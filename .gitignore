@@ -8,3 +8,6 @@ datasets
 # Added by cargo
 
 /target
+slurm
+*.out
+*.err
