@@ -2,3 +2,9 @@
 .env
 .codex
 datasets
+.vscode
+
+
+# Added by cargo
+
+/target
