@@ -1,8 +1,8 @@
 use candle_vllm::api::{EngineBuilder, ModelRepo};
-use candle_vllm::openai::requests::{ChatCompletionRequest, Messages};
+use candle_vllm::openai::requests::{ChatCompletionRequest, ChatMessage, Messages};
 
 #[tokio::main]
-async fn main() -> candle_core::Result<()> {
+async fn main() -> Result<(), String> {
     println!("Building engine...");
     let engine = EngineBuilder::new(ModelRepo::ModelID(("Qwen/Qwen2.5-7B", None)))
         .build_async()
@@ -22,7 +22,7 @@ async fn main() -> candle_core::Result<()> {
         ..Default::default()
     };
     println!("Sending request...");
-    let response = engine.generate_request(request).await?;
+    let response = engine.generate_request(request).await.map_err(|e| e.to_string())?;
     println!("Response received: {:?}", response);
     engine.shutdown();
     Ok(())
