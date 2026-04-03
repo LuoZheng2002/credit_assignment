@@ -66,3 +66,19 @@ For the agentic system, we set its operation mode to have clear boundaries betwe
     * If the executor is hesitant about whether to listen to the verifier, then it is a good opportunity to reward / penalize the executor for listening / not listening to the verifier, because it's on-policy.
 5. The biggiest concern is that the change of plan is not sufficient when the model lacks advanced mindset required for solving hard problems, in which case, we prioritize trying if adding task-specific prompts (manually injecting general mindset knowledge) helps.
 6. TBD
+
+
+# How To Work (IMPORTANT)
+## When writing python code
+* The overall style is to expose a problem early instead of hiding it or allowing a suboptimal run with unfavorable fallbacks. You'd rather not handle a potential vulnerability that may cause a runtime crash at all, than to intentionally hide it. A better act when spotting a vulnerability is to add assert statements before it to communicate the semantic assumption.
+* The following "fallback mechanism" refers to the act of patching a scenario that is not expected by the program semantic. Intentional branching on expected scenarios is exempted from the following. Do not add fallback mechanism unless the user has explicitly requested or approved it. If you think a fallback mechanism is idiomatic or very helpful in certain scenarios, explicitly recommend it to the user and ask for approval. Fallback mechanism can include implicit ones like my_dict.get('key', None) or my_dict.get('key', []), in this case, prefer my_dict['key'] to let the program crash naturally if 'key' is not found.
+* Prefer assert statement over if + raise statement.
+* Make all function arguments mandatory without a default value, unless approved by the user for not to, in which case an inline comment is needed to explain the reason. If there is a recommended default value, like for hyperparameters, state it in the form of an inline comment. Do not make arguments optional (via "| None") unless the user explicitly says so or you're sure it agrees with the context semantic. Add inline comment explaining the necessity of all optional arguments.
+* For any object used in a class instance, either instantiate it within the class or pass it to the class through constructor or other functions, but do not allow both to possibly happen. If you think it is necessary, ask for user's approval before implementing it, and leave a comment explaining it.
+* If you find currently in the code there are places violating the above rules and without comments explaining the reason, inform the user after the current task is done and revise them after receiving approval.
+## For python environment
+See if virtual environment in .venv folder is available, if no, ask the user to create it.
+Normally do not run python scripts, only check the compiling. Running a python script requires user's consent.
+
+## For file editing
+Files may be changed manually by the user, so your cached memory may not be up to date. Always reread the file before editing.
