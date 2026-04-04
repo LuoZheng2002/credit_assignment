@@ -4,11 +4,11 @@
 datasets
 tokenizers
 .vscode
-
+slurm
+*.out
+*.err
 
 # Added by cargo
 
 /target
-slurm
-*.out
-*.err
+

@@ -1,0 +1,1 @@
+CUDA_COMPUTE_CAP=80 cargo check --features "cuda"
