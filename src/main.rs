@@ -6,7 +6,8 @@ async fn main() -> Result<(), String> {
     println!("Building engine...");
     let engine = EngineBuilder::new(ModelRepo::ModelID(("Qwen/Qwen2.5-7B", None)))
         .build_async()
-        .await?;
+        .await
+        .map_err(|e| e.to_string())?;
     println!("Engine built successfully!");
 
     let request = ChatCompletionRequest {
@@ -22,7 +23,10 @@ async fn main() -> Result<(), String> {
         ..Default::default()
     };
     println!("Sending request...");
-    let response = engine.generate_request(request).await.map_err(|e| e.to_string())?;
+    let response = engine
+        .generate_request(request)
+        .await
+        .map_err(|e| e.to_string())?;
     println!("Response received: {:?}", response);
     engine.shutdown();
     Ok(())
