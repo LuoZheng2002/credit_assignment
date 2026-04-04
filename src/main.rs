@@ -1,33 +1,32 @@
-use candle_vllm::api::{EngineBuilder, ModelRepo};
-use candle_vllm::openai::requests::{ChatCompletionRequest, ChatMessage, Messages};
+use reqwest::Client;
+use serde_json::json;
 
 #[tokio::main]
-async fn main() -> Result<(), String> {
-    println!("Building engine...");
-    let engine = EngineBuilder::new(ModelRepo::ModelID(("Qwen/Qwen2.5-7B", None)))
-        .build_async()
-        .await
-        .map_err(|e| e.to_string())?;
-    println!("Engine built successfully!");
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::new();
 
-    let request = ChatCompletionRequest {
-        model: Some("default".to_string()),
-        messages: Messages::Map(vec![std::collections::HashMap::from([
-            ("role".to_string(), "user".to_string()),
-            (
-                "content".to_string(),
-                "Say hello from the Rust API.".to_string(),
-            ),
-        ])]),
-        max_tokens: Some(64),
-        ..Default::default()
-    };
-    println!("Sending request...");
-    let response = engine
-        .generate_request(request)
-        .await
-        .map_err(|e| e.to_string())?;
-    println!("Response received: {:?}", response);
-    engine.shutdown();
+    let url = "http://localhost:8000/v1/chat/completions";
+
+    let body = json!({
+        "model": "Qwen/Qwen2.5-7B-Instruct",
+        "messages": [
+            {
+                "role": "user",
+                "content": "What is the capital of France?"
+            }
+        ],
+        "max_tokens": 100
+    });
+
+    let response = client
+        .post(url)
+        .json(&body)
+        .send()
+        .await?;
+
+    let json: serde_json::Value = response.json().await?;
+
+    println!("{}", serde_json::to_string_pretty(&json)?);
+
     Ok(())
 }
