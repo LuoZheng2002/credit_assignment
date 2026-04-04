@@ -58,7 +58,7 @@ For the agentic system, we set its operation mode to have clear boundaries betwe
 1. Set up the agentic system and make it work on the datasets to see what problems can occur.
 2. Most likely the base model does not adapt to the agentic system and need behavioral alignment, in which case add more prompts to see if it gets better. If not, may require GPT to generate samples and SFT. If more prompts work, defer the SFT and focus on reasoning process problems.
 3. If problems cannot be solved due to behavioral misalignment, adjust prompts to include task-specific hints and see if some of the existing problems can be solved, so that no reference trajectory is needed.
-4. Potential RL pan: train executor and verifier at the same time.
+4. Potential RL plan: train executor and verifier at the same time.
     * Verifier should have a good prior (model's inherent capability)
     * Initially the executor never listens to the verifier (mask verifier output out from executor's context). For each rollout, see if the verifier's prediction aligns with the outcome; train the verifier.
     * Train the executor based on both the final outcome and verifier's verdict, the blending is based on verifier's growing capability.

@@ -7,6 +7,7 @@ tokenizers
 slurm
 *.out
 *.err
+AgentFlow
 
 # Added by cargo
 
