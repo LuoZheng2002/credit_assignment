@@ -51,24 +51,19 @@ def main() -> None:
     sample_indices = rng.sample(range(dataset.num_rows), num_samples)
     subset = dataset.select(sample_indices)
 
-    output_file = output_dir / f"DeepMath-103K-first-{num_samples}.jsonl"
-    question_answer_file = output_dir / f"{output_file.stem}-question_answer.jsonl"
-    with output_file.open("w", encoding="utf-8") as full_handle, question_answer_file.open(
+    question_answer_file = output_dir / f"{num_samples}.jsonl"
+    with question_answer_file.open(
         "w", encoding="utf-8"
     ) as question_handle:
-        for entry in subset:
-            json.dump(entry, full_handle, ensure_ascii=False)
-            full_handle.write("\n")
-
+        for idx, entry in enumerate(subset):
             json.dump(
-                {"question": entry["question"], "final_answer": entry["final_answer"]},
+                {"id": idx, "question": entry["question"], "final_answer": entry["final_answer"]},
                 question_handle,
                 ensure_ascii=False,
             )
             question_handle.write("\n")
 
-    print(f"Saved {num_samples} DeepMath samples to {output_file.resolve()}")
-    print(f"Saved {num_samples} question-answer entries to {question_answer_file.resolve()}")
+    print(f"Saved {num_samples} DeepMath samples to {question_answer_file.resolve()}")
 
 
 if __name__ == "__main__":

@@ -1,29 +1,18 @@
-use std::{
-    io::BufRead,
-    panic,
-    sync::{Arc, LazyLock, atomic::AtomicUsize},
-};
+use std::path::Path;
 
 use clap::Parser;
+use credit_assignment::parallel_process_jsonl::{HasId, parallel_process_jsonl};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tokio::{
-    fs::OpenOptions,
-    io::AsyncWriteExt,
-    sync::{Semaphore, mpsc},
-};
+
+const INPUT_FOLDER: &str = "datasets/deepmath_samples";
+const OUTPUT_FOLDER_PREFIX: &str = "results/deepmath_samples";
 
 #[derive(Parser, Debug)]
 #[command(name = "Evaluate DeepMath Model")]
 struct Args {
-    #[arg(
-        short,
-        long,
-        default_value = "datasets/deepmath_samples/DeepMath-103K-first-20-question_answer.jsonl"
-    )]
-    input_file: String,
-    #[arg(short, long, default_value = "output_deepmath.jsonl")]
-    output_file: String,
+    #[arg(short, long)]
+    num_samples: usize,
     #[arg(value_enum, short, long)]
     model: Model,
 }
@@ -38,42 +27,37 @@ enum Model {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DeepMathQuestion {
+    id: usize,
     question: String,
     final_answer: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+impl HasId for DeepMathQuestion {
+    fn id(&self) -> usize {
+        self.id
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 pub struct DeepMathAnswer {
+    id: usize,
     question: String,
     model_reasoning: String,
     model_answer: String,
     correct_answer: String,
 }
 
-pub fn read_jsonl_file(file_path: &str) -> Result<Vec<DeepMathQuestion>, String> {
-    let file = std::fs::File::open(file_path).map_err(|e| e.to_string())?;
-    let reader = std::io::BufReader::new(file);
-    let mut questions = Vec::new();
-    for line in reader.lines() {
-        let line = line.map_err(|e| e.to_string())?;
-        let question: DeepMathQuestion = serde_json::from_str(&line).map_err(|e| e.to_string())?;
-        questions.push(question);
+impl HasId for DeepMathAnswer {
+    fn id(&self) -> usize {
+        self.id
     }
-    Ok(questions)
 }
-
-// static MODEL: LazyLock<Model> = LazyLock::new(|| {
-//     let args = Args::parse();
-//     args.model
-// });
 
 async fn evaluate_question(
     question: DeepMathQuestion,
     client: Client,
-    sem: Arc<Semaphore>,
     model: Model,
 ) -> DeepMathAnswer {
-    let _permit = sem.acquire().await.unwrap(); // Acquire a permit to limit concurrency
     let prompt = format!(
         "Please answer the following question by first reasoning and then putting the final short answer in <answer></answer> tags. Question: {}",
         question.question
@@ -125,25 +109,12 @@ async fn evaluate_question(
     // Placeholder for actual evaluation logic
     // For demonstration, we just return the question and the final answer
     DeepMathAnswer {
+        id: question.id,
         question: question.question,
         model_reasoning,
         model_answer,
         correct_answer: question.final_answer,
     }
-}
-
-async fn receive_lines_and_write_to_file(mut rx: mpsc::Receiver<Vec<u8>>, file_path: &str) {
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(file_path)
-        .await
-        .unwrap();
-    while let Some(line) = rx.recv().await {
-        file.write_all(&line).await.unwrap();
-        file.write_all(b"\n").await.unwrap();
-    }
-    file.flush().await.unwrap();
 }
 
 #[tokio::main]
@@ -154,36 +125,27 @@ async fn main() {
     }));
     // load env from .env file
     dotenvy::dotenv().ok();
-    let args = Args::parse();
-    let model = args.model;
-    let questions =
-        read_jsonl_file("datasets/deepmath_samples/DeepMath-103K-first-20-question_answer.jsonl")
-            .unwrap();
-    println!("Read {} questions", questions.len());
-    let semaphore = Arc::new(Semaphore::new(200)); // Limit to 200 concurrent tasks
+    let Args { model, num_samples } = Args::parse();
+    let model_name = match model {
+        Model::Gpt5Mini => "gpt",
+        Model::Qwen25Instruct => "qwen",
+    };
+    let dataset_path = Path::new(INPUT_FOLDER).join(format!("{}.jsonl", num_samples));
+    let output_folder = Path::new(OUTPUT_FOLDER_PREFIX).join(format!("{}", model_name));
+    let output_file_path = output_folder.join(format!("{}.jsonl", num_samples));
     let client = Client::new();
 
-    let (tx, rx) = mpsc::channel::<Vec<u8>>(100);
-    let writer_handle = tokio::spawn(receive_lines_and_write_to_file(rx, "output_deepmath.jsonl"));
-    let count: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
-    for question in questions.into_iter() {
-        let owned_permit = semaphore.clone().acquire_owned().await.unwrap(); // Acquire a permit for each task
-        let client = client.clone();
-        let sem = semaphore.clone();
-        let tx = tx.clone();
-        let count = count.clone();
-        tokio::spawn(async move {
-            let answer = evaluate_question(question, client, sem, model).await;
-            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            println!(
-                "Processed {} questions",
-                count.load(std::sync::atomic::Ordering::SeqCst)
-            );
-            let bytes = serde_json::to_vec(&answer).unwrap();
-            tx.send(bytes).await.unwrap();
-            drop(owned_permit); // Release the permit when done
-        });
-    }
-    drop(tx); // Close the sender to signal completion
-    writer_handle.await.unwrap(); // Wait for the writer task to finish
+    let results = parallel_process_jsonl(
+        dataset_path,
+        output_file_path,
+        move |question: DeepMathQuestion| {
+            let client = client.clone();
+            async move { evaluate_question(question, client, model).await }
+        },
+        200,
+    )
+    .await
+    .unwrap();
+
+    println!("Processed {} answers", results.len());
 }

@@ -240,6 +240,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dotenvy",
+ "indexmap",
  "regex",
  "reqwest",
  "serde",

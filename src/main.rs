@@ -18,11 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "max_tokens": 100
     });
 
-    let response = client
-        .post(url)
-        .json(&body)
-        .send()
-        .await?;
+    let response = client.post(url).json(&body).send().await?;
 
     let json: serde_json::Value = response.json().await?;
 
