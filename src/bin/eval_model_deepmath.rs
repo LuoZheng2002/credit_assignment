@@ -1,5 +1,7 @@
 use std::{
-    io::BufRead, panic, sync::{Arc, LazyLock}
+    io::BufRead,
+    panic,
+    sync::{Arc, LazyLock, atomic::AtomicUsize},
 };
 
 use clap::Parser;
@@ -43,6 +45,7 @@ pub struct DeepMathQuestion {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DeepMathAnswer {
     question: String,
+    model_reasoning: String,
     model_answer: String,
     correct_answer: String,
 }
@@ -71,11 +74,12 @@ async fn evaluate_question(
     model: Model,
 ) -> DeepMathAnswer {
     let _permit = sem.acquire().await.unwrap(); // Acquire a permit to limit concurrency
+    let prompt = format!(
+        "Please answer the following question by first reasoning and then putting the final short answer in <answer></answer> tags. Question: {}",
+        question.question
+    );
     let (url, model_name) = match model {
-        Model::Gpt5Mini => (
-            "https://api.openai.com/v1/chat/completions",
-            "gpt-5-mini",
-        ),
+        Model::Gpt5Mini => ("https://api.openai.com/v1/chat/completions", "gpt-5-mini"),
         Model::Qwen25Instruct => (
             "http://localhost:8000/v1/chat/completions",
             "Qwen/Qwen2.5-7B-Instruct",
@@ -86,21 +90,43 @@ async fn evaluate_question(
         "messages": [
             {
                 "role": "user",
-                "content": question.question
+                "content": prompt,
             }
         ],
-        "max_tokens": 2048,
+        "max_completion_tokens": 4096,
     });
-    let response = client.post(url).json(&body).send().await.unwrap();
+
+    let response = match model {
+        Model::Qwen25Instruct => client.post(url).json(&body).send().await.unwrap(),
+        Model::Gpt5Mini => {
+            let api_key = std::env::var("OPENAI_API_KEY")
+                .expect("OPENAI_API_KEY environment variable not set");
+            client
+                .post(url)
+                .bearer_auth(api_key)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
     let json: serde_json::Value = response.json().await.unwrap();
-    let model_answer = json["choices"][0]["message"]["content"]
+    let model_reasoning = json["choices"][0]["message"]["content"]
         .as_str()
         .expect(&format!("model answer is invalid: {:?}", json))
         .to_string();
+    // use regex to extract the answer in <answer></answer> tags
+    let re = regex::Regex::new(r"<answer>(.*?)</answer>").unwrap();
+    let model_answer = if let Some(caps) = re.captures(&model_reasoning) {
+        caps.get(1).map_or("", |m| m.as_str()).to_string()
+    } else {
+        "No answer found".to_string()
+    };
     // Placeholder for actual evaluation logic
     // For demonstration, we just return the question and the final answer
     DeepMathAnswer {
         question: question.question,
+        model_reasoning,
         model_answer,
         correct_answer: question.final_answer,
     }
@@ -139,16 +165,19 @@ async fn main() {
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>(100);
     let writer_handle = tokio::spawn(receive_lines_and_write_to_file(rx, "output_deepmath.jsonl"));
+    let count: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
     for question in questions.into_iter() {
         let owned_permit = semaphore.clone().acquire_owned().await.unwrap(); // Acquire a permit for each task
         let client = client.clone();
         let sem = semaphore.clone();
         let tx = tx.clone();
+        let count = count.clone();
         tokio::spawn(async move {
             let answer = evaluate_question(question, client, sem, model).await;
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             println!(
-                "Question: {}\nModel Answer: {}\nCorrect Answer: {}\n",
-                answer.question, answer.model_answer, answer.correct_answer
+                "Processed {} questions",
+                count.load(std::sync::atomic::Ordering::SeqCst)
             );
             let bytes = serde_json::to_vec(&answer).unwrap();
             tx.send(bytes).await.unwrap();
