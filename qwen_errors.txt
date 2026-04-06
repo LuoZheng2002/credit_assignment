@@ -1,0 +1,5 @@
+15: The coordinates are correctly solved, but the final calculation is incorrect.
+
+16: Determined the wrong digits in the odd position.
+
+17: 

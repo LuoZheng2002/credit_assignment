@@ -58,6 +58,7 @@ pub struct DeepMathAnswerParsed {
     model_answer: String,
     correct_answer: String,
     question: String,
+    model_reasoning: String,
 }
 
 impl HasId for DeepMathAnswerParsed {
@@ -73,12 +74,20 @@ pub struct DeepMathScore {
     model_answer: String,
     correct_answer: String,
     question: String,
+    model_reasoning: String,
 }
 
 impl HasId for DeepMathScore {
     fn id(&self) -> usize {
         self.id
     }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DeepMathErrorReason {
+    id: usize,
+    correct: bool,
+    error_reason: Option<String>,
 }
 
 async fn parse_model_answer(answer: DeepMathAnswer) -> DeepMathAnswerParsed {
@@ -89,6 +98,7 @@ async fn parse_model_answer(answer: DeepMathAnswer) -> DeepMathAnswerParsed {
         model_answer,
         correct_answer: answer.correct_answer,
         question: answer.question,
+        model_reasoning: answer.model_reasoning,
     }
 }
 
@@ -134,14 +144,10 @@ async fn evaluate_question(
         }
     };
     let json: serde_json::Value = response.json().await.unwrap();
-    let mut model_reasoning = json["choices"][0]["message"]["content"]
+    let model_reasoning = json["choices"][0]["message"]["content"]
         .as_str()
         .expect(&format!("model answer is invalid: {:?}", json))
         .to_string();
-    // remove all new lines from model_reasoning
-    model_reasoning.retain(|c| c != '\n');
-    // Placeholder for actual evaluation logic
-    // For demonstration, we just return the question and the final answer
     DeepMathAnswer {
         id: question.id,
         question: question.question,
@@ -224,6 +230,51 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
         model_answer: answer.model_answer,
         correct_answer: answer.correct_answer,
         question: answer.question,
+        model_reasoning: answer.model_reasoning,
+    }
+}
+
+
+async fn generate_error_reason(
+    score: DeepMathScore,
+    client: Client,
+) -> DeepMathErrorReason {
+    let prompt = format!(
+        "You are a helpful assistant that provides error analysis for incorrect answers. \
+Given the following question, the model's reasoning and the reference reasoning, determine the core error in the model's reasoning that leads to the incorrect answer. \
+If there are multiple errors, only state the first one. Use one sentence to summarize the error.\n\
+Question: {}\nModel's Reasoning: {}\nReference Reasoning: {}\nError Analysis:",
+        score.question, score.model_reasoning, score.correct_answer // to do: needs to pass in the actual reasoning
+    );
+    let body = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        "max_completion_tokens": 2048,
+    });
+    let api_key =
+        std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set");
+    let response = client
+        .post("https://api.openai.com/v1/chat/completions")
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let json: serde_json::Value = response.json().await.unwrap();
+    let error_reason = json["choices"][0]["message"]["content"]
+        .as_str()
+        .expect(&format!("error reason is invalid: {:?}", json))
+        .trim()
+        .to_string();
+    DeepMathErrorReason {
+        id: score.id,
+        correct: score.correct,
+        error_reason: Some(error_reason),
     }
 }
 

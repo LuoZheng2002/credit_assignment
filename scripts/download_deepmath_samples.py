@@ -52,9 +52,12 @@ def main() -> None:
     subset = dataset.select(sample_indices)
 
     question_answer_file = output_dir / f"deepmath_samples_{num_samples}.jsonl"
+    question_answer_reasoning_file = output_dir / f"deepmath_samples_{num_samples}_reasoning.jsonl"
     with question_answer_file.open(
         "w", encoding="utf-8"
-    ) as question_handle:
+    ) as question_handle, question_answer_reasoning_file.open(
+        "w", encoding="utf-8"
+    ) as reasoning_handle:
         for idx, entry in enumerate(subset):
             json.dump(
                 {"id": idx, "question": entry["question"], "final_answer": entry["final_answer"]},
@@ -62,8 +65,15 @@ def main() -> None:
                 ensure_ascii=False,
             )
             question_handle.write("\n")
+            json.dump(
+                {"id": idx, "question": entry["question"], "final_answer": entry["final_answer"], "reasoning": entry["r1_solution_1"]},
+                reasoning_handle,
+                ensure_ascii=False,
+            )
+            reasoning_handle.write("\n")
 
     print(f"Saved {num_samples} DeepMath samples to {question_answer_file.resolve()}")
+    print(f"Saved {num_samples} DeepMath samples with reasoning to {question_answer_reasoning_file.resolve()}")
 
 
 if __name__ == "__main__":
