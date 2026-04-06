@@ -1,4 +1,4 @@
-use crate::deepmath::generate_raw_answers::{DeepMathAnswerRaw, get_deepmath_raw_answer_path};
+use crate::deepmath::generate_raw_answers::{DeepMathAnswerRaw, get_raw_answer_path};
 use crate::parallel_process_jsonl::{HasId, parallel_process_jsonl};
 use serde::{Deserialize, Serialize};
 
@@ -16,10 +16,10 @@ impl HasId for DeepMathAnswerParsed {
     }
 }
 
-pub fn get_deepmath_parsed_path(model_name: &str, num_samples: usize) -> String {
+pub fn get_parsed_path(model_name: &str, dataset_name: &str, num_samples: usize) -> String {
     format!(
-        "results/{}/deepmath_parsed_{}.jsonl",
-        model_name, num_samples
+        "results/{}/{}_parsed_{}.jsonl",
+        model_name, dataset_name, num_samples
     )
 }
 
@@ -58,16 +58,16 @@ async fn parse_model_answer_task(answer: DeepMathAnswerRaw) -> DeepMathAnswerPar
     }
 }
 
-pub async fn parse_answers(model_name: &str, num_samples: usize) {
+pub async fn parse_answers(model_name: &str, dataset_name: &str, num_samples: usize) {
     println!(
-        "Parsing model answers for model {} on DeepMath dataset with {} samples",
-        model_name, num_samples
+        "Parsing model answers for model {} on {} dataset with {} samples",
+        model_name, dataset_name, num_samples
     );
-    let deepmath_raw_path = get_deepmath_raw_answer_path(model_name, num_samples);
-    let deepmath_parsed_path = get_deepmath_parsed_path(model_name, num_samples);
+    let raw_path = get_raw_answer_path(model_name, dataset_name, num_samples);
+    let parsed_path = get_parsed_path(model_name, dataset_name, num_samples);
     parallel_process_jsonl(
-        &[&deepmath_raw_path],
-        &deepmath_parsed_path,
+        &[&raw_path],
+        &parsed_path,
         |values| {
             assert_eq!(values.len(), 1);
             let answer: DeepMathAnswerRaw =
@@ -80,7 +80,7 @@ pub async fn parse_answers(model_name: &str, num_samples: usize) {
     .await
     .unwrap();
     println!(
-        "Parsed model answers for model {} on DeepMath dataset with {} samples and saved to {}",
-        model_name, num_samples, deepmath_parsed_path
+        "Parsed model answers for model {} on {} dataset with {} samples and saved to {}",
+        model_name, dataset_name, num_samples, parsed_path
     );
 }

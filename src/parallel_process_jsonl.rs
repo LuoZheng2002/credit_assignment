@@ -22,7 +22,8 @@ pub fn read_json_lines_indexed<T: DeserializeOwned + HasId>(
     let mut results = IndexMap::new();
     for line in reader.lines() {
         let line = line.map_err(|e| e.to_string())?;
-        let item: T = serde_json::from_str(&line).map_err(|e| e.to_string())?;
+        let item: T = serde_json::from_str(&line)
+            .map_err(|e| format!("Failed to parse line: {}\nError: {}", line, e))?;
         results.insert(item.id(), item);
     }
     Ok(results)
@@ -41,7 +42,8 @@ pub fn read_json_lines_indexed_erased(
             .get("id")
             .ok_or_else(|| format!("Missing id field in item: {}", item))?
             .as_u64()
-            .ok_or_else(|| format!("id field is not a number in item: {}", item))? as usize;
+            .ok_or_else(|| format!("id field is not a number in item: {}", item))?
+            as usize;
         results.insert(id, item);
     }
     Ok(results)
@@ -88,7 +90,7 @@ where
     );
     let mut items: Vec<IndexMap<usize, serde_json::Value>> = Vec::new();
     for input_file_path in input_file_paths {
-        let input_file = File::open(input_file_path.as_ref()).map_err(|e| e.to_string())?;
+        let input_file = File::open(input_file_path.as_ref()).map_err(|e| format!("Cannot open file {}: {}", input_file_path.as_ref().display(), e))?;
         let file_items = read_json_lines_indexed_erased(&input_file)?;
         items.push(file_items);
     }
@@ -102,9 +104,7 @@ where
     for id in first_keys {
         let item_values: Vec<&serde_json::Value> = items
             .iter()
-            .map(|item_map| {
-                item_map.get(&id).unwrap()
-            })
+            .map(|item_map| item_map.get(&id).unwrap())
             .collect();
         let zipped_item = zip_fn(&item_values);
         zipped_items.insert(id, zipped_item);

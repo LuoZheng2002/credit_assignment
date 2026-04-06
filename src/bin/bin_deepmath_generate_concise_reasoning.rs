@@ -5,6 +5,8 @@ use reqwest::Client;
 #[command(name = "Generate Concise Reasoning")]
 struct Args {
     #[arg(short, long)]
+    dataset_name: String,
+    #[arg(short, long)]
     num_samples: usize,
 }
 
@@ -15,8 +17,8 @@ async fn main() {
         std::process::abort();
     }));
     dotenvy::dotenv().ok();
-    let Args { num_samples } = Args::parse();
+    let Args { dataset_name, num_samples } = Args::parse();
 
     let client = Client::new();
-    generate_concise_reasoning(num_samples, client).await;
+    generate_concise_reasoning(&dataset_name, num_samples, client).await;
 }

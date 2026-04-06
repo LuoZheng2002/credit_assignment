@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     deepmath::{
         generate_raw_answers::Model,
-        parse_answers::{DeepMathAnswerParsed, get_deepmath_parsed_path},
+        parse_answers::{DeepMathAnswerParsed, get_parsed_path},
     },
     parallel_process_jsonl::{HasId, parallel_process_jsonl, read_json_lines_indexed},
 };
@@ -27,17 +27,17 @@ impl HasId for DeepMathCorrectness {
     }
 }
 
-pub fn get_deepmath_correctness_path(model_name: &str, num_samples: usize) -> String {
+pub fn get_correctness_path(model_name: &str, dataset_name: &str, num_samples: usize) -> String {
     format!(
-        "results/{}/deepmath_correctness_{}.jsonl",
-        model_name, num_samples
+        "results/{}/{}_correctness_{}.jsonl",
+        model_name, dataset_name, num_samples
     )
 }
 
-fn get_deepmath_accuracy_path(model_name: &str, num_samples: usize) -> String {
+fn get_accuracy_path(model_name: &str, dataset_name: &str, num_samples: usize) -> String {
     format!(
-        "results/{}/deepmath_accuracy_{}.json",
-        model_name, num_samples
+        "results/{}/{}_accuracy_{}.json",
+        model_name, dataset_name, num_samples
     )
 }
 
@@ -45,6 +45,7 @@ async fn judge_answer_task(answer: DeepMathAnswerParsed, client: Client) -> Deep
     let prompt = format!(
         // "The question is: {}. The model's answer is: {}. The correct answer is: {}. Please evaluate whether the model's answer is correct and return only 'correct' or 'incorrect'.",
         "You are an answer checker that checks a model's answer against the reference answer. Judge if the model's answer is equivalent to the reference answer. \
+If the model's answer contains units but the reference answer does not, treat them as equivalent if the numerical values are the same. \
 The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
         answer.model_answer, answer.correct_answer
     );
@@ -94,15 +95,13 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
     }
 }
 
-pub async fn judge_answers(model: Model, num_samples: usize, client: Client) {
+pub async fn judge_answers(model_name: &str, dataset_name: &str, num_samples: usize, client: Client) {
     println!(
         "Judging answers for model {} on {} samples",
-        model.name(),
-        num_samples
+        model_name, num_samples
     );
-    let model_name = model.name();
-    let parsed_answers_path = get_deepmath_parsed_path(model_name, num_samples);
-    let correctness_path = get_deepmath_correctness_path(model_name, num_samples);
+    let parsed_answers_path = get_parsed_path(model_name, dataset_name, num_samples);
+    let correctness_path = get_correctness_path(model_name, dataset_name, num_samples);
     parallel_process_jsonl(
         &[&parsed_answers_path],
         &correctness_path,
@@ -122,7 +121,7 @@ pub async fn judge_answers(model: Model, num_samples: usize, client: Client) {
     .unwrap();
     println!(
         "Finished judging answers for model {} on {} samples. Results saved to {}",
-        model.name(),
+        model_name,
         num_samples,
         correctness_path
     );
@@ -134,7 +133,7 @@ pub async fn judge_answers(model: Model, num_samples: usize, client: Client) {
             correct += 1;
         }
     }
-    let score_stats_file = get_deepmath_accuracy_path(model_name, num_samples);
+    let score_stats_file = get_accuracy_path(model_name, dataset_name, num_samples);
     std::fs::write(
         score_stats_file,
         serde_json::to_string_pretty(&serde_json::json!({
@@ -147,7 +146,7 @@ pub async fn judge_answers(model: Model, num_samples: usize, client: Client) {
     .unwrap();
     println!(
         "Accuracy for model {} on {} samples: {:.2}%",
-        model.name(),
+        model_name,
         num_samples,
         correct as f64 / score_results.len() as f64 * 100.0
     );

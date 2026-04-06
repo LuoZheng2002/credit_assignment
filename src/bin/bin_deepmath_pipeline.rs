@@ -6,6 +6,8 @@ use reqwest::Client;
 #[command(name = "Evaluate DeepMath Model")]
 struct Args {
     #[arg(short, long)]
+    dataset_name: String,
+    #[arg(short, long)]
     num_samples: usize,
     #[arg(value_enum, short, long)]
     model: Model,
@@ -20,19 +22,19 @@ async fn main() {
     }));
     // load env from .env file
     dotenvy::dotenv().ok();
-    let Args { model, num_samples } = Args::parse();
+    let Args { dataset_name, model, num_samples } = Args::parse();
     let model_name = model.name();
     println!(
-        "Evaluating model {} on DeepMath dataset with {} samples",
-        model_name, num_samples
+        "Evaluating model {} on {} dataset with {} samples",
+        model_name, dataset_name, num_samples
     );
     
     let client = Client::new();
-    generate_raw_answers(num_samples, client.clone(), model).await;
+    generate_raw_answers(&dataset_name, num_samples, client.clone(), model).await;
 
-    parse_answers(model_name, num_samples).await;
+    parse_answers(model_name, &dataset_name, num_samples).await;
 
-    judge_answers(model, num_samples, client.clone()).await;
+    judge_answers(model_name, &dataset_name, num_samples, client.clone()).await;
 
-    generate_error_causes(model_name, num_samples, client).await;
+    generate_error_causes(model_name, &dataset_name, num_samples, client).await;
 }

@@ -1,7 +1,7 @@
 use reqwest::Client;
 
 use crate::{
-    datasets::{DeepMathQuestionReasoning, get_deepmath_questions_with_reasoning_path},
+    datasets::{DeepMathQuestionReasoning, get_questions_with_reasoning_path},
     parallel_process_jsonl::{HasId, parallel_process_jsonl},
 };
 use serde::{Deserialize, Serialize};
@@ -64,16 +64,16 @@ Question: {}\nFinal Answer: {}\nReasoning: {}\nConcise Reasoning:",
     }
 }
 
-pub fn get_concise_reasoning_path(num_samples: usize) -> String {
+pub fn get_concise_reasoning_path(dataset_name: &str, num_samples: usize) -> String {
     format!(
-        "datasets/deepmath_samples_{}_concise_reasoning.jsonl",
-        num_samples
+        "datasets/{}_samples_{}_concise_reasoning.jsonl",
+        dataset_name, num_samples
     )
 }
 
-pub async fn generate_concise_reasoning(num_samples: usize, client: Client) {
-    let questions_with_reasoning_path = get_deepmath_questions_with_reasoning_path(num_samples);
-    let concise_reasoning_output_path = get_concise_reasoning_path(num_samples);
+pub async fn generate_concise_reasoning(dataset_name: &str, num_samples: usize, client: Client) {
+    let questions_with_reasoning_path = get_questions_with_reasoning_path(dataset_name, num_samples);
+    let concise_reasoning_output_path = get_concise_reasoning_path(dataset_name, num_samples);
     parallel_process_jsonl(
         &[&questions_with_reasoning_path],
         &concise_reasoning_output_path,

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     deepmath::{
         generate_concise_reasoning::{DeepMathConciseReasoning, get_concise_reasoning_path},
-        generate_raw_answers::{DeepMathAnswerRaw, get_deepmath_raw_answer_path},
+        generate_raw_answers::{DeepMathAnswerRaw, get_raw_answer_path},
         judge_answers::DeepMathCorrectness,
     },
     parallel_process_jsonl::{HasId, parallel_process_jsonl},
@@ -32,6 +32,8 @@ pub struct DeepMathErrorCause {
     pub id: usize,
     pub correct: bool,
     pub error_cause: Option<String>,
+    pub question: Option<String>,
+    pub model_reasoning: Option<String>,
 }
 
 impl HasId for DeepMathErrorCause {
@@ -40,10 +42,10 @@ impl HasId for DeepMathErrorCause {
     }
 }
 
-pub fn get_deepmath_error_causes_path(model_name: &str, num_samples: usize) -> String {
+pub fn get_error_causes_path(model_name: &str, dataset_name: &str, num_samples: usize) -> String {
     format!(
-        "results/{}/deepmath_error_causes_{}.jsonl",
-        model_name, num_samples
+        "results/{}/{}_error_causes_{}.jsonl",
+        model_name, dataset_name, num_samples
     )
 }
 
@@ -56,6 +58,8 @@ async fn generate_error_cause_task(
             id: correctness_reasoning.id,
             correct: true,
             error_cause: None,
+            question: None,
+            model_reasoning: None,
         };
     }
     let prompt = format!(
@@ -96,19 +100,26 @@ Question: {}\nModel's Reasoning: {}\nReference Reasoning: {}\nError Cause Analys
         id: correctness_reasoning.id,
         correct: correctness_reasoning.correct,
         error_cause: Some(error_reason),
+        question: Some(correctness_reasoning.question),
+        model_reasoning: Some(correctness_reasoning.model_reasoning),
     }
 }
 
-pub async fn generate_error_causes(model_name: &str, num_samples: usize, client: Client) {
+pub async fn generate_error_causes(
+    model_name: &str,
+    dataset_name: &str,
+    num_samples: usize,
+    client: Client,
+) {
     println!(
-        "Generating error cause analysis for model {} on {} DeepMath samples...",
-        model_name, num_samples
+        "Generating error cause analysis for model {} on {} dataset with {} samples...",
+        model_name, dataset_name, num_samples
     );
     let correctness_path =
-        crate::deepmath::judge_answers::get_deepmath_correctness_path(model_name, num_samples);
-    let raw_answer_path = get_deepmath_raw_answer_path(model_name, num_samples);
-    let reference_reasoning_path = get_concise_reasoning_path(num_samples);
-    let error_causes_output_path = get_deepmath_error_causes_path(model_name, num_samples);
+        crate::deepmath::judge_answers::get_correctness_path(model_name, dataset_name, num_samples);
+    let raw_answer_path = get_raw_answer_path(model_name, dataset_name, num_samples);
+    let reference_reasoning_path = get_concise_reasoning_path(dataset_name, num_samples);
+    let error_causes_output_path = get_error_causes_path(model_name, dataset_name, num_samples);
     parallel_process_jsonl(
         &[
             &correctness_path,
@@ -118,11 +129,13 @@ pub async fn generate_error_causes(model_name: &str, num_samples: usize, client:
         &error_causes_output_path,
         |values| {
             assert_eq!(values.len(), 3);
-            let correctness: DeepMathCorrectness =
-                serde_json::from_value(values[0].clone()).unwrap();
-            let raw_answer: DeepMathAnswerRaw = serde_json::from_value(values[1].clone()).unwrap();
+            let correctness: DeepMathCorrectness = serde_json::from_value(values[0].clone())
+                .expect(&format!("Failed to parse value: {}", values[0]));
+            let raw_answer: DeepMathAnswerRaw = serde_json::from_value(values[1].clone())
+                .expect(&format!("Failed to parse value: {}", values[1]));
             let reference_reasoning: DeepMathConciseReasoning =
-                serde_json::from_value(values[2].clone()).unwrap();
+                serde_json::from_value(values[2].clone())
+                    .expect(&format!("Failed to parse value: {}", values[2]));
             ZippedDeepMathCorrectnessReasoning {
                 id: correctness.id,
                 correct: correctness.correct,

@@ -1,5 +1,5 @@
 use crate::{
-    datasets::{DeepMathQuestion, get_deepmath_questions_path},
+    datasets::{DeepMathQuestion, get_question_path},
     parallel_process_jsonl::{HasId, parallel_process_jsonl},
 };
 use reqwest::Client;
@@ -36,8 +36,11 @@ impl HasId for DeepMathAnswerRaw {
     }
 }
 
-pub fn get_deepmath_raw_answer_path(model_name: &str, num_samples: usize) -> String {
-    format!("results/{}/deepmath_raw_{}.jsonl", model_name, num_samples)
+pub fn get_raw_answer_path(model_name: &str, dataset_name: &str, num_samples: usize) -> String {
+    format!(
+        "results/{}/{}_raw_{}.jsonl",
+        model_name, dataset_name, num_samples
+    )
 }
 
 async fn generate_raw_answer_task(
@@ -94,9 +97,14 @@ async fn generate_raw_answer_task(
     }
 }
 
-pub async fn generate_raw_answers(num_samples: usize, client: Client, model: Model) {
-    let questions_path = get_deepmath_questions_path(num_samples);
-    let raw_output_path = get_deepmath_raw_answer_path(model.name(), num_samples);
+pub async fn generate_raw_answers(
+    dataset_name: &str,
+    num_samples: usize,
+    client: Client,
+    model: Model,
+) {
+    let questions_path = get_question_path(dataset_name, num_samples);
+    let raw_output_path = get_raw_answer_path(model.name(), dataset_name, num_samples);
     parallel_process_jsonl(
         &[&questions_path],
         &raw_output_path,

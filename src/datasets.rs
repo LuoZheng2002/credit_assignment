@@ -15,7 +15,6 @@ impl HasId for DeepMathQuestion {
     }
 }
 
-
 #[derive(Serialize, Deserialize, Debug)]
 pub struct DeepMathQuestionReasoning {
     pub id: usize,
@@ -30,11 +29,16 @@ impl HasId for DeepMathQuestionReasoning {
     }
 }
 
-pub fn get_deepmath_questions_path(num_samples: usize) -> String {
-    format!("datasets/deepmath_samples_{}.jsonl", num_samples)
+pub fn get_question_path(dataset_name: &str, num_samples: usize) -> String {
+    format!("datasets/{}_samples_{}.jsonl", dataset_name, num_samples)
 }
 
-pub fn get_deepmath_questions_with_reasoning_path(num_samples: usize) -> String {
-    format!("datasets/deepmath_samples_{}_reasoning.jsonl", num_samples)
+pub fn get_questions_with_reasoning_path(
+    dataset_name: &str,
+    num_samples: usize,
+) -> String {
+    format!(
+        "datasets/{}_samples_{}_reasoning.jsonl",
+        dataset_name, num_samples
+    )
 }
-
