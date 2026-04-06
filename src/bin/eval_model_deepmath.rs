@@ -1,4 +1,4 @@
-use std::{fs::File};
+use std::fs::File;
 
 use clap::Parser;
 use credit_assignment::parallel_process_jsonl::{
@@ -7,7 +7,6 @@ use credit_assignment::parallel_process_jsonl::{
 use indexmap::IndexMap;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-
 
 #[derive(Parser, Debug)]
 #[command(name = "Evaluate DeepMath Model")]
@@ -69,13 +68,14 @@ impl HasId for DeepMathScore {
     }
 }
 
+
 async fn evaluate_question(
     question: DeepMathQuestion,
     client: Client,
     model: Model,
 ) -> DeepMathAnswer {
     let prompt = format!(
-        "Please answer the following question by first reasoning and then putting the final short answer in <answer></answer> tags. Question: {}",
+        "Please answer the following question by first reasoning and then putting the final short answer in \\boxed{{}}. Question: {}",
         question.question
     );
     let (url, model_name) = match model {
@@ -117,8 +117,7 @@ async fn evaluate_question(
         .to_string();
     // remove all new lines from model_reasoning
     model_reasoning.retain(|c| c != '\n');
-    // use regex to extract the answer in <answer></answer> tags
-    let re = regex::Regex::new(r"<answer>(.*?)</answer>").unwrap();
+    let re = regex::Regex::new(r"\\boxed\{(.*?)\}").unwrap();
     let model_answer = if let Some(caps) = re.captures(&model_reasoning) {
         // caps.get(1).map_or("", |m| m.as_str()).to_string()
         caps.get(1)
@@ -147,11 +146,13 @@ async fn evaluate_question(
 
 async fn score_result(answer: DeepMathAnswer, client: Client) -> DeepMathScore {
     let prompt = format!(
-        "The question is: {}. The model's answer is: {}. The correct answer is: {}. Please evaluate whether the model's answer is correct and return only 'correct' or 'incorrect'.",
-        answer.question, answer.model_answer, answer.correct_answer
+        // "The question is: {}. The model's answer is: {}. The correct answer is: {}. Please evaluate whether the model's answer is correct and return only 'correct' or 'incorrect'.",
+        "You are an answer checker that checks a model's answer against the reference answer. Judge if the model's answer is equivalent to the reference answer. \
+The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
+        answer.model_answer, answer.correct_answer
     );
     let body = serde_json::json!({
-        "model": "gpt-5-mini",
+        "model": "gpt-4o",
         "messages": [
             {
                 "role": "user",
@@ -250,7 +251,7 @@ async fn main() {
                 let client = client.clone();
                 async move { evaluate_question(question, client, model).await }
             },
-            200,
+            2000,
         )
         .await
         .unwrap();
@@ -268,7 +269,7 @@ async fn main() {
             let client = client.clone();
             async move { score_result(answer, client).await }
         },
-        200,
+        2000,
     )
     .await
     .unwrap();
