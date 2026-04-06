@@ -1,4 +1,4 @@
-use std::{fs::File, path::Path};
+use std::{fs::File};
 
 use clap::Parser;
 use credit_assignment::parallel_process_jsonl::{
@@ -8,8 +8,6 @@ use indexmap::IndexMap;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-const INPUT_FOLDER: &str = "datasets/deepmath_samples";
-const OUTPUT_FOLDER_PREFIX: &str = "results/deepmath_samples";
 
 #[derive(Parser, Debug)]
 #[command(name = "Evaluate DeepMath Model")]
@@ -113,10 +111,12 @@ async fn evaluate_question(
         }
     };
     let json: serde_json::Value = response.json().await.unwrap();
-    let model_reasoning = json["choices"][0]["message"]["content"]
+    let mut model_reasoning = json["choices"][0]["message"]["content"]
         .as_str()
         .expect(&format!("model answer is invalid: {:?}", json))
         .to_string();
+    // remove all new lines from model_reasoning
+    model_reasoning.retain(|c| c != '\n');
     // use regex to extract the answer in <answer></answer> tags
     let re = regex::Regex::new(r"<answer>(.*?)</answer>").unwrap();
     let model_answer = if let Some(caps) = re.captures(&model_reasoning) {
