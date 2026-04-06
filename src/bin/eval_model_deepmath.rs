@@ -1,7 +1,10 @@
-use std::path::Path;
+use std::{fs::File, path::Path};
 
 use clap::Parser;
-use credit_assignment::parallel_process_jsonl::{HasId, parallel_process_jsonl};
+use credit_assignment::parallel_process_jsonl::{
+    HasId, parallel_process_jsonl, read_json_lines_indexed,
+};
+use indexmap::IndexMap;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +51,21 @@ pub struct DeepMathAnswer {
 }
 
 impl HasId for DeepMathAnswer {
+    fn id(&self) -> usize {
+        self.id
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DeepMathScore {
+    id: usize,
+    correct: bool,
+    model_answer: String,
+    correct_answer: String,
+    question: String,
+}
+
+impl HasId for DeepMathScore {
     fn id(&self) -> usize {
         self.id
     }
@@ -102,7 +120,17 @@ async fn evaluate_question(
     // use regex to extract the answer in <answer></answer> tags
     let re = regex::Regex::new(r"<answer>(.*?)</answer>").unwrap();
     let model_answer = if let Some(caps) = re.captures(&model_reasoning) {
-        caps.get(1).map_or("", |m| m.as_str()).to_string()
+        // caps.get(1).map_or("", |m| m.as_str()).to_string()
+        caps.get(1)
+            .expect(
+                format!(
+                    "The regular expression does not capture pattern for {}",
+                    model_reasoning
+                )
+                .as_str(),
+            )
+            .as_str()
+            .to_string()
     } else {
         "No answer found".to_string()
     };
@@ -115,6 +143,81 @@ async fn evaluate_question(
         model_answer,
         correct_answer: question.final_answer,
     }
+}
+
+async fn score_result(answer: DeepMathAnswer, client: Client) -> DeepMathScore {
+    let prompt = format!(
+        "The question is: {}. The model's answer is: {}. The correct answer is: {}. Please evaluate whether the model's answer is correct and return only 'correct' or 'incorrect'.",
+        answer.question, answer.model_answer, answer.correct_answer
+    );
+    let body = serde_json::json!({
+        "model": "gpt-5-mini",
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        "max_completion_tokens": 2048,
+    });
+    let api_key =
+        std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set");
+    let response = client
+        .post("https://api.openai.com/v1/chat/completions")
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let json: serde_json::Value = response.json().await.unwrap();
+    let evaluation = json["choices"][0]["message"]["content"]
+        .as_str()
+        .expect(&format!("evaluation is invalid: {:?}", json))
+        .trim()
+        .to_lowercase();
+    println!("Evaluation for question {}: {}", answer.id, evaluation);
+    let correct = match evaluation.as_str() {
+        "correct" => true,
+        "incorrect" => false,
+        _ => {
+            println!(
+                "Unexpected evaluation result for question {}: {}. Treating it as incorrect.",
+                answer.id, evaluation
+            );
+            false
+        }
+    };
+    DeepMathScore {
+        id: answer.id,
+        correct,
+        model_answer: answer.model_answer,
+        correct_answer: answer.correct_answer,
+        question: answer.question,
+    }
+}
+
+fn get_deepmath_dataset_path(num_samples: usize) -> String {
+    format!("datasets/deepmath_samples/{}.jsonl", num_samples)
+}
+
+fn get_deepmath_output_path(model_name: &str, num_samples: usize) -> String {
+    format!(
+        "results/deepmath_samples/{}/{}.jsonl",
+        model_name, num_samples
+    )
+}
+
+fn get_deepmath_score_output_path(model_name: &str, num_samples: usize) -> String {
+    format!(
+        "results/deepmath_scores/{}/{}.jsonl",
+        model_name, num_samples
+    )
+}
+fn get_deepmath_score_stats_output_path(model_name: &str, num_samples: usize) -> String {
+    format!(
+        "results/deepmath_scores/{}/{}_stats.json",
+        model_name, num_samples
+    )
 }
 
 #[tokio::main]
@@ -130,22 +233,68 @@ async fn main() {
         Model::Gpt5Mini => "gpt",
         Model::Qwen25Instruct => "qwen",
     };
-    let dataset_path = Path::new(INPUT_FOLDER).join(format!("{}.jsonl", num_samples));
-    let output_folder = Path::new(OUTPUT_FOLDER_PREFIX).join(format!("{}", model_name));
-    let output_file_path = output_folder.join(format!("{}.jsonl", num_samples));
     let client = Client::new();
 
-    let results = parallel_process_jsonl(
-        dataset_path,
-        output_file_path,
-        move |question: DeepMathQuestion| {
+    let deepmath_dataset_path = get_deepmath_dataset_path(num_samples);
+    let deepmath_output_path = get_deepmath_output_path(model_name, num_samples);
+    println!(
+        "Evaluating model {} on DeepMath dataset with {} samples",
+        model_name, num_samples
+    );
+    {
+        let client = client.clone();
+        parallel_process_jsonl(
+            &deepmath_dataset_path,
+            &deepmath_output_path,
+            move |question: DeepMathQuestion| {
+                let client = client.clone();
+                async move { evaluate_question(question, client, model).await }
+            },
+            200,
+        )
+        .await
+        .unwrap();
+    }
+
+    let deepmath_score_output_path = get_deepmath_score_output_path(model_name, num_samples);
+    println!(
+        "Scoring model answers for model {} on DeepMath dataset with {} samples",
+        model_name, num_samples
+    );
+    parallel_process_jsonl(
+        &deepmath_output_path,
+        &deepmath_score_output_path,
+        move |answer: DeepMathAnswer| {
             let client = client.clone();
-            async move { evaluate_question(question, client, model).await }
+            async move { score_result(answer, client).await }
         },
         200,
     )
     .await
     .unwrap();
-
-    println!("Processed {} answers", results.len());
+    let score_results: IndexMap<usize, DeepMathScore> =
+        read_json_lines_indexed(&File::open(&deepmath_score_output_path).unwrap()).unwrap();
+    let mut correct = 0;
+    for score in score_results.values() {
+        if score.correct {
+            correct += 1;
+        }
+    }
+    let score_stats_file = get_deepmath_score_stats_output_path(model_name, num_samples);
+    std::fs::write(
+        score_stats_file,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "total": score_results.len(),
+            "correct": correct,
+            "accuracy": correct as f64 / score_results.len() as f64,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    println!(
+        "Finished evaluating model {} on DeepMath dataset with {} samples. Accuracy: {:.2}%",
+        model_name,
+        num_samples,
+        correct as f64 / score_results.len() as f64 * 100.0
+    );
 }

@@ -14,7 +14,7 @@ pub trait HasId {
     fn id(&self) -> usize;
 }
 
-fn read_json_lines_indexed<T: DeserializeOwned + HasId>(
+pub fn read_json_lines_indexed<T: DeserializeOwned + HasId>(
     file: &File,
 ) -> Result<IndexMap<usize, T>, String> {
     let reader = BufReader::new(file);
@@ -27,7 +27,7 @@ fn read_json_lines_indexed<T: DeserializeOwned + HasId>(
     Ok(results)
 }
 
-fn write_jsonl_file<T: Serialize>(file_path: impl AsRef<Path>, data: &[T]) -> Result<(), String> {
+pub fn write_jsonl_file<T: Serialize>(file_path: impl AsRef<Path>, data: &[T]) -> Result<(), String> {
     let file_path = file_path.as_ref();
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -50,7 +50,7 @@ pub async fn parallel_process_jsonl<T, U, F, Fut>(
     output_file_path: impl AsRef<Path>,
     process_fn: F,
     max_tasks: usize,
-) -> Result<Vec<U>, String>
+) -> Result<(), String>
 where
     T: DeserializeOwned + HasId + Send + 'static,
     U: Serialize + HasId + DeserializeOwned + Send + 'static,
@@ -73,9 +73,11 @@ where
     let mut results = read_json_lines_indexed::<U>(&output_file)?;
 
     let processed_ids: Vec<usize> = results.keys().cloned().collect();
+    println!("Already processed {} items, skipping them", processed_ids.len());
     for id in processed_ids {
         items.shift_remove(&id);
     }
+    println!("Processing {} items", items.len());
 
     let sem = Arc::new(Semaphore::new(max_tasks));
     let process_fn = Arc::new(process_fn);
@@ -96,17 +98,14 @@ where
         });
     }
     drop(tx);
-
     while let Some(answer) = rx.recv().await {
         let serialized = serde_json::to_string(&answer).map_err(|e| e.to_string())?;
         writeln!(output_file, "{}", serialized).map_err(|e| e.to_string())?;
         results.insert(answer.id(), answer);
     }
-
-    let mut final_results: Vec<_> = results.into_values().collect();
-    final_results.sort_by_key(|item| item.id());
+    results.sort_keys();
+    let results_vec: Vec<&U> = results.values().collect();
     drop(output_file);
-    write_jsonl_file(output_path, &final_results)?;
-
-    Ok(final_results)
+    write_jsonl_file(output_path, &results_vec)?;
+    Ok(())
 }

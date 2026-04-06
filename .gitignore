@@ -8,7 +8,7 @@ slurm
 *.out
 *.err
 AgentFlow
-
+results
 # Added by cargo
 
 /target
