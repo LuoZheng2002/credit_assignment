@@ -9,6 +9,7 @@ slurm
 *.err
 AgentFlow
 results
+scripts/*.sh
 # Added by cargo
 
 /target

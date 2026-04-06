@@ -27,7 +27,10 @@ pub fn read_json_lines_indexed<T: DeserializeOwned + HasId>(
     Ok(results)
 }
 
-pub fn write_jsonl_file<T: Serialize>(file_path: impl AsRef<Path>, data: &[T]) -> Result<(), String> {
+pub fn write_jsonl_file<T: Serialize>(
+    file_path: impl AsRef<Path>,
+    data: &[T],
+) -> Result<(), String> {
     let file_path = file_path.as_ref();
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -73,7 +76,10 @@ where
     let mut results = read_json_lines_indexed::<U>(&output_file)?;
 
     let processed_ids: Vec<usize> = results.keys().cloned().collect();
-    println!("Already processed {} items, skipping them", processed_ids.len());
+    println!(
+        "Already processed {} items, skipping them",
+        processed_ids.len()
+    );
     for id in processed_ids {
         items.shift_remove(&id);
     }
