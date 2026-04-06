@@ -197,25 +197,25 @@ async fn score_result(answer: DeepMathAnswer, client: Client) -> DeepMathScore {
 }
 
 fn get_deepmath_dataset_path(num_samples: usize) -> String {
-    format!("datasets/deepmath_samples/{}.jsonl", num_samples)
+    format!("datasets/deepmath_samples_{}.jsonl", num_samples)
 }
 
 fn get_deepmath_output_path(model_name: &str, num_samples: usize) -> String {
     format!(
-        "results/deepmath_samples/{}/{}.jsonl",
+        "results/{}/deepmath_samples_{}.jsonl",
         model_name, num_samples
     )
 }
 
 fn get_deepmath_score_output_path(model_name: &str, num_samples: usize) -> String {
     format!(
-        "results/deepmath_scores/{}/{}.jsonl",
+        "results/{}/deepmath_scores_{}.jsonl",
         model_name, num_samples
     )
 }
 fn get_deepmath_score_stats_output_path(model_name: &str, num_samples: usize) -> String {
     format!(
-        "results/deepmath_scores/{}/{}_stats.json",
+        "results/{}/deepmath_scores_{}_stats.json",
         model_name, num_samples
     )
 }

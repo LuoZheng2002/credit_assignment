@@ -41,7 +41,7 @@ def main() -> None:
     num_samples = args.num_samples
     assert num_samples > 0, "--num-samples must be positive"
 
-    output_dir = repo_root / "datasets/deepmath_samples"
+    output_dir = repo_root / "datasets"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dataset = load_dataset("zwhe99/DeepMath-103K", split="train")
@@ -51,7 +51,7 @@ def main() -> None:
     sample_indices = rng.sample(range(dataset.num_rows), num_samples)
     subset = dataset.select(sample_indices)
 
-    question_answer_file = output_dir / f"{num_samples}.jsonl"
+    question_answer_file = output_dir / f"deepmath_samples_{num_samples}.jsonl"
     with question_answer_file.open(
         "w", encoding="utf-8"
     ) as question_handle:
