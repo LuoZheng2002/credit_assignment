@@ -1,0 +1,148 @@
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    deepmath::{
+        generate_concise_reasoning::{DeepMathConciseReasoning, get_concise_reasoning_path},
+        generate_raw_answers::{DeepMathAnswerRaw, get_deepmath_raw_answer_path},
+        judge_answers::DeepMathCorrectness,
+    },
+    parallel_process_jsonl::{HasId, parallel_process_jsonl},
+};
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ZippedDeepMathCorrectnessReasoning {
+    pub id: usize,
+    pub correct: bool,
+    pub model_answer: String,
+    pub correct_answer: String,
+    pub question: String,
+    pub model_reasoning: String,
+    pub reference_reasoning: String,
+}
+
+impl HasId for ZippedDeepMathCorrectnessReasoning {
+    fn id(&self) -> usize {
+        self.id
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DeepMathErrorCause {
+    pub id: usize,
+    pub correct: bool,
+    pub error_cause: Option<String>,
+}
+
+impl HasId for DeepMathErrorCause {
+    fn id(&self) -> usize {
+        self.id
+    }
+}
+
+pub fn get_deepmath_error_causes_path(model_name: &str, num_samples: usize) -> String {
+    format!(
+        "results/{}/deepmath_error_causes_{}.jsonl",
+        model_name, num_samples
+    )
+}
+
+async fn generate_error_cause_task(
+    correctness_reasoning: ZippedDeepMathCorrectnessReasoning,
+    client: Client,
+) -> DeepMathErrorCause {
+    if correctness_reasoning.correct {
+        return DeepMathErrorCause {
+            id: correctness_reasoning.id,
+            correct: true,
+            error_cause: None,
+        };
+    }
+    let prompt = format!(
+        "You are an error cause analyzer. You will be given the question, a model's reasoning process and the reference reasoning process. \
+Your task is to find the core error cause in the model's reasoning that leads to the incorrect answer. \
+If there are multiple errors, only state the first one. Use one sentence to summarize the error.\n\
+Question: {}\nModel's Reasoning: {}\nReference Reasoning: {}\nError Cause Analysis:",
+        correctness_reasoning.question,
+        correctness_reasoning.model_reasoning,
+        correctness_reasoning.reference_reasoning
+    );
+    let body = serde_json::json!({
+        "model": "gpt-5-mini",
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        "max_completion_tokens": 2048,
+    });
+    let api_key =
+        std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set");
+    let response = client
+        .post("https://api.openai.com/v1/chat/completions")
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let json: serde_json::Value = response.json().await.unwrap();
+    let error_reason = json["choices"][0]["message"]["content"]
+        .as_str()
+        .expect(&format!("error reason is invalid: {:?}", json))
+        .trim()
+        .to_string();
+    DeepMathErrorCause {
+        id: correctness_reasoning.id,
+        correct: correctness_reasoning.correct,
+        error_cause: Some(error_reason),
+    }
+}
+
+pub async fn generate_error_causes(model_name: &str, num_samples: usize, client: Client) {
+    println!(
+        "Generating error cause analysis for model {} on {} DeepMath samples...",
+        model_name, num_samples
+    );
+    let correctness_path =
+        crate::deepmath::judge_answers::get_deepmath_correctness_path(model_name, num_samples);
+    let raw_answer_path = get_deepmath_raw_answer_path(model_name, num_samples);
+    let reference_reasoning_path = get_concise_reasoning_path(num_samples);
+    let error_causes_output_path = get_deepmath_error_causes_path(model_name, num_samples);
+    parallel_process_jsonl(
+        &[
+            &correctness_path,
+            &raw_answer_path,
+            &reference_reasoning_path,
+        ],
+        &error_causes_output_path,
+        |values| {
+            assert_eq!(values.len(), 3);
+            let correctness: DeepMathCorrectness =
+                serde_json::from_value(values[0].clone()).unwrap();
+            let raw_answer: DeepMathAnswerRaw = serde_json::from_value(values[1].clone()).unwrap();
+            let reference_reasoning: DeepMathConciseReasoning =
+                serde_json::from_value(values[2].clone()).unwrap();
+            ZippedDeepMathCorrectnessReasoning {
+                id: correctness.id,
+                correct: correctness.correct,
+                model_answer: correctness.model_answer,
+                correct_answer: correctness.correct_answer,
+                question: correctness.question,
+                model_reasoning: raw_answer.model_reasoning,
+                reference_reasoning: reference_reasoning.concise_reasoning,
+            }
+        },
+        move |correctness_reasoning| {
+            let client = client.clone();
+            async move { generate_error_cause_task(correctness_reasoning, client).await }
+        },
+        2000,
+    )
+    .await
+    .unwrap();
+    println!(
+        "Generated error cause analysis for model {} on {} DeepMath samples and saved to {}",
+        model_name, num_samples, error_causes_output_path
+    );
+}

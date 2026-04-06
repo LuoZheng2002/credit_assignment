@@ -1,36 +1,17 @@
-use clap::Parser;
-use credit_assignment::parallel_process_jsonl::{HasId, parallel_process_jsonl};
 use reqwest::Client;
+
+use crate::{
+    datasets::{DeepMathQuestionReasoning, get_deepmath_questions_with_reasoning_path},
+    parallel_process_jsonl::{HasId, parallel_process_jsonl},
+};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-
-#[derive(Parser, Debug)]
-#[command(name = "Evaluate DeepMath Model")]
-struct Args {
-    #[arg(short, long)]
-    num_samples: usize,
-}
 
 #[derive(Serialize, Deserialize, Debug)]
-struct DeepMathQuestionReasoning {
-    id: usize,
-    reasoning: String,
-    final_answer: String,
-    question: String,
-}
-
-impl HasId for DeepMathQuestionReasoning {
-    fn id(&self) -> usize {
-        self.id
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct DeepMathConciseReasoning {
-    id: usize,
-    concise_reasoning: String,
-    final_answer: String,
-    question: String,
+pub struct DeepMathConciseReasoning {
+    pub id: usize,
+    pub concise_reasoning: String,
+    pub final_answer: String,
+    pub question: String,
 }
 
 impl HasId for DeepMathConciseReasoning {
@@ -39,7 +20,7 @@ impl HasId for DeepMathConciseReasoning {
     }
 }
 
-async fn generate_reasoning(
+async fn generate_concise_reasoning_task(
     question: DeepMathQuestionReasoning,
     client: Client,
 ) -> DeepMathConciseReasoning {
@@ -49,7 +30,7 @@ Given the following question, final answer and a reference reasoning paragraph, 
 Question: {}\nFinal Answer: {}\nReasoning: {}\nConcise Reasoning:",
         question.question, question.final_answer, question.reasoning
     );
-    let body = json!({
+    let body = serde_json::json!({
         "model": "gpt-5-mini",
         "messages": [
             {"role": "system", "content": "You are a helpful assistant that provides concise reasoning steps for solving math problems."},
@@ -83,34 +64,27 @@ Question: {}\nFinal Answer: {}\nReasoning: {}\nConcise Reasoning:",
     }
 }
 
-fn get_questions_with_reasoning_path(num_samples: usize) -> String {
-    format!("datasets/deepmath_samples_{}_reasoning.jsonl", num_samples)
-}
-
-fn get_concise_reasoning_output_path(num_samples: usize) -> String {
+pub fn get_concise_reasoning_path(num_samples: usize) -> String {
     format!(
         "datasets/deepmath_samples_{}_concise_reasoning.jsonl",
         num_samples
     )
 }
 
-#[tokio::main]
-async fn main() {
-    std::panic::set_hook(Box::new(|info| {
-        eprintln!("panic occurred: {}", info);
-        std::process::abort();
-    }));
-    dotenvy::dotenv().ok();
-    let Args { num_samples } = Args::parse();
-    let questions_with_reasoning_path = get_questions_with_reasoning_path(num_samples);
-    let concise_reasoning_output_path = get_concise_reasoning_output_path(num_samples);
-    let client = Client::new();
+pub async fn generate_concise_reasoning(num_samples: usize, client: Client) {
+    let questions_with_reasoning_path = get_deepmath_questions_with_reasoning_path(num_samples);
+    let concise_reasoning_output_path = get_concise_reasoning_path(num_samples);
     parallel_process_jsonl(
-        &questions_with_reasoning_path,
+        &[&questions_with_reasoning_path],
         &concise_reasoning_output_path,
+        |values| {
+            let question = serde_json::from_value::<DeepMathQuestionReasoning>(values[0].clone())
+                .expect("Failed to parse question with reasoning");
+            question
+        },
         move |question| {
             let client = client.clone();
-            async move { generate_reasoning(question, client).await }
+            async move { generate_concise_reasoning_task(question, client).await }
         },
         2000,
     )
