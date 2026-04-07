@@ -2,12 +2,11 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    deepmath::{
+    call_llm::call_llm, deepmath::{
         generate_concise_reasoning::{DeepMathConciseReasoning, get_concise_reasoning_path},
-        generate_raw_answers::{DeepMathAnswerRaw, get_raw_answer_path},
-        judge_answers::DeepMathCorrectness,
-    },
-    parallel_process_jsonl::{HasId, parallel_process_jsonl},
+        generate_raw_answers::{AnswerRaw, get_raw_answer_path},
+        judge_answers::{DeepMathCorrectness, get_correctness_path},
+    }, parallel_process_jsonl::{HasId, parallel_process_jsonl}
 };
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -42,11 +41,18 @@ impl HasId for DeepMathErrorCause {
     }
 }
 
-pub fn get_error_causes_path(model_name: &str, dataset_name: &str, num_samples: usize) -> String {
-    format!(
-        "results/{}/{}_error_causes_{}.jsonl",
-        model_name, dataset_name, num_samples
-    )
+pub fn get_error_causes_path(model_name: &str, dataset_name: &str, num_samples: usize, is_rollout: bool) -> String {
+    if is_rollout {
+        format!(
+            "results/{}/rollout/{}_error_causes_{}.jsonl",
+            model_name, dataset_name, num_samples
+        )
+    } else {
+        format!(
+            "results/{}/{}_error_causes_{}.jsonl",
+            model_name, dataset_name, num_samples
+        )
+    }
 }
 
 async fn generate_error_cause_task(
@@ -71,31 +77,7 @@ Question: {}\nModel's Reasoning: {}\nReference Reasoning: {}\nError Cause Analys
         correctness_reasoning.model_reasoning,
         correctness_reasoning.reference_reasoning
     );
-    let body = serde_json::json!({
-        "model": "gpt-5-mini",
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ],
-        "max_completion_tokens": 2048,
-    });
-    let api_key =
-        std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set");
-    let response = client
-        .post("https://api.openai.com/v1/chat/completions")
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
-        .await
-        .unwrap();
-    let json: serde_json::Value = response.json().await.unwrap();
-    let error_reason = json["choices"][0]["message"]["content"]
-        .as_str()
-        .expect(&format!("error reason is invalid: {:?}", json))
-        .trim()
-        .to_string();
+    let error_reason = call_llm(client, prompt, "gpt-5-mini").await;
     DeepMathErrorCause {
         id: correctness_reasoning.id,
         correct: correctness_reasoning.correct,
@@ -110,16 +92,17 @@ pub async fn generate_error_causes(
     dataset_name: &str,
     num_samples: usize,
     client: Client,
+    is_rollout: bool,
 ) {
     println!(
         "Generating error cause analysis for model {} on {} dataset with {} samples...",
         model_name, dataset_name, num_samples
     );
     let correctness_path =
-        crate::deepmath::judge_answers::get_correctness_path(model_name, dataset_name, num_samples);
+        get_correctness_path(model_name, dataset_name, num_samples, is_rollout);
     let raw_answer_path = get_raw_answer_path(model_name, dataset_name, num_samples);
     let reference_reasoning_path = get_concise_reasoning_path(dataset_name, num_samples);
-    let error_causes_output_path = get_error_causes_path(model_name, dataset_name, num_samples);
+    let error_causes_output_path = get_error_causes_path(model_name, dataset_name, num_samples, is_rollout);
     parallel_process_jsonl(
         &[
             &correctness_path,
@@ -131,7 +114,7 @@ pub async fn generate_error_causes(
             assert_eq!(values.len(), 3);
             let correctness: DeepMathCorrectness = serde_json::from_value(values[0].clone())
                 .expect(&format!("Failed to parse value: {}", values[0]));
-            let raw_answer: DeepMathAnswerRaw = serde_json::from_value(values[1].clone())
+            let raw_answer: AnswerRaw = serde_json::from_value(values[1].clone())
                 .expect(&format!("Failed to parse value: {}", values[1]));
             let reference_reasoning: DeepMathConciseReasoning =
                 serde_json::from_value(values[2].clone())

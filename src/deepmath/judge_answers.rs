@@ -5,10 +5,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    deepmath::{
-        generate_raw_answers::Model,
-        parse_answers::{DeepMathAnswerParsed, get_parsed_path},
-    },
+    call_llm::call_llm,
+    deepmath::parse_answers::{AnswerParsed, get_parsed_path},
     parallel_process_jsonl::{HasId, parallel_process_jsonl, read_json_lines_indexed},
 };
 
@@ -27,21 +25,45 @@ impl HasId for DeepMathCorrectness {
     }
 }
 
-pub fn get_correctness_path(model_name: &str, dataset_name: &str, num_samples: usize) -> String {
-    format!(
-        "results/{}/{}_correctness_{}.jsonl",
-        model_name, dataset_name, num_samples
-    )
+pub fn get_correctness_path(
+    model_name: &str,
+    dataset_name: &str,
+    num_samples: usize,
+    is_rollout: bool,
+) -> String {
+    if is_rollout {
+        format!(
+            "results/{}/rollout/{}_correctness_{}.jsonl",
+            model_name, dataset_name, num_samples
+        )
+    } else {
+        format!(
+            "results/{}/{}_correctness_{}.jsonl",
+            model_name, dataset_name, num_samples
+        )
+    }
 }
 
-fn get_accuracy_path(model_name: &str, dataset_name: &str, num_samples: usize) -> String {
-    format!(
-        "results/{}/{}_accuracy_{}.json",
-        model_name, dataset_name, num_samples
-    )
+fn get_accuracy_path(
+    model_name: &str,
+    dataset_name: &str,
+    num_samples: usize,
+    is_rollout: bool,
+) -> String {
+    if is_rollout {
+        format!(
+            "results/{}/rollout/{}_accuracy_{}.json",
+            model_name, dataset_name, num_samples
+        )
+    } else {
+        format!(
+            "results/{}/{}_accuracy_{}.json",
+            model_name, dataset_name, num_samples
+        )
+    }
 }
 
-async fn judge_answer_task(answer: DeepMathAnswerParsed, client: Client) -> DeepMathCorrectness {
+async fn judge_answer_task(answer: AnswerParsed, client: Client) -> DeepMathCorrectness {
     let prompt = format!(
         // "The question is: {}. The model's answer is: {}. The correct answer is: {}. Please evaluate whether the model's answer is correct and return only 'correct' or 'incorrect'.",
         "You are an answer checker that checks a model's answer against the reference answer. Judge if the model's answer is equivalent to the reference answer. \
@@ -49,29 +71,8 @@ If the model's answer contains units but the reference answer does not, treat th
 The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
         answer.model_answer, answer.correct_answer
     );
-    let body = serde_json::json!({
-        "model": "gpt-4o",
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ],
-        "max_completion_tokens": 2048,
-    });
-    let api_key =
-        std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set");
-    let response = client
-        .post("https://api.openai.com/v1/chat/completions")
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
+    let evaluation = call_llm(client, prompt, "gpt-4o")
         .await
-        .unwrap();
-    let json: serde_json::Value = response.json().await.unwrap();
-    let evaluation = json["choices"][0]["message"]["content"]
-        .as_str()
-        .expect(&format!("evaluation is invalid: {:?}", json))
         .trim()
         .to_lowercase();
     println!("Evaluation for question {}: {}", answer.id, evaluation);
@@ -95,23 +96,29 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
     }
 }
 
-pub async fn judge_answers(model_name: &str, dataset_name: &str, num_samples: usize, client: Client) {
+pub async fn judge_answers(
+    model_name: &str,
+    dataset_name: &str,
+    num_samples: usize,
+    client: Client,
+    is_rollout: bool,
+) {
     println!(
         "Judging answers for model {} on {} samples",
         model_name, num_samples
     );
-    let parsed_answers_path = get_parsed_path(model_name, dataset_name, num_samples);
-    let correctness_path = get_correctness_path(model_name, dataset_name, num_samples);
+    let parsed_answers_path = get_parsed_path(model_name, dataset_name, num_samples, is_rollout);
+    let correctness_path = get_correctness_path(model_name, dataset_name, num_samples, is_rollout);
     parallel_process_jsonl(
         &[&parsed_answers_path],
         &correctness_path,
         |values| {
             assert_eq!(values.len(), 1);
-            let answer: DeepMathAnswerParsed =
+            let answer: AnswerParsed =
                 serde_json::from_value(values[0].clone()).expect("Failed to parse answer");
             answer
         },
-        move |answer: DeepMathAnswerParsed| {
+        move |answer: AnswerParsed| {
             let client = client.clone();
             async move { judge_answer_task(answer, client).await }
         },
@@ -121,9 +128,7 @@ pub async fn judge_answers(model_name: &str, dataset_name: &str, num_samples: us
     .unwrap();
     println!(
         "Finished judging answers for model {} on {} samples. Results saved to {}",
-        model_name,
-        num_samples,
-        correctness_path
+        model_name, num_samples, correctness_path
     );
     let score_results: IndexMap<usize, DeepMathCorrectness> =
         read_json_lines_indexed(&File::open(&correctness_path).unwrap()).unwrap();
@@ -133,7 +138,7 @@ pub async fn judge_answers(model_name: &str, dataset_name: &str, num_samples: us
             correct += 1;
         }
     }
-    let score_stats_file = get_accuracy_path(model_name, dataset_name, num_samples);
+    let score_stats_file = get_accuracy_path(model_name, dataset_name, num_samples, is_rollout);
     std::fs::write(
         score_stats_file,
         serde_json::to_string_pretty(&serde_json::json!({

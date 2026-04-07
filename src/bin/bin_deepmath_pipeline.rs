@@ -1,5 +1,10 @@
 use clap::Parser;
-use credit_assignment::deepmath::{generate_error_causes::generate_error_causes, generate_raw_answers::{Model, generate_raw_answers}, judge_answers::judge_answers, parse_answers::parse_answers};
+use credit_assignment::deepmath::{
+    generate_error_causes::generate_error_causes,
+    generate_raw_answers::{Model, generate_raw_answers},
+    judge_answers::judge_answers,
+    parse_answers::parse_answers,
+};
 use reqwest::Client;
 
 #[derive(Parser, Debug)]
@@ -22,19 +27,30 @@ async fn main() {
     }));
     // load env from .env file
     dotenvy::dotenv().ok();
-    let Args { dataset_name, model, num_samples } = Args::parse();
+    let Args {
+        dataset_name,
+        model,
+        num_samples,
+    } = Args::parse();
     let model_name = model.name();
     println!(
         "Evaluating model {} on {} dataset with {} samples",
         model_name, dataset_name, num_samples
     );
-    
+
     let client = Client::new();
     generate_raw_answers(&dataset_name, num_samples, client.clone(), model).await;
 
     parse_answers(model_name, &dataset_name, num_samples).await;
 
-    judge_answers(model_name, &dataset_name, num_samples, client.clone()).await;
+    judge_answers(
+        model_name,
+        &dataset_name,
+        num_samples,
+        client.clone(),
+        false,
+    )
+    .await;
 
-    generate_error_causes(model_name, &dataset_name, num_samples, client).await;
+    generate_error_causes(model_name, &dataset_name, num_samples, client, false).await;
 }

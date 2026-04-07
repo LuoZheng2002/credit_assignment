@@ -1,8 +1,7 @@
 use reqwest::Client;
 
 use crate::{
-    datasets::{DeepMathQuestionReasoning, get_questions_with_reasoning_path},
-    parallel_process_jsonl::{HasId, parallel_process_jsonl},
+    call_llm::call_llm, datasets::{DeepMathQuestionReasoning, get_questions_with_reasoning_path}, parallel_process_jsonl::{HasId, parallel_process_jsonl}
 };
 use serde::{Deserialize, Serialize};
 
@@ -30,32 +29,7 @@ Given the following question, final answer and a reference reasoning paragraph, 
 Question: {}\nFinal Answer: {}\nReasoning: {}\nConcise Reasoning:",
         question.question, question.final_answer, question.reasoning
     );
-    let body = serde_json::json!({
-        "model": "gpt-5-mini",
-        "messages": [
-            {"role": "system", "content": "You are a helpful assistant that provides concise reasoning steps for solving math problems."},
-            {"role": "user", "content": prompt}
-        ],
-        "max_completion_tokens": 4096,
-    });
-    let api_key =
-        std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set");
-    let response = client
-        .post("https://api.openai.com/v1/chat/completions")
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
-        .await
-        .expect("Failed to send request to OpenAI API");
-    let response_json: serde_json::Value = response
-        .json()
-        .await
-        .expect("Failed to parse response from OpenAI API");
-    let concise_reasoning = response_json["choices"][0]["message"]["content"]
-        .as_str()
-        .expect(&format!("content is invalid: {}", response_json))
-        .trim()
-        .to_string();
+    let concise_reasoning = call_llm(client, prompt, "gpt-5-mini").await;
     DeepMathConciseReasoning {
         id: question.id,
         question: question.question,

@@ -1,4 +1,5 @@
 use crate::{
+    call_llm::call_llm,
     datasets::{DeepMathQuestion, get_question_path},
     parallel_process_jsonl::{HasId, parallel_process_jsonl},
 };
@@ -20,17 +21,23 @@ impl Model {
             Model::Qwen => "qwen",
         }
     }
+    pub fn full_name(&self) -> &'static str {
+        match self {
+            Model::Gpt => "gpt-4o",
+            Model::Qwen => "Qwen/Qwen2.5-7B-Instruct",
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct DeepMathAnswerRaw {
+pub struct AnswerRaw {
     pub id: usize,
     pub correct_answer: String,
     pub model_reasoning: String,
     pub question: String,
 }
 
-impl HasId for DeepMathAnswerRaw {
+impl HasId for AnswerRaw {
     fn id(&self) -> usize {
         self.id
     }
@@ -47,52 +54,20 @@ async fn generate_raw_answer_task(
     question: DeepMathQuestion,
     client: Client,
     model: Model,
-) -> DeepMathAnswerRaw {
+) -> AnswerRaw {
     let prompt = format!(
         "Please answer the following question by first reasoning and then putting the final short answer in \\boxed{{}}. Question: {}",
         question.question
     );
-    let (url, model_name) = match model {
-        Model::Gpt => ("https://api.openai.com/v1/chat/completions", "gpt-4o"),
-        Model::Qwen => (
-            "http://localhost:8000/v1/chat/completions",
-            "Qwen/Qwen2.5-7B-Instruct",
-        ),
+    let model_name = match model {
+        Model::Gpt => "gpt-4o",
+        Model::Qwen => "Qwen/Qwen2.5-7B-Instruct",
     };
-    let body = serde_json::json!({
-        "model": model_name,
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ],
-        "max_completion_tokens": 4096,
-    });
-
-    let response = match model {
-        Model::Qwen => client.post(url).json(&body).send().await.unwrap(),
-        Model::Gpt => {
-            let api_key = std::env::var("OPENAI_API_KEY")
-                .expect("OPENAI_API_KEY environment variable not set");
-            client
-                .post(url)
-                .bearer_auth(api_key)
-                .json(&body)
-                .send()
-                .await
-                .unwrap()
-        }
-    };
-    let json: serde_json::Value = response.json().await.unwrap();
-    let model_reasoning = json["choices"][0]["message"]["content"]
-        .as_str()
-        .expect(&format!("model answer is invalid: {:?}", json))
-        .to_string();
-    DeepMathAnswerRaw {
+    let response = call_llm(client, prompt, model_name).await;
+    AnswerRaw {
         id: question.id,
         question: question.question,
-        model_reasoning,
+        model_reasoning: response,
         correct_answer: question.final_answer,
     }
 }
