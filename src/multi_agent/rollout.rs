@@ -51,13 +51,14 @@ Please output exactly one of PROCEED, CHANGE_PLAN, OVERWRITE_LAST_STEP_AND_PROCE
                 }
             };
             // available tools
+            // stashed subagent prompt:
+            // 2. Sub-agent: The sub-agent can write and execute complex Python code for you. You're encouraged to use it for complex calculations. Make sure to provide all necessary information as the sub-agent will not have access to external context. \
+            // Use the same format as this example: <tool_call>{\"name\": \"sub_agent\", \"request\": \"Find the number of prime numbers less than 1000.\"}</tool_call>.\n\
+            // \n\
             let tool_prompt: String = "You can both reason in plain texts and use the following tools in this step:\n\
-1. Python code executor: You're encouraged to use it for simple calculations to ensure correctness. Use the same format as this example: <tool_call>{\"name\": \"python\", \"code\": \"x=0\\nfor i in range(10):\\n    x += i\\nprint(x)\"}</tool_call>.\
+1. Python code executor: You're encouraged to use it for calculations to ensure correctness. Use the same format as this example: <tool_call>{\"name\": \"python\", \"code\": \"x=0\\nfor i in range(10):\\n    x += i\\nprint(x)\"}</tool_call>.\
 IMPORTANT: always use print() statement to output the result, otherwise the result will not be shown.\n\
-2. Sub-agent: The sub-agent can write and execute complex Python code for you. You're encouraged to use it for complex calculations. Make sure to provide all necessary information as the sub-agent will not have access to external context. \
-Use the same format as this example: <tool_call>{\"name\": \"sub_agent\", \"request\": \"Find the number of prime numbers less than 1000.\"}</tool_call>.\n\
-\n\
-You can only invoke one tool call at a time. After you have output the tool call, you have to stop the generation and wait for the response.\n\
+After you have output the tool call, you have to stop the generation and wait for the response.\n\
 \n\
 If you think a milestone has been achieved and want to mark the current step as complete, end your response with <END_STEP> and nothing else.".to_string();
             format!("Currently you are in the middle of a step.\n\
@@ -71,18 +72,28 @@ Please continue with the current step:",
     }
 }
 
-pub fn get_planner_prompt(question: &str, planner_status: PlannerStatus, history: &str) -> String {
+pub fn get_planner_prompt(
+    question: &str,
+    planner_status: PlannerStatus,
+    history_prev_steps: &str,
+    history_curr_step: &str,
+) -> String {
     let planner_status_prompt = get_planner_status_prompt(planner_status);
     format!(
         "You are a planner agent that is trying to solve the following problem step by step:\n{}\n\n\
 Here is the history of previous steps:\n\
 {}\n\n\
-{}",
-        question, history, planner_status_prompt
+{}\n\n\
+{}\n",
+        question, history_prev_steps, planner_status_prompt, history_curr_step
     )
 }
 
-pub fn get_verifier_prompt(question: &str, history: &str) -> String {
+pub fn get_verifier_prompt(
+    question: &str,
+    history_prev_steps: &str,
+    history_curr_step: &str,
+) -> String {
     format!(
         "You are a verifier agent that is trying to evaluate the reasoning steps for the following problem:\n\
 {}\n\n\
@@ -94,44 +105,50 @@ Your job is to generate the comment for the reasoning of the current step only. 
 3. Is the length and scope of the current step appropriate? An appropriate step should have a single concrete sub-goal, neither too large nor too small. If you think the current step scope is inappropriate, make suggestions on how to plan the steps better.\n\
 4. Does the current step utilize the sub_agent and python tools when necessary? If the planner attempts to do complex calculations by hand, point it out. \
 Are there opportunities for the planner to use python or sub_agent for complex but pervasive problems like solving a set of linear equations? Encourage the planner to leverage these tools even when calculations appear to be manageable.\n\
-\n\
+\n\n\
+{}\n\n\
 Please start your comment and be concise:\n",
-        question, history
+        question, history_prev_steps, history_curr_step
     )
 }
 
-fn parse_to_reasoning_and_too_calls(response: &str) -> Vec<ModelOperation> {
+fn parse_to_reasoning_and_too_calls(mut response: String) -> Vec<ModelOperation> {
     let mut operations: Vec<ModelOperation> = vec![];
     loop {
         // extract non-tool-call reasoning
-        let tool_call_start_index = response.find("<tool_call>");
-        let Some(start_index) = tool_call_start_index else {
-            let reasoning_part = response.trim();
-            if !reasoning_part.is_empty() {
-                operations.push(ModelOperation::PlannerReasoning(reasoning_part.to_string()));
-            }
+        response = response.trim().to_string();
+        if response.is_empty() {
+            break;
+        }
+        let Some(start_index) = response.find("<tool_call>") else {
+            operations.push(ModelOperation::PlannerReasoning(response.to_string()));
             break;
         };
         let reasoning_part = response[..start_index].trim();
         if !reasoning_part.is_empty() {
             operations.push(ModelOperation::PlannerReasoning(reasoning_part.to_string()));
         }
-        // extract tool call
-        let tool_call_end_index = response.find("</tool_call>").expect(
-            format!(
-                "Tool call start tag found without end tag, response: {}",
-                response
-            )
-            .as_str(),
-        );
-        let tool_call_part =
-            response[start_index..tool_call_end_index + "</tool_call>".len()].trim();
+        response = response[start_index..].trim().to_string();
+
+        // if there is no </tool_call> after the start_index, capture as much as possible as the tool call content, but before the next <tool_call> if there is one
+        let tool_call_end_index = if let Some(end_index) = response[1..].find("</tool_call>") {
+            assert_eq!(
+                &response[end_index + 1..end_index + "</tool_call>".len() + 1],
+                "</tool_call>"
+            );
+            end_index + "</tool_call>".len() + 1
+        } else if let Some(next_tool_call_index) = response[1..].find("<tool_call>") {
+            assert_eq!(
+                &response[next_tool_call_index + 1..next_tool_call_index + "<tool_call>".len() + 1],
+                "<tool_call>"
+            );
+            next_tool_call_index + 1
+        } else {
+            response.len()
+        };
+        let tool_call_part = response[..tool_call_end_index].trim();
         operations.push(ModelOperation::PlannerToolCall(tool_call_part.to_string()));
-        // update response by removing the processed part
-        let remaining_response = response[tool_call_end_index + "</tool_call>".len()..].to_string();
-        if remaining_response.trim().is_empty() {
-            break;
-        }
+        response = response[tool_call_end_index..].trim().to_string();
     }
     operations
 }
@@ -238,9 +255,15 @@ pub async fn rollout(
         }
         let new_operations: Vec<ModelOperation> = match &session.session_state.session_status {
             SessionStatus::PlannerTurn => {
-                let history = session.session_state.to_history(true);
+                let history_prev_steps = session.session_state.to_history_prev_steps(true);
+                let history_curr_step = session.session_state.to_history_curr_step(true);
                 let planner_status = session.session_state.planner_status;
-                let prompt = get_planner_prompt(&question, planner_status, &history);
+                let prompt = get_planner_prompt(
+                    &question,
+                    planner_status,
+                    &history_prev_steps,
+                    &history_curr_step,
+                );
                 let response = call_llm(client.clone(), prompt, model_name).await;
                 match planner_status {
                     PlannerStatus::PlannerChoosingMode => {
@@ -260,20 +283,27 @@ pub async fn rollout(
                         vec![ModelOperation::PlannerChooseMode(chosen_mode)]
                     }
                     PlannerStatus::PlannerChosen(_step_mode) => {
-                        let reasoning_and_tool_calls = parse_to_reasoning_and_too_calls(&response);
+                        let reasoning_and_tool_calls =
+                            parse_to_reasoning_and_too_calls(response.clone());
                         let mut operations = reasoning_and_tool_calls;
                         let mut tool_response_operations: Vec<ModelOperation> = vec![];
                         for operation in &operations {
                             if let ModelOperation::PlannerToolCall(tool_call) = operation {
-                                if !(tool_call.starts_with("<tool_call>")
-                                    && tool_call.ends_with("</tool_call>"))
-                                {
-                                    panic!("Tool call not properly formatted: {}", tool_call);
-                                }
-                                let tool_call_content = &tool_call
-                                    ["<tool_call>".len()..tool_call.len() - "</tool_call>".len()];
-                                let tool_response =
-                                    execute_tool_call_content(tool_call_content).await;
+                                let tool_response = {
+                                    if !tool_call.starts_with("<tool_call>") {
+                                        panic!("Tool call not properly formatted: {}", tool_call);
+                                    }
+                                    let tool_call_content_end_index =
+                                        if let Some(end_index) = tool_call.find("</tool_call>") {
+                                            end_index
+                                        } else {
+                                            // use the end index of the string
+                                            tool_call.len()
+                                        };
+                                    let tool_call_content = &tool_call
+                                        ["<tool_call>".len()..tool_call_content_end_index];
+                                    execute_tool_call_content(tool_call_content).await
+                                };
                                 let tool_response_operation =
                                     ModelOperation::ToolCallResponse(tool_response);
                                 tool_response_operations.push(tool_response_operation);
@@ -296,8 +326,10 @@ pub async fn rollout(
                         PlannerStatus::PlannerChosen(ActualStepMode::SubmitAnswer)
                     )
                 {
-                    let history = session.session_state.to_history(false);
-                    let prompt = get_verifier_prompt(&question, &history);
+                    let history_prev_steps = session.session_state.to_history_prev_steps(false);
+                    let history_curr_step = session.session_state.to_history_curr_step(false);
+                    let prompt =
+                        get_verifier_prompt(&question, &history_prev_steps, &history_curr_step);
                     let response = call_llm(client.clone(), prompt, model_name).await;
                     verifier_comment = Some(response.trim().to_string());
                 }

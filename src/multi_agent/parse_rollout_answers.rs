@@ -1,5 +1,5 @@
-use crate::deepmath::generate_raw_answers::{AnswerRaw, get_raw_answer_path};
 use crate::deepmath::parse_answers::{AnswerParsed, get_parsed_path};
+use crate::multi_agent::generate_rollout_answers::{RolloutAnswerRaw, get_rollout_answer_path};
 use crate::parallel_process_jsonl::parallel_process_jsonl;
 
 pub fn extract_boxed_content(text: &str) -> Option<String> {
@@ -26,12 +26,10 @@ pub fn extract_boxed_content(text: &str) -> Option<String> {
     None
 }
 
-async fn parse_rollout_answer_task(answer: AnswerRaw) -> AnswerParsed {
-    let model_answer = extract_boxed_content(&answer.model_reasoning)
-        .unwrap_or_else(|| "No answer found".to_string());
+async fn parse_rollout_answer_task(answer: RolloutAnswerRaw) -> AnswerParsed {
     AnswerParsed {
         id: answer.id,
-        model_answer,
+        model_answer: answer.model_answer,
         correct_answer: answer.correct_answer,
         question: answer.question,
     }
@@ -42,18 +40,18 @@ pub async fn parse_rollout_answers(model_name: &str, dataset_name: &str, num_sam
         "Parsing rollout answers for model {} on {} dataset with {} samples",
         model_name, dataset_name, num_samples
     );
-    let raw_path = get_raw_answer_path(model_name, dataset_name, num_samples);
+    let raw_path = get_rollout_answer_path(model_name, dataset_name, num_samples);
     let parsed_path = get_parsed_path(model_name, dataset_name, num_samples, true);
     parallel_process_jsonl(
         &[&raw_path],
         &parsed_path,
         |values| {
             assert_eq!(values.len(), 1);
-            let answer: AnswerRaw =
+            let answer: RolloutAnswerRaw =
                 serde_json::from_value(values[0].clone()).expect("Failed to parse answer");
             answer
         },
-        move |answer: AnswerRaw| async move { parse_rollout_answer_task(answer).await },
+        move |answer: RolloutAnswerRaw| async move { parse_rollout_answer_task(answer).await },
         2000,
     )
     .await

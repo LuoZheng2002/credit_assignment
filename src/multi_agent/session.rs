@@ -265,7 +265,7 @@ impl SessionState {
         }
         should_end_session
     }
-    pub fn to_history(&self, planner_turn: bool) -> String {
+    pub fn to_history_prev_steps(&self, planner_turn: bool) -> String {
         let mut history = String::new();
         for (i, step) in self.prev_steps.iter().enumerate() {
             history.push_str(&format!("Step {}:\n", i + 1));
@@ -298,6 +298,25 @@ impl SessionState {
                 }
             }
         }
+
+        match self.session_status {
+            SessionStatus::PlannerTurn => {
+                assert_eq!(
+                    planner_turn, true,
+                    "to_history should be called with planner_turn=true when it's planner's turn"
+                );
+            }
+            SessionStatus::VerifierTurn => {
+                assert_eq!(
+                    planner_turn, false,
+                    "to_history should be called with planner_turn=false when it's verifier's turn"
+                );
+            }
+        }
+        history
+    }
+    pub fn to_history_curr_step(&self, planner_turn: bool) -> String {
+        let mut history = String::new();
         let current_step_index = self.prev_steps.len() + 1;
         let current_step_hint_str = if planner_turn {
             format!("Current step {} (not yet completed):\n", current_step_index)
@@ -339,21 +358,6 @@ impl SessionState {
         history.push_str(&format!("{}\n", planner_status_description));
 
         history.push_str(&format!("Assistant: {}\n", self.current_step_content_raw));
-
-        match self.session_status {
-            SessionStatus::PlannerTurn => {
-                assert_eq!(
-                    planner_turn, true,
-                    "to_history should be called with planner_turn=true when it's planner's turn"
-                );
-            }
-            SessionStatus::VerifierTurn => {
-                assert_eq!(
-                    planner_turn, false,
-                    "to_history should be called with planner_turn=false when it's verifier's turn"
-                );
-            }
-        }
         history
     }
     pub fn total_display_rounds(&self) -> usize {

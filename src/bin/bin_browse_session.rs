@@ -20,6 +20,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui_core::buffer::Buffer;
 use serde_json;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use credit_assignment::multi_agent::generate_rollout_answers::RolloutAnswerRaw;
 use credit_assignment::multi_agent::rollout::{get_planner_prompt, get_verifier_prompt};
@@ -151,6 +153,8 @@ struct App {
     prompt_area: Option<Rect>,
     action_area: Option<Rect>,
     selection_area: Option<Rect>,
+    prompt_metrics: Option<PaneMetrics>,
+    action_metrics: Option<PaneMetrics>,
 }
 
 impl App {
@@ -170,6 +174,8 @@ impl App {
             prompt_area: None,
             action_area: None,
             selection_area: None,
+            prompt_metrics: None,
+            action_metrics: None,
         }
     }
 
@@ -571,11 +577,16 @@ impl App {
         self.prompt_area = Some(right_chunks[0]);
         self.action_area = Some(right_chunks[1]);
 
+        let turn_info = format!(
+            "display turn: {}, actual turn: {}",
+            view.total_display_turns, view.total_actual_turns
+        );
         let prompt_block = Block::default()
             .borders(Borders::ALL)
             .title(format!(
-                "Prompt (role: {}){}",
+                "Prompt (role: {}) [{}]{}",
                 prompt_label,
+                turn_info,
                 if self.focus == PaneFocus::Prompt {
                     " [focused]"
                 } else {
@@ -608,8 +619,10 @@ impl App {
         let action_text_area = action_block.inner(right_chunks[1]);
         let prompt_height = prompt_text_area.height as usize;
         let action_height = action_text_area.height as usize;
-        let prompt_lines = count_wrapped_lines(&prompt_text, prompt_text_area);
-        let action_lines = count_wrapped_lines(&action_text, action_text_area);
+        let prompt_lines =
+            compute_wrapped_line_count(&prompt_text, prompt_text_area, &mut self.prompt_metrics);
+        let action_lines =
+            compute_wrapped_line_count(&action_text, action_text_area, &mut self.action_metrics);
         let prompt_max_scroll = bottom_scroll_limit(prompt_lines, prompt_height.max(1));
         let action_max_scroll = bottom_scroll_limit(action_lines, action_height.max(1));
         self.prompt_scroll = self.prompt_scroll.min(prompt_max_scroll);
@@ -689,22 +702,69 @@ fn bottom_scroll_limit(lines: usize, height: usize) -> usize {
     extra.saturating_sub(height)
 }
 
+#[derive(Clone, Copy)]
+struct PaneMetrics {
+    text_hash: u64,
+    width: u16,
+    height: u16,
+    lines: usize,
+}
+
+fn compute_wrapped_line_count(
+    text: &str,
+    area: Rect,
+    metrics_slot: &mut Option<PaneMetrics>,
+) -> usize {
+    if area.width == 0 {
+        return 0;
+    }
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    let text_hash = hasher.finish();
+    if let Some(metrics) = metrics_slot {
+        if metrics.text_hash == text_hash
+            && metrics.width == area.width
+            && metrics.height == area.height
+        {
+            return metrics.lines;
+        }
+    }
+    let lines = count_wrapped_lines(text, area);
+    *metrics_slot = Some(PaneMetrics {
+        text_hash,
+        width: area.width,
+        height: area.height,
+        lines,
+    });
+    lines
+}
+
 struct SessionView {
     answer: RolloutAnswerRaw,
     operations: Vec<ModelOperation>,
     operation_roles: Vec<PromptRole>,
     current_pos: usize,
+    total_display_turns: usize,
+    total_actual_turns: usize,
 }
 
 impl SessionView {
     fn new(answer: RolloutAnswerRaw) -> Self {
         let operations = answer.trajectory.operations().to_vec();
         let operation_roles = compute_operation_roles(&operations);
+        let mut final_state = SessionState::new();
+        for operation in operations.iter() {
+            final_state.update(operation.clone());
+        }
+        let total_display_turns = final_state.total_display_rounds();
+        let total_actual_turns = answer.trajectory.total_actual_rounds();
         Self {
             answer,
             operations,
             operation_roles,
             current_pos: 0,
+            total_display_turns,
+            total_actual_turns,
         }
     }
 
@@ -743,14 +803,24 @@ impl SessionView {
             return None;
         }
         let state = self.session_state_at(self.current_pos.saturating_sub(1));
-        let history = match state.session_status {
-            SessionStatus::PlannerTurn => state.to_history(true),
-            SessionStatus::VerifierTurn => state.to_history(false),
+        let (history_prev_steps, history_curr_step) = match state.session_status {
+            SessionStatus::PlannerTurn => (
+                state.to_history_prev_steps(true),
+                state.to_history_curr_step(true),
+            ),
+            SessionStatus::VerifierTurn => (
+                state.to_history_prev_steps(false),
+                state.to_history_curr_step(false),
+            ),
         };
         let prompt = match state.session_status {
             SessionStatus::PlannerTurn => {
-                let prompt =
-                    get_planner_prompt(&self.answer.question, state.planner_status, &history);
+                let prompt = get_planner_prompt(
+                    &self.answer.question,
+                    state.planner_status,
+                    &history_prev_steps,
+                    &history_curr_step,
+                );
                 let role = if matches!(state.planner_status, PlannerStatus::PlannerChoosingMode) {
                     PromptRole::PlannerChoice
                 } else {
@@ -760,7 +830,11 @@ impl SessionView {
             }
             SessionStatus::VerifierTurn => Some((
                 PromptRole::Verifier,
-                get_verifier_prompt(&self.answer.question, &history),
+                get_verifier_prompt(
+                    &self.answer.question,
+                    &history_prev_steps,
+                    &history_curr_step,
+                ),
             )),
         };
         prompt
