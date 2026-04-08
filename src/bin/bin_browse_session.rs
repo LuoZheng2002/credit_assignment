@@ -87,43 +87,20 @@ fn run_app(
     answers: Vec<RolloutAnswerRaw>,
 ) -> Result<(), Box<dyn Error>> {
     let mut app = App::new(answers);
-    const RESIZE_THROTTLE: Duration = Duration::from_millis(500);
-    let mut pending_resize = false;
-    let mut last_resize_draw = Instant::now() - RESIZE_THROTTLE;
-    terminal.draw(|f| app.draw(f))?;
     loop {
-        if pending_resize && last_resize_draw.elapsed() >= RESIZE_THROTTLE {
-            terminal.draw(|f| app.draw(f))?;
-            pending_resize = false;
-            last_resize_draw = Instant::now();
-            continue;
-        }
-
-        if event::poll(Duration::from_millis(100))? {
-            match event::read()? {
-                Event::Key(key) => {
-                    if app.handle_key(key) {
-                        break;
-                    }
-                    terminal.draw(|f| app.draw(f))?;
+        terminal.draw(|f| app.draw(f))?;
+        match event::read()? {
+            Event::Key(key) => {
+                if app.handle_key(key) {
+                    break;
                 }
-                Event::Mouse(mouse) => {
-                    if app.handle_mouse(mouse) {
-                        break;
-                    }
-                    terminal.draw(|f| app.draw(f))?;
-                }
-                Event::Resize(_, _) => {
-                    if last_resize_draw.elapsed() >= RESIZE_THROTTLE {
-                        terminal.draw(|f| app.draw(f))?;
-                        last_resize_draw = Instant::now();
-                        pending_resize = false;
-                    } else {
-                        pending_resize = true;
-                    }
-                }
-                _ => {}
             }
+            Event::Mouse(mouse) => {
+                if app.handle_mouse(mouse) {
+                    break;
+                }
+            }
+            _ => {}
         }
     }
     Ok(())
