@@ -56,7 +56,8 @@ Please output exactly one of PROCEED, CHANGE_PLAN, OVERWRITE_LAST_STEP_AND_PROCE
             // Use the same format as this example: <tool_call>{\"name\": \"sub_agent\", \"request\": \"Find the number of prime numbers less than 1000.\"}</tool_call>.\n\
             // \n\
             let tool_prompt: String = "You can both reason in plain texts and use the following tools in this step:\n\
-1. Python code executor: You're encouraged to use it for calculations to ensure correctness. Use the same format as this example: <tool_call>{\"name\": \"python\", \"code\": \"x=0\\nfor i in range(10):\\n    x += i\\nprint(x)\"}</tool_call>.\
+1. Python code executor: You're encouraged to use it for calculations to ensure correctness. Use the same format as this example: <tool_call>{\"name\": \"python\", \"code\": \"x=0\\nfor i in range(10):\\n    x += i\\nprint(x)\"}</tool_call>. \
+Another way of calling python code is to start with ```python and end with ```.\n\
 IMPORTANT: always use print() statement to output the result, otherwise the result will not be shown.\n\
 After you have output the tool call, you have to stop the generation and wait for the response.\n\
 \n\
@@ -287,6 +288,42 @@ async fn execute_tool_call_content(tool_call_content: &str) -> String {
     }
 }
 
+pub async fn execute_planner_tool_call(tool_call: &str) -> String {
+    let trimmed_tool_call = tool_call.trim_start();
+    if trimmed_tool_call.starts_with("```python") {
+        let fence_end_index = trimmed_tool_call
+            .rfind("```")
+            .expect("Markdown python tool call missing closing fence");
+        let code_start = trimmed_tool_call
+            .find('\n')
+            .map(|idx| idx + 1)
+            .unwrap_or("```python".len());
+        assert!(
+            fence_end_index >= code_start,
+            "Invalid markdown python tool call format"
+        );
+        let code = &trimmed_tool_call[code_start..fence_end_index];
+        let python_code_result = execute_python_code(code.to_string()).await;
+        format!(
+            "<tool_response>{}</tool_response>",
+            python_code_result.trim()
+        )
+    } else {
+        assert!(
+            tool_call.starts_with("<tool_call>"),
+            "Tool call not properly formatted: {}",
+            tool_call
+        );
+        let tool_call_content_end_index = if let Some(end_index) = tool_call.find("</tool_call>") {
+            end_index
+        } else {
+            tool_call.len()
+        };
+        let tool_call_content = &tool_call["<tool_call>".len()..tool_call_content_end_index];
+        execute_tool_call_content(tool_call_content).await
+    }
+}
+
 // there are many permutations
 
 // we want same trajectory but whether verifier takes place
@@ -352,48 +389,7 @@ pub async fn rollout(
                         let mut tool_response_operations: Vec<ModelOperation> = vec![];
                         for operation in &operations {
                             if let ModelOperation::PlannerToolCall(tool_call) = operation {
-                                let tool_response = {
-                                    let trimmed_tool_call = tool_call.trim_start();
-                                    if trimmed_tool_call.starts_with("```python") {
-                                        let fence_end_index =
-                                            trimmed_tool_call.rfind("```").expect(
-                                                "Markdown python tool call missing closing fence",
-                                            );
-                                        let code_start = trimmed_tool_call
-                                            .find("\n")
-                                            .map(|idx| idx + 1)
-                                            .unwrap_or("```python".len());
-                                        assert!(
-                                            fence_end_index >= code_start,
-                                            "Invalid markdown python tool call format"
-                                        );
-                                        let code = &trimmed_tool_call[code_start..fence_end_index];
-                                        let python_code_result =
-                                            execute_python_code(code.to_string()).await;
-                                        format!(
-                                            "<tool_response>{}</tool_response>",
-                                            python_code_result.trim()
-                                        )
-                                    } else {
-                                        if !tool_call.starts_with("<tool_call>") {
-                                            panic!(
-                                                "Tool call not properly formatted: {}",
-                                                tool_call
-                                            );
-                                        }
-                                        let tool_call_content_end_index = if let Some(end_index) =
-                                            tool_call.find("</tool_call>")
-                                        {
-                                            end_index
-                                        } else {
-                                            // use the end index of the string
-                                            tool_call.len()
-                                        };
-                                        let tool_call_content = &tool_call
-                                            ["<tool_call>".len()..tool_call_content_end_index];
-                                        execute_tool_call_content(tool_call_content).await
-                                    }
-                                };
+                                let tool_response = execute_planner_tool_call(tool_call).await;
                                 let tool_response_operation =
                                     ModelOperation::ToolCallResponse(tool_response);
                                 tool_response_operations.push(tool_response_operation);
