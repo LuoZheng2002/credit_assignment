@@ -105,10 +105,38 @@ enum BrowsingAction {
     Quit,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum PaneFocus {
+    Log,
+    Prompt,
+    Action,
+}
+
+impl PaneFocus {
+    fn next(self) -> Self {
+        match self {
+            PaneFocus::Log => PaneFocus::Prompt,
+            PaneFocus::Prompt => PaneFocus::Action,
+            PaneFocus::Action => PaneFocus::Log,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            PaneFocus::Log => PaneFocus::Action,
+            PaneFocus::Prompt => PaneFocus::Log,
+            PaneFocus::Action => PaneFocus::Prompt,
+        }
+    }
+}
+
 struct App {
     answers: Vec<RolloutAnswerRaw>,
     selection_state: ListState,
     browsing_view: Option<SessionView>,
+    focus: PaneFocus,
+    prompt_scroll: usize,
+    action_scroll: usize,
 }
 
 impl App {
@@ -121,20 +149,23 @@ impl App {
             answers,
             selection_state,
             browsing_view: None,
+            focus: PaneFocus::Log,
+            prompt_scroll: 0,
+            action_scroll: 0,
         }
     }
 
     fn draw(&mut self, frame: &mut ratatui::Frame<'_>) {
-        if let Some(view) = &self.browsing_view {
-            self.draw_session(frame, view);
+        if self.browsing_view.is_some() {
+            self.draw_session(frame);
         } else {
             self.draw_selection(frame);
         }
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> bool {
-        if let Some(view) = &mut self.browsing_view {
-            match Self::handle_browsing_key(key, view) {
+        if self.browsing_view.is_some() {
+            match self.handle_browsing_key(key) {
                 BrowsingAction::Continue => false,
                 BrowsingAction::GoBack => {
                     self.browsing_view = None;
@@ -149,6 +180,9 @@ impl App {
                 SelectionAction::OpenSession(selected) => {
                     let answer = self.answers[selected].clone();
                     self.browsing_view = Some(SessionView::new(answer));
+                    self.focus = PaneFocus::Log;
+                    self.prompt_scroll = 0;
+                    self.action_scroll = 0;
                     false
                 }
             }
@@ -191,36 +225,70 @@ impl App {
         }
     }
 
-    fn handle_browsing_key(key: KeyEvent, view: &mut SessionView) -> BrowsingAction {
-        match key.code {
-            KeyCode::Left => {
-                view.move_by(-1);
-                BrowsingAction::Continue
+    fn handle_browsing_key(&mut self, key: KeyEvent) -> BrowsingAction {
+        let mut new_focus = self.focus;
+        let mut new_prompt_scroll = self.prompt_scroll;
+        let mut new_action_scroll = self.action_scroll;
+        let action = {
+            let view = self.browsing_view.as_mut().unwrap();
+            match key.code {
+                KeyCode::Left => {
+                    new_focus = new_focus.prev();
+                    BrowsingAction::Continue
+                }
+                KeyCode::Right => {
+                    new_focus = new_focus.next();
+                    BrowsingAction::Continue
+                }
+                KeyCode::Up => {
+                    match new_focus {
+                        PaneFocus::Log => view.move_by(-1),
+                        PaneFocus::Prompt => {
+                            new_prompt_scroll = new_prompt_scroll.saturating_sub(1);
+                        }
+                        PaneFocus::Action => {
+                            new_action_scroll = new_action_scroll.saturating_sub(1);
+                        }
+                    }
+                    BrowsingAction::Continue
+                }
+                KeyCode::Down => {
+                    match new_focus {
+                        PaneFocus::Log => view.move_by(1),
+                        PaneFocus::Prompt => {
+                            new_prompt_scroll = new_prompt_scroll.saturating_add(1);
+                        }
+                        PaneFocus::Action => {
+                            new_action_scroll = new_action_scroll.saturating_add(1);
+                        }
+                    }
+                    BrowsingAction::Continue
+                }
+                KeyCode::Home => {
+                    view.move_to_start();
+                    BrowsingAction::Continue
+                }
+                KeyCode::End => {
+                    view.move_to_end();
+                    BrowsingAction::Continue
+                }
+                KeyCode::PageUp => {
+                    view.move_by(-10);
+                    BrowsingAction::Continue
+                }
+                KeyCode::PageDown => {
+                    view.move_by(10);
+                    BrowsingAction::Continue
+                }
+                KeyCode::Esc => BrowsingAction::GoBack,
+                KeyCode::Char('q') => BrowsingAction::Quit,
+                _ => BrowsingAction::Continue,
             }
-            KeyCode::Right => {
-                view.move_by(1);
-                BrowsingAction::Continue
-            }
-            KeyCode::Home => {
-                view.move_to_start();
-                BrowsingAction::Continue
-            }
-            KeyCode::End => {
-                view.move_to_end();
-                BrowsingAction::Continue
-            }
-            KeyCode::PageUp => {
-                view.move_by(-10);
-                BrowsingAction::Continue
-            }
-            KeyCode::PageDown => {
-                view.move_by(10);
-                BrowsingAction::Continue
-            }
-            KeyCode::Esc => BrowsingAction::GoBack,
-            KeyCode::Char('q') => BrowsingAction::Quit,
-            _ => BrowsingAction::Continue,
-        }
+        };
+        self.focus = new_focus;
+        self.prompt_scroll = new_prompt_scroll;
+        self.action_scroll = new_action_scroll;
+        action
     }
 
     fn draw_selection(&mut self, frame: &mut ratatui::Frame<'_>) {
@@ -282,7 +350,8 @@ impl App {
         frame.render_widget(footer, chunks[2]);
     }
 
-    fn draw_session(&self, frame: &mut ratatui::Frame<'_>, view: &SessionView) {
+    fn draw_session(&mut self, frame: &mut ratatui::Frame<'_>) {
+        let view = self.browsing_view.as_ref().unwrap();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -310,25 +379,38 @@ impl App {
 
         let body_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .constraints([Constraint::Ratio(1, 5), Constraint::Ratio(4, 5)])
             .split(chunks[1]);
 
         let log_title = format!(
-            "Session log progress ({}/{})",
+            "Session log progress ({}/{}){}",
             view.current_pos,
-            view.total_ops()
+            view.total_ops(),
+            if self.focus == PaneFocus::Log {
+                " [focused]"
+            } else {
+                ""
+            }
         );
-        let log_block = Block::default().borders(Borders::ALL).title(log_title);
+        let log_block = Block::default()
+            .borders(Borders::ALL)
+            .title(log_title)
+            .border_style(if self.focus == PaneFocus::Log {
+                Style::default()
+                    .fg(Color::LightGreen)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            });
         let visible_ops: Vec<&PromptedOperation> =
             view.prompted_ops.iter().take(view.current_pos).collect();
         let log_items: Vec<ListItem> = visible_ops
             .iter()
             .map(|entry| {
                 ListItem::new(format!(
-                    "[{index}] ({role}) {action}",
+                    "[{index}] {role}",
                     index = entry.index,
                     role = entry.context.role_label(),
-                    action = summarize_operation(&entry.operation)
                 ))
             })
             .collect();
@@ -349,9 +431,6 @@ impl App {
             &mut log_state,
         );
 
-        let prompt_block = Block::default().borders(Borders::ALL).title("Prompt");
-        let action_block = Block::default().borders(Borders::ALL).title("Action");
-
         let main_prompt = view.current_context();
         let prompt_label = main_prompt
             .map(|ctx| ctx.role_label().to_string())
@@ -359,35 +438,83 @@ impl App {
         let prompt_text = main_prompt
             .map(|ctx| ctx.prompt.as_str())
             .unwrap_or("No prompt available");
-        let prompt_paragraph = Paragraph::new(prompt_text)
-            .block(prompt_block.title(format!("Prompt (role: {})", prompt_label)))
-            .wrap(Wrap { trim: true });
-
         let action_text = view
             .current_operation()
             .map(|entry| entry.operation.to_pretty_string())
             .unwrap_or_else(|| "No action yet".to_string());
-        let action_paragraph = Paragraph::new(action_text)
-            .block(action_block)
-            .wrap(Wrap { trim: true });
 
         let right_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(body_chunks[1]);
+        let prompt_height = right_chunks[0].height as usize;
+        let action_height = right_chunks[1].height as usize;
+        let prompt_lines = count_lines(prompt_text);
+        let action_lines = count_lines(&action_text);
+        let prompt_max_scroll = prompt_lines.saturating_sub(prompt_height.max(1));
+        let action_max_scroll = action_lines.saturating_sub(action_height.max(1));
+        if self.prompt_scroll > prompt_max_scroll {
+            self.prompt_scroll = prompt_max_scroll;
+        }
+        if self.action_scroll > action_max_scroll {
+            self.action_scroll = action_max_scroll;
+        }
+
+        let prompt_block = Block::default()
+            .borders(Borders::ALL)
+            .title(format!(
+                "Prompt (role: {}){}",
+                prompt_label,
+                if self.focus == PaneFocus::Prompt {
+                    " [focused]"
+                } else {
+                    ""
+                }
+            ))
+            .border_style(if self.focus == PaneFocus::Prompt {
+                Style::default()
+                    .fg(Color::LightGreen)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            });
+        let action_block = Block::default()
+            .borders(Borders::ALL)
+            .title(if self.focus == PaneFocus::Action {
+                "Action [focused]"
+            } else {
+                "Action"
+            })
+            .border_style(if self.focus == PaneFocus::Action {
+                Style::default()
+                    .fg(Color::LightGreen)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            });
+
+        let prompt_paragraph = Paragraph::new(prompt_text)
+            .block(prompt_block)
+            .wrap(Wrap { trim: true })
+            .scroll((self.prompt_scroll as u16, 0));
+        let action_paragraph = Paragraph::new(action_text)
+            .block(action_block)
+            .wrap(Wrap { trim: true })
+            .scroll((self.action_scroll as u16, 0));
         frame.render_widget(prompt_paragraph, right_chunks[0]);
         frame.render_widget(action_paragraph, right_chunks[1]);
 
-        let footer =
-            Paragraph::new("←/→ step, Home/End to jump, PgUp/PgDn fast, Esc to go back, q to quit")
-                .block(Block::default().borders(Borders::ALL).title("Controls"));
+        let footer = Paragraph::new(
+            "Left/Right: switch focus between log, prompt, and action panes; Up/Down: scroll the focused pane (or move the log when it is focused); PgUp/PgDn: jump log positions; Esc: go back to selection; q: quit",
+        )
+        .block(Block::default().borders(Borders::ALL).title("Controls"));
         frame.render_widget(footer, chunks[2]);
     }
 }
 
-fn summarize_operation(operation: &ModelOperation) -> String {
-    let raw = operation.to_pretty_string();
-    raw.lines().next().unwrap_or(&raw).trim().to_string()
+fn count_lines(text: &str) -> usize {
+    let count = text.lines().count();
+    if count == 0 { 1 } else { count }
 }
 
 struct SessionView {
