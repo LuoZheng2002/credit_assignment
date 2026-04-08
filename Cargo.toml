@@ -9,7 +9,7 @@ crossterm = "0.29.0"
 dotenvy = "0.15.7"
 indexmap = "2.13.1"
 minijinja = "2.19.0"
-pyo3 = "0.28.3"
+pyo3 = {version="0.28.3", features=["abi3"]}
 rand = "0.10.0"
 ratatui = "0.30.0"
 ratatui-core = "0.1.0"
