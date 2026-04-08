@@ -369,6 +369,7 @@ dependencies = [
  "pyo3",
  "rand 0.10.0",
  "ratatui",
+ "ratatui-core",
  "regex",
  "reqwest",
  "serde",

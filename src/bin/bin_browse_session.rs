@@ -14,15 +14,17 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
+use ratatui::prelude::Widget;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui_core::buffer::Buffer;
 use serde_json;
 
 use credit_assignment::multi_agent::generate_rollout_answers::RolloutAnswerRaw;
 use credit_assignment::multi_agent::rollout::{get_planner_prompt, get_verifier_prompt};
 use credit_assignment::multi_agent::session::{
-    ModelOperation, PlannerStatus, SessionLog, SessionState, SessionStatus,
+    ModelOperation, PlannerStatus, SessionState, SessionStatus,
 };
 
 /// Command line arguments for browsing rollout session logs.
@@ -525,15 +527,13 @@ impl App {
             } else {
                 Style::default()
             });
-        let visible_ops: Vec<&PromptedOperation> =
-            view.prompted_ops.iter().take(view.current_pos).collect();
+        let visible_ops = view.operations.iter().enumerate().take(view.current_pos);
         let log_items: Vec<ListItem> = visible_ops
-            .iter()
-            .map(|entry| {
+            .map(|(index, _)| {
                 ListItem::new(format!(
                     "[{index}] {role}",
-                    index = entry.index,
-                    role = entry.context.role_label(),
+                    index = index,
+                    role = view.operation_roles[index].label(),
                 ))
             })
             .collect();
@@ -554,16 +554,13 @@ impl App {
             &mut log_state,
         );
 
-        let main_prompt = view.current_context();
-        let prompt_label = main_prompt
-            .map(|ctx| ctx.role_label().to_string())
-            .unwrap_or_else(|| "Planner".into());
-        let prompt_text = main_prompt
-            .map(|ctx| ctx.prompt.as_str())
-            .unwrap_or("No prompt available");
+        let (prompt_label, prompt_text) = view
+            .current_prompt()
+            .map(|(role, text)| (role.label().to_string(), text))
+            .unwrap_or_else(|| ("Planner".into(), "No prompt available".into()));
         let action_text = view
             .current_operation()
-            .map(|entry| entry.operation.to_pretty_string())
+            .map(|entry| entry.to_pretty_string())
             .unwrap_or_else(|| "No action yet".to_string());
 
         let right_chunks = Layout::default()
@@ -607,6 +604,17 @@ impl App {
                 Style::default()
             });
 
+        let prompt_text_area = prompt_block.inner(right_chunks[0]);
+        let action_text_area = action_block.inner(right_chunks[1]);
+        let prompt_height = prompt_text_area.height as usize;
+        let action_height = action_text_area.height as usize;
+        let prompt_lines = count_wrapped_lines(&prompt_text, prompt_text_area);
+        let action_lines = count_wrapped_lines(&action_text, action_text_area);
+        let prompt_max_scroll = bottom_scroll_limit(prompt_lines, prompt_height.max(1));
+        let action_max_scroll = bottom_scroll_limit(action_lines, action_height.max(1));
+        self.prompt_scroll = self.prompt_scroll.min(prompt_max_scroll);
+        self.action_scroll = self.action_scroll.min(action_max_scroll);
+
         let prompt_paragraph = Paragraph::new(prompt_text)
             .block(prompt_block)
             .wrap(Wrap { trim: true })
@@ -647,28 +655,65 @@ fn clamp_scroll(value: usize) -> u16 {
     }
 }
 
+fn count_wrapped_lines(text: &str, area: Rect) -> usize {
+    if area.width == 0 {
+        return 0;
+    }
+    let height = area.height.max(1).saturating_add(1024).min(u16::MAX);
+    let mut buffer = Buffer::empty(Rect::new(0, 0, area.width, height));
+    Paragraph::new(text)
+        .wrap(Wrap { trim: true })
+        .render(buffer.area, &mut buffer);
+    let mut last_non_empty = None;
+    for y in 0..height {
+        let row_has_content = (0..area.width).any(|x| {
+            buffer
+                .cell(Position::new(x, y))
+                .map_or(false, |cell| !cell.symbol().trim().is_empty())
+        });
+        if row_has_content {
+            last_non_empty = Some(y);
+        }
+    }
+    last_non_empty
+        .map(|last| (last + 1) as usize)
+        .unwrap_or(0)
+        .max(1)
+}
+
+fn bottom_scroll_limit(lines: usize, height: usize) -> usize {
+    if height == 0 {
+        return lines + 2;
+    }
+    let extra = lines.saturating_add(2);
+    extra.saturating_sub(height)
+}
+
 struct SessionView {
     answer: RolloutAnswerRaw,
-    prompted_ops: Vec<PromptedOperation>,
+    operations: Vec<ModelOperation>,
+    operation_roles: Vec<PromptRole>,
     current_pos: usize,
 }
 
 impl SessionView {
     fn new(answer: RolloutAnswerRaw) -> Self {
-        let prompted_ops = build_prompted_operations(&answer.question, &answer.trajectory);
+        let operations = answer.trajectory.operations().to_vec();
+        let operation_roles = compute_operation_roles(&operations);
         Self {
             answer,
-            prompted_ops,
+            operations,
+            operation_roles,
             current_pos: 0,
         }
     }
 
     fn total_ops(&self) -> usize {
-        self.prompted_ops.len()
+        self.operations.len()
     }
 
     fn move_by(&mut self, delta: isize) {
-        if self.prompted_ops.is_empty() {
+        if self.operations.is_empty() {
             self.current_pos = 0;
             return;
         }
@@ -685,40 +730,48 @@ impl SessionView {
         self.current_pos = self.total_ops();
     }
 
-    fn current_operation(&self) -> Option<&PromptedOperation> {
+    fn current_operation(&self) -> Option<&ModelOperation> {
         if self.current_pos == 0 {
             None
         } else {
-            self.prompted_ops.get(self.current_pos - 1)
+            self.operations.get(self.current_pos - 1)
         }
     }
 
-    fn current_context(&self) -> Option<&PromptContext> {
-        if self.prompted_ops.is_empty() {
+    fn current_prompt(&self) -> Option<(PromptRole, String)> {
+        if self.operations.is_empty() {
             return None;
         }
-        if self.current_pos == 0 {
-            return self.prompted_ops.first().map(|op| &op.context);
-        }
-        self.prompted_ops
-            .get(self.current_pos - 1)
-            .map(|op| &op.context)
+        let state = self.session_state_at(self.current_pos.saturating_sub(1));
+        let history = match state.session_status {
+            SessionStatus::PlannerTurn => state.to_history(true),
+            SessionStatus::VerifierTurn => state.to_history(false),
+        };
+        let prompt = match state.session_status {
+            SessionStatus::PlannerTurn => {
+                let prompt =
+                    get_planner_prompt(&self.answer.question, state.planner_status, &history);
+                let role = if matches!(state.planner_status, PlannerStatus::PlannerChoosingMode) {
+                    PromptRole::PlannerChoice
+                } else {
+                    PromptRole::PlannerStep
+                };
+                Some((role, prompt))
+            }
+            SessionStatus::VerifierTurn => Some((
+                PromptRole::Verifier,
+                get_verifier_prompt(&self.answer.question, &history),
+            )),
+        };
+        prompt
     }
-}
 
-#[derive(Clone)]
-struct PromptContext {
-    role: PromptRole,
-    prompt: String,
-}
-
-impl PromptContext {
-    fn role_label(&self) -> &str {
-        match self.role {
-            PromptRole::PlannerChoice => "Planner (choose mode)",
-            PromptRole::PlannerStep => "Planner (step reasoning)",
-            PromptRole::Verifier => "Verifier",
+    fn session_state_at(&self, upto: usize) -> SessionState {
+        let mut state = SessionState::new();
+        for operation in self.operations.iter().take(upto) {
+            state.update(operation.clone());
         }
+        state
     }
 }
 
@@ -729,64 +782,29 @@ enum PromptRole {
     Verifier,
 }
 
-struct PromptedOperation {
-    index: usize,
-    operation: ModelOperation,
-    context: PromptContext,
-}
-
-fn build_prompted_operations(question: &str, session_log: &SessionLog) -> Vec<PromptedOperation> {
-    let mut result = Vec::new();
-    let mut state = SessionState::new();
-    let operations = session_log.operations();
-    let mut idx = 0;
-    while idx < operations.len() {
-        let (role, prompt_text): (PromptRole, String) = match state.session_status {
-            SessionStatus::PlannerTurn => {
-                let planner_status = state.planner_status;
-                let history = state.to_history(true);
-                let prompt = get_planner_prompt(question, planner_status, &history);
-                let role = if matches!(planner_status, PlannerStatus::PlannerChoosingMode) {
-                    PromptRole::PlannerChoice
-                } else {
-                    PromptRole::PlannerStep
-                };
-                (role, prompt)
-            }
-            SessionStatus::VerifierTurn => {
-                let history = state.to_history(false);
-                (
-                    PromptRole::Verifier,
-                    get_verifier_prompt(question, &history),
-                )
-            }
-        };
-
-        loop {
-            if idx >= operations.len() {
-                break;
-            }
-            let op = operations[idx].clone();
-            result.push(PromptedOperation {
-                index: idx,
-                operation: op.clone(),
-                context: PromptContext {
-                    role,
-                    prompt: prompt_text.clone(),
-                },
-            });
-            state.update(op);
-            idx += 1;
-            let end_iteration = matches!(role, PromptRole::PlannerChoice | PromptRole::Verifier)
-                || matches!(role, PromptRole::PlannerStep)
-                    && matches!(
-                        result.last().unwrap().operation,
-                        ModelOperation::PlannerEndStep
-                    );
-            if end_iteration {
-                break;
-            }
+impl PromptRole {
+    fn label(self) -> &'static str {
+        match self {
+            PromptRole::PlannerChoice => "Planner (choose mode)",
+            PromptRole::PlannerStep => "Planner (step reasoning)",
+            PromptRole::Verifier => "Verifier",
         }
     }
-    result
+}
+
+fn compute_operation_roles(operations: &[ModelOperation]) -> Vec<PromptRole> {
+    let mut state = SessionState::new();
+    let mut roles = Vec::with_capacity(operations.len());
+    for operation in operations {
+        let role = match state.session_status {
+            SessionStatus::PlannerTurn => match state.planner_status {
+                PlannerStatus::PlannerChoosingMode => PromptRole::PlannerChoice,
+                _ => PromptRole::PlannerStep,
+            },
+            SessionStatus::VerifierTurn => PromptRole::Verifier,
+        };
+        roles.push(role);
+        state.update(operation.clone());
+    }
+    roles
 }

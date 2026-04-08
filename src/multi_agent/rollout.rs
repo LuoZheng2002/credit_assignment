@@ -59,7 +59,7 @@ Use the same format as this example: <tool_call>{\"name\": \"sub_agent\", \"requ
 \n\
 You can only invoke one tool call at a time. After you have output the tool call, you have to stop the generation and wait for the response.\n\
 \n\
-If you think a milestone has been achieved and want to mark the current step as complete, end your response with END_STEP and nothing else.".to_string();
+If you think a milestone has been achieved and want to mark the current step as complete, end your response with <END_STEP> and nothing else.".to_string();
             format!("Currently you are in the middle of a step.\n\
 {}\n\
 {}\n\
@@ -117,9 +117,13 @@ fn parse_to_reasoning_and_too_calls(response: &str) -> Vec<ModelOperation> {
             operations.push(ModelOperation::PlannerReasoning(reasoning_part.to_string()));
         }
         // extract tool call
-        let tool_call_end_index = response
-            .find("</tool_call>")
-            .expect("Tool call start tag found without end tag");
+        let tool_call_end_index = response.find("</tool_call>").expect(
+            format!(
+                "Tool call start tag found without end tag, response: {}",
+                response
+            )
+            .as_str(),
+        );
         let tool_call_part =
             response[start_index..tool_call_end_index + "</tool_call>".len()].trim();
         operations.push(ModelOperation::PlannerToolCall(tool_call_part.to_string()));
@@ -228,8 +232,9 @@ pub async fn rollout(
     loop {
         let mut session_should_end = false;
         safe_counter += 1;
-        if safe_counter > 30 {
+        if safe_counter > 20 {
             session.session_state.final_answer = Some("The model does not manage to provide a final answer within allowed number of turns.".to_string());
+            session_should_end = true;
         }
         let new_operations: Vec<ModelOperation> = match &session.session_state.session_status {
             SessionStatus::PlannerTurn => {
