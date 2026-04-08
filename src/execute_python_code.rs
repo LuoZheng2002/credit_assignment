@@ -5,7 +5,7 @@ use pyo3::{prelude::*, types::PyDict};
 fn blocking_python_code_task(code: String) -> PyResult<String> {
     Python::attach(|py| -> PyResult<String> {
         // Persistent REPL namespace
-        let locals = PyDict::new(py);
+        let globals = PyDict::new(py);
 
         let io_redirect_code = r#"
 import io, sys
@@ -15,17 +15,17 @@ sys.stdout = buf
 
         py.run(
             CString::new(io_redirect_code).unwrap().as_c_str(),
-            None,
-            Some(&locals),
+            Some(&globals),
+            Some(&globals),
         )?;
         let code = CString::new(code).unwrap();
-        py.run(code.as_c_str(), None, Some(&locals))?;
+        py.run(code.as_c_str(), Some(&globals), Some(&globals))?;
         // use eval to get the result of the last expression
         let output = py
             .eval(
                 CString::new("buf.getvalue()").unwrap().as_c_str(),
-                None,
-                Some(&locals),
+                Some(&globals),
+                Some(&globals),
             )?
             .extract::<String>()?;
         Ok(output)

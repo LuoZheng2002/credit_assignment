@@ -53,15 +53,31 @@ Final reasoning after markdown call
 
 #[tokio::test]
 async fn execute_markdown_planner_tool_call_runs_python() {
+    dotenvy::dotenv().ok();
     Python::initialize();
     let markdown_tool_call = r#"```python
 from math import comb
 
 def evaluate_expression(n):
-
+    total_sum = 0
+    for j in range(n + 1):
+        inner_sum = sum(comb(j, k) * 4**k for k in range(j + 1))
+        total_sum += comb(n, j) * (-1)**j * inner_sum
+    return total_sum
+# Calculate and print for small values of n
+results = {n: evaluate_expression(n) for n in range(5)}
+print(results)
 ```"#;
+//     let markdown_tool_call = r#"```python
+// from math import comb
+// print(comb(10, 3))
+// ```"#;
     let response = execute_planner_tool_call(markdown_tool_call).await;
-    assert!(response.contains("<tool_response>5</tool_response>"));
+    // assert!(response.contains("<tool_response>5</tool_response>"));
+    assert_eq!(
+        response.trim(),
+        "<tool_response>{0: 1, 1: 5, 2: 25, 3: 125, 4: 625}</tool_response>"
+    );
 }
 
 #[tokio::test]

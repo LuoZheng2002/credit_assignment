@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Stdout};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use clap::Parser;
 use crossterm::event::{
@@ -10,14 +11,14 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::prelude::Widget;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::Terminal;
 use ratatui_core::buffer::Buffer;
 use serde_json;
 use std::collections::hash_map::DefaultHasher;
@@ -86,20 +87,43 @@ fn run_app(
     answers: Vec<RolloutAnswerRaw>,
 ) -> Result<(), Box<dyn Error>> {
     let mut app = App::new(answers);
+    const RESIZE_THROTTLE: Duration = Duration::from_millis(500);
+    let mut pending_resize = false;
+    let mut last_resize_draw = Instant::now() - RESIZE_THROTTLE;
+    terminal.draw(|f| app.draw(f))?;
     loop {
-        terminal.draw(|f| app.draw(f))?;
-        match event::read()? {
-            Event::Key(key) => {
-                if app.handle_key(key) {
-                    break;
+        if pending_resize && last_resize_draw.elapsed() >= RESIZE_THROTTLE {
+            terminal.draw(|f| app.draw(f))?;
+            pending_resize = false;
+            last_resize_draw = Instant::now();
+            continue;
+        }
+
+        if event::poll(Duration::from_millis(100))? {
+            match event::read()? {
+                Event::Key(key) => {
+                    if app.handle_key(key) {
+                        break;
+                    }
+                    terminal.draw(|f| app.draw(f))?;
                 }
-            }
-            Event::Mouse(mouse) => {
-                if app.handle_mouse(mouse) {
-                    break;
+                Event::Mouse(mouse) => {
+                    if app.handle_mouse(mouse) {
+                        break;
+                    }
+                    terminal.draw(|f| app.draw(f))?;
                 }
+                Event::Resize(_, _) => {
+                    if last_resize_draw.elapsed() >= RESIZE_THROTTLE {
+                        terminal.draw(|f| app.draw(f))?;
+                        last_resize_draw = Instant::now();
+                        pending_resize = false;
+                    } else {
+                        pending_resize = true;
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
     Ok(())
@@ -630,11 +654,11 @@ impl App {
 
         let prompt_paragraph = Paragraph::new(prompt_text)
             .block(prompt_block)
-            .wrap(Wrap { trim: true })
+            .wrap(Wrap { trim: false })
             .scroll((clamp_scroll(self.prompt_scroll), 0));
         let action_paragraph = Paragraph::new(action_text)
             .block(action_block)
-            .wrap(Wrap { trim: true })
+            .wrap(Wrap { trim: false })
             .scroll((clamp_scroll(self.action_scroll), 0));
         frame.render_widget(prompt_paragraph, right_chunks[0]);
         frame.render_widget(action_paragraph, right_chunks[1]);
@@ -675,7 +699,7 @@ fn count_wrapped_lines(text: &str, area: Rect) -> usize {
     let height = area.height.max(1).saturating_add(1024).min(u16::MAX);
     let mut buffer = Buffer::empty(Rect::new(0, 0, area.width, height));
     Paragraph::new(text)
-        .wrap(Wrap { trim: true })
+        .wrap(Wrap { trim: false })
         .render(buffer.area, &mut buffer);
     let mut last_non_empty = None;
     for y in 0..height {
