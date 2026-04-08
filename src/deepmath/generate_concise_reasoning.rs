@@ -1,7 +1,9 @@
 use reqwest::Client;
 
 use crate::{
-    call_llm::call_llm, datasets::{DeepMathQuestionReasoning, get_questions_with_reasoning_path}, parallel_process_jsonl::{HasId, parallel_process_jsonl}
+    call_llm::call_llm,
+    datasets::{DeepMathQuestionReasoning, get_questions_with_reasoning_path},
+    parallel_process_jsonl::{HasId, parallel_process_jsonl},
 };
 use serde::{Deserialize, Serialize};
 
@@ -46,7 +48,8 @@ pub fn get_concise_reasoning_path(dataset_name: &str, num_samples: usize) -> Str
 }
 
 pub async fn generate_concise_reasoning(dataset_name: &str, num_samples: usize, client: Client) {
-    let questions_with_reasoning_path = get_questions_with_reasoning_path(dataset_name, num_samples);
+    let questions_with_reasoning_path =
+        get_questions_with_reasoning_path(dataset_name, num_samples);
     let concise_reasoning_output_path = get_concise_reasoning_path(dataset_name, num_samples);
     parallel_process_jsonl(
         &[&questions_with_reasoning_path],

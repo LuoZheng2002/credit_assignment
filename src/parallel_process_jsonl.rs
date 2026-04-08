@@ -90,7 +90,13 @@ where
     );
     let mut items: Vec<IndexMap<usize, serde_json::Value>> = Vec::new();
     for input_file_path in input_file_paths {
-        let input_file = File::open(input_file_path.as_ref()).map_err(|e| format!("Cannot open file {}: {}", input_file_path.as_ref().display(), e))?;
+        let input_file = File::open(input_file_path.as_ref()).map_err(|e| {
+            format!(
+                "Cannot open file {}: {}",
+                input_file_path.as_ref().display(),
+                e
+            )
+        })?;
         let file_items = read_json_lines_indexed_erased(&input_file)?;
         items.push(file_items);
     }

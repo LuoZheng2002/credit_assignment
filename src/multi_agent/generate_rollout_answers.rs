@@ -8,7 +8,7 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RolloutAnswerRaw {
     pub id: usize,
     pub model_answer: String,

@@ -17,7 +17,10 @@ async fn main() {
         std::process::abort();
     }));
     dotenvy::dotenv().ok();
-    let Args { dataset_name, num_samples } = Args::parse();
+    let Args {
+        dataset_name,
+        num_samples,
+    } = Args::parse();
 
     let client = Client::new();
     generate_concise_reasoning(&dataset_name, num_samples, client).await;

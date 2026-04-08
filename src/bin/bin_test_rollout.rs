@@ -2,10 +2,6 @@ use credit_assignment::multi_agent::rollout::rollout;
 use pyo3::Python;
 use rand::{SeedableRng, rngs::StdRng};
 
-
-
-
-
 #[tokio::main]
 async fn main() {
     Python::initialize();
@@ -17,5 +13,13 @@ $(x_n,y_n)$ be the solutions to\n\\begin{align*}\n|x - 3| &= |y - 9|, \\\\\n|x -
     let model_name = "gpt-4o".to_string();
     let mut rng = StdRng::seed_from_u64(42); // Use a fixed seed for reproducibility
     let verifier_probability = 1.0; // Set your desired verifier probability
-    rollout(0, question, client, &model_name, verifier_probability, &mut rng).await;
+    rollout(
+        0,
+        question,
+        client,
+        &model_name,
+        verifier_probability,
+        &mut rng,
+    )
+    .await;
 }

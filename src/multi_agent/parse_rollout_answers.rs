@@ -2,9 +2,6 @@ use crate::deepmath::generate_raw_answers::{AnswerRaw, get_raw_answer_path};
 use crate::deepmath::parse_answers::{AnswerParsed, get_parsed_path};
 use crate::parallel_process_jsonl::parallel_process_jsonl;
 
-
-
-
 pub fn extract_boxed_content(text: &str) -> Option<String> {
     const MARKER: &str = "\\boxed{";
     let start = text.find(MARKER)?;

@@ -94,6 +94,10 @@ impl SessionLog {
             .filter(|op| matches!(op, ModelOperation::PlannerChooseMode(_)))
             .count()
     }
+
+    pub fn operations(&self) -> &[ModelOperation] {
+        &self.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

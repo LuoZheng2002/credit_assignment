@@ -16,7 +16,12 @@ impl HasId for AnswerParsed {
     }
 }
 
-pub fn get_parsed_path(model_name: &str, dataset_name: &str, num_samples: usize, is_rollout: bool) -> String {
+pub fn get_parsed_path(
+    model_name: &str,
+    dataset_name: &str,
+    num_samples: usize,
+    is_rollout: bool,
+) -> String {
     if is_rollout {
         format!(
             "results/{}/rollout/{}_parsed_{}.jsonl",
