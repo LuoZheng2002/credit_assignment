@@ -10,6 +10,7 @@ use crate::{
         ActualStepMode, ModelOperation, PlannerStatus, Session, SessionStatus, StepDirection,
     },
 };
+use serde_json::json;
 
 #[derive(Debug, Clone, Copy)]
 pub enum PlannerState {
@@ -112,45 +113,114 @@ Please start your comment and be concise:\n",
     )
 }
 
-fn parse_to_reasoning_and_too_calls(mut response: String) -> Vec<ModelOperation> {
-    let mut operations: Vec<ModelOperation> = vec![];
-    loop {
-        // extract non-tool-call reasoning
-        response = response.trim().to_string();
-        if response.is_empty() {
-            break;
+fn parse_to_reasoning_and_too_calls(response: String) -> Vec<ModelOperation> {
+    let (reasonings, tool_calls) = split_tool_call_segments(&response);
+    let mut operations = Vec::new();
+    let mut tool_call_iter = tool_calls.into_iter();
+    for reasoning in reasonings {
+        let trimmed = reasoning.trim();
+        if !trimmed.is_empty() {
+            operations.push(ModelOperation::PlannerReasoning(trimmed.to_string()));
         }
-        let Some(start_index) = response.find("<tool_call>") else {
-            operations.push(ModelOperation::PlannerReasoning(response.to_string()));
-            break;
-        };
-        let reasoning_part = response[..start_index].trim();
-        if !reasoning_part.is_empty() {
-            operations.push(ModelOperation::PlannerReasoning(reasoning_part.to_string()));
+        if let Some(tool_call) = tool_call_iter.next() {
+            operations.push(ModelOperation::PlannerToolCall(tool_call));
         }
-        response = response[start_index..].trim().to_string();
-
-        // if there is no </tool_call> after the start_index, capture as much as possible as the tool call content, but before the next <tool_call> if there is one
-        let tool_call_end_index = if let Some(end_index) = response[1..].find("</tool_call>") {
-            assert_eq!(
-                &response[end_index + 1..end_index + "</tool_call>".len() + 1],
-                "</tool_call>"
-            );
-            end_index + "</tool_call>".len() + 1
-        } else if let Some(next_tool_call_index) = response[1..].find("<tool_call>") {
-            assert_eq!(
-                &response[next_tool_call_index + 1..next_tool_call_index + "<tool_call>".len() + 1],
-                "<tool_call>"
-            );
-            next_tool_call_index + 1
-        } else {
-            response.len()
-        };
-        let tool_call_part = response[..tool_call_end_index].trim();
-        operations.push(ModelOperation::PlannerToolCall(tool_call_part.to_string()));
-        response = response[tool_call_end_index..].trim().to_string();
     }
     operations
+}
+
+fn split_tool_call_segments(response: &str) -> (Vec<String>, Vec<String>) {
+    let (reasonings, markdown_tool_calls) = split_markdown_python_blocks(response);
+    let mut final_reasonings = Vec::new();
+    let mut final_tool_calls = Vec::new();
+    let mut markdown_iter = markdown_tool_calls.into_iter();
+    for reasoning in reasonings {
+        let (inner_reasonings, inner_tool_calls) = split_tool_call_python_blocks(&reasoning);
+        final_reasonings.extend(inner_reasonings);
+        final_tool_calls.extend(inner_tool_calls);
+        if let Some(markdown_call) = markdown_iter.next() {
+            final_tool_calls.push(format!(
+                "<tool_call>{}</tool_call>",
+                json!({"name": "python", "code": markdown_call})
+            ));
+        }
+    }
+    (final_reasonings, final_tool_calls)
+}
+
+fn split_markdown_python_blocks(content: &str) -> (Vec<String>, Vec<String>) {
+    let mut reasonings = Vec::new();
+    let mut tool_calls = Vec::new();
+    let mut remainder = content.trim();
+    while !remainder.is_empty() {
+        if let Some(start_index) = remainder.find("```python\n") {
+            let reasoning_part = remainder[..start_index].trim().to_string();
+            reasonings.push(reasoning_part);
+            remainder = remainder[start_index + "```python\n".len()..].trim();
+            if remainder.is_empty() {
+                tool_calls.push(String::new());
+                break;
+            }
+            if let Some(end_index) = remainder.find("```") {
+                let code = remainder[..end_index].to_string();
+                tool_calls.push(code);
+                remainder = remainder[end_index + "```".len()..].trim();
+            } else {
+                tool_calls.push(remainder.to_string());
+                break;
+            }
+        } else {
+            reasonings.push(remainder.to_string());
+            remainder = "";
+        }
+    }
+    if reasonings.is_empty() && tool_calls.is_empty() {
+        reasonings.push(String::new());
+    }
+    (reasonings, tool_calls)
+}
+
+fn split_tool_call_python_blocks(content: &str) -> (Vec<String>, Vec<String>) {
+    let mut final_reasonings = Vec::new();
+    let mut final_tool_calls = Vec::new();
+    let mut remainder = content.trim().to_string();
+    loop {
+        if remainder.is_empty() {
+            final_reasonings.push(String::new());
+            break;
+        }
+        if let Some(start_index) = remainder.find("<tool_call>") {
+            let reasoning_part = remainder[..start_index].trim().to_string();
+            final_reasonings.push(reasoning_part);
+            remainder = remainder[start_index..].trim().to_string();
+            let tool_call_end_index =
+                if let Some(end_index) = remainder[1..].find("</tool_call>") {
+                    assert!(
+                        &remainder[end_index + 1..end_index + "</tool_call>".len() + 1]
+                            == "</tool_call>"
+                    );
+                    end_index + "</tool_call>".len() + 1
+                } else if let Some(next_tool_call_index) = remainder[1..].find("<tool_call>") {
+                    assert!(
+                        &remainder[next_tool_call_index + 1
+                            ..next_tool_call_index + "<tool_call>".len() + 1]
+                            == "<tool_call>"
+                    );
+                    next_tool_call_index + 1
+                } else {
+                    remainder.len()
+                };
+            final_tool_calls.push(remainder[..tool_call_end_index].trim().to_string());
+            remainder = remainder[tool_call_end_index..].trim().to_string();
+        } else {
+            final_reasonings.push(remainder.clone());
+            break;
+        }
+    }
+    if final_reasonings.is_empty() && final_tool_calls.is_empty() {
+        final_reasonings.push(String::new());
+    }
+    (final_reasonings, final_tool_calls)
 }
 
 async fn execute_tool_call_content(tool_call_content: &str) -> String {
