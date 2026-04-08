@@ -5,7 +5,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    call_llm::call_llm,
+    call_llm::call_llm_chat_completions,
     deepmath::parse_answers::{AnswerParsed, get_parsed_path},
     parallel_process_jsonl::{HasId, parallel_process_jsonl, read_json_lines_indexed},
 };
@@ -71,7 +71,7 @@ If the model's answer contains units but the reference answer does not, treat th
 The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
         answer.model_answer, answer.correct_answer
     );
-    let evaluation = call_llm(client, prompt, "gpt-4o")
+    let evaluation = call_llm_chat_completions(client, prompt, "gpt-4o")
         .await
         .trim()
         .to_lowercase();

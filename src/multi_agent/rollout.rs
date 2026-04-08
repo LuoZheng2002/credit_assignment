@@ -4,7 +4,7 @@ use rand::RngExt;
 use reqwest::Client;
 
 use crate::{
-    call_llm::call_llm,
+    call_llm::call_llm_chat_completions,
     execute_python_code::execute_python_code,
     multi_agent::session::{
         ActualStepMode, ModelOperation, PlannerStatus, Session, SessionStatus, StepDirection,
@@ -364,7 +364,7 @@ pub async fn rollout(
                     &history_prev_steps,
                     &history_curr_step,
                 );
-                let response = call_llm(client.clone(), prompt, model_name).await;
+                let response = call_llm_chat_completions(client.clone(), prompt, model_name).await;
                 match planner_status {
                     PlannerStatus::PlannerChoosingMode => {
                         let chosen_mode: ActualStepMode = match response.trim() {
@@ -416,7 +416,8 @@ pub async fn rollout(
                     let history_curr_step = session.session_state.to_history_curr_step(false);
                     let prompt =
                         get_verifier_prompt(&question, &history_prev_steps, &history_curr_step);
-                    let response = call_llm(client.clone(), prompt, model_name).await;
+                    let response =
+                        call_llm_chat_completions(client.clone(), prompt, model_name).await;
                     verifier_comment = Some(response.trim().to_string());
                 }
                 vec![ModelOperation::VerifierComment(verifier_comment)]

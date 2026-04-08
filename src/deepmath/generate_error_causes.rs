@@ -2,7 +2,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    call_llm::call_llm,
+    call_llm::call_llm_chat_completions,
     deepmath::{
         generate_concise_reasoning::{DeepMathConciseReasoning, get_concise_reasoning_path},
         generate_raw_answers::{AnswerRaw, get_raw_answer_path},
@@ -84,7 +84,7 @@ Question: {}\nModel's Reasoning: {}\nReference Reasoning: {}\nError Cause Analys
         correctness_reasoning.model_reasoning,
         correctness_reasoning.reference_reasoning
     );
-    let error_reason = call_llm(client, prompt, "gpt-5-mini").await;
+    let error_reason = call_llm_chat_completions(client, prompt, "gpt-5-mini").await;
     DeepMathErrorCause {
         id: correctness_reasoning.id,
         correct: correctness_reasoning.correct,

@@ -1,5 +1,5 @@
 use crate::{
-    call_llm::call_llm,
+    call_llm::call_llm_chat_completions,
     datasets::{DeepMathQuestion, get_question_path},
     parallel_process_jsonl::{HasId, parallel_process_jsonl},
 };
@@ -63,7 +63,7 @@ async fn generate_raw_answer_task(
         Model::Gpt => "gpt-4o",
         Model::Qwen => "Qwen/Qwen2.5-7B-Instruct",
     };
-    let response = call_llm(client, prompt, model_name).await;
+    let response = call_llm_chat_completions(client, prompt, model_name).await;
     AnswerRaw {
         id: question.id,
         question: question.question,

@@ -1,7 +1,7 @@
 use reqwest::Client;
 
-pub async fn call_llm(client: Client, prompt: String, model_name: &str) -> String {
-    let url = if model_name.to_lowercase().contains("gpt") {
+pub async fn call_llm_chat_completions(client: Client, prompt: String, model_name: &str) -> String {
+    let url = if model_name.contains("gpt") {
         "https://api.openai.com/v1/chat/completions"
     } else if model_name.to_lowercase().contains("qwen") {
         "http://localhost:8000/v1/chat/completions"
@@ -35,5 +35,29 @@ pub async fn call_llm(client: Client, prompt: String, model_name: &str) -> Strin
     json["choices"][0]["message"]["content"]
         .as_str()
         .expect(&format!("LLM response is invalid: {:?}", json))
+        .to_string()
+}
+
+pub async fn call_qwen_raw_completions(
+    client: Client,
+    chat_template_prompt: String,
+    model_name: &str,
+) -> String {
+    assert!(
+        model_name.to_lowercase().contains("qwen"),
+        "call_qwen_raw_completions only supports Qwen-family models",
+    );
+    let url = "http://localhost:8000/v1/completions";
+    let body = serde_json::json!({
+        "model": model_name,
+        "prompt": chat_template_prompt,
+        "max_tokens": 2048,
+    });
+
+    let response = client.post(url).json(&body).send().await.unwrap();
+    let json: serde_json::Value = response.json().await.unwrap();
+    json["choices"][0]["text"]
+        .as_str()
+        .expect(&format!("Qwen completions response is invalid: {:?}", json))
         .to_string()
 }
