@@ -4,14 +4,17 @@ use std::io::{self, BufRead, BufReader, Stdout};
 use std::path::PathBuf;
 
 use clap::Parser;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseButton,
+    MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use serde_json;
@@ -87,6 +90,11 @@ fn run_app(
                     break;
                 }
             }
+            Event::Mouse(mouse) => {
+                if app.handle_mouse(mouse) {
+                    break;
+                }
+            }
             _ => {}
         }
     }
@@ -96,7 +104,7 @@ fn run_app(
 enum SelectionAction {
     Continue,
     Quit,
-    OpenSession(usize),
+    OpenSession,
 }
 
 enum BrowsingAction {
@@ -137,6 +145,10 @@ struct App {
     focus: PaneFocus,
     prompt_scroll: usize,
     action_scroll: usize,
+    log_area: Option<Rect>,
+    prompt_area: Option<Rect>,
+    action_area: Option<Rect>,
+    selection_area: Option<Rect>,
 }
 
 impl App {
@@ -152,6 +164,10 @@ impl App {
             focus: PaneFocus::Log,
             prompt_scroll: 0,
             action_scroll: 0,
+            log_area: None,
+            prompt_area: None,
+            action_area: None,
+            selection_area: None,
         }
     }
 
@@ -177,46 +193,115 @@ impl App {
             match self.handle_selection_key(key) {
                 SelectionAction::Continue => false,
                 SelectionAction::Quit => true,
-                SelectionAction::OpenSession(selected) => {
-                    let answer = self.answers[selected].clone();
-                    self.browsing_view = Some(SessionView::new(answer));
-                    self.focus = PaneFocus::Log;
-                    self.prompt_scroll = 0;
-                    self.action_scroll = 0;
+                SelectionAction::OpenSession => {
+                    self.open_selected_question();
                     false
                 }
             }
         }
     }
 
+    fn handle_mouse(&mut self, mouse_event: MouseEvent) -> bool {
+        if self.browsing_view.is_some() {
+            match mouse_event.kind {
+                MouseEventKind::Moved => {
+                    self.update_focus_from_mouse(mouse_event.column, mouse_event.row);
+                    false
+                }
+                MouseEventKind::ScrollUp => {
+                    self.update_focus_from_mouse(mouse_event.column, mouse_event.row);
+                    self.apply_mouse_scroll(-1);
+                    false
+                }
+                MouseEventKind::ScrollDown => {
+                    self.update_focus_from_mouse(mouse_event.column, mouse_event.row);
+                    self.apply_mouse_scroll(1);
+                    false
+                }
+                _ => false,
+            }
+        } else {
+            match mouse_event.kind {
+                MouseEventKind::Moved => {
+                    self.update_selection_from_mouse(mouse_event.column, mouse_event.row);
+                    false
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.update_selection_from_mouse(mouse_event.column, mouse_event.row);
+                    self.open_selected_question();
+                    false
+                }
+                MouseEventKind::ScrollUp => {
+                    self.step_selection(-1);
+                    false
+                }
+                MouseEventKind::ScrollDown => {
+                    self.step_selection(1);
+                    false
+                }
+                _ => false,
+            }
+        }
+    }
+
+    fn update_selection_from_mouse(&mut self, column: u16, row: u16) {
+        if let Some(index) = self.selection_index_from_mouse(column, row) {
+            self.selection_state.select(Some(index));
+        }
+    }
+
+    fn selection_index_from_mouse(&self, column: u16, row: u16) -> Option<usize> {
+        let rect = self.selection_area?;
+        if !contains_point(rect, column, row) {
+            return None;
+        }
+        let inner_height = rect.height.saturating_sub(2);
+        if inner_height == 0 {
+            return None;
+        }
+        if row <= rect.y || row >= rect.y + rect.height - 1 {
+            return None;
+        }
+        let local_row = row - rect.y - 1;
+        if local_row >= inner_height {
+            return None;
+        }
+        let offset = self.selection_state.offset();
+        offset.checked_add(local_row as usize)
+    }
+
+    fn step_selection(&mut self, delta: isize) {
+        if self.answers.is_empty() {
+            return;
+        }
+        let current = self.selection_state.selected().unwrap_or(0);
+        let next = if delta < 0 {
+            current.saturating_sub(delta.unsigned_abs() as usize)
+        } else {
+            current.saturating_add(delta as usize)
+        };
+        let clamped = next.min(self.answers.len() - 1);
+        self.selection_state.select(Some(clamped));
+    }
+
+    fn open_selected_question(&mut self) {
+        if let Some(selected) = self.selection_state.selected() {
+            if selected < self.answers.len() {
+                let answer = self.answers[selected].clone();
+                self.browsing_view = Some(SessionView::new(answer));
+                self.focus = PaneFocus::Log;
+                self.prompt_scroll = 0;
+                self.action_scroll = 0;
+                self.selection_area = None;
+            }
+        }
+    }
+
     fn handle_selection_key(&mut self, key: KeyEvent) -> SelectionAction {
         match key.code {
-            KeyCode::Down => {
-                if self.answers.is_empty() {
-                    return SelectionAction::Continue;
-                }
-                let next = match self.selection_state.selected() {
-                    Some(index) if index + 1 < self.answers.len() => index + 1,
-                    _ => 0,
-                };
-                self.selection_state.select(Some(next));
-                SelectionAction::Continue
-            }
-            KeyCode::Up => {
-                if self.answers.is_empty() {
-                    return SelectionAction::Continue;
-                }
-                let prev = match self.selection_state.selected() {
-                    Some(index) if index > 0 => index - 1,
-                    Some(_) => 0,
-                    None => 0,
-                };
-                self.selection_state.select(Some(prev));
-                SelectionAction::Continue
-            }
             KeyCode::Enter => {
-                if let Some(selected) = self.selection_state.selected() {
-                    return SelectionAction::OpenSession(selected);
+                if self.selection_state.selected().is_some() {
+                    return SelectionAction::OpenSession;
                 }
                 SelectionAction::Continue
             }
@@ -291,6 +376,41 @@ impl App {
         action
     }
 
+    fn update_focus_from_mouse(&mut self, column: u16, row: u16) {
+        if self.browsing_view.is_none() {
+            return;
+        }
+        if let Some(rect) = self.log_area {
+            if contains_point(rect, column, row) {
+                self.focus = PaneFocus::Log;
+                return;
+            }
+        }
+        if let Some(rect) = self.prompt_area {
+            if contains_point(rect, column, row) {
+                self.focus = PaneFocus::Prompt;
+                return;
+            }
+        }
+        if let Some(rect) = self.action_area {
+            if contains_point(rect, column, row) {
+                self.focus = PaneFocus::Action;
+            }
+        }
+    }
+
+    fn apply_mouse_scroll(&mut self, delta: isize) {
+        if self.browsing_view.is_none() {
+            return;
+        }
+        let view = self.browsing_view.as_mut().unwrap();
+        match self.focus {
+            PaneFocus::Log => view.move_by(delta),
+            PaneFocus::Prompt => adjust_scroll_offset(&mut self.prompt_scroll, delta),
+            PaneFocus::Action => adjust_scroll_offset(&mut self.action_scroll, delta),
+        }
+    }
+
     fn draw_selection(&mut self, frame: &mut ratatui::Frame<'_>) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -309,6 +429,7 @@ impl App {
         frame.render_widget(header, chunks[0]);
 
         let list_block = Block::default().borders(Borders::ALL).title("Questions");
+        self.selection_area = Some(chunks[1]);
         if self.answers.is_empty() {
             let empty = Paragraph::new("No RolloutAnswerRaw entries found in the given file")
                 .block(list_block);
@@ -352,6 +473,7 @@ impl App {
 
     fn draw_session(&mut self, frame: &mut ratatui::Frame<'_>) {
         let view = self.browsing_view.as_ref().unwrap();
+        self.selection_area = None;
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -382,6 +504,7 @@ impl App {
             .constraints([Constraint::Ratio(1, 5), Constraint::Ratio(4, 5)])
             .split(chunks[1]);
 
+        self.log_area = Some(body_chunks[0]);
         let log_title = format!(
             "Session log progress ({}/{}){}",
             view.current_pos,
@@ -447,18 +570,9 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(body_chunks[1]);
-        let prompt_height = right_chunks[0].height as usize;
-        let action_height = right_chunks[1].height as usize;
-        let prompt_lines = count_lines(prompt_text);
-        let action_lines = count_lines(&action_text);
-        let prompt_max_scroll = prompt_lines.saturating_sub(prompt_height.max(1));
-        let action_max_scroll = action_lines.saturating_sub(action_height.max(1));
-        if self.prompt_scroll > prompt_max_scroll {
-            self.prompt_scroll = prompt_max_scroll;
-        }
-        if self.action_scroll > action_max_scroll {
-            self.action_scroll = action_max_scroll;
-        }
+
+        self.prompt_area = Some(right_chunks[0]);
+        self.action_area = Some(right_chunks[1]);
 
         let prompt_block = Block::default()
             .borders(Borders::ALL)
@@ -496,11 +610,11 @@ impl App {
         let prompt_paragraph = Paragraph::new(prompt_text)
             .block(prompt_block)
             .wrap(Wrap { trim: true })
-            .scroll((self.prompt_scroll as u16, 0));
+            .scroll((clamp_scroll(self.prompt_scroll), 0));
         let action_paragraph = Paragraph::new(action_text)
             .block(action_block)
             .wrap(Wrap { trim: true })
-            .scroll((self.action_scroll as u16, 0));
+            .scroll((clamp_scroll(self.action_scroll), 0));
         frame.render_widget(prompt_paragraph, right_chunks[0]);
         frame.render_widget(action_paragraph, right_chunks[1]);
 
@@ -512,9 +626,25 @@ impl App {
     }
 }
 
-fn count_lines(text: &str) -> usize {
-    let count = text.lines().count();
-    if count == 0 { 1 } else { count }
+fn adjust_scroll_offset(offset: &mut usize, delta: isize) {
+    let magnitude = delta.unsigned_abs() as usize;
+    if delta < 0 {
+        *offset = offset.saturating_sub(magnitude);
+    } else {
+        *offset = offset.saturating_add(magnitude);
+    }
+}
+
+fn contains_point(rect: Rect, column: u16, row: u16) -> bool {
+    column >= rect.x && column < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
+}
+
+fn clamp_scroll(value: usize) -> u16 {
+    if value > u16::MAX as usize {
+        u16::MAX
+    } else {
+        value as u16
+    }
 }
 
 struct SessionView {
