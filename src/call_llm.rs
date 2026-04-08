@@ -1,9 +1,9 @@
 use reqwest::Client;
 
 pub async fn call_llm(client: Client, prompt: String, model_name: &str) -> String {
-    let url = if model_name.contains("gpt") {
+    let url = if model_name.to_lowercase().contains("gpt") {
         "https://api.openai.com/v1/chat/completions"
-    } else if model_name.contains("qwen") {
+    } else if model_name.to_lowercase().contains("qwen") {
         "http://localhost:8000/v1/chat/completions"
     } else {
         panic!("Unsupported model name: {}", model_name);
@@ -18,7 +18,7 @@ pub async fn call_llm(client: Client, prompt: String, model_name: &str) -> Strin
         ],
         "max_completion_tokens": 2048,
     });
-    let response = if model_name.contains("gpt") {
+    let response = if model_name.to_lowercase().contains("gpt") {
         let api_key =
             std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set");
         client
