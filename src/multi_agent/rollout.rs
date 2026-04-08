@@ -226,9 +226,10 @@ pub async fn rollout(
     let mut session = Session::new();
     let mut safe_counter = 0; // to prevent infinite loop in case of bugs
     loop {
+        let mut session_should_end = false;
         safe_counter += 1;
         if safe_counter > 30 {
-            panic!("Safe counter exceeded, possible infinite loop in rollout");
+            session.session_state.final_answer = Some("The model does not manage to provide a final answer within allowed number of turns.".to_string());
         }
         let new_operations: Vec<ModelOperation> = match &session.session_state.session_status {
             SessionStatus::PlannerTurn => {
@@ -298,7 +299,7 @@ pub async fn rollout(
                 vec![ModelOperation::VerifierComment(verifier_comment)]
             }
         };
-        let mut session_should_end = false;
+
         for operation in new_operations {
             // println!("{}", operation.to_pretty_string());
             if session.update(operation) {
