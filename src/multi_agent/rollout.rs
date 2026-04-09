@@ -370,7 +370,7 @@ pub async fn rollout(
     loop {
         let mut session_should_end = false;
         safe_counter += 1;
-        if safe_counter > 20 {
+        if safe_counter > 30 {
             session.session_state.final_answer = Some("The model does not manage to provide a final answer within allowed number of turns.".to_string());
             session_should_end = true;
         }
