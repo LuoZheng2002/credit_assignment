@@ -17,6 +17,8 @@ pub async fn call_llm_chat_completions(client: Client, prompt: String, model_nam
             }
         ],
         "max_completion_tokens": 2048,
+        "stop": ["<tool_wait>"],
+        "include_stop_str_in_output": true,
     });
     let response = if model_name.to_lowercase().contains("gpt") {
         let api_key =
@@ -52,6 +54,8 @@ pub async fn call_qwen_raw_completions(
         "model": model_name,
         "prompt": chat_template_prompt,
         "max_tokens": 2048,
+        "stop": ["<tool_wait>"],
+        "include_stop_str_in_output": true,
     });
 
     let response = client.post(url).json(&body).send().await.unwrap();

@@ -82,21 +82,37 @@ impl ModelOperation {
             ModelOperation::VerifierComment(comment) => format!("[VerifierComment]: {:?}", comment),
         }
     }
+    pub fn to_concise_string(&self) -> String {
+        match self {
+            ModelOperation::PlannerChooseMode(mode) => format!("[PlannerChooseMode]: {:?}", mode),
+            ModelOperation::PlannerReasoning(_reasoning) => "[PlannerReasoning]".to_string(),
+            ModelOperation::PlannerToolCall(_tool_call) => "[PlannerToolCall]".to_string(),
+            ModelOperation::PlannerEndStep => "[PlannerEndStep]".to_string(),
+            ModelOperation::ToolCallResponse(_tool_response) => "[ToolCallResponse]".to_string(),
+            ModelOperation::VerifierComment(comment) => format!(
+                "[VerifierComment]\n{}",
+                comment.clone().unwrap_or_else(|| "None".to_string())
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionLog(Vec<ModelOperation>);
+pub struct SessionLog {
+    pub parsed_operations: Vec<ModelOperation>,
+    pub model_raw_outputs: Vec<String>,
+}
 
 impl SessionLog {
     pub fn total_actual_rounds(&self) -> usize {
-        self.0
+        self.parsed_operations
             .iter()
             .filter(|op| matches!(op, ModelOperation::PlannerChooseMode(_)))
             .count()
     }
 
     pub fn operations(&self) -> &[ModelOperation] {
-        &self.0
+        &self.parsed_operations
     }
 }
 
@@ -131,13 +147,19 @@ pub struct Session {
 impl Session {
     pub fn new() -> Self {
         Self {
-            session_log: SessionLog(Vec::new()),
+            session_log: SessionLog {
+                parsed_operations: Vec::new(),
+                model_raw_outputs: Vec::new(),
+            },
             session_state: SessionState::new(),
         }
     }
-    pub fn update(&mut self, operation: ModelOperation) -> bool {
-        self.session_log.0.push(operation.clone());
+    pub fn apply_parsed_operation(&mut self, operation: ModelOperation) -> bool {
+        self.session_log.parsed_operations.push(operation.clone());
         self.session_state.update(operation)
+    }
+    pub fn add_model_raw_output(&mut self, raw_output: String) {
+        self.session_log.model_raw_outputs.push(raw_output);
     }
 }
 
@@ -154,7 +176,7 @@ impl SessionState {
     }
     pub fn from_session_log(session_log: &SessionLog) -> Self {
         let mut session_state = SessionState::new();
-        for operation in &session_log.0 {
+        for operation in &session_log.parsed_operations {
             session_state.update(operation.clone());
         }
         session_state
@@ -315,51 +337,51 @@ impl SessionState {
         }
         history
     }
-    pub fn to_history_curr_step(&self, planner_turn: bool) -> String {
-        let mut history = String::new();
-        let current_step_index = self.prev_steps.len() + 1;
-        let current_step_hint_str = if planner_turn {
-            format!("Current step {} (not yet completed):\n", current_step_index)
-        } else {
-            format!(
-                "Current step {} (that you're about to evaluate):\n",
-                current_step_index
-            )
-        };
-        history.push_str(&current_step_hint_str);
+    // pub fn to_history_curr_step(&self, planner_turn: bool) -> String {
+    //     let mut history = String::new();
+    //     let current_step_index = self.prev_steps.len() + 1;
+    //     let current_step_hint_str = if planner_turn {
+    //         format!("Current step {} (not yet completed):\n", current_step_index)
+    //     } else {
+    //         format!(
+    //             "Current step {} (that you're about to evaluate):\n",
+    //             current_step_index
+    //         )
+    //     };
+    //     history.push_str(&current_step_hint_str);
 
-        let planner_status_description: &str = match self.planner_status {
-            PlannerStatus::PlannerChoosingMode => {
-                "Assistant is currently deciding how to proceed with the current step."
-            }
-            PlannerStatus::PlannerChosen(step_mode) => match step_mode {
-                ActualStepMode::Append(direction) => match direction {
-                    StepDirection::Proceed => {
-                        "Assistant has chosen to continue the previous reasoning direction."
-                    }
-                    StepDirection::ChangePlan => {
-                        "Assistant has chosen to attempt a different reasoning direction from the previous steps."
-                    }
-                },
-                ActualStepMode::OverwriteLastStep(direction) => match direction {
-                    StepDirection::Proceed => {
-                        "Assistant has chosen to OVERWRITE the last step while maintaining its reasoning direction."
-                    }
-                    StepDirection::ChangePlan => {
-                        "Assistant has chosen to OVERWRITE the last step while changing its reasoning direction."
-                    }
-                },
-                ActualStepMode::Compact => {
-                    "Assistant has chosen to COMPACT all previous steps into a more concise form."
-                }
-                ActualStepMode::SubmitAnswer => "Assistant has chosen to SUBMIT the final answer.",
-            },
-        };
-        history.push_str(&format!("{}\n", planner_status_description));
+    //     let planner_status_description: &str = match self.planner_status {
+    //         PlannerStatus::PlannerChoosingMode => {
+    //             "Assistant is currently deciding how to proceed with the current step."
+    //         }
+    //         PlannerStatus::PlannerChosen(step_mode) => match step_mode {
+    //             ActualStepMode::Append(direction) => match direction {
+    //                 StepDirection::Proceed => {
+    //                     "Assistant has chosen to continue the previous reasoning direction."
+    //                 }
+    //                 StepDirection::ChangePlan => {
+    //                     "Assistant has chosen to attempt a different reasoning direction from the previous steps."
+    //                 }
+    //             },
+    //             ActualStepMode::OverwriteLastStep(direction) => match direction {
+    //                 StepDirection::Proceed => {
+    //                     "Assistant has chosen to OVERWRITE the last step while maintaining its reasoning direction."
+    //                 }
+    //                 StepDirection::ChangePlan => {
+    //                     "Assistant has chosen to OVERWRITE the last step while changing its reasoning direction."
+    //                 }
+    //             },
+    //             ActualStepMode::Compact => {
+    //                 "Assistant has chosen to COMPACT all previous steps into a more concise form."
+    //             }
+    //             ActualStepMode::SubmitAnswer => "Assistant has chosen to SUBMIT the final answer.",
+    //         },
+    //     };
+    //     history.push_str(&format!("{}\n", planner_status_description));
 
-        history.push_str(&format!("Assistant: {}\n", self.current_step_content_raw));
-        history
-    }
+    //     history.push_str(&format!("Assistant: {}\n", self.current_step_content_raw));
+    //     history
+    // }
     pub fn total_display_rounds(&self) -> usize {
         self.prev_steps.len()
     }

@@ -1,8 +1,8 @@
+use std::cell::RefCell;
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Stdout};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use clap::Parser;
 use crossterm::event::{
@@ -11,21 +11,24 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::prelude::Widget;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
-use ratatui::Terminal;
 use ratatui_core::buffer::Buffer;
 use serde_json;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use credit_assignment::multi_agent::generate_rollout_answers::RolloutAnswerRaw;
-use credit_assignment::multi_agent::rollout::{get_planner_prompt, get_verifier_prompt};
+use credit_assignment::multi_agent::rollout::{
+    get_planner_prompt_after_assistant, get_planner_prompt_before_assistant,
+    get_verifier_prompt_before_assistant,
+};
 use credit_assignment::multi_agent::session::{
     ModelOperation, PlannerStatus, SessionState, SessionStatus,
 };
@@ -562,12 +565,11 @@ impl App {
         );
 
         let (prompt_label, prompt_text) = view
-            .current_prompt()
+            .current_prompt_display()
             .map(|(role, text)| (role.label().to_string(), text))
             .unwrap_or_else(|| ("Planner".into(), "No prompt available".into()));
         let action_text = view
-            .current_operation()
-            .map(|entry| entry.to_pretty_string())
+            .current_operation_display()
             .unwrap_or_else(|| "No action yet".to_string());
 
         let right_chunks = Layout::default()
@@ -745,6 +747,7 @@ struct SessionView {
     operations: Vec<ModelOperation>,
     operation_roles: Vec<PromptRole>,
     current_pos: usize,
+    cached_session_state: RefCell<Option<(usize, SessionState)>>,
     total_display_turns: usize,
     total_actual_turns: usize,
 }
@@ -766,8 +769,22 @@ impl SessionView {
             current_pos: 0,
             total_display_turns,
             total_actual_turns,
+            cached_session_state: RefCell::new(None),
         }
     }
+    // fn get_current_session_state(&self) -> SessionState {
+    //     if let Some((cached_pos, cached_state)) = &*self.cached_session_state.borrow() {
+    //         if *cached_pos == self.current_pos {
+    //             return cached_state.clone();
+    //         }
+    //     }
+    //     let mut state = SessionState::new();
+    //     for operation in self.operations.iter().take(self.current_pos) {
+    //         state.update(operation.clone());
+    //     }
+    //     *self.cached_session_state.borrow_mut() = Some((self.current_pos, state.clone()));
+    //     state
+    // }
 
     fn total_ops(&self) -> usize {
         self.operations.len()
@@ -791,61 +808,91 @@ impl SessionView {
         self.current_pos = self.total_ops();
     }
 
-    fn current_operation(&self) -> Option<&ModelOperation> {
+    fn current_operation_display(&self) -> Option<String> {
         if self.current_pos == 0 {
             None
         } else {
-            self.operations.get(self.current_pos - 1)
+            let operation = self.operations.get(self.current_pos - 1)?;
+            // match operation {
+            //     ModelOperation::PlannerChooseMode(_)
+            //     | ModelOperation::PlannerEndStep
+            //     | ModelOperation::VerifierComment(_) => Some(operation.to_concise_string()),
+            //     ModelOperation::PlannerReasoning(_)
+            //     | ModelOperation::PlannerToolCall(_)
+            //     | ModelOperation::ToolCallResponse(_) => {
+            //         let head = operation.to_concise_string();
+            //         let body = self
+            //             .get_current_session_state()
+            //             .current_step_content_raw
+            //             .clone();
+            //         Some(format!(
+            //             "{}\nAssistant Actively Generating:\n{}",
+            //             head, body
+            //         ))
+            //     }
+            // }
+            operation.to_pretty_string().into()
         }
     }
 
-    fn current_prompt(&self) -> Option<(PromptRole, String)> {
+    fn current_prompt_display(&self) -> Option<(PromptRole, String)> {
         if self.operations.is_empty() {
             return None;
         }
         let state = self.session_state_at(self.current_pos.saturating_sub(1));
-        let (history_prev_steps, history_curr_step) = match state.session_status {
-            SessionStatus::PlannerTurn => (
-                state.to_history_prev_steps(true),
-                state.to_history_curr_step(true),
-            ),
-            SessionStatus::VerifierTurn => (
-                state.to_history_prev_steps(false),
-                state.to_history_curr_step(false),
-            ),
+        let history_prev_steps = match state.session_status {
+            SessionStatus::PlannerTurn => state.to_history_prev_steps(true),
+            SessionStatus::VerifierTurn => state.to_history_prev_steps(false),
         };
-        let prompt = match state.session_status {
+        let prompt_role_and_prompt = match state.session_status {
             SessionStatus::PlannerTurn => {
-                let prompt = get_planner_prompt(
+                let prompt_before_assistant = get_planner_prompt_before_assistant(
                     &self.answer.question,
                     state.planner_status,
                     &history_prev_steps,
-                    &history_curr_step,
                 );
+                let prompt_after_assistant = get_planner_prompt_after_assistant(&state);
+                let prompt_combined = format!(
+                    "{}\n==========Assistant==========\n{}",
+                    prompt_before_assistant, prompt_after_assistant
+                );
+
                 let role = if matches!(state.planner_status, PlannerStatus::PlannerChoosingMode) {
                     PromptRole::PlannerChoice
                 } else {
                     PromptRole::PlannerStep
                 };
-                Some((role, prompt))
+                Some((role, prompt_combined))
             }
             SessionStatus::VerifierTurn => Some((
                 PromptRole::Verifier,
-                get_verifier_prompt(
+                get_verifier_prompt_before_assistant(
                     &self.answer.question,
                     &history_prev_steps,
-                    &history_curr_step,
+                    &state,
                 ),
             )),
         };
-        prompt
+        prompt_role_and_prompt
     }
 
     fn session_state_at(&self, upto: usize) -> SessionState {
+        // let mut state = SessionState::new();
+        // for operation in self.operations.iter().take(upto) {
+        //     state.update(operation.clone());
+        // }
+        // state
+        // use cache
+        if let Some((cached_pos, cached_state)) = &*self.cached_session_state.borrow() {
+            if *cached_pos == upto {
+                return cached_state.clone();
+            }
+        }
         let mut state = SessionState::new();
         for operation in self.operations.iter().take(upto) {
             state.update(operation.clone());
         }
+        *self.cached_session_state.borrow_mut() = Some((upto, state.clone()));
         state
     }
 }
