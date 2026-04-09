@@ -50,10 +50,6 @@ fn get_step_mode_prompt(step_mode: ActualStepMode, is_planner: bool) -> String {
             "{} about to COMPACT all previous steps into a more concise form. When this step is completed, it will replace all the previous steps, so please record all necessary information for future steps.",
             subject
         ),
-        ActualStepMode::SubmitAnswer => format!(
-            "{} about to REPORT the final answer. Please leave the final answer in \\boxed{{}}, and then output <end_step>",
-            subject
-        ),
     }
 }
 
@@ -62,14 +58,13 @@ fn get_planner_status_prompt(planner_status: PlannerStatus) -> String {
         PlannerStatus::PlannerChoosingMode => {
             "\
 A new step is just about to begin. Your job is to determine the mode of the new step based on the history. You have the following choices:\n\
-1. SUBMIT_ANSWER: If in the previous steps, you have already found the answer, choose this option to begin the submit process.\n\
-2. PROCEED: You are confident about the current reasoning direction and want to proceed with it.\n\
-3. CHANGE_PLAN: You find the previous steps not leading to a good direction, and want to change the plan and try a different reasoning direction.\n\
-4. OVERWRITE_LAST_STEP_AND_PROCEED: You find the last step problematic, and want to rewrite it while maintaining the current reasoning direction.\n\
-5. OVERWRITE_LAST_STEP_AND_CHANGE_PLAN: You find the last step problematic, and want to rewrite it and also change the reasoning direction.\n\
-6. COMPACT: You find the context length too long, and want to compact the previous steps into a more concise form, while maintaining the current reasoning direction.\n\
+1. PROCEED: You are confident about the current reasoning direction and want to proceed with it.\n\
+2. CHANGE_PLAN: You find the previous steps not leading to a good direction, and want to change the plan and try a different reasoning direction.\n\
+3. OVERWRITE_LAST_STEP_AND_PROCEED: You find the last step problematic, and want to rewrite it while maintaining the current reasoning direction.\n\
+4. OVERWRITE_LAST_STEP_AND_CHANGE_PLAN: You find the last step problematic, and want to rewrite it and also change the reasoning direction.\n\
+5. COMPACT: You find the context length too long, and want to compact the previous steps into a more concise form, while maintaining the current reasoning direction.\n\
 \n\
-Please output exactly one of PROCEED, CHANGE_PLAN, OVERWRITE_LAST_STEP_AND_PROCEED, OVERWRITE_LAST_STEP_AND_CHANGE_PLAN, COMPACT, SUBMIT_ANSWER and nothing else.".to_string()
+Please output exactly one of PROCEED, CHANGE_PLAN, OVERWRITE_LAST_STEP_AND_PROCEED, OVERWRITE_LAST_STEP_AND_CHANGE_PLAN, COMPACT and nothing else.".to_string()
         }
         PlannerStatus::PlannerChosen(step_mode) => {
             let step_mode_prompt = get_step_mode_prompt(step_mode, true);
@@ -79,7 +74,8 @@ You can both reason in plain texts and use the following tools in this step:\n\
 IMPORTANT: always use Python's print statement to output the result, otherwise the result will not be shown.\n\
 IMPORTANT: after calling any tool, immediately output a <tool_wait> to obtain the tool's response.\n\
 \n\
-If you think a milestone has been achieved and want to mark the current step as complete, end your response with <end_step> and nothing else.".to_string();
+If you think a milestone has been achieved and want to mark the current step as complete, end your response with <end_step>\n\
+If you have got the final answer to submit, put the answer in \\boxed{} in a concise form. Do not put anything else other than the final answer in \\boxed{}.".to_string();
             format!("\
 The verifier's comment is only for reference and may not be true. \
 Please do not explicitly quote the verifier or try to respond to it in your reasoning.\n\
@@ -223,110 +219,6 @@ pub fn split_reasoning_and_tool_call(
     (reasoning, Some(tool_call))
 }
 
-// pub fn parse_to_reasoning_and_tool_calls(response: String) -> Vec<ModelOperation> {
-//     split_tool_call_segments(&response)
-// }
-
-// fn split_tool_call_segments(response: &str) -> Vec<ModelOperation> {
-//     let (reasonings, markdown_tool_calls) = split_markdown_python_blocks(response);
-//     let mut operations = Vec::new();
-//     let mut markdown_iter = markdown_tool_calls.into_iter();
-//     for reasoning in reasonings {
-//         operations.extend(split_tool_call_python_blocks(&reasoning));
-//         if let Some(markdown_call) = markdown_iter.next() {
-//             operations.push(ModelOperation::PlannerToolCall(markdown_call));
-//         }
-//     }
-//     if operations.is_empty() {
-//         operations.push(ModelOperation::PlannerReasoning(String::new()));
-//     }
-//     operations
-// }
-// /// Exposed for tests that need to inspect the parsed operations.
-// pub fn split_tool_call_segments_for_test(response: &str) -> Vec<ModelOperation> {
-//     split_tool_call_segments(response)
-// }
-
-// fn split_markdown_python_blocks(content: &str) -> (Vec<String>, Vec<String>) {
-//     let mut reasonings = Vec::new();
-//     let mut tool_calls = Vec::new();
-//     let mut remainder = content.trim();
-//     while !remainder.is_empty() {
-//         if let Some(start_index) = remainder.find("```python\n") {
-//             let reasoning_part = remainder[..start_index].trim().to_string();
-//             reasonings.push(reasoning_part);
-//             let block_start = start_index;
-//             let after_open_index = start_index + "```python\n".len();
-//             if after_open_index >= remainder.len() {
-//                 tool_calls.push(remainder[block_start..].trim().to_string());
-//                 break;
-//             }
-//             let after_open = &remainder[after_open_index..];
-//             if let Some(end_relative) = after_open.find("```") {
-//                 let block_end = after_open_index + end_relative + "```".len();
-//                 let block = remainder[block_start..block_end].trim().to_string();
-//                 tool_calls.push(block);
-//                 remainder = remainder[block_end..].trim();
-//             } else {
-//                 let block = remainder[block_start..].trim().to_string();
-//                 tool_calls.push(block);
-//                 break;
-//             }
-//         } else {
-//             reasonings.push(remainder.to_string());
-//             remainder = "";
-//         }
-//     }
-//     if reasonings.is_empty() && tool_calls.is_empty() {
-//         reasonings.push(String::new());
-//     }
-//     (reasonings, tool_calls)
-// }
-
-// fn split_tool_call_python_blocks(content: &str) -> Vec<ModelOperation> {
-//     let mut operations = Vec::new();
-//     let mut remainder = content.trim().to_string();
-//     loop {
-//         if remainder.is_empty() {
-//             break;
-//         }
-//         if let Some(start_index) = remainder.find("<tool_call>") {
-//             let reasoning_part = remainder[..start_index].trim();
-//             if !reasoning_part.is_empty() {
-//                 operations.push(ModelOperation::PlannerReasoning(reasoning_part.to_string()));
-//             }
-//             remainder = remainder[start_index..].trim().to_string();
-//             let tool_call_end_index = if let Some(end_index) = remainder[1..].find("</tool_call>") {
-//                 assert!(
-//                     &remainder[end_index + 1..end_index + "</tool_call>".len() + 1]
-//                         == "</tool_call>"
-//                 );
-//                 end_index + "</tool_call>".len() + 1
-//             } else if let Some(next_tool_call_index) = remainder[1..].find("<tool_call>") {
-//                 assert!(
-//                     &remainder
-//                         [next_tool_call_index + 1..next_tool_call_index + "<tool_call>".len() + 1]
-//                         == "<tool_call>"
-//                 );
-//                 next_tool_call_index + 1
-//             } else {
-//                 remainder.len()
-//             };
-//             operations.push(ModelOperation::PlannerToolCall(
-//                 remainder[..tool_call_end_index].trim().to_string(),
-//             ));
-//             remainder = remainder[tool_call_end_index..].trim().to_string();
-//         } else {
-//             let reasoning_part = remainder.trim();
-//             if !reasoning_part.is_empty() {
-//                 operations.push(ModelOperation::PlannerReasoning(reasoning_part.to_string()));
-//             }
-//             break;
-//         }
-//     }
-//     operations
-// }
-
 pub async fn execute_planner_tool_call(tool_call: &str) -> String {
     let trimmed_tool_call = tool_call.trim_start();
     assert!(
@@ -405,7 +297,7 @@ pub async fn rollout(
                 session.add_model_raw_output(response.clone());
                 if response.trim().is_empty() {
                     response += "<end_step>";
-                }                
+                }
                 match planner_status {
                     PlannerStatus::PlannerChoosingMode => {
                         let chosen_mode: ActualStepMode = match response.trim() {
@@ -418,29 +310,11 @@ pub async fn rollout(
                                 ActualStepMode::OverwriteLastStep(StepDirection::ChangePlan)
                             }
                             "COMPACT" => ActualStepMode::Compact,
-                            "SUBMIT_ANSWER" => ActualStepMode::SubmitAnswer,
                             _ => panic!("Invalid response from planner: {}", response),
                         };
                         vec![ModelOperation::PlannerChooseMode(chosen_mode)]
                     }
                     PlannerStatus::PlannerChosen(_step_mode) => {
-                        // let reasoning_and_tool_calls =
-                        //     parse_to_reasoning_and_tool_calls(response.clone());
-                        // let mut operations = reasoning_and_tool_calls;
-                        // let mut tool_response_operations: Vec<ModelOperation> = vec![];
-                        // for operation in &operations {
-                        //     if let ModelOperation::PlannerToolCall(tool_call) = operation {
-                        //         let tool_response = execute_planner_tool_call(tool_call).await;
-                        //         let tool_response_operation =
-                        //             ModelOperation::ToolCallResponse(tool_response);
-                        //         tool_response_operations.push(tool_response_operation);
-                        //     }
-                        // }
-                        // operations.extend(tool_response_operations);
-                        // if response.contains("<end_step>") {
-                        //     let end_step_operation = ModelOperation::PlannerEndStep;
-                        //     operations.push(end_step_operation);
-                        // }
                         let (reasoning, tool_call) =
                             split_reasoning_and_tool_call(response, model_name);
                         let mut operations = Vec::new();
@@ -465,12 +339,7 @@ pub async fn rollout(
             }
             SessionStatus::VerifierTurn => {
                 let mut verifier_comment = None;
-                if rng.random::<f32>() <= verifier_probability
-                    && !matches!(
-                        session.session_state.planner_status,
-                        PlannerStatus::PlannerChosen(ActualStepMode::SubmitAnswer)
-                    )
-                {
+                if rng.random::<f32>() <= verifier_probability {
                     let history_prev_steps = session.session_state.to_history_prev_steps(false);
                     let prompt_before_assistant = get_verifier_prompt_before_assistant(
                         &question,

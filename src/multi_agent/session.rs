@@ -13,14 +13,12 @@ pub enum ActualStepMode {
     Append(StepDirection),
     OverwriteLastStep(StepDirection),
     Compact,
-    SubmitAnswer,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DisplayStepMode {
     Directional(StepDirection),
     Compacted,
-    SubmitAnswer,
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +187,10 @@ impl SessionState {
             }
             ModelOperation::PlannerReasoning(reasoning) => {
                 self.current_step_content_raw.push_str(&reasoning);
+                if let Some(boxed_answer) = extract_boxed_content(&self.current_step_content_raw) {
+                    self.final_answer = Some(boxed_answer);
+                    should_end_session = true;
+                }
             }
             ModelOperation::PlannerToolCall(tool_call) => {
                 self.current_step_content_raw.push_str(&tool_call);
@@ -217,10 +219,6 @@ impl SessionState {
                 let PlannerStatus::PlannerChosen(step_mode) = self.planner_status else {
                     panic!("Invalid state: PlannerChosen must be set before VerifierComment");
                 };
-                assert!(
-                    !matches!(step_mode, ActualStepMode::SubmitAnswer) || comment.is_none(),
-                    "In SubmitAnswer mode, the verifier should not provide any comment"
-                );
                 self.current_step_verifier_comment = comment;
                 match step_mode {
                     ActualStepMode::Append(direction) => {
@@ -260,26 +258,6 @@ impl SessionState {
                         self.current_step_content_raw.clear();
                         self.current_step_verifier_comment = None;
                     }
-                    ActualStepMode::SubmitAnswer => {
-                        // in submit answer mode, we treat the current step as the final answer step and end the session after this step
-                        let display_step_mode = DisplayStepMode::SubmitAnswer;
-                        let new_step = DisplayPlannerStepComplete::new(
-                            self.current_step_verifier_comment.take(),
-                            display_step_mode,
-                            self.current_step_content_raw.clone(),
-                        );
-
-                        let boxed_answer = extract_boxed_content(&self.current_step_content_raw);
-                        // assert!(
-                        //     boxed_answer.is_some(),
-                        //     "In SubmitAnswer mode, the final answer must be enclosed in \\boxed{{}}"
-                        // );
-                        self.final_answer = boxed_answer;
-                        self.prev_steps.push(new_step);
-                        self.current_step_content_raw.clear();
-                        self.current_step_verifier_comment = None;
-                        should_end_session = true;
-                    }
                 }
                 self.planner_status = PlannerStatus::PlannerChoosingMode;
                 self.session_status = SessionStatus::PlannerTurn;
@@ -301,7 +279,6 @@ impl SessionState {
                     }
                 },
                 DisplayStepMode::Compacted => "This step is a compacted summary of previous steps.",
-                DisplayStepMode::SubmitAnswer => "This step is the final answer step.",
             };
 
             history.push_str(&format!("Current step mode: {}\n", step_mode_str));
