@@ -70,14 +70,14 @@ impl ModelOperation {
         match self {
             ModelOperation::PlannerChooseMode(mode) => format!("[PlannerChooseMode]: {:?}", mode),
             ModelOperation::PlannerReasoning(reasoning) => {
-                format!("[PlannerReasoning]: {}", reasoning)
+                format!("[PlannerReasoning]:\n{}", reasoning)
             }
             ModelOperation::PlannerToolCall(tool_call) => {
-                format!("[PlannerToolCall]: {}", tool_call)
+                format!("[PlannerToolCall]:\n{}", tool_call)
             }
             ModelOperation::PlannerEndStep => "[PlannerEndStep]".to_string(),
             ModelOperation::ToolCallResponse(tool_response) => {
-                format!("[ToolCallResponse]: {}", tool_response)
+                format!("[ToolCallResponse]:\n{}", tool_response)
             }
             ModelOperation::VerifierComment(comment) => format!("[VerifierComment]: {:?}", comment),
         }

@@ -18,7 +18,7 @@ pub async fn call_llm_chat_completions(client: Client, prompt: String, model_nam
         ],
         "max_completion_tokens": 2048,
         "stop": ["<tool_wait>"],
-        "include_stop_str_in_output": true,
+        // "include_stop_str_in_output": true,
     });
     let response = if model_name.to_lowercase().contains("gpt") {
         let api_key =
@@ -33,7 +33,13 @@ pub async fn call_llm_chat_completions(client: Client, prompt: String, model_nam
     } else {
         client.post(url).json(&body).send().await.unwrap()
     };
-    let json: serde_json::Value = response.json().await.unwrap();
+    let body = response.bytes().await.unwrap();
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        panic!(
+            "Failed to parse LLM response as JSON. Response text: {:?}",
+            String::from_utf8_lossy(&body)
+        );
+    };
     json["choices"][0]["message"]["content"]
         .as_str()
         .expect(&format!("LLM response is invalid: {:?}", json))

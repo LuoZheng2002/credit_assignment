@@ -180,7 +180,10 @@ impl ToolCallParser for MarkdownPythonParser {
 }
 
 // (Option<String>, Option<String>) means (reasoning, tool_call)
-pub fn split_reasoning_and_tool_call(response: String) -> (Option<String>, Option<String>) {
+pub fn split_reasoning_and_tool_call(
+    response: String,
+    model_name: &str,
+) -> (Option<String>, Option<String>) {
     let parsers: Vec<Box<dyn ToolCallParser>> = vec![Box::new(MarkdownPythonParser {})];
     let mut min_start_position = None;
     let mut selected_parser = None;
@@ -204,10 +207,12 @@ pub fn split_reasoning_and_tool_call(response: String) -> (Option<String>, Optio
     if end_position < response.len() && response[end_position..].trim().starts_with("<tool_wait>") {
         tool_call.push_str("<tool_wait>");
     } else {
-        println!(
-            "Warning: tool call does not end with <tool_wait> tag. response: {}",
-            response
-        );
+        if model_name.to_lowercase().contains("qwen") {
+            println!(
+                "Warning: tool call does not end with <tool_wait> tag. response: {}",
+                response
+            );
+        }
         tool_call.push_str("<tool_wait>"); // if there is no <tool_wait> tag, we also add it and trim all the content after the tool call
     }
     let reasoning = if !response[..start_position].trim().is_empty() {
@@ -348,7 +353,7 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> String {
     if python_code_result.trim().is_empty() {
         python_code_result = "Python interpreter did not return any output. Please use print statements to retrieve results.".to_string();
     }
-    format!("```python\n{}```\n", python_code_result.trim())
+    format!("```python\n{}\n```\n", python_code_result.trim())
 }
 
 pub async fn rollout(
@@ -433,7 +438,8 @@ pub async fn rollout(
                         //     let end_step_operation = ModelOperation::PlannerEndStep;
                         //     operations.push(end_step_operation);
                         // }
-                        let (reasoning, tool_call) = split_reasoning_and_tool_call(response);
+                        let (reasoning, tool_call) =
+                            split_reasoning_and_tool_call(response, model_name);
                         let mut operations = Vec::new();
                         let mut push_end_step = false;
                         if let Some(reasoning) = reasoning {
@@ -469,7 +475,8 @@ pub async fn rollout(
                         &session.session_state,
                     );
                     let response = if model_name.to_lowercase().contains("qwen") {
-                        let verifier_chat_template_prompt = apply_qwen_chat_template(&prompt_before_assistant);
+                        let verifier_chat_template_prompt =
+                            apply_qwen_chat_template(&prompt_before_assistant);
                         call_qwen_raw_completions(
                             client.clone(),
                             verifier_chat_template_prompt,
@@ -477,7 +484,12 @@ pub async fn rollout(
                         )
                         .await
                     } else {
-                        call_llm_chat_completions(client.clone(), prompt_before_assistant, model_name).await
+                        call_llm_chat_completions(
+                            client.clone(),
+                            prompt_before_assistant,
+                            model_name,
+                        )
+                        .await
                     };
                     session.add_model_raw_output(response.clone());
                     verifier_comment = Some(response.trim().to_string());
