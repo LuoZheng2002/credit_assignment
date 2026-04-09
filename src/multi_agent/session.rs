@@ -270,10 +270,10 @@ impl SessionState {
                         );
 
                         let boxed_answer = extract_boxed_content(&self.current_step_content_raw);
-                        assert!(
-                            boxed_answer.is_some(),
-                            "In SubmitAnswer mode, the final answer must be enclosed in \\boxed{{}}"
-                        );
+                        // assert!(
+                        //     boxed_answer.is_some(),
+                        //     "In SubmitAnswer mode, the final answer must be enclosed in \\boxed{{}}"
+                        // );
                         self.final_answer = boxed_answer;
                         self.prev_steps.push(new_step);
                         self.current_step_content_raw.clear();

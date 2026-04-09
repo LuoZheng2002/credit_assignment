@@ -385,7 +385,7 @@ pub async fn rollout(
                 );
                 let prompt_after_assistant =
                     get_planner_prompt_after_assistant(&session.session_state);
-                let response = if model_name.to_lowercase().contains("qwen") {
+                let mut response = if model_name.to_lowercase().contains("qwen") {
                     let mut planner_chat_template_prompt =
                         apply_qwen_chat_template(&prompt_before_assistant);
                     planner_chat_template_prompt += &prompt_after_assistant;
@@ -403,6 +403,9 @@ pub async fn rollout(
                     call_llm_chat_completions(client.clone(), full_prompt, model_name).await
                 };
                 session.add_model_raw_output(response.clone());
+                if response.trim().is_empty() {
+                    response += "<end_step>";
+                }                
                 match planner_status {
                     PlannerStatus::PlannerChoosingMode => {
                         let chosen_mode: ActualStepMode = match response.trim() {
