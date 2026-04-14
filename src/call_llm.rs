@@ -1,11 +1,13 @@
 use reqwest::Client;
 
 use crate::apply_qwen_chat_template::apply_qwen_chat_template;
+use crate::deepmath::generate_raw_answers::Model;
 
-pub async fn call_llm_chat_completions(client: Client, prompt: String, model_name: &str) -> String {
-    let url = if model_name.contains("gpt") {
+pub async fn call_llm_chat_completions(client: Client, prompt: String, model: Model) -> String {
+    let model_name = model.api_name();
+    let url = if model.is_gpt() {
         "https://api.openai.com/v1/chat/completions"
-    } else if model_name.to_lowercase().contains("qwen") {
+    } else if model.is_qwen() {
         "http://localhost:8000/v1/chat/completions"
     } else {
         panic!("Unsupported model name: {}", model_name);
@@ -22,7 +24,7 @@ pub async fn call_llm_chat_completions(client: Client, prompt: String, model_nam
         "stop": ["<tool_wait>"],
         // "include_stop_str_in_output": true,
     });
-    let response = if model_name.to_lowercase().contains("gpt") {
+    let response = if model.is_gpt() {
         let api_key =
             std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set");
         client
@@ -51,10 +53,11 @@ pub async fn call_llm_chat_completions(client: Client, prompt: String, model_nam
 pub async fn call_qwen_raw_completions(
     client: Client,
     chat_template_prompt: String,
-    model_name: &str,
+    model: Model,
 ) -> String {
+    let model_name = model.api_name();
     assert!(
-        model_name.to_lowercase().contains("qwen"),
+        model.is_qwen(),
         "call_qwen_raw_completions only supports Qwen-family models",
     );
     let url = "http://localhost:8000/v1/completions";
@@ -78,17 +81,17 @@ pub async fn call_llm_with_prefix(
     client: Client,
     prompt_before_assistant: String,
     prompt_after_assistant: String,
-    model_name: &str,
+    model: Model,
 ) -> String {
-    if model_name.to_lowercase().contains("qwen") {
+    if model.is_qwen() {
         let mut planner_chat_template_prompt = apply_qwen_chat_template(&prompt_before_assistant);
         planner_chat_template_prompt += &prompt_after_assistant;
-        call_qwen_raw_completions(client.clone(), planner_chat_template_prompt, model_name).await
+        call_qwen_raw_completions(client.clone(), planner_chat_template_prompt, model).await
     } else {
         let full_prompt = format!(
             "{}\nAssistant: {}",
             prompt_before_assistant, prompt_after_assistant
         );
-        call_llm_chat_completions(client.clone(), full_prompt, model_name).await
+        call_llm_chat_completions(client.clone(), full_prompt, model).await
     }
 }

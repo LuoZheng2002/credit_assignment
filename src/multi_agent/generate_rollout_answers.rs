@@ -23,10 +23,10 @@ impl HasId for RolloutAnswerRaw {
     }
 }
 
-pub fn get_rollout_answer_path(model_name: &str, dataset_name: &str, num_samples: usize) -> String {
+pub fn get_rollout_answer_path(model: Model, dataset_name: &str, num_samples: usize) -> String {
     format!(
         "results/{}/rollout/{}_raw_{}.jsonl",
-        model_name, dataset_name, num_samples
+        model.cli_name(), dataset_name, num_samples
     )
 }
 
@@ -37,12 +37,11 @@ async fn generate_rollout_answer_task(
     verifier_probability: f32,
     mut rng: impl rand::Rng,
 ) -> RolloutAnswerRaw {
-    let model_name = model.full_name();
     let session = rollout(
         question.id,
         question.question.clone(),
         client,
-        &model_name,
+        model,
         verifier_probability,
         &mut rng,
     )
@@ -69,7 +68,7 @@ pub async fn generate_rollout_answers(
     rng: &mut StdRng,
 ) {
     let questions_path = get_question_path(dataset_name, num_samples);
-    let raw_output_path = get_rollout_answer_path(model.name(), dataset_name, num_samples);
+    let raw_output_path = get_rollout_answer_path(model, dataset_name, num_samples);
     let random_seed_u64 = rng.next_u64();
     parallel_process_jsonl(
         &[&questions_path],

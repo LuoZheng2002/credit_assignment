@@ -1,5 +1,6 @@
 use clap::Parser;
 use credit_assignment::apply_qwen_chat_template::apply_qwen_chat_template;
+use credit_assignment::deepmath::generate_raw_answers::Model;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -29,11 +30,10 @@ async fn main() {
     let client = reqwest::Client::new();
     let mut chat_template_prompt = apply_qwen_chat_template(&qwen_request.prompt);
     chat_template_prompt += &qwen_request.synthesized_response_prefix;
-    let model_name = "Qwen/Qwen2.5-7B-Instruct";
     let result = credit_assignment::call_llm::call_qwen_raw_completions(
         client,
         chat_template_prompt,
-        model_name,
+        Model::Qwen25_7b,
     )
     .await;
     println!("Qwen response:\n{}", result);

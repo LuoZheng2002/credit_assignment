@@ -5,7 +5,7 @@ use crate::{
     call_llm::call_llm_chat_completions,
     deepmath::{
         generate_concise_reasoning::{DeepMathConciseReasoning, get_concise_reasoning_path},
-        generate_raw_answers::{AnswerRaw, get_raw_answer_path},
+        generate_raw_answers::{AnswerRaw, Model, get_raw_answer_path},
         judge_answers::{DeepMathCorrectness, get_correctness_path},
     },
     parallel_process_jsonl::{HasId, parallel_process_jsonl},
@@ -44,7 +44,7 @@ impl HasId for DeepMathErrorCause {
 }
 
 pub fn get_error_causes_path(
-    model_name: &str,
+    model: Model,
     dataset_name: &str,
     num_samples: usize,
     is_rollout: bool,
@@ -52,12 +52,12 @@ pub fn get_error_causes_path(
     if is_rollout {
         format!(
             "results/{}/rollout/{}_error_causes_{}.jsonl",
-            model_name, dataset_name, num_samples
+            model.cli_name(), dataset_name, num_samples
         )
     } else {
         format!(
             "results/{}/{}_error_causes_{}.jsonl",
-            model_name, dataset_name, num_samples
+            model.cli_name(), dataset_name, num_samples
         )
     }
 }
@@ -84,7 +84,7 @@ Question: {}\nModel's Reasoning: {}\nReference Reasoning: {}\nError Cause Analys
         correctness_reasoning.model_reasoning,
         correctness_reasoning.reference_reasoning
     );
-    let error_reason = call_llm_chat_completions(client, prompt, "gpt-5-mini").await;
+    let error_reason = call_llm_chat_completions(client, prompt, Model::Gpt5Mini).await;
     DeepMathErrorCause {
         id: correctness_reasoning.id,
         correct: correctness_reasoning.correct,
@@ -95,7 +95,7 @@ Question: {}\nModel's Reasoning: {}\nReference Reasoning: {}\nError Cause Analys
 }
 
 pub async fn generate_error_causes(
-    model_name: &str,
+    model: Model,
     dataset_name: &str,
     num_samples: usize,
     client: Client,
@@ -103,13 +103,13 @@ pub async fn generate_error_causes(
 ) {
     println!(
         "Generating error cause analysis for model {} on {} dataset with {} samples...",
-        model_name, dataset_name, num_samples
+        model.cli_name(), dataset_name, num_samples
     );
-    let correctness_path = get_correctness_path(model_name, dataset_name, num_samples, is_rollout);
-    let raw_answer_path = get_raw_answer_path(model_name, dataset_name, num_samples);
+    let correctness_path = get_correctness_path(model, dataset_name, num_samples, is_rollout);
+    let raw_answer_path = get_raw_answer_path(model, dataset_name, num_samples);
     let reference_reasoning_path = get_concise_reasoning_path(dataset_name, num_samples);
     let error_causes_output_path =
-        get_error_causes_path(model_name, dataset_name, num_samples, is_rollout);
+        get_error_causes_path(model, dataset_name, num_samples, is_rollout);
     parallel_process_jsonl(
         &[
             &correctness_path,
@@ -146,6 +146,6 @@ pub async fn generate_error_causes(
     .unwrap();
     println!(
         "Generated error cause analysis for model {} on {} DeepMath samples and saved to {}",
-        model_name, num_samples, error_causes_output_path
+        model.cli_name(), num_samples, error_causes_output_path
     );
 }

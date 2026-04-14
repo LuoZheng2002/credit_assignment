@@ -5,6 +5,7 @@ use reqwest::Client;
 
 use crate::{
     call_llm::call_llm_with_prefix,
+    deepmath::generate_raw_answers::Model,
     execute_python_code::execute_python_code,
     multi_agent::{
         planner_compacting::get_planner_compacting_prompts,
@@ -52,7 +53,7 @@ impl ToolCallParser for MarkdownPythonParser {
 // (Option<String>, Option<String>) means (reasoning, tool_call)
 pub fn split_reasoning_and_tool_call(
     response: String,
-    model_name: &str,
+    model: Model,
 ) -> (Option<String>, Option<String>) {
     let parsers: Vec<Box<dyn ToolCallParser>> = vec![Box::new(MarkdownPythonParser {})];
     let mut min_start_position = None;
@@ -77,7 +78,7 @@ pub fn split_reasoning_and_tool_call(
     if end_position < response.len() && response[end_position..].trim().starts_with("<tool_wait>") {
         tool_call.push_str("<tool_wait>");
     } else {
-        if model_name.to_lowercase().contains("qwen") {
+        if model.is_qwen() {
             println!(
                 "Warning: tool call does not end with <tool_wait> tag. response: {}",
                 response
@@ -153,7 +154,7 @@ pub async fn rollout(
     question_id: usize,
     question: String,
     client: Client,
-    model_name: &str,
+    model: Model,
     verifier_probability: f32,
     rng: &mut impl rand::Rng,
 ) -> Session {
@@ -179,7 +180,7 @@ pub async fn rollout(
                     client.clone(),
                     prompt_before_assistant,
                     prompt_after_assistant,
-                    model_name,
+                    model,
                 )
                 .await;
                 session.add_model_raw_output(response.clone());
@@ -202,7 +203,7 @@ pub async fn rollout(
                     client.clone(),
                     prompt_before_assistant,
                     prompt_after_assistant,
-                    model_name,
+                    model,
                 )
                 .await;
                 session.add_model_raw_output(response.clone());
@@ -226,7 +227,7 @@ pub async fn rollout(
                             client.clone(),
                             fix_json_prompt,
                             String::new(),
-                            model_name,
+                            Model::Gpt4o,
                         )
                         .await;
                         session.add_model_raw_output(fixed_response.clone());
@@ -294,14 +295,14 @@ pub async fn rollout(
                     client.clone(),
                     prompt_before_assistant,
                     prompt_after_assistant,
-                    model_name,
+                    model,
                 )
                 .await;
                 session.add_model_raw_output(response.clone());
                 if response.trim().is_empty() {
                     response += "<end_step>";
                 }
-                let (reasoning, tool_call) = split_reasoning_and_tool_call(response, model_name);
+                let (reasoning, tool_call) = split_reasoning_and_tool_call(response, model);
                 let mut operations = Vec::new();
                 let mut push_end_step = false;
                 if let Some(reasoning) = reasoning {
@@ -327,7 +328,7 @@ pub async fn rollout(
                     client.clone(),
                     prompt_before_assistant,
                     prompt_after_assistant,
-                    model_name,
+                    model,
                 )
                 .await;
                 session.add_model_raw_output(response.clone());
@@ -340,7 +341,7 @@ pub async fn rollout(
                     client.clone(),
                     prompt_before_assistant,
                     prompt_after_assistant,
-                    model_name,
+                    model,
                 )
                 .await;
                 session.add_model_raw_output(response.clone());
@@ -367,7 +368,7 @@ pub async fn rollout(
                         client.clone(),
                         prompt_before_assistant,
                         prompt_after_assistant,
-                        model_name,
+                        model,
                     )
                     .await;
                     session.add_model_raw_output(response.clone());

@@ -1,4 +1,4 @@
-use crate::deepmath::generate_raw_answers::{AnswerRaw, get_raw_answer_path};
+use crate::deepmath::generate_raw_answers::{AnswerRaw, Model, get_raw_answer_path};
 use crate::parallel_process_jsonl::{HasId, parallel_process_jsonl};
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +17,7 @@ impl HasId for AnswerParsed {
 }
 
 pub fn get_parsed_path(
-    model_name: &str,
+    model: Model,
     dataset_name: &str,
     num_samples: usize,
     is_rollout: bool,
@@ -25,12 +25,12 @@ pub fn get_parsed_path(
     if is_rollout {
         format!(
             "results/{}/rollout/{}_parsed_{}.jsonl",
-            model_name, dataset_name, num_samples
+            model.cli_name(), dataset_name, num_samples
         )
     } else {
         format!(
             "results/{}/{}_parsed_{}.jsonl",
-            model_name, dataset_name, num_samples
+            model.cli_name(), dataset_name, num_samples
         )
     }
 }
@@ -70,13 +70,13 @@ async fn parse_model_answer_task(answer: AnswerRaw) -> AnswerParsed {
     }
 }
 
-pub async fn parse_answers(model_name: &str, dataset_name: &str, num_samples: usize) {
+pub async fn parse_answers(model: Model, dataset_name: &str, num_samples: usize) {
     println!(
         "Parsing model answers for model {} on {} dataset with {} samples",
-        model_name, dataset_name, num_samples
+        model.cli_name(), dataset_name, num_samples
     );
-    let raw_path = get_raw_answer_path(model_name, dataset_name, num_samples);
-    let parsed_path = get_parsed_path(model_name, dataset_name, num_samples, false);
+    let raw_path = get_raw_answer_path(model, dataset_name, num_samples);
+    let parsed_path = get_parsed_path(model, dataset_name, num_samples, false);
     parallel_process_jsonl(
         &[&raw_path],
         &parsed_path,
@@ -93,6 +93,6 @@ pub async fn parse_answers(model_name: &str, dataset_name: &str, num_samples: us
     .unwrap();
     println!(
         "Parsed model answers for model {} on {} dataset with {} samples and saved to {}",
-        model_name, dataset_name, num_samples, parsed_path
+        model.cli_name(), dataset_name, num_samples, parsed_path
     );
 }

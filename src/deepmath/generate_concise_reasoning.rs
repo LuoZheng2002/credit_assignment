@@ -3,6 +3,7 @@ use reqwest::Client;
 use crate::{
     call_llm::call_llm_chat_completions,
     datasets::{DeepMathQuestionReasoning, get_questions_with_reasoning_path},
+    deepmath::generate_raw_answers::Model,
     parallel_process_jsonl::{HasId, parallel_process_jsonl},
 };
 use serde::{Deserialize, Serialize};
@@ -31,7 +32,7 @@ Given the following question, final answer and a reference reasoning paragraph, 
 Question: {}\nFinal Answer: {}\nReasoning: {}\nConcise Reasoning:",
         question.question, question.final_answer, question.reasoning
     );
-    let concise_reasoning = call_llm_chat_completions(client, prompt, "gpt-5-mini").await;
+    let concise_reasoning = call_llm_chat_completions(client, prompt, Model::Gpt5Mini).await;
     DeepMathConciseReasoning {
         id: question.id,
         question: question.question,

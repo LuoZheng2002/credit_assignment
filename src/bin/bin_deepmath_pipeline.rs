@@ -32,7 +32,7 @@ async fn main() {
         model,
         num_samples,
     } = Args::parse();
-    let model_name = model.name();
+    let model_name = model.cli_name();
     println!(
         "Evaluating model {} on {} dataset with {} samples",
         model_name, dataset_name, num_samples
@@ -41,10 +41,10 @@ async fn main() {
     let client = Client::new();
     generate_raw_answers(&dataset_name, num_samples, client.clone(), model).await;
 
-    parse_answers(model_name, &dataset_name, num_samples).await;
+    parse_answers(model, &dataset_name, num_samples).await;
 
     judge_answers(
-        model_name,
+        model,
         &dataset_name,
         num_samples,
         client.clone(),
@@ -52,5 +52,5 @@ async fn main() {
     )
     .await;
 
-    generate_error_causes(model_name, &dataset_name, num_samples, client, false).await;
+    generate_error_causes(model, &dataset_name, num_samples, client, false).await;
 }

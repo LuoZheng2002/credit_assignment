@@ -8,23 +8,50 @@ use serde::{Deserialize, Serialize};
 
 #[derive(clap::ValueEnum, Clone, Debug, Copy)]
 pub enum Model {
-    #[value(name = "gpt")]
-    Gpt,
-    #[value(name = "qwen")]
-    Qwen,
+    #[value(name = "gpt-4o")]
+    Gpt4o,
+    #[value(name = "gpt-5-mini")]
+    Gpt5Mini,
+    #[value(name = "qwen2.5-7b")]
+    Qwen25_7b,
+    #[value(name = "qwen3-4b")]
+    Qwen3_4b,
+    #[value(name = "qwen3-8b")]
+    Qwen3_8b,
 }
 
 impl Model {
-    pub fn name(&self) -> &'static str {
+    pub fn cli_name(&self) -> &'static str {
         match self {
-            Model::Gpt => "gpt",
-            Model::Qwen => "qwen",
+            Model::Gpt4o => "gpt-4o",
+            Model::Gpt5Mini => "gpt-5-mini",
+            Model::Qwen25_7b => "qwen2.5-7b",
+            Model::Qwen3_4b => "qwen3-4b",
+            Model::Qwen3_8b => "qwen3-8b",
         }
     }
-    pub fn full_name(&self) -> &'static str {
+
+    pub fn api_name(&self) -> &'static str {
         match self {
-            Model::Gpt => "gpt-4o",
-            Model::Qwen => "Qwen/Qwen2.5-7B-Instruct",
+            Model::Gpt4o => "gpt-4o",
+            Model::Gpt5Mini => "gpt-5-mini",
+            Model::Qwen25_7b => "Qwen/Qwen2.5-7B-Instruct",
+            Model::Qwen3_4b => "Qwen/Qwen3-4B",
+            Model::Qwen3_8b => "Qwen/Qwen3-8B",
+        }
+    }
+
+    pub fn is_qwen(&self) -> bool {
+        match self {
+            Model::Qwen25_7b | Model::Qwen3_4b | Model::Qwen3_8b => true,
+            Model::Gpt4o | Model::Gpt5Mini => false,
+        }
+    }
+
+    pub fn is_gpt(&self) -> bool {
+        match self {
+            Model::Gpt4o | Model::Gpt5Mini => true,
+            Model::Qwen25_7b | Model::Qwen3_4b | Model::Qwen3_8b => false,
         }
     }
 }
@@ -43,10 +70,10 @@ impl HasId for AnswerRaw {
     }
 }
 
-pub fn get_raw_answer_path(model_name: &str, dataset_name: &str, num_samples: usize) -> String {
+pub fn get_raw_answer_path(model: Model, dataset_name: &str, num_samples: usize) -> String {
     format!(
         "results/{}/{}_raw_{}.jsonl",
-        model_name, dataset_name, num_samples
+        model.cli_name(), dataset_name, num_samples
     )
 }
 
@@ -59,11 +86,7 @@ async fn generate_raw_answer_task(
         "Please answer the following question by first reasoning and then putting the final short answer in \\boxed{{}}. Question: {}",
         question.question
     );
-    let model_name = match model {
-        Model::Gpt => "gpt-4o",
-        Model::Qwen => "Qwen/Qwen2.5-7B-Instruct",
-    };
-    let response = call_llm_chat_completions(client, prompt, model_name).await;
+    let response = call_llm_chat_completions(client, prompt, model).await;
     AnswerRaw {
         id: question.id,
         question: question.question,
@@ -79,7 +102,7 @@ pub async fn generate_raw_answers(
     model: Model,
 ) {
     let questions_path = get_question_path(dataset_name, num_samples);
-    let raw_output_path = get_raw_answer_path(model.name(), dataset_name, num_samples);
+    let raw_output_path = get_raw_answer_path(model, dataset_name, num_samples);
     parallel_process_jsonl(
         &[&questions_path],
         &raw_output_path,

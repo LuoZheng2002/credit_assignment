@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     call_llm::call_llm_chat_completions,
-    deepmath::parse_answers::{AnswerParsed, get_parsed_path},
+    deepmath::{
+        generate_raw_answers::Model,
+        parse_answers::{AnswerParsed, get_parsed_path},
+    },
     parallel_process_jsonl::{HasId, parallel_process_jsonl, read_json_lines_indexed},
 };
 
@@ -26,7 +29,7 @@ impl HasId for DeepMathCorrectness {
 }
 
 pub fn get_correctness_path(
-    model_name: &str,
+    model: Model,
     dataset_name: &str,
     num_samples: usize,
     is_rollout: bool,
@@ -34,18 +37,18 @@ pub fn get_correctness_path(
     if is_rollout {
         format!(
             "results/{}/rollout/{}_correctness_{}.jsonl",
-            model_name, dataset_name, num_samples
+            model.cli_name(), dataset_name, num_samples
         )
     } else {
         format!(
             "results/{}/{}_correctness_{}.jsonl",
-            model_name, dataset_name, num_samples
+            model.cli_name(), dataset_name, num_samples
         )
     }
 }
 
 fn get_accuracy_path(
-    model_name: &str,
+    model: Model,
     dataset_name: &str,
     num_samples: usize,
     is_rollout: bool,
@@ -53,12 +56,12 @@ fn get_accuracy_path(
     if is_rollout {
         format!(
             "results/{}/rollout/{}_accuracy_{}.json",
-            model_name, dataset_name, num_samples
+            model.cli_name(), dataset_name, num_samples
         )
     } else {
         format!(
             "results/{}/{}_accuracy_{}.json",
-            model_name, dataset_name, num_samples
+            model.cli_name(), dataset_name, num_samples
         )
     }
 }
@@ -71,7 +74,7 @@ If the model's answer contains units but the reference answer does not, treat th
 The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
         answer.model_answer, answer.correct_answer
     );
-    let evaluation = call_llm_chat_completions(client, prompt, "gpt-4o")
+    let evaluation = call_llm_chat_completions(client, prompt, Model::Gpt4o)
         .await
         .trim()
         .to_lowercase();
@@ -97,7 +100,7 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
 }
 
 pub async fn judge_answers(
-    model_name: &str,
+    model: Model,
     dataset_name: &str,
     num_samples: usize,
     client: Client,
@@ -105,10 +108,10 @@ pub async fn judge_answers(
 ) {
     println!(
         "Judging answers for model {} on {} samples",
-        model_name, num_samples
+        model.cli_name(), num_samples
     );
-    let parsed_answers_path = get_parsed_path(model_name, dataset_name, num_samples, is_rollout);
-    let correctness_path = get_correctness_path(model_name, dataset_name, num_samples, is_rollout);
+    let parsed_answers_path = get_parsed_path(model, dataset_name, num_samples, is_rollout);
+    let correctness_path = get_correctness_path(model, dataset_name, num_samples, is_rollout);
     parallel_process_jsonl(
         &[&parsed_answers_path],
         &correctness_path,
@@ -128,7 +131,7 @@ pub async fn judge_answers(
     .unwrap();
     println!(
         "Finished judging answers for model {} on {} samples. Results saved to {}",
-        model_name, num_samples, correctness_path
+        model.cli_name(), num_samples, correctness_path
     );
     let score_results: IndexMap<usize, DeepMathCorrectness> =
         read_json_lines_indexed(&File::open(&correctness_path).unwrap()).unwrap();
@@ -138,7 +141,7 @@ pub async fn judge_answers(
             correct += 1;
         }
     }
-    let score_stats_file = get_accuracy_path(model_name, dataset_name, num_samples, is_rollout);
+    let score_stats_file = get_accuracy_path(model, dataset_name, num_samples, is_rollout);
     std::fs::write(
         score_stats_file,
         serde_json::to_string_pretty(&serde_json::json!({
@@ -151,7 +154,7 @@ pub async fn judge_answers(
     .unwrap();
     println!(
         "Accuracy for model {} on {} samples: {:.2}%",
-        model_name,
+        model.cli_name(),
         num_samples,
         correct as f64 / score_results.len() as f64 * 100.0
     );
