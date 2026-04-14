@@ -2,71 +2,64 @@ use serde::{Deserialize, Serialize};
 
 use crate::deepmath::parse_answers::extract_boxed_content;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum StepDirection {
-    Proceed,
-    ChangePlan,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NextStepDecision {
+    Continue,
+    OverwriteLastStep(String),
+    ChangePlan {
+        fail_reason: String,
+        possible_future_direction: String,
+    },
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ActualStepMode {
-    Append(StepDirection),
-    OverwriteLastStep(StepDirection),
-    Compact,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DisplayStepMode {
-    Directional(StepDirection),
-    Compacted,
-}
-
-#[derive(Debug, Clone)]
-pub struct ToolCallSegment {
-    pub tool_call_string: String,
-    pub tool_result_string: String,
-}
-
-#[derive(Debug, Clone)]
-pub enum PlannerStepOperation {
-    Reasoning(String),
-    ToolCall(String),
+impl NextStepDecision {
+    pub fn is_overwriting(&self) -> bool {
+        match self {
+            NextStepDecision::Continue => false,
+            NextStepDecision::OverwriteLastStep(_) => true,
+            NextStepDecision::ChangePlan { .. } => panic!(
+                "ChangePlan should not be a valid step mode when the planner has entered the working on step status"
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct DisplayPlannerStepComplete {
-    pub step_mode: DisplayStepMode,
-    pub content_raw: String,
+    // pub step_mode: DisplayStepMode,
+    // pub content_raw: String,
+    pub content_compacted: String,
     pub current_step_verifier_comment: Option<String>,
 }
 impl DisplayPlannerStepComplete {
-    pub fn new(
-        current_step_verifier_comment: Option<String>,
-        step_mode: DisplayStepMode,
-        content_raw: String,
-    ) -> Self {
+    pub fn new(content_compacted: String, current_step_verifier_comment: Option<String>) -> Self {
         Self {
+            content_compacted,
             current_step_verifier_comment,
-            step_mode,
-            content_raw,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModelOperation {
-    PlannerChooseMode(ActualStepMode),
+    PlannerMakePlan(String), // this should be a mandatory process instead of a choice
+    PlannerDecideNextStep(NextStepDecision),
     PlannerReasoning(String),
-    PlannerToolCall(String), // with <tool_call> ... </tool_call> wrapper
-    PlannerEndStep,
+    PlannerToolCall(String),  // with <tool_call> ... </tool_call> wrapper
     ToolCallResponse(String), // with <tool_response> ... </tool_response> wrapper
+    PlannerEndStep,
+    PlannerCompactStep(String),
+    PlannerUpdatePlan(String),
     VerifierComment(Option<String>),
 }
 
 impl ModelOperation {
     pub fn to_pretty_string(&self) -> String {
         match self {
-            ModelOperation::PlannerChooseMode(mode) => format!("[PlannerChooseMode]: {:?}", mode),
+            ModelOperation::PlannerMakePlan(plan) => format!("[PlannerMakePlan]:\n{}", plan),
+            ModelOperation::PlannerDecideNextStep(mode) => {
+                format!("[PlannerChooseMode]: {:?}", mode)
+            }
             ModelOperation::PlannerReasoning(reasoning) => {
                 format!("[PlannerReasoning]:\n{}", reasoning)
             }
@@ -74,18 +67,31 @@ impl ModelOperation {
                 format!("[PlannerToolCall]:\n{}", tool_call)
             }
             ModelOperation::PlannerEndStep => "[PlannerEndStep]".to_string(),
+            ModelOperation::PlannerCompactStep(compacted) => {
+                format!("[PlannerCompactStep]:\n{}", compacted)
+            }
+            ModelOperation::PlannerUpdatePlan(updated_plan) => {
+                format!("[PlannerUpdatePlan]:\n{}", updated_plan)
+            }
             ModelOperation::ToolCallResponse(tool_response) => {
                 format!("[ToolCallResponse]:\n{}", tool_response)
             }
-            ModelOperation::VerifierComment(comment) => format!("[VerifierComment]: {:?}", comment),
+            ModelOperation::VerifierComment(comment) => {
+                format!("[VerifierComment]:\n{:?}", comment)
+            }
         }
     }
     pub fn to_concise_string(&self) -> String {
         match self {
-            ModelOperation::PlannerChooseMode(mode) => format!("[PlannerChooseMode]: {:?}", mode),
+            ModelOperation::PlannerMakePlan(plan) => format!("[PlannerMakePlan]"),
+            ModelOperation::PlannerDecideNextStep(mode) => {
+                format!("[PlannerChooseMode]: {:?}", mode)
+            }
             ModelOperation::PlannerReasoning(_reasoning) => "[PlannerReasoning]".to_string(),
             ModelOperation::PlannerToolCall(_tool_call) => "[PlannerToolCall]".to_string(),
             ModelOperation::PlannerEndStep => "[PlannerEndStep]".to_string(),
+            ModelOperation::PlannerCompactStep(_compacted) => "[PlannerCompactStep]".to_string(),
+            ModelOperation::PlannerUpdatePlan(_updated_plan) => "[PlannerUpdatePlan]".to_string(),
             ModelOperation::ToolCallResponse(_tool_response) => "[ToolCallResponse]".to_string(),
             ModelOperation::VerifierComment(comment) => format!(
                 "[VerifierComment]\n{}",
@@ -105,7 +111,7 @@ impl SessionLog {
     pub fn total_actual_rounds(&self) -> usize {
         self.parsed_operations
             .iter()
-            .filter(|op| matches!(op, ModelOperation::PlannerChooseMode(_)))
+            .filter(|op| matches!(op, ModelOperation::PlannerDecideNextStep(_)))
             .count()
     }
 
@@ -115,25 +121,35 @@ impl SessionLog {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlannerStatus {
+pub enum SessionStatus {
+    PlannerMakingPlan, // this should be a mandatory process instead of a choice
     PlannerChoosingMode,
-    PlannerChosen(ActualStepMode),
+    PlannerWorkingOnStep,
+    PlannerCompactingStep,
+    PlannerUpdatingPlan,
+    VerifierCommenting,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionStatus {
-    PlannerTurn,
-    VerifierTurn,
+#[derive(Debug, Clone)]
+pub struct FailedAttempt {
+    pub plan: String,
+    pub fail_reason: String,
+    pub possible_future_direction: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct SessionState {
+    pub question: String,
     pub prev_steps: Vec<DisplayPlannerStepComplete>,
     pub current_step_content_raw: String,
+    pub current_step_content_compacted: Option<String>,
     pub current_step_verifier_comment: Option<String>,
-    pub planner_status: PlannerStatus,
+    pub current_plan: Option<String>,
+    // pub planner_status: PlannerStatus,
     pub session_status: SessionStatus,
+    pub planner_chosen_mode: Option<NextStepDecision>,
     pub final_answer: Option<String>,
+    pub failed_attempts: Vec<FailedAttempt>,
 }
 
 #[derive(Debug, Clone)]
@@ -143,13 +159,13 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new() -> Self {
+    pub fn new(question: String) -> Self {
         Self {
             session_log: SessionLog {
                 parsed_operations: Vec::new(),
                 model_raw_outputs: Vec::new(),
             },
-            session_state: SessionState::new(),
+            session_state: SessionState::new(question),
         }
     }
     pub fn apply_parsed_operation(&mut self, operation: ModelOperation) -> bool {
@@ -162,18 +178,22 @@ impl Session {
 }
 
 impl SessionState {
-    pub fn new() -> Self {
+    pub fn new(question: String) -> Self {
         Self {
+            question,
             prev_steps: Vec::new(),
             current_step_content_raw: String::new(),
             current_step_verifier_comment: None,
-            session_status: SessionStatus::PlannerTurn,
-            planner_status: PlannerStatus::PlannerChoosingMode,
+            current_step_content_compacted: None,
+            current_plan: None,
+            session_status: SessionStatus::PlannerMakingPlan,
+            planner_chosen_mode: None,
             final_answer: None,
+            failed_attempts: Vec::new(),
         }
     }
-    pub fn from_session_log(session_log: &SessionLog) -> Self {
-        let mut session_state = SessionState::new();
+    pub fn from_session_log(question: String, session_log: &SessionLog) -> Self {
+        let mut session_state = SessionState::new(question);
         for operation in &session_log.parsed_operations {
             session_state.update(operation.clone());
         }
@@ -182,8 +202,13 @@ impl SessionState {
     pub fn update(&mut self, operation: ModelOperation) -> bool {
         let mut should_end_session = false;
         match operation {
-            ModelOperation::PlannerChooseMode(mode) => {
-                self.planner_status = PlannerStatus::PlannerChosen(mode);
+            ModelOperation::PlannerMakePlan(plan) => {
+                self.current_plan = Some(plan);
+                self.session_status = SessionStatus::PlannerChoosingMode;
+            }
+            ModelOperation::PlannerDecideNextStep(mode) => {
+                self.planner_chosen_mode = Some(mode);
+                self.session_status = SessionStatus::PlannerWorkingOnStep;
             }
             ModelOperation::PlannerReasoning(reasoning) => {
                 self.current_step_content_raw.push_str(&reasoning);
@@ -195,95 +220,138 @@ impl SessionState {
             ModelOperation::PlannerToolCall(tool_call) => {
                 self.current_step_content_raw.push_str(&tool_call);
             }
+            ModelOperation::ToolCallResponse(tool_response) => {
+                assert_eq!(
+                    self.session_status,
+                    SessionStatus::PlannerWorkingOnStep,
+                    "ToolCallResponse can only be called during PlannerTurn"
+                );
+                self.current_step_content_raw.push_str(&tool_response);
+            }
             ModelOperation::PlannerEndStep => {
                 assert_eq!(
                     self.session_status,
-                    SessionStatus::PlannerTurn,
+                    SessionStatus::PlannerWorkingOnStep,
                     "PlannerEndStep can only be called during PlannerTurn"
                 );
-                assert!(
-                    matches!(self.planner_status, PlannerStatus::PlannerChosen(_)),
-                    "Invalid state transition: PlannerEndStep can only be called after PlannerChosen"
-                );
-                self.session_status = SessionStatus::VerifierTurn;
+                self.session_status = SessionStatus::PlannerCompactingStep;
             }
-            ModelOperation::ToolCallResponse(tool_response) => {
-                self.current_step_content_raw.push_str(&tool_response);
+            ModelOperation::PlannerCompactStep(compacted) => {
+                assert_eq!(
+                    self.session_status,
+                    SessionStatus::PlannerCompactingStep,
+                    "PlannerCompactStep can only be called after PlannerEndStep"
+                );
+                self.current_step_content_compacted = Some(compacted);
+                self.session_status = SessionStatus::PlannerUpdatingPlan;
+            }
+            ModelOperation::PlannerUpdatePlan(updated_plan) => {
+                assert_eq!(
+                    self.session_status,
+                    SessionStatus::PlannerUpdatingPlan,
+                    "PlannerUpdatePlan can only be called after PlannerCompactStep"
+                );
+                self.current_plan = Some(updated_plan);
+                self.session_status = SessionStatus::VerifierCommenting;
             }
             ModelOperation::VerifierComment(comment) => {
                 assert_eq!(
                     self.session_status,
-                    SessionStatus::VerifierTurn,
-                    "VerifierComment can only be called during VerifierTurn"
+                    SessionStatus::VerifierCommenting,
+                    "VerifierComment can only be called during VerifierCommenting"
                 );
-                let PlannerStatus::PlannerChosen(step_mode) = self.planner_status else {
-                    panic!("Invalid state: PlannerChosen must be set before VerifierComment");
-                };
+                // this operation flushes the current step and moves it to prev_steps
                 self.current_step_verifier_comment = comment;
+                let step_mode = self
+                    .planner_chosen_mode
+                    .take()
+                    .expect("Planner must have chosen a mode before verifier commenting");
                 match step_mode {
-                    ActualStepMode::Append(direction) => {
-                        let display_step_mode = DisplayStepMode::Directional(direction);
+                    NextStepDecision::Continue => {
                         let new_step = DisplayPlannerStepComplete::new(
+                            self.current_step_content_compacted
+                                .take()
+                                .expect("The compacted content must be available"),
                             self.current_step_verifier_comment.take(),
-                            display_step_mode,
-                            self.current_step_content_raw.clone(),
                         );
                         self.prev_steps.push(new_step);
                         self.current_step_content_raw.clear();
+                        self.current_step_content_compacted = None;
                         self.current_step_verifier_comment = None;
                     }
-                    ActualStepMode::OverwriteLastStep(direction) => {
-                        let display_step_mode = DisplayStepMode::Directional(direction);
+                    NextStepDecision::OverwriteLastStep(_overwrite_reason) => {
                         let new_step = DisplayPlannerStepComplete::new(
+                            self.current_step_content_compacted
+                                .take()
+                                .expect("The compacted content must be available"),
                             self.current_step_verifier_comment.take(),
-                            display_step_mode,
-                            self.current_step_content_raw.clone(),
                         );
                         self.prev_steps.pop();
                         self.prev_steps.push(new_step);
                         self.current_step_content_raw.clear();
+                        self.current_step_content_compacted = None;
                         self.current_step_verifier_comment = None;
                     }
-                    ActualStepMode::Compact => {
-                        let display_step_mode = DisplayStepMode::Compacted;
-                        // we do not keep verifier comment in compact mode
-                        let new_step = DisplayPlannerStepComplete::new(
-                            self.current_step_verifier_comment.take(),
-                            display_step_mode,
-                            self.current_step_content_raw.clone(),
-                        );
-                        // in compact mode, we clear all previous steps and only keep the current step
-                        self.prev_steps.clear();
-                        self.prev_steps.push(new_step);
+                    NextStepDecision::ChangePlan {
+                        fail_reason,
+                        possible_future_direction,
+                    } => {
+                        let old_plan = self
+                            .current_plan
+                            .clone()
+                            .take()
+                            .expect("There must be a plan to change");
+                        let failed_attempt = FailedAttempt {
+                            plan: old_plan,
+                            fail_reason,
+                            possible_future_direction,
+                        };
+                        self.failed_attempts.push(failed_attempt);
+                        self.prev_steps.clear(); // when changing plan, we clear the previous steps to avoid confusion
                         self.current_step_content_raw.clear();
+                        self.current_step_content_compacted = None;
                         self.current_step_verifier_comment = None;
                     }
                 }
-                self.planner_status = PlannerStatus::PlannerChoosingMode;
-                self.session_status = SessionStatus::PlannerTurn;
+                self.session_status = SessionStatus::PlannerChoosingMode;
             }
         }
         should_end_session
     }
-    pub fn to_history_prev_steps(&self, planner_turn: bool) -> String {
+    pub fn to_history_prev_steps(&self) -> String {
+        let (planner_turn, making_plan) = match self.session_status {
+            SessionStatus::PlannerMakingPlan => (true, true), // it should only show the attempts, but not steps
+            SessionStatus::PlannerChoosingMode => (true, false), // should see last step verifier comment if there is any
+            SessionStatus::PlannerWorkingOnStep => (true, false), // should see last step verifier comment if there is any
+            SessionStatus::PlannerCompactingStep => (true, false), // same as working on step
+            SessionStatus::PlannerUpdatingPlan => (true, false), // for current step, should see the compacted content only
+            SessionStatus::VerifierCommenting => (false, false), // for current step, should see both the raw content and compacted content
+        };
         let mut history = String::new();
+        for (i, failed_attempt) in self.failed_attempts.iter().enumerate() {
+            history.push_str(&format!("Failed Attempt {}:\n", i + 1));
+            history.push_str(&format!("Plan: {}\n", failed_attempt.plan));
+            history.push_str(&format!("Fail reason: {}\n", failed_attempt.fail_reason));
+            history.push_str(&format!(
+                "Possible future direction: {}\n",
+                failed_attempt.possible_future_direction
+            ));
+        }
+        if !making_plan {
+            let current_plan = self
+                .current_plan
+                .as_ref()
+                .expect("There should be a current plan when not making plan");
+            history.push_str(&format!("Current plan:\n{}\n", current_plan));
+        }
+        assert!(
+            !making_plan || self.prev_steps.is_empty(),
+            "When making plan, there should be no previous steps"
+        );
         for (i, step) in self.prev_steps.iter().enumerate() {
             history.push_str(&format!("Step {}:\n", i + 1));
-            let step_mode_str = match step.step_mode {
-                DisplayStepMode::Directional(direction) => match direction {
-                    StepDirection::Proceed => {
-                        "This step is a continuation of the previous reasoning direction."
-                    }
-                    StepDirection::ChangePlan => {
-                        "This step is attempting a different reasoning direction from the previous steps."
-                    }
-                },
-                DisplayStepMode::Compacted => "This step is a compacted summary of previous steps.",
-            };
 
-            history.push_str(&format!("Current step mode: {}\n", step_mode_str));
-
-            history.push_str(&format!("Assistant: {}\n", step.content_raw));
+            history.push_str(&format!("{}\n", step.content_compacted));
 
             history.push_str(&format!("Step {} ends.\n", i + 1));
             // only show the last verifier comment if it exists
@@ -297,68 +365,8 @@ impl SessionState {
                 }
             }
         }
-
-        match self.session_status {
-            SessionStatus::PlannerTurn => {
-                assert_eq!(
-                    planner_turn, true,
-                    "to_history should be called with planner_turn=true when it's planner's turn"
-                );
-            }
-            SessionStatus::VerifierTurn => {
-                assert_eq!(
-                    planner_turn, false,
-                    "to_history should be called with planner_turn=false when it's verifier's turn"
-                );
-            }
-        }
         history
     }
-    // pub fn to_history_curr_step(&self, planner_turn: bool) -> String {
-    //     let mut history = String::new();
-    //     let current_step_index = self.prev_steps.len() + 1;
-    //     let current_step_hint_str = if planner_turn {
-    //         format!("Current step {} (not yet completed):\n", current_step_index)
-    //     } else {
-    //         format!(
-    //             "Current step {} (that you're about to evaluate):\n",
-    //             current_step_index
-    //         )
-    //     };
-    //     history.push_str(&current_step_hint_str);
-
-    //     let planner_status_description: &str = match self.planner_status {
-    //         PlannerStatus::PlannerChoosingMode => {
-    //             "Assistant is currently deciding how to proceed with the current step."
-    //         }
-    //         PlannerStatus::PlannerChosen(step_mode) => match step_mode {
-    //             ActualStepMode::Append(direction) => match direction {
-    //                 StepDirection::Proceed => {
-    //                     "Assistant has chosen to continue the previous reasoning direction."
-    //                 }
-    //                 StepDirection::ChangePlan => {
-    //                     "Assistant has chosen to attempt a different reasoning direction from the previous steps."
-    //                 }
-    //             },
-    //             ActualStepMode::OverwriteLastStep(direction) => match direction {
-    //                 StepDirection::Proceed => {
-    //                     "Assistant has chosen to OVERWRITE the last step while maintaining its reasoning direction."
-    //                 }
-    //                 StepDirection::ChangePlan => {
-    //                     "Assistant has chosen to OVERWRITE the last step while changing its reasoning direction."
-    //                 }
-    //             },
-    //             ActualStepMode::Compact => {
-    //                 "Assistant has chosen to COMPACT all previous steps into a more concise form."
-    //             }
-    //             ActualStepMode::SubmitAnswer => "Assistant has chosen to SUBMIT the final answer.",
-    //         },
-    //     };
-    //     history.push_str(&format!("{}\n", planner_status_description));
-
-    //     history.push_str(&format!("Assistant: {}\n", self.current_step_content_raw));
-    //     history
-    // }
     pub fn total_display_rounds(&self) -> usize {
         self.prev_steps.len()
     }

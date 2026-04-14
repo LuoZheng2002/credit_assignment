@@ -4,12 +4,13 @@ use rand::RngExt;
 use reqwest::Client;
 
 use crate::{
-    apply_qwen_chat_template::apply_qwen_chat_template,
-    call_llm::{call_llm_chat_completions, call_qwen_raw_completions},
+    call_llm::call_llm_with_prefix,
     execute_python_code::execute_python_code,
-    multi_agent::session::{
-        ActualStepMode, ModelOperation, PlannerStatus, Session, SessionState, SessionStatus,
-        StepDirection,
+    multi_agent::{
+        planner_deciding_next_step::get_planner_deciding_next_step_prompts,
+        planner_working_on_step::get_planner_working_on_step_prompts,
+        session::{ModelOperation, NextStepDecision, Session, SessionState, SessionStatus},
+        verifier_commenting::get_verifier_commenting_prompts,
     },
 };
 
@@ -17,136 +18,6 @@ use crate::{
 pub enum PlannerState {
     BeginStep,
     MidStep,
-}
-
-fn get_step_mode_prompt(step_mode: ActualStepMode, is_planner: bool) -> String {
-    let subject = if is_planner {
-        "You are"
-    } else {
-        "The planner is"
-    };
-    match step_mode {
-        ActualStepMode::Append(step_direction) => match step_direction {
-            StepDirection::Proceed => format!(
-                "{} willing to proceed with the current reasoning direction.",
-                subject
-            ),
-            StepDirection::ChangePlan => format!(
-                "{} attempting a different reasoning direction from the previous steps.",
-                subject
-            ),
-        },
-        ActualStepMode::OverwriteLastStep(step_direction) => match step_direction {
-            StepDirection::Proceed => format!(
-                "{} about to OVERWRITE the last step while maintaining its reasoning direction. Please use a tone as if you are working on the previous step for the first time, and avoid wordings like \"revisit\".",
-                subject
-            ),
-            StepDirection::ChangePlan => format!(
-                "{} about to OVERWRITE the last step while changing its reasoning direction. Please use a tone as if you are working on the previous step for the first time, and avoid wordings like \"revisit\".",
-                subject
-            ),
-        },
-        ActualStepMode::Compact => format!(
-            "{} about to COMPACT all previous steps into a more concise form. When this step is completed, it will replace all the previous steps, so please record all necessary information for future steps.",
-            subject
-        ),
-    }
-}
-
-fn get_planner_status_prompt(planner_status: PlannerStatus) -> String {
-    match planner_status {
-        PlannerStatus::PlannerChoosingMode => {
-            "\
-A new step is just about to begin. Your job is to determine the mode of the new step based on the history. You have the following choices:\n\
-1. PROCEED: You are confident about the current reasoning direction and want to proceed with it.\n\
-2. CHANGE_PLAN: You find the previous steps not leading to a good direction, and want to change the plan and try a different reasoning direction.\n\
-3. OVERWRITE_LAST_STEP_AND_PROCEED: You find the last step problematic, and want to rewrite it while maintaining the current reasoning direction.\n\
-4. OVERWRITE_LAST_STEP_AND_CHANGE_PLAN: You find the last step problematic, and want to rewrite it and also change the reasoning direction.\n\
-5. COMPACT: You find the context length too long, and want to compact the previous steps into a more concise form, while maintaining the current reasoning direction.\n\
-\n\
-Please output exactly one of PROCEED, CHANGE_PLAN, OVERWRITE_LAST_STEP_AND_PROCEED, OVERWRITE_LAST_STEP_AND_CHANGE_PLAN, COMPACT and nothing else.".to_string()
-        }
-        PlannerStatus::PlannerChosen(step_mode) => {
-            let step_mode_prompt = get_step_mode_prompt(step_mode, true);
-            let tool_prompt: String = "\
-You can both reason in plain texts and use the following tools in this step:\n\
-1. Python code executor: You're encouraged to use it for calculations to ensure correctness. You can invoke python code by outputting a markdown Python code block.\n\
-IMPORTANT: always use Python's print statement to output the result, otherwise the result will not be shown.\n\
-IMPORTANT: after calling any tool, immediately output a <tool_wait> to obtain the tool's response.\n\
-\n\
-If you think a milestone has been achieved and want to mark the current step as complete, end your response with <end_step>\n\
-If you have got the final answer to submit, put the answer in \\boxed{} in a concise form. Do not put anything else other than the final answer in \\boxed{}.".to_string();
-            format!("\
-The verifier's comment is only for reference and may not be true. \
-Please do not explicitly quote the verifier or try to respond to it in your reasoning.\n\
-{}\n\
-\n\
-{}\n\
-Please plan your new step to solve a concrete sub-goal. Avoid solving multiple sub-goals in a single step.\n\
-Begin your new step:",
-            tool_prompt, step_mode_prompt)
-        }
-    }
-}
-
-pub fn get_planner_prompt_before_assistant(
-    question: &str,
-    planner_status: PlannerStatus,
-    history_prev_steps: &str,
-) -> String {
-    let planner_status_prompt = get_planner_status_prompt(planner_status);
-    format!(
-        "You are a planner agent that is trying to solve the following problem step by step:\n\
-<PROBLEM_BEGIN>\n\
-{}\n\
-<PROBLEM_END>\n\n\
-Here is the history of previous steps you have done:\n\
-<HISTORY_BEGIN>\n\
-{}\n\
-<HISTORY_END>\n\n\
-{}",
-        question, history_prev_steps, planner_status_prompt
-    )
-}
-
-pub fn get_planner_prompt_after_assistant(session_state: &SessionState) -> String {
-    session_state.current_step_content_raw.clone()
-}
-
-pub fn get_verifier_prompt_before_assistant(
-    question: &str,
-    history_prev_steps: &str,
-    session_state: &SessionState,
-) -> String {
-    let PlannerStatus::PlannerChosen(step_mode) = session_state.planner_status else {
-        panic!("Verifier should only be called when planner has chosen the step mode");
-    };
-    let step_mode_prompt = get_step_mode_prompt(step_mode, false);
-    let current_step_content = session_state.current_step_content_raw.clone();
-    format!(
-        "You are a verifier agent that is trying to evaluate the reasoning steps for the following problem:\n\
-<PROBLEM_BEGIN>\n\
-{}\n\
-<PROBLEM_END>\n\n\
-Here is the history of previous steps the planner has done:\n\
-<HISTORY_BEGIN>\n\
-{}\n\
-<HISTORY_END>\n\n\
-<CURRENT_STEP_BEGIN>\n\
-{}\n\
-Planner:\n\
-{}\n\
-<CURRENT_STEP_END>\n\n\
-Your job is to generate the comment for the reasoning of the current step only. You need to provide feedbacks on the following aspects:\n\
-1. Are there any calculation or logical mistakes in the current step? If so, point them out. If there are values produced, verify if they satisfy the problem requirements by plugging them in.\n\
-2. Is the current reasoning direction promising for solving the problem? If not, encourage the planner to try a different direction.\n\
-3. Is the length and scope of the current step appropriate? An appropriate step should have a single concrete sub-goal, neither too large nor too small. If you think the current step scope is inappropriate, make suggestions on how to plan the steps better.\n\
-4. Does the current step utilize the Python tools when necessary? If the planner attempts to do complex calculations by hand, point it out. \
-Are there opportunities for the planner to use Python for complex but pervasive problems like solving a set of linear equations? Encourage the planner to leverage these tools even when calculations appear to be manageable.\n\
-\n\n\
-Please start your comment and be concise:\n",
-        question, history_prev_steps, step_mode_prompt, current_step_content
-    )
 }
 
 pub trait ToolCallParser {
@@ -248,6 +119,17 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> String {
     format!("```python\n{}\n```\n", python_code_result.trim())
 }
 
+pub fn get_prompt_according_to_session_status(session_state: &SessionState) -> (String, String) {
+    match session_state.session_status {
+        SessionStatus::PlannerMakingPlan => todo!(),
+        SessionStatus::PlannerChoosingMode => get_planner_deciding_next_step_prompts(session_state),
+        SessionStatus::PlannerWorkingOnStep => get_planner_working_on_step_prompts(session_state),
+        SessionStatus::PlannerCompactingStep => todo!(),
+        SessionStatus::PlannerUpdatingPlan => todo!(),
+        SessionStatus::VerifierCommenting => get_verifier_commenting_prompts(session_state),
+    }
+}
+
 pub async fn rollout(
     question_id: usize,
     question: String,
@@ -257,7 +139,7 @@ pub async fn rollout(
     rng: &mut impl rand::Rng,
 ) -> Session {
     // create a state machine
-    let mut session = Session::new();
+    let mut session = Session::new(question.clone());
     let mut safe_counter = 0; // to prevent infinite loop in case of bugs
     loop {
         let mut session_should_end = false;
@@ -267,102 +149,119 @@ pub async fn rollout(
             session_should_end = true;
         }
         let new_operations: Vec<ModelOperation> = match &session.session_state.session_status {
-            SessionStatus::PlannerTurn => {
-                let history_prev_steps = session.session_state.to_history_prev_steps(true);
-                let planner_status = session.session_state.planner_status;
-                let prompt_before_assistant = get_planner_prompt_before_assistant(
-                    &question,
-                    planner_status,
-                    &history_prev_steps,
+            SessionStatus::PlannerMakingPlan => {
+                todo!()
+            }
+            SessionStatus::PlannerChoosingMode => {
+                let (prompt_before_assistant, prompt_after_assistant) =
+                    get_prompt_according_to_session_status(&session.session_state);
+                assert_eq!(
+                    prompt_after_assistant,
+                    String::new(),
+                    "Planner deciding next step should not have prompt after assistant"
                 );
-                let prompt_after_assistant =
-                    get_planner_prompt_after_assistant(&session.session_state);
-                let mut response = if model_name.to_lowercase().contains("qwen") {
-                    let mut planner_chat_template_prompt =
-                        apply_qwen_chat_template(&prompt_before_assistant);
-                    planner_chat_template_prompt += &prompt_after_assistant;
-                    call_qwen_raw_completions(
-                        client.clone(),
-                        planner_chat_template_prompt,
-                        model_name,
-                    )
-                    .await
-                } else {
-                    let full_prompt = format!(
-                        "{}\nAssistant: {}",
-                        prompt_before_assistant, prompt_after_assistant
-                    );
-                    call_llm_chat_completions(client.clone(), full_prompt, model_name).await
+                let response = call_llm_with_prefix(
+                    client.clone(),
+                    prompt_before_assistant,
+                    prompt_after_assistant,
+                    model_name,
+                )
+                .await;
+                session.add_model_raw_output(response.clone());
+                // begin to parse
+                let response_json: serde_json::Value = serde_json::from_str(&response.trim())
+                    .expect(&format!(
+                        "Failed to parse planner choosing mode response as JSON. Response text: {}",
+                        response
+                    ));
+                let choice = response_json["choice"]
+                    .as_str()
+                    .expect(&format!("Planner choosing mode response JSON does not contain 'choice' field. Response JSON: {}", response_json));
+                let chosen_mode = match choice {
+                    "continue" => NextStepDecision::Continue,
+                    "overwrite_last_step" => {
+                        let reason = response_json["reason"]
+                            .as_str()
+                            .expect(&format!("Planner choosing mode response JSON with 'overwrite_last_step' choice does not contain 'reason' field. Response JSON: {}", response_json));
+                        NextStepDecision::OverwriteLastStep(reason.to_string())
+                    }
+                    "change_plan" => {
+                        let fail_reason = response_json["fail_reason"]
+                            .as_str()
+                            .expect(&format!("Planner choosing mode response JSON with 'change_plan' choice does not contain 'fail_reason' field. Response JSON: {}", response_json));
+                        let possible_future_direction = response_json["possible_future_direction"]
+                            .as_str()
+                            .expect(&format!("Planner choosing mode response JSON with 'change_plan' choice does not contain 'possible_future_direction' field. Response JSON: {}", response_json));
+                        NextStepDecision::ChangePlan {
+                            fail_reason: fail_reason.to_string(),
+                            possible_future_direction: possible_future_direction.to_string(),
+                        }
+                    }
+                    _ => panic!(
+                        "Invalid choice field in planner choosing mode response JSON: {}",
+                        choice
+                    ),
                 };
+                vec![ModelOperation::PlannerDecideNextStep(chosen_mode)]
+            }
+            SessionStatus::PlannerWorkingOnStep => {
+                let (prompt_before_assistant, prompt_after_assistant) =
+                    get_prompt_according_to_session_status(&session.session_state);
+                let mut response = call_llm_with_prefix(
+                    client.clone(),
+                    prompt_before_assistant,
+                    prompt_after_assistant,
+                    model_name,
+                )
+                .await;
                 session.add_model_raw_output(response.clone());
                 if response.trim().is_empty() {
                     response += "<end_step>";
                 }
-                match planner_status {
-                    PlannerStatus::PlannerChoosingMode => {
-                        let chosen_mode: ActualStepMode = match response.trim() {
-                            "PROCEED" => ActualStepMode::Append(StepDirection::Proceed),
-                            "CHANGE_PLAN" => ActualStepMode::Append(StepDirection::ChangePlan),
-                            "OVERWRITE_LAST_STEP_AND_PROCEED" => {
-                                ActualStepMode::OverwriteLastStep(StepDirection::Proceed)
-                            }
-                            "OVERWRITE_LAST_STEP_AND_CHANGE_PLAN" => {
-                                ActualStepMode::OverwriteLastStep(StepDirection::ChangePlan)
-                            }
-                            "COMPACT" => ActualStepMode::Compact,
-                            _ => panic!("Invalid response from planner: {}", response),
-                        };
-                        vec![ModelOperation::PlannerChooseMode(chosen_mode)]
+                let (reasoning, tool_call) = split_reasoning_and_tool_call(response, model_name);
+                let mut operations = Vec::new();
+                let mut push_end_step = false;
+                if let Some(reasoning) = reasoning {
+                    if reasoning.contains("<end_step>") {
+                        push_end_step = true;
                     }
-                    PlannerStatus::PlannerChosen(_step_mode) => {
-                        let (reasoning, tool_call) =
-                            split_reasoning_and_tool_call(response, model_name);
-                        let mut operations = Vec::new();
-                        let mut push_end_step = false;
-                        if let Some(reasoning) = reasoning {
-                            if reasoning.contains("<end_step>") {
-                                push_end_step = true;
-                            }
-                            operations.push(ModelOperation::PlannerReasoning(reasoning));
-                        }
-                        if let Some(tool_call) = tool_call {
-                            let tool_response = execute_planner_tool_call(&tool_call).await;
-                            operations.push(ModelOperation::PlannerToolCall(tool_call));
-                            operations.push(ModelOperation::ToolCallResponse(tool_response));
-                        }
-                        if push_end_step {
-                            operations.push(ModelOperation::PlannerEndStep);
-                        }
-                        operations
-                    }
+                    operations.push(ModelOperation::PlannerReasoning(reasoning));
                 }
+                if let Some(tool_call) = tool_call {
+                    let tool_response = execute_planner_tool_call(&tool_call).await;
+                    operations.push(ModelOperation::PlannerToolCall(tool_call));
+                    operations.push(ModelOperation::ToolCallResponse(tool_response));
+                }
+                if push_end_step {
+                    operations.push(ModelOperation::PlannerEndStep);
+                }
+                operations
             }
-            SessionStatus::VerifierTurn => {
+            SessionStatus::PlannerCompactingStep => {
+                todo!()
+            }
+            SessionStatus::PlannerUpdatingPlan => {
+                todo!()
+            }
+            SessionStatus::VerifierCommenting => {
                 let mut verifier_comment = None;
                 if rng.random::<f32>() <= verifier_probability {
-                    let history_prev_steps = session.session_state.to_history_prev_steps(false);
-                    let prompt_before_assistant = get_verifier_prompt_before_assistant(
-                        &question,
-                        &history_prev_steps,
-                        &session.session_state,
+                    // let prompt_before_assistant =
+                    //     get_verifier_commenting_prompt_before_assistant(&session.session_state);
+                    let (prompt_before_assistant, prompt_after_assistant) =
+                        get_prompt_according_to_session_status(&session.session_state);
+                    assert_eq!(
+                        prompt_after_assistant,
+                        String::new(),
+                        "Verifier commenting should not have prompt after assistant"
                     );
-                    let response = if model_name.to_lowercase().contains("qwen") {
-                        let verifier_chat_template_prompt =
-                            apply_qwen_chat_template(&prompt_before_assistant);
-                        call_qwen_raw_completions(
-                            client.clone(),
-                            verifier_chat_template_prompt,
-                            model_name,
-                        )
-                        .await
-                    } else {
-                        call_llm_chat_completions(
-                            client.clone(),
-                            prompt_before_assistant,
-                            model_name,
-                        )
-                        .await
-                    };
+                    let response = call_llm_with_prefix(
+                        client.clone(),
+                        prompt_before_assistant,
+                        prompt_after_assistant,
+                        model_name,
+                    )
+                    .await;
                     session.add_model_raw_output(response.clone());
                     verifier_comment = Some(response.trim().to_string());
                 }

@@ -26,12 +26,9 @@ use std::hash::{Hash, Hasher};
 
 use credit_assignment::multi_agent::generate_rollout_answers::RolloutAnswerRaw;
 use credit_assignment::multi_agent::rollout::{
-    get_planner_prompt_after_assistant, get_planner_prompt_before_assistant,
-    get_verifier_prompt_before_assistant,
+    get_prompt_according_to_session_status,
 };
-use credit_assignment::multi_agent::session::{
-    ModelOperation, PlannerStatus, SessionState, SessionStatus,
-};
+use credit_assignment::multi_agent::session::{ModelOperation, SessionState};
 
 /// Command line arguments for browsing rollout session logs.
 #[derive(Parser, Debug)]
@@ -543,7 +540,7 @@ impl App {
                 ListItem::new(format!(
                     "[{index}] {role}",
                     index = index,
-                    role = view.operation_roles[index].label(),
+                    role = "Unknown Role",
                 ))
             })
             .collect();
@@ -564,10 +561,9 @@ impl App {
             &mut log_state,
         );
 
-        let (prompt_label, prompt_text) = view
+        let prompt_text = view
             .current_prompt_display()
-            .map(|(role, text)| (role.label().to_string(), text))
-            .unwrap_or_else(|| ("Planner".into(), "No prompt available".into()));
+            .unwrap_or_else(|| "No prompt available".into());
         let action_text = view
             .current_operation_display()
             .unwrap_or_else(|| "No action yet".to_string());
@@ -588,7 +584,7 @@ impl App {
             .borders(Borders::ALL)
             .title(format!(
                 "Prompt (role: {}) [{}]{}",
-                prompt_label,
+                "Prompt Label",
                 turn_info,
                 if self.focus == PaneFocus::Prompt {
                     " [focused]"
@@ -745,7 +741,6 @@ fn compute_wrapped_line_count(
 struct SessionView {
     answer: RolloutAnswerRaw,
     operations: Vec<ModelOperation>,
-    operation_roles: Vec<PromptRole>,
     current_pos: usize,
     cached_session_state: RefCell<Option<(usize, SessionState)>>,
     total_display_turns: usize,
@@ -755,8 +750,7 @@ struct SessionView {
 impl SessionView {
     fn new(answer: RolloutAnswerRaw) -> Self {
         let operations = answer.trajectory.operations().to_vec();
-        let operation_roles = compute_operation_roles(&operations);
-        let mut final_state = SessionState::new();
+        let mut final_state = SessionState::new(answer.question.clone());
         for operation in operations.iter() {
             final_state.update(operation.clone());
         }
@@ -765,26 +759,12 @@ impl SessionView {
         Self {
             answer,
             operations,
-            operation_roles,
             current_pos: 0,
             total_display_turns,
             total_actual_turns,
             cached_session_state: RefCell::new(None),
         }
     }
-    // fn get_current_session_state(&self) -> SessionState {
-    //     if let Some((cached_pos, cached_state)) = &*self.cached_session_state.borrow() {
-    //         if *cached_pos == self.current_pos {
-    //             return cached_state.clone();
-    //         }
-    //     }
-    //     let mut state = SessionState::new();
-    //     for operation in self.operations.iter().take(self.current_pos) {
-    //         state.update(operation.clone());
-    //     }
-    //     *self.cached_session_state.borrow_mut() = Some((self.current_pos, state.clone()));
-    //     state
-    // }
 
     fn total_ops(&self) -> usize {
         self.operations.len()
@@ -835,98 +815,34 @@ impl SessionView {
         }
     }
 
-    fn current_prompt_display(&self) -> Option<(PromptRole, String)> {
+    fn current_prompt_display(&self) -> Option<String> {
         if self.operations.is_empty() {
             return None;
         }
         let state = self.session_state_at(self.current_pos.saturating_sub(1));
-        let history_prev_steps = match state.session_status {
-            SessionStatus::PlannerTurn => state.to_history_prev_steps(true),
-            SessionStatus::VerifierTurn => state.to_history_prev_steps(false),
-        };
-        let prompt_role_and_prompt = match state.session_status {
-            SessionStatus::PlannerTurn => {
-                let prompt_before_assistant = get_planner_prompt_before_assistant(
-                    &self.answer.question,
-                    state.planner_status,
-                    &history_prev_steps,
-                );
-                let prompt_after_assistant = get_planner_prompt_after_assistant(&state);
-                let prompt_combined = format!(
-                    "{}\n==========Assistant==========\n{}",
-                    prompt_before_assistant, prompt_after_assistant
-                );
+        let (prompt_before_assistant, prompt_after_assistant) =
+            get_prompt_according_to_session_status(&state);
 
-                let role = if matches!(state.planner_status, PlannerStatus::PlannerChoosingMode) {
-                    PromptRole::PlannerChoice
-                } else {
-                    PromptRole::PlannerStep
-                };
-                Some((role, prompt_combined))
-            }
-            SessionStatus::VerifierTurn => Some((
-                PromptRole::Verifier,
-                get_verifier_prompt_before_assistant(
-                    &self.answer.question,
-                    &history_prev_steps,
-                    &state,
-                ),
-            )),
-        };
-        prompt_role_and_prompt
+        let prompt_combined = format!(
+            "{}\n==========Assistant==========\n{}",
+            prompt_before_assistant, prompt_after_assistant
+        );
+
+        Some(prompt_combined)
     }
 
     fn session_state_at(&self, upto: usize) -> SessionState {
-        // let mut state = SessionState::new();
-        // for operation in self.operations.iter().take(upto) {
-        //     state.update(operation.clone());
-        // }
-        // state
         // use cache
         if let Some((cached_pos, cached_state)) = &*self.cached_session_state.borrow() {
             if *cached_pos == upto {
                 return cached_state.clone();
             }
         }
-        let mut state = SessionState::new();
+        let mut state = SessionState::new(self.answer.question.clone());
         for operation in self.operations.iter().take(upto) {
             state.update(operation.clone());
         }
         *self.cached_session_state.borrow_mut() = Some((upto, state.clone()));
         state
     }
-}
-
-#[derive(Copy, Clone)]
-enum PromptRole {
-    PlannerChoice,
-    PlannerStep,
-    Verifier,
-}
-
-impl PromptRole {
-    fn label(self) -> &'static str {
-        match self {
-            PromptRole::PlannerChoice => "Planner (choose mode)",
-            PromptRole::PlannerStep => "Planner (step reasoning)",
-            PromptRole::Verifier => "Verifier",
-        }
-    }
-}
-
-fn compute_operation_roles(operations: &[ModelOperation]) -> Vec<PromptRole> {
-    let mut state = SessionState::new();
-    let mut roles = Vec::with_capacity(operations.len());
-    for operation in operations {
-        let role = match state.session_status {
-            SessionStatus::PlannerTurn => match state.planner_status {
-                PlannerStatus::PlannerChoosingMode => PromptRole::PlannerChoice,
-                _ => PromptRole::PlannerStep,
-            },
-            SessionStatus::VerifierTurn => PromptRole::Verifier,
-        };
-        roles.push(role);
-        state.update(operation.clone());
-    }
-    roles
 }

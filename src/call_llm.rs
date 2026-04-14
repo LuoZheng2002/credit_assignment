@@ -1,5 +1,7 @@
 use reqwest::Client;
 
+use crate::apply_qwen_chat_template::apply_qwen_chat_template;
+
 pub async fn call_llm_chat_completions(client: Client, prompt: String, model_name: &str) -> String {
     let url = if model_name.contains("gpt") {
         "https://api.openai.com/v1/chat/completions"
@@ -70,4 +72,23 @@ pub async fn call_qwen_raw_completions(
         .as_str()
         .expect(&format!("Qwen completions response is invalid: {:?}", json))
         .to_string()
+}
+
+pub async fn call_llm_with_prefix(
+    client: Client,
+    prompt_before_assistant: String,
+    prompt_after_assistant: String,
+    model_name: &str,
+) -> String {
+    if model_name.to_lowercase().contains("qwen") {
+        let mut planner_chat_template_prompt = apply_qwen_chat_template(&prompt_before_assistant);
+        planner_chat_template_prompt += &prompt_after_assistant;
+        call_qwen_raw_completions(client.clone(), planner_chat_template_prompt, model_name).await
+    } else {
+        let full_prompt = format!(
+            "{}\nAssistant: {}",
+            prompt_before_assistant, prompt_after_assistant
+        );
+        call_llm_chat_completions(client.clone(), full_prompt, model_name).await
+    }
 }
