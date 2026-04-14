@@ -1,6 +1,6 @@
 use reqwest::Client;
 
-use crate::apply_qwen_chat_template::apply_qwen_chat_template;
+use crate::apply_vllm_model_chat_template::apply_vllm_model_chat_template;
 use crate::deepmath::generate_raw_answers::Model;
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
@@ -115,7 +115,7 @@ pub async fn call_llm_with_prefix(
 ) -> String {
     if model.is_qwen() {
         let mut planner_chat_template_prompt =
-            apply_qwen_chat_template(&prompt_before_assistant, false);
+            apply_vllm_model_chat_template(model, &prompt_before_assistant, false);
         planner_chat_template_prompt += &prompt_after_assistant;
         call_qwen_raw_completions(client.clone(), planner_chat_template_prompt, model).await
     } else {
