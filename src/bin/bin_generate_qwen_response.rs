@@ -28,7 +28,7 @@ async fn main() {
     let qwen_request: QwenRequest =
         serde_json::from_str(&file_content).expect("Failed to parse JSON");
     let client = reqwest::Client::new();
-    let mut chat_template_prompt = apply_qwen_chat_template(&qwen_request.prompt);
+    let mut chat_template_prompt = apply_qwen_chat_template(&qwen_request.prompt, false);
     chat_template_prompt += &qwen_request.synthesized_response_prefix;
     let result = credit_assignment::call_llm::call_qwen_raw_completions(
         client,
