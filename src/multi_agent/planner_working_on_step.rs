@@ -19,6 +19,15 @@ pub fn get_step_mode_prompt(is_overwriting: bool, is_planner: bool) -> String {
 }
 
 
+// const TOOL_PROMPT: &str = "\
+// You can both reason in plain texts and use the following tools in this step:\n\
+// 1. Python code executor: You're encouraged to use it for calculations to ensure correctness. You can invoke python code by outputting a markdown Python code block.\n\
+// IMPORTANT: always use Python's print statement to output the result, otherwise the result will not be shown.\n\
+// IMPORTANT: after calling any tool, immediately output a <tool_wait> to obtain the tool's response.\n\
+// If the current step's goal is achieved, end your response with <end_step>. DO NOT start the next step in the same turn.\n\
+// If you have got the final answer to submit, put the answer in \\boxed{} in a concise form. \
+// Do not put anything else other than the final answer in \\boxed{}.";
+
 fn get_planner_working_on_step_status_prompt(step_mode: NextStepDecision) -> String {
     let tool_prompt: String = "\
 You can both reason in plain texts and use the following tools in this step:\n\
@@ -31,6 +40,11 @@ If you have got the final answer to submit, put the answer in \\boxed{} in a con
 Do not put anything else other than the final answer in \\boxed{}.".to_string();
     let is_overwriting = step_mode.is_overwriting();
     let step_mode_prompt = get_step_mode_prompt(is_overwriting, true);
+    let final_prompt = if !is_overwriting {
+        "Please identify the next step from the current plan and work on it. Only work on one step before outputting <end_step>.\nBegin your step:"
+    } else{
+        "Your current task is to rewrite the last step instead of starting a new one.\nBegin your step:"
+    };
     format!(
         "\
 The verifier's comment is only for reference and may not be true. \
@@ -38,9 +52,8 @@ Please do not explicitly quote the verifier or try to respond to it in your reas
 {}\n\
 \n\
 {}\n\
-Please identify the next step from the current plan and work on it. Only work on one step before outputting <enqd_step>.\n\
-Begin your new step:",
-        tool_prompt, step_mode_prompt
+{}",
+        tool_prompt, step_mode_prompt, final_prompt
     )
 }
 

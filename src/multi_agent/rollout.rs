@@ -159,11 +159,15 @@ pub async fn rollout(
 ) -> Session {
     // create a state machine
     let mut session = Session::new(question.clone());
-    let mut safe_counter = 0; // to prevent infinite loop in case of bugs
+    let mut sub_step_counter = 0; // to prevent infinite loop in case of bugs
     loop {
         let mut session_should_end = false;
-        safe_counter += 1;
-        if safe_counter > 30 {
+        sub_step_counter += 1;
+        // if sub_step_counter > 30 {
+        //     session.session_state.final_answer = Some("The model does not manage to provide a final answer within allowed number of turns.".to_string());
+        //     session_should_end = true;
+        // }
+        if session.session_state.prev_steps.len() > 20 {
             session.session_state.final_answer = Some("The model does not manage to provide a final answer within allowed number of turns.".to_string());
             session_should_end = true;
         }
@@ -379,8 +383,10 @@ pub async fn rollout(
             }
         }
         println!(
-            "[rollout] question index: {}, sub-step: {} finished",
-            question_id, safe_counter
+            "[rollout] question index: {}, sub-step: {} finished, num prev steps: {}",
+            question_id,
+            sub_step_counter,
+            session.session_state.prev_steps.len()
         );
         if session_should_end {
             println!(
