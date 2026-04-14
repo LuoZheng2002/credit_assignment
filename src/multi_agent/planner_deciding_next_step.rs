@@ -32,7 +32,8 @@ If you choose \"Overwrite Last Step\", write only the following json, with conte
 {\"choice\": \"overwrite_last_step\", \"reason\": \"[Your reason here, including what goes wrong in the last step and what can be improved in the new iteration.]\"}.\n\
 If you choose \"Change Plan\", write only the following json, with contents in the square brackets replaced with appropriate contents: \
 {\"choice\": \"change_plan\", \"fail_reason\": \"[Your reason here, describing why the current plan is not promising.]\", \
-\"possible_future_direction\": \"[Briefly describe a possible direction without elaborating on detailed plans.]\"}.".to_string()
+\"possible_future_direction\": \"[Briefly describe a possible direction without elaborating on detailed plans.]\"}.\n\
+Please be careful with the json character escape rule if you try to include math formula.".to_string()
 }
 
 

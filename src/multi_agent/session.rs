@@ -83,7 +83,7 @@ impl ModelOperation {
     }
     pub fn to_concise_string(&self) -> String {
         match self {
-            ModelOperation::PlannerMakePlan(plan) => format!("[PlannerMakePlan]"),
+            ModelOperation::PlannerMakePlan(_plan) => format!("[PlannerMakePlan]"),
             ModelOperation::PlannerDecideNextStep(mode) => {
                 format!("[PlannerChooseMode]: {:?}", mode)
             }
@@ -207,8 +207,28 @@ impl SessionState {
                 self.session_status = SessionStatus::PlannerChoosingMode;
             }
             ModelOperation::PlannerDecideNextStep(mode) => {
-                self.planner_chosen_mode = Some(mode);
-                self.session_status = SessionStatus::PlannerWorkingOnStep;
+                self.planner_chosen_mode = Some(mode.clone());
+                if let NextStepDecision::ChangePlan {
+                    fail_reason,
+                    possible_future_direction,
+                } = &mode
+                {
+                    let old_plan = self
+                        .current_plan
+                        .clone()
+                        .take()
+                        .expect("There must be a plan to change");
+                    let failed_attempt = FailedAttempt {
+                        plan: old_plan,
+                        fail_reason: fail_reason.clone(),
+                        possible_future_direction: possible_future_direction.clone(),
+                    };
+                    self.failed_attempts.push(failed_attempt);
+                    self.prev_steps.clear();
+                    self.session_status = SessionStatus::PlannerMakingPlan;
+                } else {
+                    self.session_status = SessionStatus::PlannerWorkingOnStep;
+                }
             }
             ModelOperation::PlannerReasoning(reasoning) => {
                 self.current_step_content_raw.push_str(&reasoning);
@@ -293,24 +313,9 @@ impl SessionState {
                         self.current_step_verifier_comment = None;
                     }
                     NextStepDecision::ChangePlan {
-                        fail_reason,
-                        possible_future_direction,
+                        ..
                     } => {
-                        let old_plan = self
-                            .current_plan
-                            .clone()
-                            .take()
-                            .expect("There must be a plan to change");
-                        let failed_attempt = FailedAttempt {
-                            plan: old_plan,
-                            fail_reason,
-                            possible_future_direction,
-                        };
-                        self.failed_attempts.push(failed_attempt);
-                        self.prev_steps.clear(); // when changing plan, we clear the previous steps to avoid confusion
-                        self.current_step_content_raw.clear();
-                        self.current_step_content_compacted = None;
-                        self.current_step_verifier_comment = None;
+                        panic!("ChangePlan should not be a valid step mode when the planner has entered the working on step status.")
                     }
                 }
                 self.session_status = SessionStatus::PlannerChoosingMode;

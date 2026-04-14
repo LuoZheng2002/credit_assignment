@@ -7,7 +7,10 @@ use crate::{
     call_llm::call_llm_with_prefix,
     execute_python_code::execute_python_code,
     multi_agent::{
+        planner_compacting::get_planner_compacting_prompts,
         planner_deciding_next_step::get_planner_deciding_next_step_prompts,
+        planner_making_plan::get_planner_making_plan_prompts,
+        planner_updating_plan::get_planner_updating_plan_prompts,
         planner_working_on_step::get_planner_working_on_step_prompts,
         session::{ModelOperation, NextStepDecision, Session, SessionState, SessionStatus},
         verifier_commenting::get_verifier_commenting_prompts,
@@ -90,6 +93,26 @@ pub fn split_reasoning_and_tool_call(
     (reasoning, Some(tool_call))
 }
 
+pub fn extract_content_in_markdown_code_block(content: &str) -> Option<String> {
+    let start_fence = "```";
+    let end_fence = "```";
+    let start_index = content.find(start_fence)?;
+    let end_index = content[start_index + start_fence.len()..].find(end_fence)?
+        + start_index
+        + start_fence.len();
+    Some(content[start_index + start_fence.len()..end_index].to_string())
+}
+
+pub fn extract_content_in_json_markdown_code_block(content: &str) -> Option<String> {
+    let start_fence = "```json";
+    let end_fence = "```";
+    let start_index = content.find(start_fence)?;
+    let end_index = content[start_index + start_fence.len()..].find(end_fence)?
+        + start_index
+        + start_fence.len();
+    Some(content[start_index + start_fence.len()..end_index].to_string())
+}
+
 pub async fn execute_planner_tool_call(tool_call: &str) -> String {
     let trimmed_tool_call = tool_call.trim_start();
     assert!(
@@ -104,10 +127,6 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> String {
         .find('\n')
         .map(|idx| idx + 1)
         .unwrap_or("```python".len());
-    // assert!(
-    //     fence_end_index >= code_start,
-    //     "Invalid markdown python tool call format"
-    // );
     if fence_end_index < code_start {
         return "```python\nTool call markdown code block not properly formatted.\n```".to_string();
     }
@@ -121,11 +140,11 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> String {
 
 pub fn get_prompt_according_to_session_status(session_state: &SessionState) -> (String, String) {
     match session_state.session_status {
-        SessionStatus::PlannerMakingPlan => todo!(),
+        SessionStatus::PlannerMakingPlan => get_planner_making_plan_prompts(session_state),
         SessionStatus::PlannerChoosingMode => get_planner_deciding_next_step_prompts(session_state),
         SessionStatus::PlannerWorkingOnStep => get_planner_working_on_step_prompts(session_state),
-        SessionStatus::PlannerCompactingStep => todo!(),
-        SessionStatus::PlannerUpdatingPlan => todo!(),
+        SessionStatus::PlannerCompactingStep => get_planner_compacting_prompts(session_state),
+        SessionStatus::PlannerUpdatingPlan => get_planner_updating_plan_prompts(session_state),
         SessionStatus::VerifierCommenting => get_verifier_commenting_prompts(session_state),
     }
 }
@@ -150,7 +169,22 @@ pub async fn rollout(
         }
         let new_operations: Vec<ModelOperation> = match &session.session_state.session_status {
             SessionStatus::PlannerMakingPlan => {
-                todo!()
+                let (prompt_before_assistant, prompt_after_assistant) =
+                    get_prompt_according_to_session_status(&session.session_state);
+                let response = call_llm_with_prefix(
+                    client.clone(),
+                    prompt_before_assistant,
+                    prompt_after_assistant,
+                    model_name,
+                )
+                .await;
+                session.add_model_raw_output(response.clone());
+                // extract the content in the markdown code block
+                let plan_content = extract_content_in_markdown_code_block(&response).expect(&format!(
+                    "Failed to extract markdown code block content for planner making plan. Response: {}",
+                    response
+                ));
+                vec![ModelOperation::PlannerMakePlan(plan_content)]
             }
             SessionStatus::PlannerChoosingMode => {
                 let (prompt_before_assistant, prompt_after_assistant) =
@@ -169,11 +203,56 @@ pub async fn rollout(
                 .await;
                 session.add_model_raw_output(response.clone());
                 // begin to parse
-                let response_json: serde_json::Value = serde_json::from_str(&response.trim())
-                    .expect(&format!(
-                        "Failed to parse planner choosing mode response as JSON. Response text: {}",
-                        response
-                    ));
+                // let response_json: serde_json::Value = serde_json::from_str(&response.trim())
+                //     .expect(&format!(
+                //         "Failed to parse planner choosing mode response as JSON. Response text: {}",
+                //         response
+                //     ));
+                let response_json: serde_json::Value = match serde_json::from_str(&response.trim())
+                {
+                    Ok(json) => json,
+                    Err(e) => {
+                        // call llm to fix the Json format error, only outputs the fixed json
+                        let fix_json_prompt = format!(
+                            "The following JSON is not properly formatted and cannot be parsed. Please fix the JSON format error and only output the fixed JSON without any explanation. JSON: {}. Error: {} You should start immediately with open curly bracket and end with close curly bracket.",
+                            response.trim(),
+                            e
+                        );
+                        let fixed_response = call_llm_with_prefix(
+                            client.clone(),
+                            fix_json_prompt,
+                            String::new(),
+                            model_name,
+                        )
+                        .await;
+                        session.add_model_raw_output(fixed_response.clone());
+                        // serde_json::from_str(&fixed_response.trim()).expect(&format!(
+                        //     "Failed to parse fixed planner choosing mode response as JSON. Fixed response text: {}",
+                        //     fixed_response
+                        // ))
+                        match serde_json::from_str(&fixed_response.trim()) {
+                            Ok(json) => json,
+                            Err(e) => {
+                                // extract the content in the markdown code block of the fixed response and try to parse it as JSON again, as the llm may output the fixed JSON in a markdown code block
+                                if let Some(content) =
+                                    extract_content_in_json_markdown_code_block(&fixed_response)
+                                {
+                                    serde_json::from_str(&content.trim()).expect(&format!(
+                                        "Failed to parse JSON content in markdown code block of fixed planner choosing mode response. Content: {}. Original fixed response: {}. Error: {}",
+                                        content,
+                                        fixed_response,
+                                        e
+                                    ))
+                                } else {
+                                    panic!(
+                                        "Failed to parse fixed planner choosing mode response as JSON and could not extract JSON content from markdown code block. Fixed response: {}. Error: {}",
+                                        fixed_response, e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                };
                 let choice = response_json["choice"]
                     .as_str()
                     .expect(&format!("Planner choosing mode response JSON does not contain 'choice' field. Response JSON: {}", response_json));
@@ -238,10 +317,35 @@ pub async fn rollout(
                 operations
             }
             SessionStatus::PlannerCompactingStep => {
-                todo!()
+                let (prompt_before_assistant, prompt_after_assistant) =
+                    get_prompt_according_to_session_status(&session.session_state);
+                let response = call_llm_with_prefix(
+                    client.clone(),
+                    prompt_before_assistant,
+                    prompt_after_assistant,
+                    model_name,
+                )
+                .await;
+                session.add_model_raw_output(response.clone());
+                vec![ModelOperation::PlannerCompactStep(response)]
             }
             SessionStatus::PlannerUpdatingPlan => {
-                todo!()
+                let (prompt_before_assistant, prompt_after_assistant) =
+                    get_prompt_according_to_session_status(&session.session_state);
+                let response = call_llm_with_prefix(
+                    client.clone(),
+                    prompt_before_assistant,
+                    prompt_after_assistant,
+                    model_name,
+                )
+                .await;
+                session.add_model_raw_output(response.clone());
+                // extract the content in the markdown code block
+                let updated_plan_content = extract_content_in_markdown_code_block(&response).expect(&format!(
+                    "Failed to extract markdown code block content for planner updating plan. Response: {}",
+                    response
+                ));
+                vec![ModelOperation::PlannerUpdatePlan(updated_plan_content)]
             }
             SessionStatus::VerifierCommenting => {
                 let mut verifier_comment = None;

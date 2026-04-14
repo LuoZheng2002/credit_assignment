@@ -26,7 +26,7 @@ You can both reason in plain texts and use the following tools in this step:\n\
 IMPORTANT: always use Python's print statement to output the result, otherwise the result will not be shown.\n\
 IMPORTANT: after calling any tool, immediately output a <tool_wait> to obtain the tool's response.\n\
 \n\
-If you think a milestone has been achieved and want to mark the current step as complete, end your response with <end_step>\n\
+If the current step's goal is achieved, end your response with <end_step>. DO NOT start the next step in the same turn.\n\
 If you have got the final answer to submit, put the answer in \\boxed{} in a concise form. \
 Do not put anything else other than the final answer in \\boxed{}.".to_string();
     let is_overwriting = step_mode.is_overwriting();
@@ -38,7 +38,7 @@ Please do not explicitly quote the verifier or try to respond to it in your reas
 {}\n\
 \n\
 {}\n\
-Please plan your new step to solve a concrete sub-goal. Avoid solving multiple sub-goals in a single step.\n\
+Please identify the next step from the current plan and work on it. Only work on one step before outputting <enqd_step>.\n\
 Begin your new step:",
         tool_prompt, step_mode_prompt
     )
