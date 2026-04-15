@@ -17,7 +17,11 @@ fn get_chat_completions_url(model: Model) -> &'static str {
     }
 }
 
-fn build_chat_completions_body(prompt: String, model: Model) -> serde_json::Value {
+fn build_chat_completions_body(
+    prompt: String,
+    model: Model,
+    passes_in_stop: bool,
+) -> serde_json::Value {
     if model.is_qwen() {
         // Explicitly disable Qwen3 thinking mode in vLLM chat templating.
         return serde_json::json!({
@@ -34,19 +38,30 @@ fn build_chat_completions_body(prompt: String, model: Model) -> serde_json::Valu
                 "enable_thinking": false,
             }
         });
+    } else if passes_in_stop {
+        serde_json::json!({
+            "model": model.api_name(),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            "max_completion_tokens": 2048,
+            "stop": ["<tool_wait>"],
+        })
+    } else {
+        serde_json::json!({
+            "model": model.api_name(),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            "max_completion_tokens": 2048,
+        })
     }
-
-    serde_json::json!({
-        "model": model.api_name(),
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ],
-        "max_completion_tokens": 2048,
-        "stop": ["<tool_wait>"],
-    })
 }
 
 async fn post_json(
@@ -70,9 +85,14 @@ async fn post_json(
     client.post(url).json(&body).send().await.unwrap()
 }
 
-pub async fn call_llm_chat_completions(client: Client, prompt: String, model: Model) -> String {
+pub async fn call_llm_chat_completions(
+    client: Client,
+    prompt: String,
+    model: Model,
+    passes_in_stop: bool,
+) -> String {
     let url = get_chat_completions_url(model);
-    let body = build_chat_completions_body(prompt, model);
+    let body = build_chat_completions_body(prompt, model, passes_in_stop);
     let response = post_json(client, url, body, model).await;
     let body = response.bytes().await.unwrap();
     let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) else {
@@ -128,6 +148,6 @@ pub async fn call_llm_with_prefix(
             "{}\nAssistant: {}",
             prompt_before_assistant, prompt_after_assistant
         );
-        call_llm_chat_completions(client.clone(), full_prompt, model).await
+        call_llm_chat_completions(client.clone(), full_prompt, model, true).await
     }
 }

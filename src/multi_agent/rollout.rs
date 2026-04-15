@@ -4,7 +4,7 @@ use rand::RngExt;
 use reqwest::Client;
 
 use crate::{
-    call_llm::call_llm_with_prefix,
+    call_llm::{call_llm_chat_completions, call_llm_with_prefix},
     deepmath::generate_raw_answers::Model,
     execute_python_code::execute_python_code,
     multi_agent::{
@@ -238,11 +238,11 @@ pub async fn rollout(
                             "The following JSON is not properly formatted and cannot be parsed. Please output the fixed JSON without any explanation. JSON to be fixed: {}. You should start immediately with open curly bracket and end with close curly bracket.",
                             response.trim()
                         );
-                        let fixed_response = call_llm_with_prefix(
+                        let fixed_response = call_llm_chat_completions(
                             client.clone(),
                             fix_json_prompt,
-                            String::new(),
                             Model::Gpt5Mini,
+                            false,
                         )
                         .await;
                         session.add_model_raw_output(fixed_response.clone());

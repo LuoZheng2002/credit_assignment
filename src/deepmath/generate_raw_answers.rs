@@ -92,7 +92,7 @@ async fn generate_raw_answer_task(
         "Please answer the following question by first reasoning and then putting the final short answer in \\boxed{{}}. Question: {}",
         question.question
     );
-    let response = call_llm_chat_completions(client, prompt, model).await;
+    let response = call_llm_chat_completions(client, prompt, model, false).await;
     AnswerRaw {
         id: question.id,
         question: question.question,

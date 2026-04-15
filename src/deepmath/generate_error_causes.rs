@@ -88,7 +88,7 @@ Question: {}\nModel's Reasoning: {}\nReference Reasoning: {}\nError Cause Analys
         correctness_reasoning.model_reasoning,
         correctness_reasoning.reference_reasoning
     );
-    let error_reason = call_llm_chat_completions(client, prompt, Model::Gpt5Mini).await;
+    let error_reason = call_llm_chat_completions(client, prompt, Model::Gpt5Mini, false).await;
     DeepMathErrorCause {
         id: correctness_reasoning.id,
         correct: correctness_reasoning.correct,

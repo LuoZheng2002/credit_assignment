@@ -82,7 +82,7 @@ If the model's answer contains units but the reference answer does not, treat th
 The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
         answer.model_answer, answer.correct_answer
     );
-    let evaluation = call_llm_chat_completions(client, prompt, Model::Gpt4o)
+    let evaluation = call_llm_chat_completions(client, prompt, Model::Gpt4o, false)
         .await
         .trim()
         .to_lowercase();
