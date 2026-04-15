@@ -234,15 +234,14 @@ pub async fn rollout(
                     Err(e) => {
                         // call llm to fix the Json format error, only outputs the fixed json
                         let fix_json_prompt = format!(
-                            "The following JSON is not properly formatted and cannot be parsed. Please fix the JSON format error and only output the fixed JSON without any explanation. JSON: {}. Error: {} You should start immediately with open curly bracket and end with close curly bracket.",
-                            response.trim(),
-                            e
+                            "The following JSON is not properly formatted and cannot be parsed. Please output the fixed JSON without any explanation. JSON to be fixed: {}. You should start immediately with open curly bracket and end with close curly bracket.",
+                            response.trim()
                         );
                         let fixed_response = call_llm_with_prefix(
                             client.clone(),
                             fix_json_prompt,
                             String::new(),
-                            Model::Gpt4o,
+                            Model::Gpt5Mini,
                         )
                         .await;
                         session.add_model_raw_output(fixed_response.clone());
