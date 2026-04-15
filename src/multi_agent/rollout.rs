@@ -123,21 +123,24 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> String {
         tool_call
     );
     let Some(fence_end_index) = trimmed_tool_call.rfind("```") else {
-        return "```python\nTool call markdown code block not properly closed.\n```".to_string();
+        return "<tool_response>Tool call markdown code block not properly closed.</tool_response>".to_string();
     };
     let code_start = trimmed_tool_call
         .find('\n')
         .map(|idx| idx + 1)
         .unwrap_or("```python".len());
     if fence_end_index < code_start {
-        return "```python\nTool call markdown code block not properly formatted.\n```".to_string();
+        return "<tool_response>Tool call markdown code block not properly formatted.</tool_response>".to_string();
     }
     let code = &trimmed_tool_call[code_start..fence_end_index];
     let mut python_code_result = execute_python_code(code.to_string()).await;
     if python_code_result.trim().is_empty() {
         python_code_result = "Python interpreter did not return any output. Please use print statements to retrieve results.".to_string();
     }
-    format!("```python\n{}\n```\n", python_code_result.trim())
+    format!(
+        "<tool_response>{}</tool_response>",
+        python_code_result.trim()
+    )
 }
 
 pub fn get_prompt_according_to_session_status(session_state: &SessionState) -> (String, String) {
@@ -166,6 +169,10 @@ pub fn get_prompt_according_to_session_status(session_state: &SessionState) -> (
         SessionStatus::VerifierCommenting => get_verifier_commenting_prompts(session_state),
     }
 }
+
+pub const SUBMIT_ANSWER_HINT: &str = "\
+<hint>It seems you are trying to end the step at the start of the step. \
+If you have got the answer, put it in \\boxed{} before ending with <end_step>.</hint>";
 
 pub async fn rollout(
     question_id: usize,
@@ -278,6 +285,7 @@ pub async fn rollout(
                             .expect(&format!("Planner choosing mode response JSON with 'overwrite_last_step' choice does not contain 'reason' field. Response JSON: {}", response_json));
                             NextStepDecision::OverwriteLastStep(reason.to_string())
                         } else {
+                            println!("[Warning] Overwrite last step is capped.");
                             NextStepDecision::Continue // if cannot overwrite step, we also continue to the next step to avoid getting stuck
                         }
                     }
@@ -294,6 +302,7 @@ pub async fn rollout(
                                 possible_future_direction: possible_future_direction.to_string(),
                             }
                         } else {
+                            println!("[Warning] Change plan is capped.");
                             NextStepDecision::Continue // if cannot change plan, we also continue to the next step to avoid getting stuck
                         }
                     }
@@ -316,10 +325,20 @@ pub async fn rollout(
                 .await;
                 session.add_model_raw_output(response.clone());
                 if response.trim().is_empty() {
-                    response += "<end_step>";
+                    response = "<end_step>".to_string(); // if the model does not output anything, we treat it as if it outputs <end_step> to prevent getting stuck
+                }
+                let mut operations = Vec::new();
+                if &response == "<end_step>"
+                    && &session.session_state.current_step_content_raw == ""
+                {
+                    println!(
+                        "[Warning]: model tries to end the step without providing any content for the step."
+                    );
+                    operations.push(ModelOperation::ToolCallResponse(
+                        SUBMIT_ANSWER_HINT.to_string(),
+                    ));
                 }
                 let (reasoning, tool_call) = split_reasoning_and_tool_call(response, model);
-                let mut operations = Vec::new();
                 let mut push_end_step = false;
                 if let Some(reasoning) = reasoning {
                     if reasoning.contains("<end_step>") {
