@@ -36,7 +36,7 @@ pub fn apply_vllm_model_chat_template(
 
     let template_environment = match model {
         Model::Qwen25_7b => &QWEN25_TEMPLATE_ENVIRONMENT,
-        Model::Qwen3_4b | Model::Qwen3_8b => &QWEN3_TEMPLATE_ENVIRONMENT,
+        Model::Qwen3_4b | Model::Qwen3_8b | Model::Qwen35_4b => &QWEN3_TEMPLATE_ENVIRONMENT,
         Model::Gpt4o | Model::Gpt5Mini => unreachable!(),
     };
     let tmpl = template_environment.get_template("chat").unwrap();

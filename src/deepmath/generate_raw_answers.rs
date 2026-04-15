@@ -18,6 +18,8 @@ pub enum Model {
     Qwen3_4b,
     #[value(name = "qwen3-8b")]
     Qwen3_8b,
+    #[value(name = "qwen3.5-4b")]
+    Qwen35_4b,
 }
 
 impl Model {
@@ -28,6 +30,7 @@ impl Model {
             Model::Qwen25_7b => "qwen2.5-7b",
             Model::Qwen3_4b => "qwen3-4b",
             Model::Qwen3_8b => "qwen3-8b",
+            Model::Qwen35_4b => "qwen3.5-4b",
         }
     }
 
@@ -38,12 +41,13 @@ impl Model {
             Model::Qwen25_7b => "Qwen/Qwen2.5-7B-Instruct",
             Model::Qwen3_4b => "Qwen/Qwen3-4B",
             Model::Qwen3_8b => "Qwen/Qwen3-8B",
+            Model::Qwen35_4b => "Qwen/Qwen3.5-4B",
         }
     }
 
     pub fn is_qwen(&self) -> bool {
         match self {
-            Model::Qwen25_7b | Model::Qwen3_4b | Model::Qwen3_8b => true,
+            Model::Qwen25_7b | Model::Qwen3_4b | Model::Qwen3_8b | Model::Qwen35_4b => true,
             Model::Gpt4o | Model::Gpt5Mini => false,
         }
     }
@@ -51,7 +55,7 @@ impl Model {
     pub fn is_gpt(&self) -> bool {
         match self {
             Model::Gpt4o | Model::Gpt5Mini => true,
-            Model::Qwen25_7b | Model::Qwen3_4b | Model::Qwen3_8b => false,
+            Model::Qwen25_7b | Model::Qwen3_4b | Model::Qwen3_8b | Model::Qwen35_4b => false,
         }
     }
 }
