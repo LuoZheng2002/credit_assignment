@@ -1,4 +1,11 @@
-use std::{collections::HashSet, fs::OpenOptions, sync::Arc};
+use std::{
+    collections::HashSet,
+    fs::OpenOptions,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+};
 
 use clap::Parser;
 use credit_assignment::{
@@ -6,7 +13,7 @@ use credit_assignment::{
     datasets::{DeepMathQuestion, get_question_path},
     deepmath::{
         generate_raw_answers::Model,
-        judge_answers::{DeepMathCorrectness, get_correctness_path},
+        judge_answers::{DeepMathCorrectness, get_accuracy_path, get_correctness_path},
     },
     multi_agent::{
         generate_rollout_answers::{
@@ -45,6 +52,7 @@ struct Args {
 // If all trajectories finish, sort the trajectories, correctness and report the final accuracy.
 
 const MAX_TASKS: usize = 1000;
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 async fn judge_rollout_answer_task(
     answer: RolloutTrajectory,
@@ -149,6 +157,12 @@ async fn main() {
     unfinished_correctness_ids.retain(|id| !correctness_completed_ids.contains(id));
 
     let sem = Arc::new(Semaphore::new(MAX_TASKS));
+    SHUTDOWN.store(false, Ordering::SeqCst);
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.unwrap();
+        println!("Ctrl+C received, shutting down...");
+        SHUTDOWN.store(true, Ordering::SeqCst);
+    });
     let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<RolloutActionLogItem>();
     let (trajectory_tx, mut trajectory_rx) =
         tokio::sync::mpsc::unbounded_channel::<RolloutTrajectory>();
@@ -170,29 +184,41 @@ async fn main() {
         .unwrap();
     let mut correctness_file = OpenOptions::new()
         .create(true)
-        .append(true)
+        .write(true)
+        .truncate(true)
         .open(&correctness_path)
         .unwrap();
     for trajectory in trajectory_items.into_values() {
         trajectory_tx.send(trajectory).unwrap();
     }
+    for correctness in correctness_items.into_values() {
+        correctness_output_tx.send(correctness).unwrap();
+    }
     let submit_trajectory_task_handle = tokio::spawn({
         let sem = sem.clone();
         let client = client.clone();
         async move {
+            let finished_count = Arc::new(AtomicUsize::new(0));
+            let total_count = unfinished_trajectory_ids.len();
             for id in unfinished_trajectory_ids {
+                if SHUTDOWN.load(Ordering::SeqCst) {
+                    break;
+                }
                 let permit = sem.clone().acquire_owned().await.unwrap();
                 let unfinished_question = questions.get(&id).unwrap();
                 let question = unfinished_question.question.clone();
+                let reference_answer = unfinished_question.final_answer.clone();
                 let action_tx = action_tx.clone();
                 let trajectory_tx = trajectory_tx.clone();
                 let client = client.clone();
                 let loaded_session_log = loaded_session_logs.swap_remove(&id).unwrap_or_default();
                 let mut task_rng = StdRng::seed_from_u64(sumit_task_rng.next_u64());
+                let finished_count = finished_count.clone();
                 tokio::spawn(async move {
                     rollout(
                         id,
                         question,
+                        reference_answer,
                         loaded_session_log,
                         client,
                         model,
@@ -203,18 +229,26 @@ async fn main() {
                     )
                     .await;
                     drop(permit);
+                    finished_count.fetch_add(1, Ordering::SeqCst);
+                    println!("Trajectory {}/{} finished", finished_count.load(Ordering::SeqCst), total_count);
                 });
             }
         }
     });
     let receive_action_handle = tokio::spawn(async move {
         while let Some(action_log_item) = action_rx.recv().await {
+            if SHUTDOWN.load(Ordering::SeqCst) {
+                break;
+            }
             let json_line = serde_json::to_string(&action_log_item).unwrap();
             writeln!(session_log_file, "{}", json_line).unwrap();
         }
     });
     let receive_trajectory_handle = tokio::spawn(async move {
         while let Some(trajectory) = trajectory_rx.recv().await {
+            if SHUTDOWN.load(Ordering::SeqCst) {
+                break;
+            }
             let json_line = serde_json::to_string(&trajectory).unwrap();
             writeln!(trajectory_file, "{}", json_line).unwrap();
             // handle correctness
@@ -226,6 +260,9 @@ async fn main() {
     });
     let submit_correctness_task_handle = tokio::spawn(async move {
         while let Some(trajectory) = correctness_input_rx.recv().await {
+            if SHUTDOWN.load(Ordering::SeqCst) {
+                break;
+            }
             let permit = sem.clone().acquire_owned().await.unwrap();
             let client = client.clone();
             let correctness_output_tx = correctness_output_tx.clone();
@@ -236,11 +273,23 @@ async fn main() {
             });
         }
     });
-
     let receive_correctness_handle = tokio::spawn(async move {
+        // let correct_count = Arc::new(AtomicUsize::new(0));
+        // let total_count = Arc::new(AtomicUsize::new(0));
+        let mut correct_count: usize = 0;
+        let mut total_count: usize = 0;
         while let Some(correctness) = correctness_output_rx.recv().await {
+            if SHUTDOWN.load(Ordering::SeqCst) {
+                break;
+            }
             let json_line = serde_json::to_string(&correctness).unwrap();
             writeln!(correctness_file, "{}", json_line).unwrap();
+            if correctness.correct {
+                correct_count += 1;
+            }
+            total_count += 1;
+            let accuracy = correct_count as f64 / total_count as f64;
+            println!("Running accuracy: {}/{} ({:.2}%)", correct_count, total_count, accuracy * 100.0);
         }
     });
 
@@ -252,4 +301,36 @@ async fn main() {
         receive_correctness_handle,
     ])
     .await;
+    // read trajectory file and correctness file, and sort them by id
+    let mut trajectories: Vec<RolloutTrajectory> =
+        read_json_lines(&trajectory_path).unwrap_or_default();
+    trajectories.sort_by_key(|t| t.id);
+    let mut correctness: Vec<DeepMathCorrectness> =
+        read_json_lines(&correctness_path).unwrap_or_default();
+    correctness.sort_by_key(|c| c.id);
+    // write back sorted trajectories and correctness
+    write_jsonl_file(&trajectory_path, &trajectories).unwrap();
+    write_jsonl_file(&correctness_path, &correctness).unwrap();
+    let accuracy_file_path = get_accuracy_path(model, &dataset_name, num_samples, true);
+    let mut correct_count = 0;
+    for c in &correctness {
+        if c.correct {
+            correct_count += 1;
+        }
+    }
+    let accuracy = correct_count as f64 / correctness.len() as f64;
+    std::fs::write(
+        accuracy_file_path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "total": correctness.len(),
+            "correct": correct_count,
+            "accuracy": accuracy,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    println!(
+        "Rollout evaluation completed for model {} on {} dataset with {} samples. Accuracy: {:.2}%",
+        model_name, dataset_name, num_samples, accuracy * 100.0
+    );
 }

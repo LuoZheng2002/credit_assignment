@@ -181,6 +181,7 @@ If you have got the answer, put it in \\boxed{} before ending with <end_step>.</
 pub async fn rollout(
     question_id: usize,
     question: String,
+    reference_answer: String,
     loaded_session_log: Vec<RolloutAction>,
     client: Client,
     model: Model,
@@ -201,14 +202,15 @@ pub async fn rollout(
     loop {
         if session_should_end {
             println!(
-                "[rollout finishd] question index: {}, total actual rounds: {}, final answer: {}",
+                "[rollout finished] question index: {}, total actual rounds: {}, final answer: {}, correct answer: {}",
                 question_id,
                 session.session_log.total_actual_rounds(),
                 session
                     .session_state
                     .final_answer
                     .as_deref()
-                    .unwrap_or("None")
+                    .unwrap_or("None"),
+                reference_answer
             );
             break;
         }
@@ -461,7 +463,7 @@ pub async fn rollout(
             .final_answer
             .clone()
             .unwrap_or("No answer found".into()),
-        correct_answer: String::new(), // we will fill in the correct answer later when we evaluate the trajectory, to avoid data leakage
+        correct_answer: reference_answer, // we will fill in the correct answer later when we evaluate the trajectory, to avoid data leakage
         trajectory: session.session_log,
     };
     trajectory_tx.send(rollout_trajectory).unwrap();

@@ -49,7 +49,7 @@ pub fn get_correctness_path(
     }
 }
 
-fn get_accuracy_path(
+pub fn get_accuracy_path(
     model: Model,
     dataset_name: &str,
     num_samples: usize,
