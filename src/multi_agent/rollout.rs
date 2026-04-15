@@ -80,10 +80,7 @@ pub fn split_reasoning_and_tool_call(
         tool_call.push_str("<tool_wait>");
     } else {
         if model.is_qwen() {
-            println!(
-                "Warning: tool call does not end with <tool_wait> tag. response: {}",
-                response
-            );
+            println!("Warning: tool call does not end with <tool_wait> tag.");
         }
         tool_call.push_str("<tool_wait>"); // if there is no <tool_wait> tag, we also add it and trim all the content after the tool call
     }
@@ -265,7 +262,7 @@ pub async fn rollout(
                                     ))
                                 } else {
                                     panic!(
-                                        "Failed to parse fixed planner choosing mode response as JSON and could not extract JSON content from markdown code block. Fixed response: {}. Error: {}",
+                                        "Failed to parse fixed planner choosing mode response as JSON and could not extract JSON content from markdown code block. Fixed response:\n{}\n Error: {}",
                                         fixed_response, e
                                     );
                                 }
