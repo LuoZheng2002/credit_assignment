@@ -1,7 +1,7 @@
 use std::fs;
 
 use credit_assignment::{
-    apply_qwen_chat_template::{ChatMessage, apply_qwen_chat_template},
+    // apply_qwen_chat_template::{ChatMessage, apply_qwen_chat_template},
     call_llm::{call_llm_chat_completions, call_qwen_raw_completions},
 };
 use minijinja::{Environment, context};

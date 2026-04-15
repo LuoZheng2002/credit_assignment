@@ -19,7 +19,7 @@ pub struct ChatMessage {
 
 fn apply_simple_qwen_chatml_template(user_prompt: &str) -> String {
     format!(
-        "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+        "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
         user_prompt
     )
 }
