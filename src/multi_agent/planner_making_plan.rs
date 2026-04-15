@@ -19,7 +19,7 @@ For example:\n\
 ```\n\
 Please do not include any conclusion in the plan. If you think you can immediately come to a conclusion, use phrases like \"Find if\" or \"Verify if\". \
 If later steps depend on some conclusions, make them conditional or \"To be determined\".\n\
-Please put your final plan within the markdown code block with triple backticks.\n\
+Please only output the steps without the backticks.\n\
 "
     .to_string()
 }

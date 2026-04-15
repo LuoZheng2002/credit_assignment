@@ -181,10 +181,11 @@ pub async fn rollout(
                 .await;
                 session.add_model_raw_output(response.clone());
                 // extract the content in the markdown code block
-                let plan_content = extract_content_in_markdown_code_block(&response).expect(&format!(
-                    "Failed to extract markdown code block content for planner making plan. Response: {}",
-                    response
-                ));
+                // let plan_content = extract_content_in_markdown_code_block(&response).expect(&format!(
+                //     "Failed to extract markdown code block content for planner making plan. Response: {}",
+                //     response
+                // ));
+                let plan_content = response; // we change to not require the plan to be in a markdown code block
                 vec![ModelOperation::PlannerMakePlan(plan_content)]
             }
             SessionStatus::PlannerChoosingMode => {
@@ -342,10 +343,11 @@ pub async fn rollout(
                 .await;
                 session.add_model_raw_output(response.clone());
                 // extract the content in the markdown code block
-                let updated_plan_content = extract_content_in_markdown_code_block(&response).expect(&format!(
-                    "Failed to extract markdown code block content for planner updating plan. Response: {}",
-                    response
-                ));
+                // let updated_plan_content = extract_content_in_markdown_code_block(&response).expect(&format!(
+                //     "Failed to extract markdown code block content for planner updating plan. Response: {}",
+                //     response
+                // ));
+                let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
                 vec![ModelOperation::PlannerUpdatePlan(updated_plan_content)]
             }
             SessionStatus::VerifierCommenting => {
