@@ -24,9 +24,9 @@ use serde_json;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use credit_assignment::multi_agent::generate_rollout_answers::RolloutAnswerRaw;
+use credit_assignment::multi_agent::generate_rollout_answers::RolloutTrajectory;
 use credit_assignment::multi_agent::rollout::get_prompt_according_to_session_status;
-use credit_assignment::multi_agent::session::{ModelOperation, SessionState};
+use credit_assignment::multi_agent::session::{RolloutAction, SessionState};
 
 /// Command line arguments for browsing rollout session logs.
 #[derive(Parser, Debug)]
@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     result
 }
 
-fn load_rollout_answers(path: &PathBuf) -> Result<Vec<RolloutAnswerRaw>, Box<dyn Error>> {
+fn load_rollout_answers(path: &PathBuf) -> Result<Vec<RolloutTrajectory>, Box<dyn Error>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut answers = Vec::new();
@@ -69,7 +69,7 @@ fn load_rollout_answers(path: &PathBuf) -> Result<Vec<RolloutAnswerRaw>, Box<dyn
         if trimmed.is_empty() {
             continue;
         }
-        let answer: RolloutAnswerRaw = serde_json::from_str(trimmed)?;
+        let answer: RolloutTrajectory = serde_json::from_str(trimmed)?;
         answers.push(answer);
     }
     if answers.is_empty() {
@@ -82,7 +82,7 @@ fn load_rollout_answers(path: &PathBuf) -> Result<Vec<RolloutAnswerRaw>, Box<dyn
 
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    answers: Vec<RolloutAnswerRaw>,
+    answers: Vec<RolloutTrajectory>,
 ) -> Result<(), Box<dyn Error>> {
     let mut app = App::new(answers);
     loop {
@@ -142,7 +142,7 @@ impl PaneFocus {
 }
 
 struct App {
-    answers: Vec<RolloutAnswerRaw>,
+    answers: Vec<RolloutTrajectory>,
     selection_state: ListState,
     browsing_view: Option<SessionView>,
     focus: PaneFocus,
@@ -157,7 +157,7 @@ struct App {
 }
 
 impl App {
-    fn new(answers: Vec<RolloutAnswerRaw>) -> Self {
+    fn new(answers: Vec<RolloutTrajectory>) -> Self {
         let mut selection_state = ListState::default();
         if !answers.is_empty() {
             selection_state.select(Some(0));
@@ -737,8 +737,8 @@ fn compute_wrapped_line_count(
 }
 
 struct SessionView {
-    answer: RolloutAnswerRaw,
-    operations: Vec<ModelOperation>,
+    answer: RolloutTrajectory,
+    operations: Vec<RolloutAction>,
     current_pos: usize,
     cached_session_state: RefCell<Option<(usize, SessionState)>>,
     total_display_turns: usize,
@@ -746,8 +746,8 @@ struct SessionView {
 }
 
 impl SessionView {
-    fn new(answer: RolloutAnswerRaw) -> Self {
-        let operations = answer.trajectory.operations().to_vec();
+    fn new(answer: RolloutTrajectory) -> Self {
+        let operations = answer.trajectory.0.clone();
         let mut final_state = SessionState::new(answer.question.clone());
         for operation in operations.iter() {
             final_state.update(operation.clone());

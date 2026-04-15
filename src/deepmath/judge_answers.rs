@@ -1,5 +1,3 @@
-use std::fs::File;
-
 use indexmap::IndexMap;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -74,7 +72,7 @@ fn get_accuracy_path(
     }
 }
 
-async fn judge_answer_task(answer: AnswerParsed, client: Client) -> DeepMathCorrectness {
+pub async fn judge_answer_task(answer: AnswerParsed, client: Client) -> DeepMathCorrectness {
     let prompt = format!(
         // "The question is: {}. The model's answer is: {}. The correct answer is: {}. Please evaluate whether the model's answer is correct and return only 'correct' or 'incorrect'.",
         "You are an answer checker that checks a model's answer against the reference answer. Judge if the model's answer is equivalent to the reference answer. \
@@ -145,7 +143,7 @@ pub async fn judge_answers(
         correctness_path
     );
     let score_results: IndexMap<usize, DeepMathCorrectness> =
-        read_json_lines_indexed(&File::open(&correctness_path).unwrap()).unwrap();
+        read_json_lines_indexed(&correctness_path).unwrap();
     let mut correct = 0;
     for score in score_results.values() {
         if score.correct {

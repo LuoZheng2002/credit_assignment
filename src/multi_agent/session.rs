@@ -41,7 +41,7 @@ impl DisplayPlannerStepComplete {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ModelOperation {
+pub enum RolloutAction {
     PlannerMakePlan(String), // this should be a mandatory process instead of a choice
     PlannerDecideNextStep(NextStepDecision),
     PlannerReasoning(String),
@@ -53,47 +53,53 @@ pub enum ModelOperation {
     VerifierComment(Option<String>),
 }
 
-impl ModelOperation {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RolloutActionLogItem {
+    pub question_id: usize,
+    pub action: RolloutAction,
+}
+
+impl RolloutAction {
     pub fn to_pretty_string(&self) -> String {
         match self {
-            ModelOperation::PlannerMakePlan(plan) => format!("[PlannerMakePlan]:\n{}", plan),
-            ModelOperation::PlannerDecideNextStep(mode) => {
+            RolloutAction::PlannerMakePlan(plan) => format!("[PlannerMakePlan]:\n{}", plan),
+            RolloutAction::PlannerDecideNextStep(mode) => {
                 format!("[PlannerChooseMode]: {:?}", mode)
             }
-            ModelOperation::PlannerReasoning(reasoning) => {
+            RolloutAction::PlannerReasoning(reasoning) => {
                 format!("[PlannerReasoning]:\n{}", reasoning)
             }
-            ModelOperation::PlannerToolCall(tool_call) => {
+            RolloutAction::PlannerToolCall(tool_call) => {
                 format!("[PlannerToolCall]:\n{}", tool_call)
             }
-            ModelOperation::PlannerEndStep => "[PlannerEndStep]".to_string(),
-            ModelOperation::PlannerCompactStep(compacted) => {
+            RolloutAction::PlannerEndStep => "[PlannerEndStep]".to_string(),
+            RolloutAction::PlannerCompactStep(compacted) => {
                 format!("[PlannerCompactStep]:\n{}", compacted)
             }
-            ModelOperation::PlannerUpdatePlan(updated_plan) => {
+            RolloutAction::PlannerUpdatePlan(updated_plan) => {
                 format!("[PlannerUpdatePlan]:\n{}", updated_plan)
             }
-            ModelOperation::ToolCallResponse(tool_response) => {
+            RolloutAction::ToolCallResponse(tool_response) => {
                 format!("[ToolCallResponse]:\n{}", tool_response)
             }
-            ModelOperation::VerifierComment(comment) => {
+            RolloutAction::VerifierComment(comment) => {
                 format!("[VerifierComment]:\n{:?}", comment)
             }
         }
     }
     pub fn to_concise_string(&self) -> String {
         match self {
-            ModelOperation::PlannerMakePlan(_plan) => format!("[PlannerMakePlan]"),
-            ModelOperation::PlannerDecideNextStep(mode) => {
+            RolloutAction::PlannerMakePlan(_plan) => format!("[PlannerMakePlan]"),
+            RolloutAction::PlannerDecideNextStep(mode) => {
                 format!("[PlannerChooseMode]: {:?}", mode)
             }
-            ModelOperation::PlannerReasoning(_reasoning) => "[PlannerReasoning]".to_string(),
-            ModelOperation::PlannerToolCall(_tool_call) => "[PlannerToolCall]".to_string(),
-            ModelOperation::PlannerEndStep => "[PlannerEndStep]".to_string(),
-            ModelOperation::PlannerCompactStep(_compacted) => "[PlannerCompactStep]".to_string(),
-            ModelOperation::PlannerUpdatePlan(_updated_plan) => "[PlannerUpdatePlan]".to_string(),
-            ModelOperation::ToolCallResponse(_tool_response) => "[ToolCallResponse]".to_string(),
-            ModelOperation::VerifierComment(comment) => format!(
+            RolloutAction::PlannerReasoning(_reasoning) => "[PlannerReasoning]".to_string(),
+            RolloutAction::PlannerToolCall(_tool_call) => "[PlannerToolCall]".to_string(),
+            RolloutAction::PlannerEndStep => "[PlannerEndStep]".to_string(),
+            RolloutAction::PlannerCompactStep(_compacted) => "[PlannerCompactStep]".to_string(),
+            RolloutAction::PlannerUpdatePlan(_updated_plan) => "[PlannerUpdatePlan]".to_string(),
+            RolloutAction::ToolCallResponse(_tool_response) => "[ToolCallResponse]".to_string(),
+            RolloutAction::VerifierComment(comment) => format!(
                 "[VerifierComment]\n{}",
                 comment.clone().unwrap_or_else(|| "None".to_string())
             ),
@@ -102,21 +108,14 @@ impl ModelOperation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionLog {
-    pub parsed_operations: Vec<ModelOperation>,
-    pub model_raw_outputs: Vec<String>,
-}
+pub struct SessionLog(pub Vec<RolloutAction>);
 
 impl SessionLog {
     pub fn total_actual_rounds(&self) -> usize {
-        self.parsed_operations
+        self.0
             .iter()
-            .filter(|op| matches!(op, ModelOperation::PlannerDecideNextStep(_)))
+            .filter(|op| matches!(op, RolloutAction::PlannerDecideNextStep(_)))
             .count()
-    }
-
-    pub fn operations(&self) -> &[ModelOperation] {
-        &self.parsed_operations
     }
 }
 
@@ -162,19 +161,13 @@ pub struct Session {
 impl Session {
     pub fn new(question: String) -> Self {
         Self {
-            session_log: SessionLog {
-                parsed_operations: Vec::new(),
-                model_raw_outputs: Vec::new(),
-            },
+            session_log: SessionLog(Vec::new()),
             session_state: SessionState::new(question),
         }
     }
-    pub fn apply_parsed_operation(&mut self, operation: ModelOperation) -> bool {
-        self.session_log.parsed_operations.push(operation.clone());
+    pub fn apply_parsed_operation(&mut self, operation: RolloutAction) -> bool {
+        self.session_log.0.push(operation.clone());
         self.session_state.update(operation)
-    }
-    pub fn add_model_raw_output(&mut self, raw_output: String) {
-        self.session_log.model_raw_outputs.push(raw_output);
     }
 }
 
@@ -199,7 +192,7 @@ impl SessionState {
     }
     pub fn from_session_log(question: String, session_log: &SessionLog) -> Self {
         let mut session_state = SessionState::new(question);
-        for operation in &session_log.parsed_operations {
+        for operation in &session_log.0 {
             session_state.update(operation.clone());
         }
         session_state
@@ -210,14 +203,14 @@ impl SessionState {
     pub fn can_overwrite_step(&self) -> bool {
         self.step_overwrite_streak < MAX_STEP_OVERWRITE_STREAK
     }
-    pub fn update(&mut self, operation: ModelOperation) -> bool {
+    pub fn update(&mut self, operation: RolloutAction) -> bool {
         let mut should_end_session = false;
         match operation {
-            ModelOperation::PlannerMakePlan(plan) => {
+            RolloutAction::PlannerMakePlan(plan) => {
                 self.current_plan = Some(plan);
                 self.session_status = SessionStatus::PlannerChoosingMode;
             }
-            ModelOperation::PlannerDecideNextStep(mode) => {
+            RolloutAction::PlannerDecideNextStep(mode) => {
                 self.planner_chosen_mode = Some(mode.clone());
                 match mode {
                     NextStepDecision::ChangePlan {
@@ -257,17 +250,17 @@ impl SessionState {
                     }
                 }
             }
-            ModelOperation::PlannerReasoning(reasoning) => {
+            RolloutAction::PlannerReasoning(reasoning) => {
                 self.current_step_content_raw.push_str(&reasoning);
                 if let Some(boxed_answer) = extract_boxed_content(&self.current_step_content_raw) {
                     self.final_answer = Some(boxed_answer);
                     should_end_session = true;
                 }
             }
-            ModelOperation::PlannerToolCall(tool_call) => {
+            RolloutAction::PlannerToolCall(tool_call) => {
                 self.current_step_content_raw.push_str(&tool_call);
             }
-            ModelOperation::ToolCallResponse(tool_response) => {
+            RolloutAction::ToolCallResponse(tool_response) => {
                 assert_eq!(
                     self.session_status,
                     SessionStatus::PlannerWorkingOnStep,
@@ -275,7 +268,7 @@ impl SessionState {
                 );
                 self.current_step_content_raw.push_str(&tool_response);
             }
-            ModelOperation::PlannerEndStep => {
+            RolloutAction::PlannerEndStep => {
                 assert_eq!(
                     self.session_status,
                     SessionStatus::PlannerWorkingOnStep,
@@ -283,7 +276,7 @@ impl SessionState {
                 );
                 self.session_status = SessionStatus::PlannerCompactingStep;
             }
-            ModelOperation::PlannerCompactStep(compacted) => {
+            RolloutAction::PlannerCompactStep(compacted) => {
                 assert_eq!(
                     self.session_status,
                     SessionStatus::PlannerCompactingStep,
@@ -292,7 +285,7 @@ impl SessionState {
                 self.current_step_content_compacted = Some(compacted);
                 self.session_status = SessionStatus::PlannerUpdatingPlan;
             }
-            ModelOperation::PlannerUpdatePlan(updated_plan) => {
+            RolloutAction::PlannerUpdatePlan(updated_plan) => {
                 assert_eq!(
                     self.session_status,
                     SessionStatus::PlannerUpdatingPlan,
@@ -301,7 +294,7 @@ impl SessionState {
                 self.current_plan = Some(updated_plan);
                 self.session_status = SessionStatus::VerifierCommenting;
             }
-            ModelOperation::VerifierComment(comment) => {
+            RolloutAction::VerifierComment(comment) => {
                 assert_eq!(
                     self.session_status,
                     SessionStatus::VerifierCommenting,

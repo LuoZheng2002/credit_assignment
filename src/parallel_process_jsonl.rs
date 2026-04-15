@@ -15,9 +15,25 @@ pub trait HasId {
     fn id(&self) -> usize;
 }
 
+pub fn read_json_lines<T: DeserializeOwned>(path: impl AsRef<Path>) -> Result<Vec<T>, String> {
+    let file = File::open(path.as_ref())
+        .map_err(|e| format!("Cannot open file {}: {}", path.as_ref().display(), e))?;
+    let reader = BufReader::new(file);
+    let mut results = Vec::new();
+    for line in reader.lines() {
+        let line = line.map_err(|e| e.to_string())?;
+        let item: T = serde_json::from_str(&line)
+            .map_err(|e| format!("Failed to parse line: {}\nError: {}", line, e))?;
+        results.push(item);
+    }
+    Ok(results)
+}
+
 pub fn read_json_lines_indexed<T: DeserializeOwned + HasId>(
-    file: &File,
+    path: impl AsRef<Path>,
 ) -> Result<IndexMap<usize, T>, String> {
+    let file = File::open(path.as_ref())
+        .map_err(|e| format!("Cannot open file {}: {}", path.as_ref().display(), e))?;
     let reader = BufReader::new(file);
     let mut results = IndexMap::new();
     for line in reader.lines() {
@@ -30,8 +46,10 @@ pub fn read_json_lines_indexed<T: DeserializeOwned + HasId>(
 }
 
 pub fn read_json_lines_indexed_erased(
-    file: &File,
+    path: impl AsRef<Path>,
 ) -> Result<IndexMap<usize, serde_json::Value>, String> {
+    let file = File::open(path.as_ref())
+        .map_err(|e| format!("Cannot open file {}: {}", path.as_ref().display(), e))?;
     let reader = BufReader::new(file);
     let mut results = IndexMap::new();
     for line in reader.lines() {
@@ -70,6 +88,21 @@ pub fn write_jsonl_file<T: Serialize>(
     Ok(())
 }
 
+// currently parallel_process_jsonl first reads the input files to get the items without holding the file handles
+// then the items are zipped.
+// then we open an output file and persistently append to it
+// in fact, we can first read it, and then append it
+// then we remove processed zipped items based on the contents in the output file
+// then we submit tasks and keep receiving processed items, and append to the file
+// then we sort the file at the end.
+
+// we want to modify the process so that the semaphore is in the for loop
+//
+// for the new task, we need to read from multiple files and append to multiple files.
+// the rollout function is responsible for sending log appending and trajectory appending signals
+// we need separate async tasks to read and execute the appending
+// the main function needs to wait for any of the appending to finish before exiting
+
 pub async fn parallel_process_jsonl<T, U, F, Z, Fut>(
     input_file_paths: &[impl AsRef<Path>],
     output_file_path: impl AsRef<Path>,
@@ -90,14 +123,7 @@ where
     );
     let mut items: Vec<IndexMap<usize, serde_json::Value>> = Vec::new();
     for input_file_path in input_file_paths {
-        let input_file = File::open(input_file_path.as_ref()).map_err(|e| {
-            format!(
-                "Cannot open file {}: {}",
-                input_file_path.as_ref().display(),
-                e
-            )
-        })?;
-        let file_items = read_json_lines_indexed_erased(&input_file)?;
+        let file_items = read_json_lines_indexed_erased(input_file_path.as_ref())?;
         items.push(file_items);
     }
     // assert file_items have the same keys
@@ -127,16 +153,17 @@ where
         .append(true)
         .open(output_path)
         .map_err(|e| e.to_string())?;
-    let mut results = read_json_lines_indexed::<U>(&output_file)?;
+    let mut results = read_json_lines_indexed::<U>(output_path)?;
 
     let processed_ids: Vec<usize> = results.keys().cloned().collect();
     println!(
         "Already processed {} items, skipping them",
         processed_ids.len()
     );
-    for id in processed_ids {
-        zipped_items.shift_remove(&id);
-    }
+    // for id in processed_ids {
+    //     zipped_items.shift_remove(&id);
+    // }
+    zipped_items.retain(|id, _| !processed_ids.contains(id));
     println!("Processing {} items", zipped_items.len());
 
     let sem = Arc::new(Semaphore::new(max_tasks));

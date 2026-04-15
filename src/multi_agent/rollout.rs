@@ -8,13 +8,17 @@ use crate::{
     deepmath::generate_raw_answers::Model,
     execute_python_code::execute_python_code,
     multi_agent::{
+        generate_rollout_answers::RolloutTrajectory,
         planner_compacting::get_planner_compacting_prompts,
         planner_deciding_next_step::get_planner_deciding_next_step_prompts,
         planner_making_plan::get_planner_making_plan_prompts,
         planner_step_continuing::get_planner_step_continuing_prompts,
         planner_step_overwriting::get_planner_step_overwriting_prompts,
         planner_updating_plan::get_planner_updating_plan_prompts,
-        session::{ModelOperation, NextStepDecision, Session, SessionState, SessionStatus},
+        session::{
+            NextStepDecision, RolloutAction, RolloutActionLogItem, Session, SessionState,
+            SessionStatus,
+        },
         verifier_commenting::get_verifier_commenting_prompts,
     },
 };
@@ -172,25 +176,59 @@ pub const SUBMIT_ANSWER_HINT: &str = "\
 <hint>It seems you are trying to end the step at the start of the step. \
 If you have got the answer, put it in \\boxed{} before ending with <end_step>.</hint>";
 
+// it will output action logs and final trajectory
+// it will also load existing logs
 pub async fn rollout(
     question_id: usize,
     question: String,
+    loaded_session_log: Vec<RolloutAction>,
     client: Client,
     model: Model,
     verifier_probability: f32,
     rng: &mut impl rand::Rng,
-) -> Session {
+    action_tx: tokio::sync::mpsc::UnboundedSender<RolloutActionLogItem>,
+    trajectory_tx: tokio::sync::mpsc::UnboundedSender<RolloutTrajectory>,
+) {
     // create a state machine
     let mut session = Session::new(question.clone());
-    let mut sub_step_counter = 0; // to prevent infinite loop in case of bugs
-    loop {
-        let mut session_should_end = false;
-        sub_step_counter += 1;
-        if session.session_state.prev_steps.len() > 20 || sub_step_counter > 150 {
-            session.session_state.final_answer = Some("The model does not manage to provide a final answer within allowed number of turns.".to_string());
+    let mut session_should_end = false;
+    for log in loaded_session_log {
+        if session.apply_parsed_operation(log) {
             session_should_end = true;
         }
-        let new_operations: Vec<ModelOperation> = match &session.session_state.session_status {
+    }
+    let mut sub_step_counter = 0; // to prevent infinite loop in case of bugs
+    loop {
+        if session_should_end {
+            println!(
+                "[rollout finishd] question index: {}, total actual rounds: {}, final answer: {}",
+                question_id,
+                session.session_log.total_actual_rounds(),
+                session
+                    .session_state
+                    .final_answer
+                    .as_deref()
+                    .unwrap_or("None")
+            );
+            break;
+        }
+        sub_step_counter += 1;
+        if session.session_state.prev_steps.len() > 20 {
+            session.session_state.final_answer = Some("The model does not manage to provide a final answer within allowed number of turns.".to_string());
+            session_should_end = true;
+            println!(
+                "[Warning] Number of steps exceeds the limit {}, ending the session.",
+                20
+            );
+        } else if session.session_log.total_actual_rounds() > 150 {
+            session.session_state.final_answer = Some("The model does not manage to provide a final answer within allowed number of turns.".to_string());
+            session_should_end = true;
+            println!(
+                "[Warning] Total actual rounds exceeds the limit {}, ending the session.",
+                150
+            );
+        }
+        let new_operations: Vec<RolloutAction> = match &session.session_state.session_status {
             SessionStatus::PlannerMakingPlan => {
                 let (prompt_before_assistant, prompt_after_assistant) =
                     get_prompt_according_to_session_status(&session.session_state);
@@ -201,14 +239,8 @@ pub async fn rollout(
                     model,
                 )
                 .await;
-                session.add_model_raw_output(response.clone());
-                // extract the content in the markdown code block
-                // let plan_content = extract_content_in_markdown_code_block(&response).expect(&format!(
-                //     "Failed to extract markdown code block content for planner making plan. Response: {}",
-                //     response
-                // ));
                 let plan_content = response; // we change to not require the plan to be in a markdown code block
-                vec![ModelOperation::PlannerMakePlan(plan_content)]
+                vec![RolloutAction::PlannerMakePlan(plan_content)]
             }
             SessionStatus::PlannerChoosingMode => {
                 let (prompt_before_assistant, prompt_after_assistant) =
@@ -225,7 +257,6 @@ pub async fn rollout(
                     model,
                 )
                 .await;
-                session.add_model_raw_output(response.clone());
                 let response_json: serde_json::Value = match serde_json::from_str(&response.trim())
                 {
                     Ok(json) => json,
@@ -242,11 +273,6 @@ pub async fn rollout(
                             false,
                         )
                         .await;
-                        session.add_model_raw_output(fixed_response.clone());
-                        // serde_json::from_str(&fixed_response.trim()).expect(&format!(
-                        //     "Failed to parse fixed planner choosing mode response as JSON. Fixed response text: {}",
-                        //     fixed_response
-                        // ))
                         match serde_json::from_str(&fixed_response.trim()) {
                             Ok(json) => json,
                             Err(e) => {
@@ -308,7 +334,7 @@ pub async fn rollout(
                         choice
                     ),
                 };
-                vec![ModelOperation::PlannerDecideNextStep(chosen_mode)]
+                vec![RolloutAction::PlannerDecideNextStep(chosen_mode)]
             }
             SessionStatus::PlannerWorkingOnStep => {
                 let (prompt_before_assistant, prompt_after_assistant) =
@@ -320,7 +346,6 @@ pub async fn rollout(
                     model,
                 )
                 .await;
-                session.add_model_raw_output(response.clone());
                 if response.trim().is_empty() {
                     response = "<end_step>".to_string(); // if the model does not output anything, we treat it as if it outputs <end_step> to prevent getting stuck
                 }
@@ -343,20 +368,20 @@ pub async fn rollout(
                     if reasoning.contains("<end_step>") {
                         push_end_step = true;
                     }
-                    operations.push(ModelOperation::PlannerReasoning(reasoning));
+                    operations.push(RolloutAction::PlannerReasoning(reasoning));
                 }
                 if let Some(tool_call) = tool_call {
                     let tool_response = execute_planner_tool_call(&tool_call).await;
-                    operations.push(ModelOperation::PlannerToolCall(tool_call));
-                    operations.push(ModelOperation::ToolCallResponse(tool_response));
+                    operations.push(RolloutAction::PlannerToolCall(tool_call));
+                    operations.push(RolloutAction::ToolCallResponse(tool_response));
                 }
                 if hold_end_step {
-                    operations.push(ModelOperation::ToolCallResponse(
+                    operations.push(RolloutAction::ToolCallResponse(
                         SUBMIT_ANSWER_HINT.to_string(),
                     ));
                 }
                 if push_end_step && !hold_end_step {
-                    operations.push(ModelOperation::PlannerEndStep);
+                    operations.push(RolloutAction::PlannerEndStep);
                 }
                 operations
             }
@@ -370,8 +395,7 @@ pub async fn rollout(
                     model,
                 )
                 .await;
-                session.add_model_raw_output(response.clone());
-                vec![ModelOperation::PlannerCompactStep(response)]
+                vec![RolloutAction::PlannerCompactStep(response)]
             }
             SessionStatus::PlannerUpdatingPlan => {
                 let (prompt_before_assistant, prompt_after_assistant) =
@@ -383,14 +407,8 @@ pub async fn rollout(
                     model,
                 )
                 .await;
-                session.add_model_raw_output(response.clone());
-                // extract the content in the markdown code block
-                // let updated_plan_content = extract_content_in_markdown_code_block(&response).expect(&format!(
-                //     "Failed to extract markdown code block content for planner updating plan. Response: {}",
-                //     response
-                // ));
                 let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
-                vec![ModelOperation::PlannerUpdatePlan(updated_plan_content)]
+                vec![RolloutAction::PlannerUpdatePlan(updated_plan_content)]
             }
             SessionStatus::VerifierCommenting => {
                 let mut verifier_comment = None;
@@ -411,17 +429,22 @@ pub async fn rollout(
                         model,
                     )
                     .await;
-                    session.add_model_raw_output(response.clone());
                     verifier_comment = Some(response.trim().to_string());
                 }
-                vec![ModelOperation::VerifierComment(verifier_comment)]
+                vec![RolloutAction::VerifierComment(verifier_comment)]
             }
         };
 
         for operation in new_operations {
-            if session.apply_parsed_operation(operation) {
+            if session.apply_parsed_operation(operation.clone()) {
                 session_should_end = true;
             }
+            // log the action
+            let log_item = RolloutActionLogItem {
+                question_id,
+                action: operation,
+            };
+            action_tx.send(log_item).unwrap();
         }
         println!(
             "[rollout] question index: {}, sub-step: {} finished, num prev steps: {}",
@@ -429,19 +452,17 @@ pub async fn rollout(
             sub_step_counter,
             session.session_state.prev_steps.len()
         );
-        if session_should_end {
-            println!(
-                "[rollout finishd] question index: {}, total actual rounds: {}, final answer: {}",
-                question_id,
-                session.session_log.total_actual_rounds(),
-                session
-                    .session_state
-                    .final_answer
-                    .as_deref()
-                    .unwrap_or("None")
-            );
-            break;
-        }
     }
-    session
+    let rollout_trajectory = RolloutTrajectory {
+        id: question_id,
+        question,
+        model_answer: session
+            .session_state
+            .final_answer
+            .clone()
+            .unwrap_or("No answer found".into()),
+        correct_answer: String::new(), // we will fill in the correct answer later when we evaluate the trajectory, to avoid data leakage
+        trajectory: session.session_log,
+    };
+    trajectory_tx.send(rollout_trajectory).unwrap();
 }
