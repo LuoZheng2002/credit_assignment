@@ -164,8 +164,8 @@ async fn main() {
         .unwrap();
     let mut trajectory_file = OpenOptions::new()
         .create(true)
+        .write(true)
         .truncate(true) // truncate and rewrite history to let the items flow through the channel
-        .append(true)
         .open(&trajectory_path)
         .unwrap();
     let mut correctness_file = OpenOptions::new()
