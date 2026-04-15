@@ -39,7 +39,9 @@ async fn parse_rollout_answer_task(answer: RolloutAnswerRaw) -> AnswerParsed {
 pub async fn parse_rollout_answers(model: Model, dataset_name: &str, num_samples: usize) {
     println!(
         "Parsing rollout answers for model {} on {} dataset with {} samples",
-        model.cli_name(), dataset_name, num_samples
+        model.cli_name(),
+        dataset_name,
+        num_samples
     );
     let raw_path = get_rollout_answer_path(model, dataset_name, num_samples);
     let parsed_path = get_parsed_path(model, dataset_name, num_samples, true);
@@ -59,6 +61,9 @@ pub async fn parse_rollout_answers(model: Model, dataset_name: &str, num_samples
     .unwrap();
     println!(
         "Parsed rollout answers for model {} on {} dataset with {} samples and saved to {}",
-        model.cli_name(), dataset_name, num_samples, parsed_path
+        model.cli_name(),
+        dataset_name,
+        num_samples,
+        parsed_path
     );
 }

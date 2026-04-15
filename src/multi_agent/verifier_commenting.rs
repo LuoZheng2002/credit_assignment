@@ -1,5 +1,4 @@
-use crate::multi_agent::{planner_working_on_step::get_step_mode_prompt, session::{SessionState, SessionStatus}};
-
+use crate::multi_agent::session::{SessionState, SessionStatus};
 
 fn get_verifier_commenting_prompt_before_assistant(session_state: &SessionState) -> String {
     assert!(matches!(
@@ -8,12 +7,6 @@ fn get_verifier_commenting_prompt_before_assistant(session_state: &SessionState)
     ));
     let question = &session_state.question;
     let history_prev_steps = session_state.to_history_prev_steps();
-    let step_mode = session_state
-        .planner_chosen_mode
-        .clone()
-        .expect("Planner chosen mode should be set when session status is not PlannerChoosingMode");
-    let is_overwriting = step_mode.is_overwriting();
-    let step_mode_prompt = get_step_mode_prompt(is_overwriting, false);
     let current_step_content = session_state.current_step_content_raw.clone();
     format!(
         "You are a verifier agent that is trying to evaluate the reasoning steps for the following problem:\n\
@@ -25,7 +18,6 @@ Here is the history of previous steps the planner has done:\n\
 {}\n\
 <HISTORY_END>\n\n\
 <CURRENT_STEP_BEGIN>\n\
-{}\n\
 Planner:\n\
 {}\n\
 <CURRENT_STEP_END>\n\n\
@@ -37,7 +29,7 @@ Your job is to generate the comment for the reasoning of the current step only. 
 Are there opportunities for the planner to use Python for complex but pervasive problems like solving a set of linear equations? Encourage the planner to leverage these tools even when calculations appear to be manageable.\n\
 \n\n\
 Please start your comment and be concise:\n",
-        question, history_prev_steps, step_mode_prompt, current_step_content,
+        question, history_prev_steps, current_step_content,
     )
 }
 

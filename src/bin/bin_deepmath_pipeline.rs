@@ -43,14 +43,7 @@ async fn main() {
 
     parse_answers(model, &dataset_name, num_samples).await;
 
-    judge_answers(
-        model,
-        &dataset_name,
-        num_samples,
-        client.clone(),
-        false,
-    )
-    .await;
+    judge_answers(model, &dataset_name, num_samples, client.clone(), false).await;
 
     generate_error_causes(model, &dataset_name, num_samples, client, false).await;
 }

@@ -52,12 +52,16 @@ pub fn get_error_causes_path(
     if is_rollout {
         format!(
             "results/{}/rollout/{}_error_causes_{}.jsonl",
-            model.cli_name(), dataset_name, num_samples
+            model.cli_name(),
+            dataset_name,
+            num_samples
         )
     } else {
         format!(
             "results/{}/{}_error_causes_{}.jsonl",
-            model.cli_name(), dataset_name, num_samples
+            model.cli_name(),
+            dataset_name,
+            num_samples
         )
     }
 }
@@ -103,7 +107,9 @@ pub async fn generate_error_causes(
 ) {
     println!(
         "Generating error cause analysis for model {} on {} dataset with {} samples...",
-        model.cli_name(), dataset_name, num_samples
+        model.cli_name(),
+        dataset_name,
+        num_samples
     );
     let correctness_path = get_correctness_path(model, dataset_name, num_samples, is_rollout);
     let raw_answer_path = get_raw_answer_path(model, dataset_name, num_samples);
@@ -146,6 +152,8 @@ pub async fn generate_error_causes(
     .unwrap();
     println!(
         "Generated error cause analysis for model {} on {} DeepMath samples and saved to {}",
-        model.cli_name(), num_samples, error_causes_output_path
+        model.cli_name(),
+        num_samples,
+        error_causes_output_path
     );
 }

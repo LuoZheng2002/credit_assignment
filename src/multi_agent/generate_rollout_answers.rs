@@ -26,7 +26,9 @@ impl HasId for RolloutAnswerRaw {
 pub fn get_rollout_answer_path(model: Model, dataset_name: &str, num_samples: usize) -> String {
     format!(
         "results/{}/rollout/{}_raw_{}.jsonl",
-        model.cli_name(), dataset_name, num_samples
+        model.cli_name(),
+        dataset_name,
+        num_samples
     )
 }
 

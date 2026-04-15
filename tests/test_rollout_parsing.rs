@@ -1,6 +1,4 @@
-use credit_assignment::multi_agent::rollout::{
-    execute_planner_tool_call,
-};
+use credit_assignment::multi_agent::rollout::execute_planner_tool_call;
 use pyo3::Python;
 
 // #[test]
@@ -67,10 +65,10 @@ def evaluate_expression(n):
 results = {n: evaluate_expression(n) for n in range(5)}
 print(results)
 ```"#;
-//     let markdown_tool_call = r#"```python
-// from math import comb
-// print(comb(10, 3))
-// ```"#;
+    //     let markdown_tool_call = r#"```python
+    // from math import comb
+    // print(comb(10, 3))
+    // ```"#;
     let response = execute_planner_tool_call(markdown_tool_call).await;
     // assert!(response.contains("<tool_response>5</tool_response>"));
     assert_eq!(

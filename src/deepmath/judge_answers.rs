@@ -37,12 +37,16 @@ pub fn get_correctness_path(
     if is_rollout {
         format!(
             "results/{}/rollout/{}_correctness_{}.jsonl",
-            model.cli_name(), dataset_name, num_samples
+            model.cli_name(),
+            dataset_name,
+            num_samples
         )
     } else {
         format!(
             "results/{}/{}_correctness_{}.jsonl",
-            model.cli_name(), dataset_name, num_samples
+            model.cli_name(),
+            dataset_name,
+            num_samples
         )
     }
 }
@@ -56,12 +60,16 @@ fn get_accuracy_path(
     if is_rollout {
         format!(
             "results/{}/rollout/{}_accuracy_{}.json",
-            model.cli_name(), dataset_name, num_samples
+            model.cli_name(),
+            dataset_name,
+            num_samples
         )
     } else {
         format!(
             "results/{}/{}_accuracy_{}.json",
-            model.cli_name(), dataset_name, num_samples
+            model.cli_name(),
+            dataset_name,
+            num_samples
         )
     }
 }
@@ -108,7 +116,8 @@ pub async fn judge_answers(
 ) {
     println!(
         "Judging answers for model {} on {} samples",
-        model.cli_name(), num_samples
+        model.cli_name(),
+        num_samples
     );
     let parsed_answers_path = get_parsed_path(model, dataset_name, num_samples, is_rollout);
     let correctness_path = get_correctness_path(model, dataset_name, num_samples, is_rollout);
@@ -131,7 +140,9 @@ pub async fn judge_answers(
     .unwrap();
     println!(
         "Finished judging answers for model {} on {} samples. Results saved to {}",
-        model.cli_name(), num_samples, correctness_path
+        model.cli_name(),
+        num_samples,
+        correctness_path
     );
     let score_results: IndexMap<usize, DeepMathCorrectness> =
         read_json_lines_indexed(&File::open(&correctness_path).unwrap()).unwrap();

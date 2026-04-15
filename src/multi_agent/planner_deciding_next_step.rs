@@ -2,9 +2,8 @@ use crate::multi_agent::session::{SessionState, SessionStatus};
 
 pub fn get_planner_prompt_before_assistant(
     question: &str,
-    // planner_status: PlannerStatus,
-    planner_status_prompt: String,
     history_prev_steps: &str,
+    planner_status_prompt: String,
 ) -> String {
     format!(
         "You are a planner agent that is trying to solve the following problem step by step:\n\
@@ -36,7 +35,6 @@ If you choose \"Change Plan\", write only the following json, with contents in t
 Please be careful with the json character escape rule if you try to include math formula.".to_string()
 }
 
-
 fn get_planner_deciding_next_step_prompt_before_assistant(session_state: &SessionState) -> String {
     assert!(matches!(
         session_state.session_status,
@@ -45,10 +43,11 @@ fn get_planner_deciding_next_step_prompt_before_assistant(session_state: &Sessio
     let question = &session_state.question;
     let planner_status_prompt = get_planner_deciding_next_step_status_prompt();
     let history_prev_steps = session_state.to_history_prev_steps();
-    get_planner_prompt_before_assistant(question, planner_status_prompt, &history_prev_steps)
+    get_planner_prompt_before_assistant(question, &history_prev_steps, planner_status_prompt)
 }
 
 pub fn get_planner_deciding_next_step_prompts(session_state: &SessionState) -> (String, String) {
-    let prompt_before_assistant = get_planner_deciding_next_step_prompt_before_assistant(session_state);
+    let prompt_before_assistant =
+        get_planner_deciding_next_step_prompt_before_assistant(session_state);
     (prompt_before_assistant, String::new())
 }

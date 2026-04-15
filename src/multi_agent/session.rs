@@ -145,11 +145,12 @@ pub struct SessionState {
     pub current_step_content_compacted: Option<String>,
     pub current_step_verifier_comment: Option<String>,
     pub current_plan: Option<String>,
-    // pub planner_status: PlannerStatus,
     pub session_status: SessionStatus,
     pub planner_chosen_mode: Option<NextStepDecision>,
     pub final_answer: Option<String>,
     pub failed_attempts: Vec<FailedAttempt>,
+    pub num_plan_changes: usize,
+    pub step_overwrite_streak: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -177,6 +178,8 @@ impl Session {
     }
 }
 
+pub const MAX_PLAN_CHANGES: usize = 2;
+pub const MAX_STEP_OVERWRITE_STREAK: usize = 2;
 impl SessionState {
     pub fn new(question: String) -> Self {
         Self {
@@ -184,6 +187,8 @@ impl SessionState {
             prev_steps: Vec::new(),
             current_step_content_raw: String::new(),
             current_step_verifier_comment: None,
+            num_plan_changes: 0,
+            step_overwrite_streak: 0,
             current_step_content_compacted: None,
             current_plan: None,
             session_status: SessionStatus::PlannerMakingPlan,
@@ -199,6 +204,12 @@ impl SessionState {
         }
         session_state
     }
+    pub fn can_change_plan(&self) -> bool {
+        self.num_plan_changes < MAX_PLAN_CHANGES
+    }
+    pub fn can_overwrite_step(&self) -> bool {
+        self.step_overwrite_streak < MAX_STEP_OVERWRITE_STREAK
+    }
     pub fn update(&mut self, operation: ModelOperation) -> bool {
         let mut should_end_session = false;
         match operation {
@@ -208,26 +219,42 @@ impl SessionState {
             }
             ModelOperation::PlannerDecideNextStep(mode) => {
                 self.planner_chosen_mode = Some(mode.clone());
-                if let NextStepDecision::ChangePlan {
-                    fail_reason,
-                    possible_future_direction,
-                } = &mode
-                {
-                    let old_plan = self
-                        .current_plan
-                        .clone()
-                        .take()
-                        .expect("There must be a plan to change");
-                    let failed_attempt = FailedAttempt {
-                        plan: old_plan,
-                        fail_reason: fail_reason.clone(),
-                        possible_future_direction: possible_future_direction.clone(),
-                    };
-                    self.failed_attempts.push(failed_attempt);
-                    self.prev_steps.clear();
-                    self.session_status = SessionStatus::PlannerMakingPlan;
-                } else {
-                    self.session_status = SessionStatus::PlannerWorkingOnStep;
+                match mode {
+                    NextStepDecision::ChangePlan {
+                        fail_reason,
+                        possible_future_direction,
+                    } => {
+                        let old_plan = self
+                            .current_plan
+                            .clone()
+                            .take()
+                            .expect("There must be a plan to change");
+                        let failed_attempt = FailedAttempt {
+                            plan: old_plan,
+                            fail_reason: fail_reason.clone(),
+                            possible_future_direction: possible_future_direction.clone(),
+                        };
+                        self.failed_attempts.push(failed_attempt);
+                        self.prev_steps.clear();
+                        assert!(
+                            self.can_change_plan(),
+                            "Exceed maximum number of plan changes"
+                        );
+                        self.num_plan_changes += 1;
+                        self.session_status = SessionStatus::PlannerMakingPlan;
+                    }
+                    NextStepDecision::OverwriteLastStep(_overwrite_reason) => {
+                        assert!(
+                            self.can_overwrite_step(),
+                            "Exceed maximum step overwrite streak"
+                        );
+                        self.step_overwrite_streak += 1;
+                        self.session_status = SessionStatus::PlannerWorkingOnStep;
+                    }
+                    NextStepDecision::Continue => {
+                        self.step_overwrite_streak = 0;
+                        self.session_status = SessionStatus::PlannerWorkingOnStep;
+                    }
                 }
             }
             ModelOperation::PlannerReasoning(reasoning) => {
@@ -312,10 +339,10 @@ impl SessionState {
                         self.current_step_content_compacted = None;
                         self.current_step_verifier_comment = None;
                     }
-                    NextStepDecision::ChangePlan {
-                        ..
-                    } => {
-                        panic!("ChangePlan should not be a valid step mode when the planner has entered the working on step status.")
+                    NextStepDecision::ChangePlan { .. } => {
+                        panic!(
+                            "ChangePlan should not be a valid step mode when the planner has entered the working on step status."
+                        )
                     }
                 }
                 self.session_status = SessionStatus::PlannerChoosingMode;

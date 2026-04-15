@@ -25,12 +25,16 @@ pub fn get_parsed_path(
     if is_rollout {
         format!(
             "results/{}/rollout/{}_parsed_{}.jsonl",
-            model.cli_name(), dataset_name, num_samples
+            model.cli_name(),
+            dataset_name,
+            num_samples
         )
     } else {
         format!(
             "results/{}/{}_parsed_{}.jsonl",
-            model.cli_name(), dataset_name, num_samples
+            model.cli_name(),
+            dataset_name,
+            num_samples
         )
     }
 }
@@ -73,7 +77,9 @@ async fn parse_model_answer_task(answer: AnswerRaw) -> AnswerParsed {
 pub async fn parse_answers(model: Model, dataset_name: &str, num_samples: usize) {
     println!(
         "Parsing model answers for model {} on {} dataset with {} samples",
-        model.cli_name(), dataset_name, num_samples
+        model.cli_name(),
+        dataset_name,
+        num_samples
     );
     let raw_path = get_raw_answer_path(model, dataset_name, num_samples);
     let parsed_path = get_parsed_path(model, dataset_name, num_samples, false);
@@ -93,6 +99,9 @@ pub async fn parse_answers(model: Model, dataset_name: &str, num_samples: usize)
     .unwrap();
     println!(
         "Parsed model answers for model {} on {} dataset with {} samples and saved to {}",
-        model.cli_name(), dataset_name, num_samples, parsed_path
+        model.cli_name(),
+        dataset_name,
+        num_samples,
+        parsed_path
     );
 }

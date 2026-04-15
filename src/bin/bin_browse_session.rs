@@ -25,9 +25,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use credit_assignment::multi_agent::generate_rollout_answers::RolloutAnswerRaw;
-use credit_assignment::multi_agent::rollout::{
-    get_prompt_according_to_session_status,
-};
+use credit_assignment::multi_agent::rollout::get_prompt_according_to_session_status;
 use credit_assignment::multi_agent::session::{ModelOperation, SessionState};
 
 /// Command line arguments for browsing rollout session logs.

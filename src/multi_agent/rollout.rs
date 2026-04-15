@@ -11,8 +11,9 @@ use crate::{
         planner_compacting::get_planner_compacting_prompts,
         planner_deciding_next_step::get_planner_deciding_next_step_prompts,
         planner_making_plan::get_planner_making_plan_prompts,
+        planner_step_continuing::get_planner_step_continuing_prompts,
+        planner_step_overwriting::get_planner_step_overwriting_prompts,
         planner_updating_plan::get_planner_updating_plan_prompts,
-        planner_working_on_step::get_planner_working_on_step_prompts,
         session::{ModelOperation, NextStepDecision, Session, SessionState, SessionStatus},
         verifier_commenting::get_verifier_commenting_prompts,
     },
@@ -143,7 +144,23 @@ pub fn get_prompt_according_to_session_status(session_state: &SessionState) -> (
     match session_state.session_status {
         SessionStatus::PlannerMakingPlan => get_planner_making_plan_prompts(session_state),
         SessionStatus::PlannerChoosingMode => get_planner_deciding_next_step_prompts(session_state),
-        SessionStatus::PlannerWorkingOnStep => get_planner_working_on_step_prompts(session_state),
+        SessionStatus::PlannerWorkingOnStep => {
+            match session_state
+                .planner_chosen_mode
+                .as_ref()
+                .expect("In PlannerWorkingOnStep status, planner_chosen_mode should be set")
+            {
+                NextStepDecision::Continue => get_planner_step_continuing_prompts(session_state),
+                NextStepDecision::OverwriteLastStep(_) => {
+                    get_planner_step_overwriting_prompts(session_state)
+                }
+                NextStepDecision::ChangePlan { .. } => {
+                    panic!(
+                        "In PlannerWorkingOnStep status, planner_chosen_mode should not be ChangePlan"
+                    );
+                }
+            }
+        }
         SessionStatus::PlannerCompactingStep => get_planner_compacting_prompts(session_state),
         SessionStatus::PlannerUpdatingPlan => get_planner_updating_plan_prompts(session_state),
         SessionStatus::VerifierCommenting => get_verifier_commenting_prompts(session_state),
@@ -204,12 +221,6 @@ pub async fn rollout(
                 )
                 .await;
                 session.add_model_raw_output(response.clone());
-                // begin to parse
-                // let response_json: serde_json::Value = serde_json::from_str(&response.trim())
-                //     .expect(&format!(
-                //         "Failed to parse planner choosing mode response as JSON. Response text: {}",
-                //         response
-                //     ));
                 let response_json: serde_json::Value = match serde_json::from_str(&response.trim())
                 {
                     Ok(json) => json,
@@ -261,21 +272,29 @@ pub async fn rollout(
                 let chosen_mode = match choice {
                     "continue" => NextStepDecision::Continue,
                     "overwrite_last_step" => {
-                        let reason = response_json["reason"]
+                        if session.session_state.can_overwrite_step() {
+                            let reason = response_json["reason"]
                             .as_str()
                             .expect(&format!("Planner choosing mode response JSON with 'overwrite_last_step' choice does not contain 'reason' field. Response JSON: {}", response_json));
-                        NextStepDecision::OverwriteLastStep(reason.to_string())
+                            NextStepDecision::OverwriteLastStep(reason.to_string())
+                        } else {
+                            NextStepDecision::Continue // if cannot overwrite step, we also continue to the next step to avoid getting stuck
+                        }
                     }
                     "change_plan" => {
-                        let fail_reason = response_json["fail_reason"]
+                        if session.session_state.can_change_plan() {
+                            let fail_reason = response_json["fail_reason"]
                             .as_str()
                             .expect(&format!("Planner choosing mode response JSON with 'change_plan' choice does not contain 'fail_reason' field. Response JSON: {}", response_json));
-                        let possible_future_direction = response_json["possible_future_direction"]
+                            let possible_future_direction = response_json["possible_future_direction"]
                             .as_str()
                             .expect(&format!("Planner choosing mode response JSON with 'change_plan' choice does not contain 'possible_future_direction' field. Response JSON: {}", response_json));
-                        NextStepDecision::ChangePlan {
-                            fail_reason: fail_reason.to_string(),
-                            possible_future_direction: possible_future_direction.to_string(),
+                            NextStepDecision::ChangePlan {
+                                fail_reason: fail_reason.to_string(),
+                                possible_future_direction: possible_future_direction.to_string(),
+                            }
+                        } else {
+                            NextStepDecision::Continue // if cannot change plan, we also continue to the next step to avoid getting stuck
                         }
                     }
                     _ => panic!(

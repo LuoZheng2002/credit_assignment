@@ -49,7 +49,12 @@ fn build_chat_completions_body(prompt: String, model: Model) -> serde_json::Valu
     })
 }
 
-async fn post_json(client: Client, url: &str, body: serde_json::Value, model: Model) -> reqwest::Response {
+async fn post_json(
+    client: Client,
+    url: &str,
+    body: serde_json::Value,
+    model: Model,
+) -> reqwest::Response {
     if model.is_gpt() {
         let api_key =
             std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set");
