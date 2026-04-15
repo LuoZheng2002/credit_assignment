@@ -1,17 +1,39 @@
 use reqwest::Client;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 use crate::apply_vllm_model_chat_template::apply_vllm_model_chat_template;
 use crate::deepmath::generate_raw_answers::Model;
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
-const VLLM_CHAT_COMPLETIONS_URL: &str = "http://localhost:8000/v1/chat/completions";
-const VLLM_RAW_COMPLETIONS_URL: &str = "http://localhost:8000/v1/completions";
+static VLLM_PORT_OVERRIDE: AtomicU16 = AtomicU16::new(0);
 
-fn get_chat_completions_url(model: Model) -> &'static str {
+pub fn set_vllm_port(port: u16) {
+    assert!(port > 0, "vLLM port must be greater than 0");
+    VLLM_PORT_OVERRIDE.store(port, Ordering::Relaxed);
+}
+
+fn get_vllm_port() -> u16 {
+    let overridden_port = VLLM_PORT_OVERRIDE.load(Ordering::Relaxed);
+    assert!(
+        overridden_port > 0,
+        "vLLM port is not set. Call set_vllm_port(...) before any vLLM request."
+    );
+    overridden_port
+}
+
+fn get_vllm_chat_completions_url() -> String {
+    format!("http://localhost:{}/v1/chat/completions", get_vllm_port())
+}
+
+fn get_vllm_raw_completions_url() -> String {
+    format!("http://localhost:{}/v1/completions", get_vllm_port())
+}
+
+fn get_chat_completions_url(model: Model) -> String {
     if model.is_gpt() {
-        OPENAI_CHAT_COMPLETIONS_URL
+        OPENAI_CHAT_COMPLETIONS_URL.to_string()
     } else if model.is_qwen() {
-        VLLM_CHAT_COMPLETIONS_URL
+        get_vllm_chat_completions_url()
     } else {
         panic!("Unsupported model family for {}", model.api_name());
     }
@@ -93,7 +115,7 @@ pub async fn call_llm_chat_completions(
 ) -> String {
     let url = get_chat_completions_url(model);
     let body = build_chat_completions_body(prompt, model, passes_in_stop);
-    let response = post_json(client, url, body, model).await;
+    let response = post_json(client, &url, body, model).await;
     let body = response.bytes().await.unwrap();
     let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) else {
         panic!(
@@ -124,7 +146,7 @@ pub async fn call_qwen_raw_completions(
         "include_stop_str_in_output": true,
     });
 
-    let response = post_json(client, VLLM_RAW_COMPLETIONS_URL, body, model).await;
+    let response = post_json(client, &get_vllm_raw_completions_url(), body, model).await;
     let json: serde_json::Value = response.json().await.unwrap();
     json["choices"][0]["text"]
         .as_str()
