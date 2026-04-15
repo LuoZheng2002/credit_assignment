@@ -123,7 +123,8 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> String {
         tool_call
     );
     let Some(fence_end_index) = trimmed_tool_call.rfind("```") else {
-        return "<tool_response>Tool call markdown code block not properly closed.</tool_response>".to_string();
+        return "<tool_response>Tool call markdown code block not properly closed.</tool_response>"
+            .to_string();
     };
     let code_start = trimmed_tool_call
         .find('\n')
@@ -231,7 +232,7 @@ pub async fn rollout(
                 let response_json: serde_json::Value = match serde_json::from_str(&response.trim())
                 {
                     Ok(json) => json,
-                    Err(e) => {
+                    Err(_e) => {
                         // call llm to fix the Json format error, only outputs the fixed json
                         let fix_json_prompt = format!(
                             "The following JSON is not properly formatted and cannot be parsed. Please output the fixed JSON without any explanation. JSON to be fixed: {}. You should start immediately with open curly bracket and end with close curly bracket.",
@@ -353,7 +354,9 @@ pub async fn rollout(
                     operations.push(ModelOperation::ToolCallResponse(tool_response));
                 }
                 if hold_end_step {
-                    operations.push(ModelOperation::ToolCallResponse(SUBMIT_ANSWER_HINT.to_string()));
+                    operations.push(ModelOperation::ToolCallResponse(
+                        SUBMIT_ANSWER_HINT.to_string(),
+                    ));
                 }
                 if push_end_step && !hold_end_step {
                     operations.push(ModelOperation::PlannerEndStep);
