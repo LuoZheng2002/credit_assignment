@@ -6,10 +6,7 @@ use crate::deepmath::parse_answers::extract_boxed_content;
 pub enum NextStepDecision {
     Continue,
     OverwriteLastStep(String),
-    ChangePlan {
-        fail_reason: String,
-        possible_future_direction: String,
-    },
+    ChangePlan(String),
 }
 
 impl NextStepDecision {
@@ -17,7 +14,7 @@ impl NextStepDecision {
         match self {
             NextStepDecision::Continue => false,
             NextStepDecision::OverwriteLastStep(_) => true,
-            NextStepDecision::ChangePlan { .. } => panic!(
+            NextStepDecision::ChangePlan(_) => panic!(
                 "ChangePlan should not be a valid step mode when the planner has entered the working on step status"
             ),
         }
@@ -132,8 +129,7 @@ pub enum SessionStatus {
 #[derive(Debug, Clone)]
 pub struct FailedAttempt {
     pub plan: String,
-    pub fail_reason: String,
-    pub possible_future_direction: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone)]
@@ -213,10 +209,7 @@ impl SessionState {
             RolloutAction::PlannerDecideNextStep(mode) => {
                 self.planner_chosen_mode = Some(mode.clone());
                 match mode {
-                    NextStepDecision::ChangePlan {
-                        fail_reason,
-                        possible_future_direction,
-                    } => {
+                    NextStepDecision::ChangePlan(reason) => {
                         let old_plan = self
                             .current_plan
                             .clone()
@@ -224,8 +217,7 @@ impl SessionState {
                             .expect("There must be a plan to change");
                         let failed_attempt = FailedAttempt {
                             plan: old_plan,
-                            fail_reason: fail_reason.clone(),
-                            possible_future_direction: possible_future_direction.clone(),
+                            reason: reason.clone(),
                         };
                         self.failed_attempts.push(failed_attempt);
                         self.prev_steps.clear();
@@ -332,7 +324,7 @@ impl SessionState {
                         self.current_step_content_compacted = None;
                         self.current_step_verifier_comment = None;
                     }
-                    NextStepDecision::ChangePlan { .. } => {
+                    NextStepDecision::ChangePlan(_) => {
                         panic!(
                             "ChangePlan should not be a valid step mode when the planner has entered the working on step status."
                         )
@@ -356,11 +348,7 @@ impl SessionState {
         for (i, failed_attempt) in self.failed_attempts.iter().enumerate() {
             history.push_str(&format!("Failed Attempt {}:\n", i + 1));
             history.push_str(&format!("Plan: {}\n", failed_attempt.plan));
-            history.push_str(&format!("Fail reason: {}\n", failed_attempt.fail_reason));
-            history.push_str(&format!(
-                "Possible future direction: {}\n",
-                failed_attempt.possible_future_direction
-            ));
+            history.push_str(&format!("Reason: {}\n", failed_attempt.reason));
         }
         if !making_plan {
             let current_plan = self

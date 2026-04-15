@@ -26,13 +26,19 @@ A new step is just about to begin. Your job is to determine the direction of the
 2. Overwrite Last Step: You find the last step problematic, and want to rewrite it while sticking to the current plan.\n\
 3. Change Plan: You find the current plan is not promising given the history of previous steps, and want to start over with a new plan.\n\
 \n\
-If you choose \"Continue\", write only the following json: {\"choice\": \"continue\"}.\n\
-If you choose \"Overwrite Last Step\", write only the following json, with contents in the square brackets replaced with appropriate contents: \
-{\"choice\": \"overwrite_last_step\", \"reason\": \"[Your reason here, including what goes wrong in the last step and what can be improved in the new iteration.]\"}.\n\
-If you choose \"Change Plan\", write only the following json, with contents in the square brackets replaced with appropriate contents: \
-{\"choice\": \"change_plan\", \"fail_reason\": \"[Your reason here, describing why the current plan is not promising.]\", \
-\"possible_future_direction\": \"[Briefly describe a possible direction without elaborating on detailed plans.]\"}.\n\
-Please be careful with the json character escape rule if you try to include math formula.".to_string()
+Output format requirement (strict): each key-value pair must occupy exactly one line using `key: value`.\n\
+Do not output JSON. Do not output markdown code block.\n\
+\n\
+If you choose \"Continue\", output exactly:\n\
+choice: continue\n\
+\n\
+If you choose \"Overwrite Last Step\", output exactly two lines:\n\
+choice: overwrite_last_step\n\
+reason: [Your reason here, including what goes wrong in the last step and what can be improved in the new iteration.]\n\
+\n\
+If you choose \"Change Plan\", output exactly two lines:\n\
+choice: change_plan\n\
+reason: [Describe both why the current plan is not promising and what possible future direction you suggest, in one single-line sentence.]".to_string()
 }
 
 fn get_planner_deciding_next_step_prompt_before_assistant(session_state: &SessionState) -> String {

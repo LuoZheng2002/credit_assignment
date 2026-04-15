@@ -4,7 +4,7 @@ use rand::RngExt;
 use reqwest::Client;
 
 use crate::{
-    call_llm::{call_llm_chat_completions, call_llm_with_prefix},
+    call_llm::call_llm_with_prefix,
     deepmath::generate_raw_answers::Model,
     execute_python_code::execute_python_code,
     multi_agent::{
@@ -116,6 +116,17 @@ pub fn extract_content_in_json_markdown_code_block(content: &str) -> Option<Stri
     Some(content[start_index + start_fence.len()..end_index].to_string())
 }
 
+fn get_protocol_value<'a>(response: &'a str, key: &str) -> Option<&'a str> {
+    let prefix = format!("{}:", key);
+    for line in response.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&prefix) {
+            return Some(trimmed[prefix.len()..].trim());
+        }
+    }
+    None
+}
+
 pub async fn execute_planner_tool_call(tool_call: &str) -> String {
     let trimmed_tool_call = tool_call.trim_start();
     assert!(
@@ -159,7 +170,7 @@ pub fn get_prompt_according_to_session_status(session_state: &SessionState) -> (
                 NextStepDecision::OverwriteLastStep(_) => {
                     get_planner_step_overwriting_prompts(session_state)
                 }
-                NextStepDecision::ChangePlan { .. } => {
+                NextStepDecision::ChangePlan(_) => {
                     panic!(
                         "In PlannerWorkingOnStep status, planner_chosen_mode should not be ChangePlan"
                     );
@@ -259,55 +270,21 @@ pub async fn rollout(
                     model,
                 )
                 .await;
-                let response_json: serde_json::Value = match serde_json::from_str(&response.trim())
-                {
-                    Ok(json) => json,
-                    Err(_e) => {
-                        // call llm to fix the Json format error, only outputs the fixed json
-                        let fix_json_prompt = format!(
-                            "The following JSON is not properly formatted and cannot be parsed. Please output the fixed JSON without any explanation. JSON to be fixed: {}. You should start immediately with open curly bracket and end with close curly bracket.",
-                            response.trim()
-                        );
-                        let fixed_response = call_llm_chat_completions(
-                            client.clone(),
-                            fix_json_prompt,
-                            Model::Gpt5Mini,
-                            false,
-                        )
-                        .await;
-                        match serde_json::from_str(&fixed_response.trim()) {
-                            Ok(json) => json,
-                            Err(e) => {
-                                // extract the content in the markdown code block of the fixed response and try to parse it as JSON again, as the llm may output the fixed JSON in a markdown code block
-                                if let Some(content) =
-                                    extract_content_in_json_markdown_code_block(&fixed_response)
-                                {
-                                    serde_json::from_str(&content.trim()).expect(&format!(
-                                        "Failed to parse JSON content in markdown code block of fixed planner choosing mode response. Content: {}. Original fixed response: {}. Error: {}",
-                                        content,
-                                        fixed_response,
-                                        e
-                                    ))
-                                } else {
-                                    panic!(
-                                        "Failed to parse fixed planner choosing mode response as JSON and could not extract JSON content from markdown code block. Fixed response:\n{}\n Error: {}",
-                                        fixed_response, e
-                                    );
-                                }
-                            }
-                        }
-                    }
-                };
-                let choice = response_json["choice"]
-                    .as_str()
-                    .expect(&format!("Planner choosing mode response JSON does not contain 'choice' field. Response JSON: {}", response_json));
+                let trimmed_response = response.trim();
+                let choice = get_protocol_value(trimmed_response, "choice").expect(&format!(
+                    "Planner choosing mode response does not contain 'choice: ...' line. Response: {}",
+                    trimmed_response
+                ));
                 let chosen_mode = match choice {
                     "continue" => NextStepDecision::Continue,
                     "overwrite_last_step" => {
                         if session.session_state.can_overwrite_step() {
-                            let reason = response_json["reason"]
-                            .as_str()
-                            .expect(&format!("Planner choosing mode response JSON with 'overwrite_last_step' choice does not contain 'reason' field. Response JSON: {}", response_json));
+                            let reason = get_protocol_value(trimmed_response, "reason").expect(
+                                &format!(
+                                    "Planner choosing mode response with 'overwrite_last_step' choice does not contain 'reason: ...' line. Response: {}",
+                                    trimmed_response
+                                ),
+                            );
                             NextStepDecision::OverwriteLastStep(reason.to_string())
                         } else {
                             println!("[Warning] Overwrite last step is capped.");
@@ -316,16 +293,13 @@ pub async fn rollout(
                     }
                     "change_plan" => {
                         if session.session_state.can_change_plan() {
-                            let fail_reason = response_json["fail_reason"]
-                            .as_str()
-                            .expect(&format!("Planner choosing mode response JSON with 'change_plan' choice does not contain 'fail_reason' field. Response JSON: {}", response_json));
-                            let possible_future_direction = response_json["possible_future_direction"]
-                            .as_str()
-                            .expect(&format!("Planner choosing mode response JSON with 'change_plan' choice does not contain 'possible_future_direction' field. Response JSON: {}", response_json));
-                            NextStepDecision::ChangePlan {
-                                fail_reason: fail_reason.to_string(),
-                                possible_future_direction: possible_future_direction.to_string(),
-                            }
+                            let reason = get_protocol_value(trimmed_response, "reason").expect(
+                                &format!(
+                                    "Planner choosing mode response with 'change_plan' choice does not contain 'reason: ...' line. Response: {}",
+                                    trimmed_response
+                                ),
+                            );
+                            NextStepDecision::ChangePlan(reason.to_string())
                         } else {
                             println!("[Warning] Change plan is capped.");
                             NextStepDecision::Continue // if cannot change plan, we also continue to the next step to avoid getting stuck
