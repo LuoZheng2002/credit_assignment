@@ -327,19 +327,21 @@ pub async fn rollout(
                 if response.trim().is_empty() {
                     response = "<end_step>".to_string(); // if the model does not output anything, we treat it as if it outputs <end_step> to prevent getting stuck
                 }
-                let mut operations = Vec::new();
+                let mut hold_end_step = false;
                 if &response == "<end_step>"
                     && &session.session_state.current_step_content_raw == ""
                 {
                     println!(
                         "[Warning]: model tries to end the step without providing any content for the step."
                     );
-                    operations.push(ModelOperation::ToolCallResponse(
-                        SUBMIT_ANSWER_HINT.to_string(),
-                    ));
+                    // operations.push(ModelOperation::ToolCallResponse(
+                    //     SUBMIT_ANSWER_HINT.to_string(),
+                    // ));
+                    hold_end_step = true;
                 }
                 let (reasoning, tool_call) = split_reasoning_and_tool_call(response, model);
                 let mut push_end_step = false;
+                let mut operations = Vec::new();
                 if let Some(reasoning) = reasoning {
                     if reasoning.contains("<end_step>") {
                         push_end_step = true;
@@ -351,7 +353,10 @@ pub async fn rollout(
                     operations.push(ModelOperation::PlannerToolCall(tool_call));
                     operations.push(ModelOperation::ToolCallResponse(tool_response));
                 }
-                if push_end_step {
+                if hold_end_step {
+                    operations.push(ModelOperation::ToolCallResponse(SUBMIT_ANSWER_HINT.to_string()));
+                }
+                if push_end_step && !hold_end_step {
                     operations.push(ModelOperation::PlannerEndStep);
                 }
                 operations
