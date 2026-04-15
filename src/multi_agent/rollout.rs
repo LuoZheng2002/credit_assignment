@@ -164,11 +164,7 @@ pub async fn rollout(
     loop {
         let mut session_should_end = false;
         sub_step_counter += 1;
-        // if sub_step_counter > 30 {
-        //     session.session_state.final_answer = Some("The model does not manage to provide a final answer within allowed number of turns.".to_string());
-        //     session_should_end = true;
-        // }
-        if session.session_state.prev_steps.len() > 20 {
+        if session.session_state.prev_steps.len() > 20 || sub_step_counter > 150 {
             session.session_state.final_answer = Some("The model does not manage to provide a final answer within allowed number of turns.".to_string());
             session_should_end = true;
         }
