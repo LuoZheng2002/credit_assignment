@@ -23,8 +23,8 @@ Please do not explicitly quote the verifier or try to respond to it in your reas
 {}\n\
 {}\n\
 \n\
-Your task is to work on the next step based on the results of previous steps.\n\
-Please identify the next step from the current plan and work on it. Only work on one step before ending with <end_step>.\n\
+Your task is to continue working on a step that is not marked as completed in the current plan (as opposed to completed steps marked with a leading \"- [x]\").\n\
+Only work on one step. After this step is finished, end with <end_step>. Do not begin your response with <end_step>.\n\
 Begin your step:",
         TOOL_PROMPT, STEP_HALT_PROMPT
     )
