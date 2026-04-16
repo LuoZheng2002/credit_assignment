@@ -30,14 +30,14 @@ Output format requirement (strict): each key-value pair must occupy exactly one 
 Do not output JSON. Do not output markdown code block.\n\
 \n\
 If you choose \"Continue\", output exactly:\n\
-choice: continue\n\
+choice: Continue\n\
 \n\
 If you choose \"Overwrite Last Step\", output exactly two lines:\n\
-choice: overwrite_last_step\n\
+choice: Overwrite Last Step\n\
 reason: [Your reason here, including what goes wrong in the last step and what can be improved in the new iteration.]\n\
 \n\
 If you choose \"Change Plan\", output exactly two lines:\n\
-choice: change_plan\n\
+choice: Change Plan\n\
 reason: [Describe both why the current plan is not promising and what possible future direction you suggest, in one single-line sentence.]".to_string()
 }
 

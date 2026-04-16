@@ -127,6 +127,38 @@ fn get_protocol_value<'a>(response: &'a str, key: &str) -> Option<&'a str> {
     None
 }
 
+fn parse_next_step_choice(choice: &str) -> Option<&'static str> {
+    let mut has_continue = false;
+    let mut has_change = false;
+    let mut has_overwrite = false;
+
+    for token in choice
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|token| !token.is_empty())
+    {
+        let token_lower = token.to_ascii_lowercase();
+        match token_lower.as_str() {
+            "continue" => has_continue = true,
+            "change" => has_change = true,
+            "overwrite" | "rewrite" => has_overwrite = true,
+            _ => {}
+        }
+    }
+
+    let matched_count = (has_continue as u8) + (has_change as u8) + (has_overwrite as u8);
+    if matched_count != 1 {
+        return None;
+    }
+
+    if has_continue {
+        return Some("continue");
+    }
+    if has_change {
+        return Some("change_plan");
+    }
+    Some("overwrite_last_step")
+}
+
 pub async fn execute_planner_tool_call(tool_call: &str) -> String {
     let trimmed_tool_call = tool_call.trim_start();
     assert!(
@@ -271,8 +303,13 @@ pub async fn rollout(
                 )
                 .await;
                 let trimmed_response = response.trim();
-                let choice = get_protocol_value(trimmed_response, "choice").expect(&format!(
+                let raw_choice = get_protocol_value(trimmed_response, "choice").expect(&format!(
                     "Planner choosing mode response does not contain 'choice: ...' line. Response: {}",
+                    trimmed_response
+                ));
+                let choice = parse_next_step_choice(raw_choice).expect(&format!(
+                    "Invalid or ambiguous choice field in planner choosing mode response. Choice must contain exactly one distinct keyword among continue/change/overwrite/rewrite (case-insensitive). choice: {}. Response: {}",
+                    raw_choice,
                     trimmed_response
                 ));
                 let chosen_mode = match choice {
