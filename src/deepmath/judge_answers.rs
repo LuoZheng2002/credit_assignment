@@ -76,9 +76,10 @@ pub async fn judge_answer_task(answer: AnswerParsed, client: Client) -> DeepMath
     let prompt = format!(
         // "The question is: {}. The model's answer is: {}. The correct answer is: {}. Please evaluate whether the model's answer is correct and return only 'correct' or 'incorrect'.",
         "You are an answer checker that checks a model's answer against the reference answer. Judge if the model's answer is equivalent to the reference answer. \
-If the model's answer contains units but the reference answer does not, treat them as equivalent if the numerical values are the same. \
+If the model's answer contains units but the reference answer does not, treat them as equivalent if the numerical values are the same. \n\
+The question is: \"{}\". \
 The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
-        answer.model_answer, answer.correct_answer
+        answer.question, answer.model_answer, answer.correct_answer
     );
     let evaluation = call_llm_chat_completions(client, prompt, Model::Gpt4o, false)
         .await
