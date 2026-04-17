@@ -405,7 +405,8 @@ pub async fn rollout(
                     );
                     operations.truncate(num_additional_actions_allowed);
                 }
-                if push_end_step && !hold_end_step {
+                let current_step_full = operations.len() == num_additional_actions_allowed;
+                if (push_end_step && !hold_end_step) || current_step_full {
                     operations.push(RolloutAction::PlannerEndStep);
                 }
                 operations
