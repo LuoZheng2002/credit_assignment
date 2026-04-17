@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::deepmath::parse_answers::extract_boxed_content;
+use crate::multi_agent::generate_rollout_answers::StepQualityAccuracy;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NextStepDecision {
@@ -143,6 +144,48 @@ impl SessionLog {
             .iter()
             .filter(|op| matches!(op, RolloutAction::PlannerDecideNextStep(_)))
             .count()
+    }
+
+    pub fn step_quality_accuracy(&self) -> Option<StepQualityAccuracy> {
+        let mut tool_true_count = 0usize;
+        let mut tool_total_count = 0usize;
+        let mut complete_true_count = 0usize;
+        let mut complete_total_count = 0usize;
+        let mut focused_true_count = 0usize;
+        let mut focused_total_count = 0usize;
+        for action in &self.0 {
+            if let RolloutAction::PlannerCompactStep {
+                step_quality: Some(step_quality),
+                ..
+            } = action
+            {
+                tool_total_count += 1;
+                if step_quality.tool {
+                    tool_true_count += 1;
+                }
+
+                complete_total_count += 1;
+                if step_quality.complete {
+                    complete_true_count += 1;
+                }
+
+                focused_total_count += 1;
+                if step_quality.focused {
+                    focused_true_count += 1;
+                }
+            }
+        }
+        assert_eq!(tool_total_count, complete_total_count);
+        assert_eq!(tool_total_count, focused_total_count);
+        if tool_total_count == 0 {
+            return None;
+        }
+
+        Some(StepQualityAccuracy {
+            tool_accuracy: tool_true_count as f32 / tool_total_count as f32,
+            complete_accuracy: complete_true_count as f32 / complete_total_count as f32,
+            focused_accuracy: focused_true_count as f32 / focused_total_count as f32,
+        })
     }
 }
 

@@ -5,10 +5,18 @@ use crate::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StepQualityAccuracy {
+    pub tool_accuracy: f32,
+    pub complete_accuracy: f32,
+    pub focused_accuracy: f32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RolloutTrajectory {
     pub id: usize,
     pub model_answer: String,
     pub correct_answer: String,
+    pub step_quality_accuracy: Option<StepQualityAccuracy>,
     pub trajectory: SessionLog,
     pub question: String,
 }

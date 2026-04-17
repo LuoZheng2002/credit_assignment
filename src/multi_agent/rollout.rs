@@ -641,6 +641,8 @@ pub async fn rollout(
             session.session_state.prev_steps.len()
         );
     }
+    let step_quality_accuracy = session.session_log.step_quality_accuracy();
+
     let rollout_trajectory = RolloutTrajectory {
         id: question_id,
         question,
@@ -650,6 +652,7 @@ pub async fn rollout(
             .clone()
             .unwrap_or("No answer found".into()),
         correct_answer: reference_answer, // we will fill in the correct answer later when we evaluate the trajectory, to avoid data leakage
+        step_quality_accuracy,
         trajectory: session.session_log,
     };
     trajectory_tx.send(rollout_trajectory).unwrap();
