@@ -197,9 +197,13 @@ async fn main() {
     for correctness in correctness_items.into_values() {
         correctness_output_tx.send(correctness).unwrap();
     }
+    let action_tx_for_submit = action_tx.clone();
+    let trajectory_tx_for_submit = trajectory_tx.clone();
     let submit_trajectory_task_handle = tokio::spawn({
         let sem = sem.clone();
         let client = client.clone();
+        let action_tx = action_tx_for_submit;
+        let trajectory_tx = trajectory_tx_for_submit;
         async move {
             let finished_count = Arc::new(AtomicUsize::new(0));
             let total_count = unfinished_trajectory_ids.len();
@@ -236,6 +240,8 @@ async fn main() {
                     println!("Trajectory {}/{} finished", finished_count.load(Ordering::SeqCst), total_count);
                 });
             }
+            drop(action_tx);
+            drop(trajectory_tx);
         }
     });
     let receive_action_handle = tokio::spawn(async move {
@@ -247,7 +253,9 @@ async fn main() {
             writeln!(session_log_file, "{}", json_line).unwrap();
         }
     });
+    let correctness_input_tx_for_receive = correctness_input_tx.clone();
     let receive_trajectory_handle = tokio::spawn(async move {
+        let correctness_input_tx = correctness_input_tx_for_receive;
         while let Some(trajectory) = trajectory_rx.recv().await {
             if SHUTDOWN.load(Ordering::SeqCst) {
                 break;
@@ -260,8 +268,11 @@ async fn main() {
                 correctness_input_tx.send(trajectory).unwrap();
             }
         }
+        drop(correctness_input_tx);
     });
+    let correctness_output_tx_for_submit = correctness_output_tx.clone();
     let submit_correctness_task_handle = tokio::spawn(async move {
+        let correctness_output_tx = correctness_output_tx_for_submit;
         while let Some(trajectory) = correctness_input_rx.recv().await {
             if SHUTDOWN.load(Ordering::SeqCst) {
                 break;
@@ -275,6 +286,7 @@ async fn main() {
                 drop(permit);
             });
         }
+        drop(correctness_output_tx);
     });
     let receive_correctness_handle = tokio::spawn(async move {
         // let correct_count = Arc::new(AtomicUsize::new(0));
@@ -295,6 +307,11 @@ async fn main() {
             println!("Running accuracy: {}/{} ({:.2}%)", correct_count, total_count, accuracy * 100.0);
         }
     });
+
+    drop(action_tx);
+    drop(trajectory_tx);
+    drop(correctness_input_tx);
+    drop(correctness_output_tx);
 
     join_all([
         submit_trajectory_task_handle,
