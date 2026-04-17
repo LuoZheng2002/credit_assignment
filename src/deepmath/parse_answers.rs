@@ -53,7 +53,11 @@ pub fn extract_boxed_content(text: &str) -> Option<String> {
             '}' => {
                 bracket_depth -= 1;
                 if bracket_depth == 0 {
-                    return Some(content);
+                    if content.trim().is_empty() {
+                        return None;
+                    } else {
+                        return Some(content);
+                    }
                 }
                 content.push(ch);
             }
