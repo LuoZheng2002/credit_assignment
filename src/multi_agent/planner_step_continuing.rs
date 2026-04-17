@@ -7,7 +7,8 @@ pub const TOOL_PROMPT: &str = "\
 You can both reason in plain texts and use the following tools in this step:\n\
 1. Python code executor: You're encouraged to use it for calculations to ensure correctness. You can invoke python code by outputting a markdown Python code block.\n\
 IMPORTANT: always use Python's print statement to output the result, otherwise the result will not be shown.\n\
-IMPORTANT: after calling any tool, immediately output a <tool_wait> to obtain the tool's response.";
+IMPORTANT: after calling any tool, immediately output a <tool_wait/> to obtain the tool's response.\n\
+Only output <tool_wait/> after calling a tool, instead of wrapping the tool call with <tool_wait/>.";
 
 pub const STEP_HALT_PROMPT: &str = "\
 If the current step's goal is achieved, end your response with <end_step>. DO NOT start the next step in the same turn.\n\

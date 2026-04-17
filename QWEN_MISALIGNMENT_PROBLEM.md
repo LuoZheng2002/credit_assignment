@@ -1,5 +1,5 @@
 - Does not produce <end_step> properly when it wants step to end (can be solved by manually adding one, just performance consideration)
-- Does not produce <tool_wait> after a tool call (we can manually add it, affects performance mainly)
+- Does not produce <tool_wait/> after a tool call (we can manually add it, affects performance mainly)
 - Does not split the problem into steps of reasonable size.
 - Does not use tool calls very often; tends to calculate things by hand.
 

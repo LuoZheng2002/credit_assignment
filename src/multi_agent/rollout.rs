@@ -79,14 +79,15 @@ pub fn split_reasoning_and_tool_call(
         .end_position(&response, start_position)
         .unwrap_or(response.len());
     let mut tool_call = response[start_position..end_position].to_string();
-    // if after the end position there is immediately a <tool_wait> tag, we also include it in the tool call
-    if end_position < response.len() && response[end_position..].trim().starts_with("<tool_wait>") {
-        tool_call.push_str("<tool_wait>");
+    // if after the end position there is immediately a <tool_wait/> tag, we also include it in the tool call
+    if end_position < response.len() && response[end_position..].trim().starts_with("<tool_wait/>")
+    {
+        tool_call.push_str("<tool_wait/>");
     } else {
         if model.is_qwen() {
-            println!("Warning: tool call does not end with <tool_wait> tag.");
+            println!("Warning: tool call does not end with <tool_wait/> tag.");
         }
-        tool_call.push_str("<tool_wait>"); // if there is no <tool_wait> tag, we also add it and trim all the content after the tool call
+        tool_call.push_str("<tool_wait/>"); // if there is no <tool_wait/> tag, we also add it and trim all the content after the tool call
     }
     let reasoning = if !response[..start_position].trim().is_empty() {
         Some(response[..start_position].to_string()) // do not trim the reasoning part, as leading/trailing spaces may be useful for formatting

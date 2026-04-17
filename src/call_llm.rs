@@ -55,7 +55,7 @@ fn build_chat_completions_body(
                 }
             ],
             "max_completion_tokens": 2048,
-            "stop": ["<tool_wait>"],
+            "stop": ["<tool_wait/>"],
             "chat_template_kwargs": {
                 "enable_thinking": false,
             }
@@ -70,7 +70,7 @@ fn build_chat_completions_body(
                 }
             ],
             "max_completion_tokens": 2048,
-            "stop": ["<tool_wait>"],
+            "stop": ["<tool_wait/>"],
         })
     } else {
         serde_json::json!({
@@ -142,7 +142,7 @@ pub async fn call_qwen_raw_completions(
         "model": model.api_name(),
         "prompt": chat_template_prompt,
         "max_tokens": 2048,
-        "stop": ["<tool_wait>"],
+        "stop": ["<tool_wait/>"],
         "include_stop_str_in_output": true,
     });
 
