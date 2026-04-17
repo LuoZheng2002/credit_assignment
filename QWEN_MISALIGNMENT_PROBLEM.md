@@ -138,3 +138,41 @@ The failure modes are:
 1. calculation mistakes
 2. logical errors, conceptual errors, other mistakes
 3. planning direction errors
+
+
+Try <tool_wait> </tool_wait> for qwen 3 / 3.5
+
+Make the compactor to spot if the final answer is found.
+
+Limit the number of steps to 5.
+
+Behavioral reward: tool calling, whether the current step only solves one step's problem; whether solved the step's problem
+
+We find the correlation between a step and the final outcome
+
+But this is expensive
+
+Also, how do we sample the step? -> through verifier or overwrite step or change plan?
+
+We hope that the step changes after the verifier intervenes and that the outcomes highly correlate with the step change.
+
+We still need to measure the effect of verifier on the correctness of the dataset
+
+How do we reuse the trajectories as much as possible?
+
+We know that once the trajectory diverges at a point, then any parts after the diverge point cannot be compared.
+
+
+
+Different trajectories ...
+
+
+
+Add a search tool
+
+step -> compact -> token generation is less than twice the ...
+amortized
+
+collecting trajectory
+
+if we have many training data, then we can do dataset generation and then train on the dataset

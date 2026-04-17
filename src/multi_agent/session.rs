@@ -299,7 +299,11 @@ impl SessionState {
                     SessionStatus::PlannerCompactingStep,
                     "PlannerCompactStep can only be called after PlannerEndStep"
                 );
-                self.current_step_content_compacted = Some(compacted);
+                if let Some(boxed_answer) = extract_boxed_content(&compacted) {
+                    self.final_answer = Some(boxed_answer);
+                    should_end_session = true;
+                }
+                self.current_step_content_compacted = Some(compacted);                
                 self.session_status = SessionStatus::PlannerUpdatingPlan;
             }
             RolloutAction::PlannerUpdatePlan(updated_plan) => {

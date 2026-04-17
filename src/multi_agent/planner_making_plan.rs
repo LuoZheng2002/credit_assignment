@@ -17,9 +17,10 @@ For example:\n\
 - [ ] Step 1: xxx.\n\
 - [ ] Step 2: To be determined.\n\
 ```\n\
-Please do not include any conclusion in the plan. If you think you can immediately come to a conclusion, use phrases like \"Find if\" or \"Verify if\". \
+Please do not include any reasoning or conclusion in the plan. If you think you can immediately come to a conclusion, use phrases like \"Find if\" or \"Verify if\". \
 If later steps depend on some conclusions, make them conditional or \"To be determined\".\n\
-Please only output the steps without the backticks.\n\
+Please limit the number of steps to be at most 5. If there are more than 5 steps, mark the 6th step as \"To be determined\".\n\
+Please only output the steps.\n\
 "
     .to_string()
 }
