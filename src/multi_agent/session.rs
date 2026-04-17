@@ -335,7 +335,7 @@ impl SessionState {
                 self.current_step_content_raw.push_str(&reasoning);
                 if let Some(boxed_answer) = extract_boxed_content(&reasoning) {
                     self.final_answer = Some(boxed_answer);
-                    should_end_session = true;
+                    // should_end_session = true;
                 }
             }
             RolloutAction::PlannerToolCall(tool_call) => {
@@ -376,6 +376,8 @@ impl SessionState {
                 );
                 if let Some(boxed_answer) = extract_boxed_content(&summary) {
                     self.final_answer = Some(boxed_answer);
+                }
+                if self.final_answer.is_some() {
                     should_end_session = true;
                 }
                 self.current_step_content_compacted = Some(summary);
