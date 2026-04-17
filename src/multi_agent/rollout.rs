@@ -393,6 +393,18 @@ pub async fn rollout(
                         SUBMIT_ANSWER_HINT.to_string(),
                     ));
                 }
+                let num_additional_actions_allowed = session
+                    .session_state
+                    .num_additional_actions_allowed_in_current_step();
+                if operations.len() > num_additional_actions_allowed {
+                    println!(
+                        "[Warning] Number of actions in the current step {} exceeds the limit {}. Only the first {} actions will be applied.",
+                        operations.len(),
+                        num_additional_actions_allowed,
+                        num_additional_actions_allowed
+                    );
+                    operations.truncate(num_additional_actions_allowed);
+                }
                 if push_end_step && !hold_end_step {
                     operations.push(RolloutAction::PlannerEndStep);
                 }

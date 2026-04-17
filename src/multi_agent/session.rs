@@ -146,6 +146,7 @@ pub struct SessionState {
     pub failed_attempts: Vec<FailedAttempt>,
     pub num_plan_changes: usize,
     pub step_overwrite_streak: usize,
+    pub current_step_num_actions: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +170,7 @@ impl Session {
 
 pub const MAX_PLAN_CHANGES: usize = 2;
 pub const MAX_STEP_OVERWRITE_STREAK: usize = 2;
+pub const MAX_ACTIONS_PER_STEP: usize = 30;
 impl SessionState {
     pub fn new(question: String) -> Self {
         Self {
@@ -177,6 +179,7 @@ impl SessionState {
             current_step_content_raw: String::new(),
             current_step_verifier_comment: None,
             num_plan_changes: 0,
+            current_step_num_actions: 0,
             step_overwrite_streak: 0,
             current_step_content_compacted: None,
             current_plan: None,
@@ -198,6 +201,12 @@ impl SessionState {
     }
     pub fn can_overwrite_step(&self) -> bool {
         self.step_overwrite_streak < MAX_STEP_OVERWRITE_STREAK
+    }
+    pub fn can_take_action_in_current_step(&self) -> bool {
+        self.current_step_num_actions < MAX_ACTIONS_PER_STEP
+    }
+    pub fn num_additional_actions_allowed_in_current_step(&self) -> usize {
+        MAX_ACTIONS_PER_STEP - self.current_step_num_actions
     }
     pub fn update(&mut self, operation: RolloutAction) -> bool {
         let mut should_end_session = false;
@@ -243,6 +252,11 @@ impl SessionState {
                 }
             }
             RolloutAction::PlannerReasoning(reasoning) => {
+                assert!(
+                    self.can_take_action_in_current_step(),
+                    "Exceed maximum number of actions in the current step"
+                );
+                self.current_step_num_actions += 1;
                 self.current_step_content_raw.push_str(&reasoning);
                 if let Some(boxed_answer) = extract_boxed_content(&self.current_step_content_raw) {
                     self.final_answer = Some(boxed_answer);
@@ -250,9 +264,19 @@ impl SessionState {
                 }
             }
             RolloutAction::PlannerToolCall(tool_call) => {
+                assert!(
+                    self.can_take_action_in_current_step(),
+                    "Exceed maximum number of actions in the current step"
+                );
+                self.current_step_num_actions += 1;
                 self.current_step_content_raw.push_str(&tool_call);
             }
             RolloutAction::ToolCallResponse(tool_response) => {
+                assert!(
+                    self.can_take_action_in_current_step(),
+                    "Exceed maximum number of actions in the current step"
+                );
+                self.current_step_num_actions += 1;
                 assert_eq!(
                     self.session_status,
                     SessionStatus::PlannerWorkingOnStep,
