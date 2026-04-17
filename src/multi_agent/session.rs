@@ -290,6 +290,7 @@ impl SessionState {
                     SessionStatus::PlannerWorkingOnStep,
                     "PlannerEndStep can only be called during PlannerTurn"
                 );
+                self.current_step_num_actions = 0;
                 self.session_status = SessionStatus::PlannerCompactingStep;
             }
             RolloutAction::PlannerCompactStep(compacted) => {
