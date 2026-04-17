@@ -67,8 +67,9 @@ pub async fn execute_python_code(code: String) -> String {
         Ok(join_result) => match join_result {
             Ok(Ok(output)) => {
                 if output.trim().is_empty() {
-                    panic!("Python interpreter did not return any output. Please use print statements to retrieve results.");
-                    // return "Python interpreter did not return any output. Please use print statements to retrieve results.".to_string();
+                    // panic!("Python interpreter did not return any output. Please use print statements to retrieve results.");
+                    println!("[Warning]: Python interpreter did not return any output.");
+                    return "Python interpreter did not return any output. Please use print statements to retrieve results.".to_string();
                 }
                 output
             }
