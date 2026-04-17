@@ -141,7 +141,6 @@ enum SelectionAction {
 enum BrowsingAction {
     Continue,
     GoBack,
-    Quit,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -227,7 +226,6 @@ impl App {
                     self.browsing_view = None;
                     false
                 }
-                BrowsingAction::Quit => true,
             }
         } else {
             match self.handle_selection_key(key) {
@@ -405,8 +403,7 @@ impl App {
                     view.move_by(10);
                     BrowsingAction::Continue
                 }
-                KeyCode::Esc => BrowsingAction::GoBack,
-                KeyCode::Char('q') => BrowsingAction::Quit,
+                KeyCode::Esc | KeyCode::Char('q') => BrowsingAction::GoBack,
                 _ => BrowsingAction::Continue,
             }
         };
