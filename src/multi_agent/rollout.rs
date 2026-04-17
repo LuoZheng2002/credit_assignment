@@ -250,6 +250,52 @@ pub const SUBMIT_ANSWER_HINT: &str = "\
 <hint>It seems you are trying to end the step at the start of the step. \
 If you have got the answer, put it in \\boxed{} before ending with <end_step>.</hint>";
 
+pub fn detect_repetition_three_times(response: &str) -> bool {
+    let min_subsequence_length = 20; // minimum length of the repeated subsequence to avoid false positive from short common phrases
+
+    let bytes = response.as_bytes();
+    let n = bytes.len();
+    if n < min_subsequence_length * 3 {
+        return false;
+    }
+
+    // Rolling hash over raw bytes. We still verify by byte comparison when hashes match.
+    let base: u64 = 1_000_003;
+    let mut pow = vec![0_u64; n + 1];
+    let mut prefix = vec![0_u64; n + 1];
+    pow[0] = 1;
+    for i in 0..n {
+        pow[i + 1] = pow[i].wrapping_mul(base);
+        prefix[i + 1] = prefix[i]
+            .wrapping_mul(base)
+            .wrapping_add((bytes[i] as u64) + 1);
+    }
+
+    let hash = |start: usize, len: usize| -> u64 {
+        prefix[start + len].wrapping_sub(prefix[start].wrapping_mul(pow[len]))
+    };
+
+    for len in min_subsequence_length..=(n / 3) {
+        for start in 0..=(n - 3 * len) {
+            let h1 = hash(start, len);
+            let h2 = hash(start + len, len);
+            let h3 = hash(start + 2 * len, len);
+            if h1 != h2 || h1 != h3 {
+                continue;
+            }
+
+            let s1 = &bytes[start..start + len];
+            let s2 = &bytes[start + len..start + 2 * len];
+            let s3 = &bytes[start + 2 * len..start + 3 * len];
+            if s1 == s2 && s1 == s3 {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 // it will output action logs and final trajectory
 // it will also load existing logs
 pub async fn rollout(
@@ -400,12 +446,9 @@ pub async fn rollout(
                     println!(
                         "[Warning]: model tries to end the step without providing any content for the step."
                     );
-                    // operations.push(ModelOperation::ToolCallResponse(
-                    //     SUBMIT_ANSWER_HINT.to_string(),
-                    // ));
                     hold_end_step = true;
                 }
-                let (reasoning, tool_call) = split_reasoning_and_tool_call(response, model);
+                let (reasoning, tool_call) = split_reasoning_and_tool_call(response.clone(), model);
                 let mut push_end_step = false;
                 let mut operations = Vec::new();
                 if let Some(reasoning) = reasoning {
@@ -436,8 +479,20 @@ pub async fn rollout(
                     );
                     operations.truncate(num_additional_actions_allowed);
                 }
+                // detect repetition
+                let found_repetition_three_times = detect_repetition_three_times(&response);
+                if found_repetition_three_times {
+                    println!(
+                        "[Warning] Detected repetition of the same response at least three times. This may indicate that the model is stuck in a loop. Response: {}",
+                        response
+                    );
+                    operations.push(RolloutAction::ToolCallResponse(
+                        "<error>Repeated contents detected. This step is forced to abort without completion.</error>".to_string(),
+                    ));
+                }
+
                 let current_step_full = operations.len() == num_additional_actions_allowed;
-                if (push_end_step && !hold_end_step) || current_step_full {
+                if (push_end_step && !hold_end_step) || current_step_full || found_repetition_three_times {
                     operations.push(RolloutAction::PlannerEndStep);
                 }
                 operations
