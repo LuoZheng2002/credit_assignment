@@ -258,7 +258,7 @@ impl SessionState {
                 );
                 self.current_step_num_actions += 1;
                 self.current_step_content_raw.push_str(&reasoning);
-                if let Some(boxed_answer) = extract_boxed_content(&self.current_step_content_raw) {
+                if let Some(boxed_answer) = extract_boxed_content(&reasoning) {
                     self.final_answer = Some(boxed_answer);
                     should_end_session = true;
                 }
