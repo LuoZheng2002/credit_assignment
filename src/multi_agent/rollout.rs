@@ -17,7 +17,7 @@ use crate::{
         planner_updating_plan::get_planner_updating_plan_prompts,
         session::{
             NextStepDecision, RolloutAction, RolloutActionLogItem, Session, SessionState,
-            SessionStatus,
+            SessionStatus, StepQuality,
         },
         verifier_commenting::get_verifier_commenting_prompts,
     },
@@ -122,6 +122,28 @@ pub fn extract_content_in_json_markdown_code_block(content: &str) -> Option<Stri
     Some(content[start_index + start_fence.len()..end_index].to_string())
 }
 
+fn parse_compactor_response(response: String) -> (String, Option<StepQuality>) {
+    if let Some(json_block) = extract_content_in_json_markdown_code_block(&response) {
+        if let Ok(step_quality) = serde_json::from_str::<StepQuality>(json_block.trim()) {
+            let json_fence_start = response
+                .find("```json")
+                .expect("The json code fence start must exist if extraction succeeded");
+            let summary = response[..json_fence_start].trim_end().to_string();
+            return (summary, Some(step_quality));
+        }
+    }
+
+    for (start_idx, _) in response.match_indices('{').rev() {
+        let candidate = response[start_idx..].trim();
+        if let Ok(step_quality) = serde_json::from_str::<StepQuality>(candidate) {
+            let summary = response[..start_idx].trim_end().to_string();
+            return (summary, Some(step_quality));
+        }
+    }
+    println!("[Warning] Failed to parse step quality from compactor response.",);
+    (response, None)
+}
+
 fn get_protocol_value<'a>(response: &'a str, key: &str) -> Option<&'a str> {
     let prefix = format!("{}:", key);
     for line in response.lines() {
@@ -166,7 +188,11 @@ fn parse_next_step_choice(choice: &str) -> Option<&'static str> {
 }
 
 pub async fn execute_planner_tool_call(tool_call: &str) -> String {
-    let trimmed_tool_call = tool_call.trim_start();
+    let mut trimmed_tool_call = tool_call.trim_start().to_string();
+    // trim <tool_wait>
+    if trimmed_tool_call.starts_with("<tool_wait>") {
+        trimmed_tool_call = trimmed_tool_call["<tool_wait>".len()..].trim_start().to_string();
+    }
     assert!(
         trimmed_tool_call.starts_with("```python"),
         "Tool call not properly formatted: {}",
@@ -185,9 +211,7 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> String {
     }
     let code = &trimmed_tool_call[code_start..fence_end_index];
     let mut python_code_result = execute_python_code(code.to_string()).await;
-    if python_code_result.trim().is_empty() {
-        python_code_result = "Python interpreter did not return any output. Please use print statements to retrieve results.".to_string();
-    }
+    
     format!(
         "<tool_response>{}</tool_response>",
         python_code_result.trim()
@@ -427,7 +451,11 @@ pub async fn rollout(
                     model,
                 )
                 .await;
-                vec![RolloutAction::PlannerCompactStep(response)]
+                let (summary, step_quality) = parse_compactor_response(response);
+                vec![RolloutAction::PlannerCompactStep {
+                    summary,
+                    step_quality,
+                }]
             }
             SessionStatus::PlannerUpdatingPlan => {
                 let (prompt_before_assistant, prompt_after_assistant) =

@@ -37,7 +37,12 @@ pub async fn execute_python_code(code: String) -> String {
     let result = tokio::time::timeout(Duration::from_millis(5000), task).await;
     match result {
         Ok(join_result) => match join_result {
-            Ok(Ok(output)) => output,
+            Ok(Ok(output)) => {
+                if output.trim().is_empty() {
+                    return "Python interpreter did not return any output. Please use print statements to retrieve results.".to_string();
+                }
+                output
+            }
             Ok(Err(err)) => format!("Python error: {}", err),
             Err(_) => "Sorry, unexpected error occurred. Please try again.".to_string(),
         },

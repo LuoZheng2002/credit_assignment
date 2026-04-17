@@ -22,19 +22,37 @@ impl NextStepDecision {
 }
 
 #[derive(Debug, Clone)]
-pub struct DisplayPlannerStepComplete {
+pub struct CompletedStep {
     // pub step_mode: DisplayStepMode,
-    // pub content_raw: String,
+    pub current_step_mode: NextStepDecision,
+    pub content_raw: String,
     pub content_compacted: String,
+    pub step_quality: Option<StepQuality>,
     pub current_step_verifier_comment: Option<String>,
 }
-impl DisplayPlannerStepComplete {
-    pub fn new(content_compacted: String, current_step_verifier_comment: Option<String>) -> Self {
+impl CompletedStep {
+    pub fn new(
+        current_step_mode: NextStepDecision,
+        content_raw: String,
+        content_compacted: String,
+        step_quality: Option<StepQuality>,
+        current_step_verifier_comment: Option<String>,
+    ) -> Self {
         Self {
+            current_step_mode,
+            content_raw,
             content_compacted,
+            step_quality,
             current_step_verifier_comment,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StepQuality {
+    pub tool: bool,
+    pub complete: bool,
+    pub focused: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,7 +63,11 @@ pub enum RolloutAction {
     PlannerToolCall(String),  // with <tool_call> ... </tool_call> wrapper
     ToolCallResponse(String), // with <tool_response> ... </tool_response> wrapper
     PlannerEndStep,
-    PlannerCompactStep(String),
+    // PlannerCompactStep(String, Option<StepQuality>),
+    PlannerCompactStep{
+        summary: String,
+        step_quality: Option<StepQuality>,
+    },
     PlannerUpdatePlan(String),
     VerifierComment(Option<String>),
 }
@@ -70,8 +92,11 @@ impl RolloutAction {
                 format!("[PlannerToolCall]:\n{}", tool_call)
             }
             RolloutAction::PlannerEndStep => "[PlannerEndStep]".to_string(),
-            RolloutAction::PlannerCompactStep(compacted) => {
-                format!("[PlannerCompactStep]:\n{}", compacted)
+            RolloutAction::PlannerCompactStep{summary, step_quality} => {
+                format!(
+                    "[PlannerCompactStep]:\n{}\n[StepQuality]: {:?}",
+                    summary, step_quality
+                )
             }
             RolloutAction::PlannerUpdatePlan(updated_plan) => {
                 format!("[PlannerUpdatePlan]:\n{}", updated_plan)
@@ -93,7 +118,12 @@ impl RolloutAction {
             RolloutAction::PlannerReasoning(_reasoning) => "[PlannerReasoning]".to_string(),
             RolloutAction::PlannerToolCall(_tool_call) => "[PlannerToolCall]".to_string(),
             RolloutAction::PlannerEndStep => "[PlannerEndStep]".to_string(),
-            RolloutAction::PlannerCompactStep(_compacted) => "[PlannerCompactStep]".to_string(),
+            RolloutAction::PlannerCompactStep{step_quality, ..} => {
+                format!(
+                    "[PlannerCompactStep]\n[StepQuality]: {:?}",
+                    step_quality
+                )
+            }
             RolloutAction::PlannerUpdatePlan(_updated_plan) => "[PlannerUpdatePlan]".to_string(),
             RolloutAction::ToolCallResponse(_tool_response) => "[ToolCallResponse]".to_string(),
             RolloutAction::VerifierComment(comment) => format!(
@@ -135,9 +165,10 @@ pub struct FailedAttempt {
 #[derive(Debug, Clone)]
 pub struct SessionState {
     pub question: String,
-    pub prev_steps: Vec<DisplayPlannerStepComplete>,
+    pub prev_steps: Vec<CompletedStep>,
     pub current_step_content_raw: String,
     pub current_step_content_compacted: Option<String>,
+    pub current_step_quality: Option<StepQuality>,
     pub current_step_verifier_comment: Option<String>,
     pub current_plan: Option<String>,
     pub session_status: SessionStatus,
@@ -178,6 +209,7 @@ impl SessionState {
             prev_steps: Vec::new(),
             current_step_content_raw: String::new(),
             current_step_verifier_comment: None,
+            current_step_quality: None,
             num_plan_changes: 0,
             current_step_num_actions: 0,
             step_overwrite_streak: 0,
@@ -293,17 +325,18 @@ impl SessionState {
                 self.current_step_num_actions = 0;
                 self.session_status = SessionStatus::PlannerCompactingStep;
             }
-            RolloutAction::PlannerCompactStep(compacted) => {
+            RolloutAction::PlannerCompactStep{summary, step_quality} => {
                 assert_eq!(
                     self.session_status,
                     SessionStatus::PlannerCompactingStep,
                     "PlannerCompactStep can only be called after PlannerEndStep"
                 );
-                if let Some(boxed_answer) = extract_boxed_content(&compacted) {
+                if let Some(boxed_answer) = extract_boxed_content(&summary) {
                     self.final_answer = Some(boxed_answer);
                     should_end_session = true;
                 }
-                self.current_step_content_compacted = Some(compacted);                
+                self.current_step_content_compacted = Some(summary);
+                self.current_step_quality = step_quality;
                 self.session_status = SessionStatus::PlannerUpdatingPlan;
             }
             RolloutAction::PlannerUpdatePlan(updated_plan) => {
@@ -327,30 +360,38 @@ impl SessionState {
                     .planner_chosen_mode
                     .take()
                     .expect("Planner must have chosen a mode before verifier commenting");
-                match step_mode {
+                match &step_mode {
                     NextStepDecision::Continue => {
-                        let new_step = DisplayPlannerStepComplete::new(
+                        let new_step = CompletedStep::new(
+                            step_mode.clone(),
+                            self.current_step_content_raw.clone(),
                             self.current_step_content_compacted
                                 .take()
                                 .expect("The compacted content must be available"),
+                            self.current_step_quality.take(),
                             self.current_step_verifier_comment.take(),
                         );
                         self.prev_steps.push(new_step);
                         self.current_step_content_raw.clear();
                         self.current_step_content_compacted = None;
+                        self.current_step_quality = None;
                         self.current_step_verifier_comment = None;
                     }
                     NextStepDecision::OverwriteLastStep(_overwrite_reason) => {
-                        let new_step = DisplayPlannerStepComplete::new(
+                        let new_step = CompletedStep::new(
+                            step_mode.clone(),
+                            self.current_step_content_raw.clone(),
                             self.current_step_content_compacted
                                 .take()
                                 .expect("The compacted content must be available"),
+                            self.current_step_quality.take(),
                             self.current_step_verifier_comment.take(),
                         );
                         self.prev_steps.pop();
                         self.prev_steps.push(new_step);
                         self.current_step_content_raw.clear();
                         self.current_step_content_compacted = None;
+                        self.current_step_quality = None;
                         self.current_step_verifier_comment = None;
                     }
                     NextStepDecision::ChangePlan(_) => {
