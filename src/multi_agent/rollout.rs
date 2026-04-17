@@ -4,7 +4,7 @@ use rand::RngExt;
 use reqwest::Client;
 
 use crate::{
-    call_llm::call_llm_with_prefix,
+    call_llm::{call_llm_with_prefix, QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE},
     deepmath::generate_raw_answers::Model,
     execute_python_code::execute_python_code,
     multi_agent::{
@@ -249,6 +249,8 @@ pub fn get_prompt_according_to_session_status(session_state: &SessionState) -> (
 pub const SUBMIT_ANSWER_HINT: &str = "\
 <hint>It seems you are trying to end the step at the start of the step. \
 If you have got the answer, put it in \\boxed{} before ending with <end_step>.</hint>";
+pub const CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE: &str =
+    "<error>Model context length exceeded, aborting.</error>";
 
 pub fn detect_repetition_three_times(response: &str) -> bool {
     let min_subsequence_length = 20; // minimum length of the repeated subsequence to avoid false positive from short common phrases
@@ -294,6 +296,10 @@ pub fn detect_repetition_three_times(response: &str) -> bool {
     }
 
     false
+}
+
+fn is_context_length_exceeded_response(response: &str) -> bool {
+    response == QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE
 }
 
 // it will output action logs and final trajectory
@@ -361,8 +367,18 @@ pub async fn rollout(
                     model,
                 )
                 .await;
-                let plan_content = response; // we change to not require the plan to be in a markdown code block
-                vec![RolloutAction::PlannerMakePlan(plan_content)]
+                if is_context_length_exceeded_response(&response) {
+                    println!(
+                        "[Warning] Model context length exceeded in PlannerMakingPlan, ending session.",
+                    );
+                    session_should_end = true;
+                    vec![RolloutAction::ToolCallResponse(
+                        CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
+                    )]
+                } else {
+                    let plan_content = response; // we change to not require the plan to be in a markdown code block
+                    vec![RolloutAction::PlannerMakePlan(plan_content)]
+                }
             }
             SessionStatus::PlannerChoosingMode => {
                 let (prompt_before_assistant, prompt_after_assistant) =
@@ -379,52 +395,62 @@ pub async fn rollout(
                     model,
                 )
                 .await;
-                let trimmed_response = response.trim();
-                let raw_choice = get_protocol_value(trimmed_response, "choice").expect(&format!(
-                    "Planner choosing mode response does not contain 'choice: ...' line. Response: {}",
-                    trimmed_response
-                ));
-                let choice = parse_next_step_choice(raw_choice).expect(&format!(
-                    "Invalid or ambiguous choice field in planner choosing mode response. Choice must contain exactly one distinct keyword among continue/change/overwrite/rewrite (case-insensitive). choice: {}. Response: {}",
-                    raw_choice,
-                    trimmed_response
-                ));
-                let chosen_mode = match choice {
-                    "continue" => NextStepDecision::Continue,
-                    "overwrite_last_step" => {
-                        if session.session_state.can_overwrite_step() {
-                            let reason = get_protocol_value(trimmed_response, "reason").expect(
-                                &format!(
-                                    "Planner choosing mode response with 'overwrite_last_step' choice does not contain 'reason: ...' line. Response: {}",
-                                    trimmed_response
-                                ),
-                            );
-                            NextStepDecision::OverwriteLastStep(reason.to_string())
-                        } else {
-                            println!("[Warning] Overwrite last step is capped.");
-                            NextStepDecision::Continue // if cannot overwrite step, we also continue to the next step to avoid getting stuck
+                if is_context_length_exceeded_response(&response) {
+                    println!(
+                        "[Warning] Model context length exceeded in PlannerChoosingMode, ending session.",
+                    );
+                    session_should_end = true;
+                    vec![RolloutAction::ToolCallResponse(
+                        CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
+                    )]
+                } else {
+                    let trimmed_response = response.trim();
+                    let raw_choice = get_protocol_value(trimmed_response, "choice").expect(&format!(
+                        "Planner choosing mode response does not contain 'choice: ...' line. Response: {}",
+                        trimmed_response
+                    ));
+                    let choice = parse_next_step_choice(raw_choice).expect(&format!(
+                        "Invalid or ambiguous choice field in planner choosing mode response. Choice must contain exactly one distinct keyword among continue/change/overwrite/rewrite (case-insensitive). choice: {}. Response: {}",
+                        raw_choice,
+                        trimmed_response
+                    ));
+                    let chosen_mode = match choice {
+                        "continue" => NextStepDecision::Continue,
+                        "overwrite_last_step" => {
+                            if session.session_state.can_overwrite_step() {
+                                let reason = get_protocol_value(trimmed_response, "reason").expect(
+                                    &format!(
+                                        "Planner choosing mode response with 'overwrite_last_step' choice does not contain 'reason: ...' line. Response: {}",
+                                        trimmed_response
+                                    ),
+                                );
+                                NextStepDecision::OverwriteLastStep(reason.to_string())
+                            } else {
+                                println!("[Warning] Overwrite last step is capped.");
+                                NextStepDecision::Continue // if cannot overwrite step, we also continue to the next step to avoid getting stuck
+                            }
                         }
-                    }
-                    "change_plan" => {
-                        if session.session_state.can_change_plan() {
-                            let reason = get_protocol_value(trimmed_response, "reason").expect(
-                                &format!(
-                                    "Planner choosing mode response with 'change_plan' choice does not contain 'reason: ...' line. Response: {}",
-                                    trimmed_response
-                                ),
-                            );
-                            NextStepDecision::ChangePlan(reason.to_string())
-                        } else {
-                            println!("[Warning] Change plan is capped.");
-                            NextStepDecision::Continue // if cannot change plan, we also continue to the next step to avoid getting stuck
+                        "change_plan" => {
+                            if session.session_state.can_change_plan() {
+                                let reason = get_protocol_value(trimmed_response, "reason").expect(
+                                    &format!(
+                                        "Planner choosing mode response with 'change_plan' choice does not contain 'reason: ...' line. Response: {}",
+                                        trimmed_response
+                                    ),
+                                );
+                                NextStepDecision::ChangePlan(reason.to_string())
+                            } else {
+                                println!("[Warning] Change plan is capped.");
+                                NextStepDecision::Continue // if cannot change plan, we also continue to the next step to avoid getting stuck
+                            }
                         }
-                    }
-                    _ => panic!(
-                        "Invalid choice field in planner choosing mode response JSON: {}",
-                        choice
-                    ),
-                };
-                vec![RolloutAction::PlannerDecideNextStep(chosen_mode)]
+                        _ => panic!(
+                            "Invalid choice field in planner choosing mode response JSON: {}",
+                            choice
+                        ),
+                    };
+                    vec![RolloutAction::PlannerDecideNextStep(chosen_mode)]
+                }
             }
             SessionStatus::PlannerWorkingOnStep => {
                 let (prompt_before_assistant, prompt_after_assistant) =
@@ -436,66 +462,79 @@ pub async fn rollout(
                     model,
                 )
                 .await;
-                if response.trim().is_empty() {
-                    response = "<end_step>".to_string(); // if the model does not output anything, we treat it as if it outputs <end_step> to prevent getting stuck
-                }
-                let mut hold_end_step = false;
-                if &response == "<end_step>"
-                    && &session.session_state.current_step_content_raw == ""
-                {
+                if is_context_length_exceeded_response(&response) {
                     println!(
-                        "[Warning]: model tries to end the step without providing any content for the step."
+                        "[Warning] Model context length exceeded in PlannerWorkingOnStep, ending session.",
                     );
-                    hold_end_step = true;
-                }
-                let (reasoning, tool_call) = split_reasoning_and_tool_call(response.clone(), model);
-                let mut push_end_step = false;
-                let mut operations = Vec::new();
-                if let Some(reasoning) = reasoning {
-                    if reasoning.contains("<end_step>") {
-                        push_end_step = true;
+                    session_should_end = true;
+                    vec![RolloutAction::ToolCallResponse(
+                        CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
+                    )]
+                } else {
+                    if response.trim().is_empty() {
+                        response = "<end_step>".to_string(); // if the model does not output anything, we treat it as if it outputs <end_step> to prevent getting stuck
                     }
-                    operations.push(RolloutAction::PlannerReasoning(reasoning));
-                }
-                if let Some(tool_call) = tool_call {
-                    let tool_response = execute_planner_tool_call(&tool_call).await;
-                    operations.push(RolloutAction::PlannerToolCall(tool_call));
-                    operations.push(RolloutAction::ToolCallResponse(tool_response));
-                }
-                if hold_end_step {
-                    operations.push(RolloutAction::ToolCallResponse(
-                        SUBMIT_ANSWER_HINT.to_string(),
-                    ));
-                }
-                let num_additional_actions_allowed = session
-                    .session_state
-                    .num_additional_actions_allowed_in_current_step();
-                if operations.len() > num_additional_actions_allowed {
-                    println!(
-                        "[Warning] Number of actions in the current step {} exceeds the limit {}. Only the first {} actions will be applied.",
-                        operations.len(),
-                        num_additional_actions_allowed,
-                        num_additional_actions_allowed
-                    );
-                    operations.truncate(num_additional_actions_allowed);
-                }
-                // detect repetition
-                let found_repetition_three_times = detect_repetition_three_times(&response);
-                if found_repetition_three_times {
-                    println!(
-                        "[Warning] Detected repetition of the same response at least three times. This may indicate that the model is stuck in a loop. Response: {}",
-                        response
-                    );
-                    operations.push(RolloutAction::ToolCallResponse(
-                        "<error>Repeated contents detected. This step is forced to abort without completion.</error>".to_string(),
-                    ));
-                }
+                    let mut hold_end_step = false;
+                    if &response == "<end_step>"
+                        && &session.session_state.current_step_content_raw == ""
+                    {
+                        println!(
+                            "[Warning]: model tries to end the step without providing any content for the step."
+                        );
+                        hold_end_step = true;
+                    }
+                    let (reasoning, tool_call) = split_reasoning_and_tool_call(response.clone(), model);
+                    let mut push_end_step = false;
+                    let mut operations = Vec::new();
+                    if let Some(reasoning) = reasoning {
+                        if reasoning.contains("<end_step>") {
+                            push_end_step = true;
+                        }
+                        operations.push(RolloutAction::PlannerReasoning(reasoning));
+                    }
+                    if let Some(tool_call) = tool_call {
+                        let tool_response = execute_planner_tool_call(&tool_call).await;
+                        operations.push(RolloutAction::PlannerToolCall(tool_call));
+                        operations.push(RolloutAction::ToolCallResponse(tool_response));
+                    }
+                    if hold_end_step {
+                        operations.push(RolloutAction::ToolCallResponse(
+                            SUBMIT_ANSWER_HINT.to_string(),
+                        ));
+                    }
+                    let num_additional_actions_allowed = session
+                        .session_state
+                        .num_additional_actions_allowed_in_current_step();
+                    if operations.len() > num_additional_actions_allowed {
+                        println!(
+                            "[Warning] Number of actions in the current step {} exceeds the limit {}. Only the first {} actions will be applied.",
+                            operations.len(),
+                            num_additional_actions_allowed,
+                            num_additional_actions_allowed
+                        );
+                        operations.truncate(num_additional_actions_allowed);
+                    }
+                    // detect repetition
+                    let found_repetition_three_times = detect_repetition_three_times(&response);
+                    if found_repetition_three_times {
+                        println!(
+                            "[Warning] Detected repetition of the same response at least three times. This may indicate that the model is stuck in a loop. Response: {}",
+                            response
+                        );
+                        operations.push(RolloutAction::ToolCallResponse(
+                            "<error>Repeated contents detected. This step is forced to abort without completion.</error>".to_string(),
+                        ));
+                    }
 
-                let current_step_full = operations.len() == num_additional_actions_allowed;
-                if (push_end_step && !hold_end_step) || current_step_full || found_repetition_three_times {
-                    operations.push(RolloutAction::PlannerEndStep);
+                    let current_step_full = operations.len() == num_additional_actions_allowed;
+                    if (push_end_step && !hold_end_step)
+                        || current_step_full
+                        || found_repetition_three_times
+                    {
+                        operations.push(RolloutAction::PlannerEndStep);
+                    }
+                    operations
                 }
-                operations
             }
             SessionStatus::PlannerCompactingStep => {
                 let (prompt_before_assistant, prompt_after_assistant) =
@@ -507,11 +546,21 @@ pub async fn rollout(
                     model,
                 )
                 .await;
-                let (summary, step_quality) = parse_compactor_response(response);
-                vec![RolloutAction::PlannerCompactStep {
-                    summary,
-                    step_quality,
-                }]
+                if is_context_length_exceeded_response(&response) {
+                    println!(
+                        "[Warning] Model context length exceeded in PlannerCompactingStep, ending session.",
+                    );
+                    session_should_end = true;
+                    vec![RolloutAction::ToolCallResponse(
+                        CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
+                    )]
+                } else {
+                    let (summary, step_quality) = parse_compactor_response(response);
+                    vec![RolloutAction::PlannerCompactStep {
+                        summary,
+                        step_quality,
+                    }]
+                }
             }
             SessionStatus::PlannerUpdatingPlan => {
                 let (prompt_before_assistant, prompt_after_assistant) =
@@ -523,8 +572,18 @@ pub async fn rollout(
                     model,
                 )
                 .await;
-                let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
-                vec![RolloutAction::PlannerUpdatePlan(updated_plan_content)]
+                if is_context_length_exceeded_response(&response) {
+                    println!(
+                        "[Warning] Model context length exceeded in PlannerUpdatingPlan, ending session.",
+                    );
+                    session_should_end = true;
+                    vec![RolloutAction::ToolCallResponse(
+                        CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
+                    )]
+                } else {
+                    let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
+                    vec![RolloutAction::PlannerUpdatePlan(updated_plan_content)]
+                }
             }
             SessionStatus::VerifierCommenting => {
                 let mut verifier_comment = None;
@@ -545,9 +604,21 @@ pub async fn rollout(
                         model,
                     )
                     .await;
-                    verifier_comment = Some(response.trim().to_string());
+                    if is_context_length_exceeded_response(&response) {
+                        println!(
+                            "[Warning] Model context length exceeded in VerifierCommenting, ending session.",
+                        );
+                        session_should_end = true;
+                        vec![RolloutAction::ToolCallResponse(
+                            CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
+                        )]
+                    } else {
+                        verifier_comment = Some(response.trim().to_string());
+                        vec![RolloutAction::VerifierComment(verifier_comment)]
+                    }
+                } else {
+                    vec![RolloutAction::VerifierComment(verifier_comment)]
                 }
-                vec![RolloutAction::VerifierComment(verifier_comment)]
             }
         };
 

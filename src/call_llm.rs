@@ -6,6 +6,7 @@ use crate::deepmath::generate_raw_answers::Model;
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
 static VLLM_PORT_OVERRIDE: AtomicU16 = AtomicU16::new(0);
+pub const QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE: &str = "<error>QWEN_CONTEXT_LENGTH_EXCEEDED</error>";
 
 pub fn set_vllm_port(port: u16) {
     assert!(port > 0, "vLLM port must be greater than 0");
@@ -148,6 +149,14 @@ pub async fn call_qwen_raw_completions(
 
     let response = post_json(client, &get_vllm_raw_completions_url(), body, model).await;
     let json: serde_json::Value = response.json().await.unwrap();
+    if let Some(error_message) = json["error"]["message"].as_str() {
+        if error_message.contains("maximum context length")
+            || error_message.contains("Please reduce the length of the input prompt")
+            || error_message.contains("parameter=input_tokens")
+        {
+            return QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE.to_string();
+        }
+    }
     json["choices"][0]["text"]
         .as_str()
         .expect(&format!("Qwen completions response is invalid: {:?}", json))
