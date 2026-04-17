@@ -10,8 +10,8 @@ fn get_planner_step_overwriting_status_prompt(step_mode: NextStepDecision) -> St
     };
     format!(
         "\
-The verifier's comment is only for reference and may not be true. \
-Please do not explicitly quote the verifier or try to respond to it in your reasoning.\n\
+The verifier's comment is only for reference. \
+Please do not explicitly quote the verifier or try to respond to it.\n\
 {}\n\
 {}\n\
 \n\
