@@ -71,19 +71,20 @@ pub fn split_reasoning_and_tool_call(
             }
         }
     }
-    let Some(start_position) = min_start_position else {
+    let Some(mut start_position) = min_start_position else {
         return (Some(response), None);
     };
+    // if there is <tool_call> before the start position, also include it
+    if let Some(tag_position) = response[..start_position].rfind("<tool_wait>") {
+        if response[tag_position..start_position].trim().is_empty() {
+            start_position = tag_position;
+        }
+    }
     let selected_parser = selected_parser.unwrap();
     let end_position = selected_parser
         .end_position(&response, start_position)
         .unwrap_or(response.len());
     let mut tool_call = response[start_position..end_position].to_string();
-    // if before the start position there is immediately a <tool_wait> tag, we also include it in the tool call
-    let before_start = response[..start_position].trim_end();
-    if before_start.ends_with("<tool_wait>") {
-        tool_call = "<tool_wait>".to_string() + &tool_call;
-    }
     // if after the end position there is immediately a </tool_wait> tag, we also include it in the tool call
     if end_position < response.len() && response[end_position..].trim().starts_with("</tool_wait>")
     {
@@ -210,7 +211,7 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> String {
         return "<tool_response>Tool call markdown code block not properly formatted.</tool_response>".to_string();
     }
     let code = &trimmed_tool_call[code_start..fence_end_index];
-    let mut python_code_result = execute_python_code(code.to_string()).await;
+    let python_code_result = execute_python_code(code.to_string()).await;
     
     format!(
         "<tool_response>{}</tool_response>",

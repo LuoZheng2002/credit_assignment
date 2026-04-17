@@ -8,9 +8,31 @@ fn blocking_python_code_task(code: String) -> PyResult<String> {
         let globals = PyDict::new(py);
 
         let io_redirect_code = r#"
-import io, sys
+import ast
+import io
+import sys
 buf = io.StringIO()
 sys.stdout = buf
+
+def _execute_with_trailing_expression(code_text: str, namespace: dict):
+    tree = ast.parse(code_text, mode='exec')
+    if len(tree.body) == 0:
+        return
+
+    last_stmt = tree.body[-1]
+    if isinstance(last_stmt, ast.Expr):
+        prefix_module = ast.Module(body=tree.body[:-1], type_ignores=[])
+        ast.fix_missing_locations(prefix_module)
+        if len(prefix_module.body) > 0:
+            exec(compile(prefix_module, '<tool>', 'exec'), namespace, namespace)
+
+        expr = ast.Expression(last_stmt.value)
+        ast.fix_missing_locations(expr)
+        expr_value = eval(compile(expr, '<tool>', 'eval'), namespace, namespace)
+        if expr_value is not None:
+            print(repr(expr_value))
+    else:
+        exec(compile(tree, '<tool>', 'exec'), namespace, namespace)
 "#;
 
         py.run(
@@ -18,8 +40,14 @@ sys.stdout = buf
             Some(&globals),
             Some(&globals),
         )?;
-        let code = CString::new(code).unwrap();
-        py.run(code.as_c_str(), Some(&globals), Some(&globals))?;
+        globals.set_item("__code_input", code)?;
+        py.run(
+            CString::new("_execute_with_trailing_expression(__code_input, globals())")
+                .unwrap()
+                .as_c_str(),
+            Some(&globals),
+            Some(&globals),
+        )?;
         // use eval to get the result of the last expression
         let output = py
             .eval(
@@ -39,7 +67,8 @@ pub async fn execute_python_code(code: String) -> String {
         Ok(join_result) => match join_result {
             Ok(Ok(output)) => {
                 if output.trim().is_empty() {
-                    return "Python interpreter did not return any output. Please use print statements to retrieve results.".to_string();
+                    panic!("Python interpreter did not return any output. Please use print statements to retrieve results.");
+                    // return "Python interpreter did not return any output. Please use print statements to retrieve results.".to_string();
                 }
                 output
             }

@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Stdout};
@@ -11,19 +12,20 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::prelude::Widget;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::Terminal;
 use ratatui_core::buffer::Buffer;
 use serde_json;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+use credit_assignment::deepmath::judge_answers::DeepMathCorrectness;
 use credit_assignment::multi_agent::generate_rollout_answers::RolloutTrajectory;
 use credit_assignment::multi_agent::rollout::get_prompt_according_to_session_status;
 use credit_assignment::multi_agent::session::{RolloutAction, SessionState};
@@ -38,17 +40,26 @@ struct Args {
         help = "Path to a jsonl file containing RolloutAnswerRaw lines"
     )]
     file: PathBuf,
+    #[arg(
+        long = "correctness-file",
+        help = "Path to a jsonl file containing DeepMathCorrectness lines"
+    )]
+    correctness_file: Option<PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     let answers = load_rollout_answers(&args.file)?;
+    let correctness_by_id = match &args.correctness_file {
+        Some(path) => Some(load_correctness_by_id(path)?),
+        None => None,
+    };
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let result = run_app(&mut terminal, answers);
+    let result = run_app(&mut terminal, answers, correctness_by_id);
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -57,6 +68,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     terminal.show_cursor()?;
     result
+}
+
+fn load_correctness_by_id(path: &PathBuf) -> Result<HashMap<usize, bool>, Box<dyn Error>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut correctness_by_id: HashMap<usize, bool> = HashMap::new();
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let correctness: DeepMathCorrectness = serde_json::from_str(trimmed)?;
+        correctness_by_id.insert(correctness.id, correctness.correct);
+    }
+    Ok(correctness_by_id)
 }
 
 fn load_rollout_answers(path: &PathBuf) -> Result<Vec<RolloutTrajectory>, Box<dyn Error>> {
@@ -83,8 +110,9 @@ fn load_rollout_answers(path: &PathBuf) -> Result<Vec<RolloutTrajectory>, Box<dy
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     answers: Vec<RolloutTrajectory>,
+    correctness_by_id: Option<HashMap<usize, bool>>,
 ) -> Result<(), Box<dyn Error>> {
-    let mut app = App::new(answers);
+    let mut app = App::new(answers, correctness_by_id);
     loop {
         terminal.draw(|f| app.draw(f))?;
         match event::read()? {
@@ -143,6 +171,7 @@ impl PaneFocus {
 
 struct App {
     answers: Vec<RolloutTrajectory>,
+    correctness_by_id: Option<HashMap<usize, bool>>,
     selection_state: ListState,
     browsing_view: Option<SessionView>,
     focus: PaneFocus,
@@ -157,13 +186,17 @@ struct App {
 }
 
 impl App {
-    fn new(answers: Vec<RolloutTrajectory>) -> Self {
+    fn new(
+        answers: Vec<RolloutTrajectory>,
+        correctness_by_id: Option<HashMap<usize, bool>>,
+    ) -> Self {
         let mut selection_state = ListState::default();
         if !answers.is_empty() {
             selection_state.select(Some(0));
         }
         Self {
             answers,
+            correctness_by_id,
             selection_state,
             browsing_view: None,
             focus: PaneFocus::Log,
@@ -454,7 +487,21 @@ impl App {
                         .chars()
                         .take(120)
                         .collect();
-                    let display = format!("{}: {}", answer.id, truncated_question);
+                    let correctness_prefix = match &self.correctness_by_id {
+                        Some(map) => {
+                            let correct = map.get(&answer.id).copied().unwrap_or(false);
+                            if correct {
+                                "✓ "
+                            } else {
+                                "✗ "
+                            }
+                        }
+                        None => "",
+                    };
+                    let display = format!(
+                        "{}{}: {}",
+                        correctness_prefix, answer.id, truncated_question
+                    );
                     ListItem::new(display)
                 })
                 .collect();
@@ -491,13 +538,15 @@ impl App {
             .split(frame.area());
 
         let header_text = format!(
-            "Question {}: {}",
+            "Question {}: {}\nModel answer: {} | Correct answer: {}",
             view.answer.id,
             view.answer
                 .question
                 .lines()
                 .next()
-                .unwrap_or("<empty question>")
+                .unwrap_or("<empty question>"),
+            view.answer.model_answer,
+            view.answer.correct_answer,
         );
         let header = Paragraph::new(header_text).block(
             Block::default()

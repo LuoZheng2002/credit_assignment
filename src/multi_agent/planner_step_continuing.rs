@@ -13,12 +13,11 @@ import numpy as np
 A = np.array([[2, 1], [1, -1]])
 b = np.array([5, 1])
 solution = np.linalg.solve(A, b)
-print(\"The solution to the linear equation is: \", solution)
+solution
 ```
 </tool_wait>\n\
 \n\
-Make sure to wrap the python code with <tool_wait> and </tool_wait> tags. \
-IMPORTANT: always use Python's print statement to output the result, otherwise the result will not be shown.\n\
+Make sure to wrap the python code with <tool_wait> and </tool_wait> tags.\
 ";
 
 pub const STEP_HALT_PROMPT: &str = "\
