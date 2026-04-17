@@ -270,11 +270,11 @@ impl App {
                     false
                 }
                 MouseEventKind::ScrollUp => {
-                    self.step_selection(-1);
+                    self.scroll_selection_window(-1);
                     false
                 }
                 MouseEventKind::ScrollDown => {
-                    self.step_selection(1);
+                    self.scroll_selection_window(1);
                     false
                 }
                 _ => false,
@@ -308,18 +308,18 @@ impl App {
         offset.checked_add(local_row as usize)
     }
 
-    fn step_selection(&mut self, delta: isize) {
+    fn scroll_selection_window(&mut self, delta: isize) {
         if self.answers.is_empty() {
             return;
         }
-        let current = self.selection_state.selected().unwrap_or(0);
-        let next = if delta < 0 {
-            current.saturating_sub(delta.unsigned_abs() as usize)
+        let current_offset = self.selection_state.offset();
+        let next_offset = if delta < 0 {
+            current_offset.saturating_sub(delta.unsigned_abs())
         } else {
-            current.saturating_add(delta as usize)
+            current_offset.saturating_add(delta as usize)
         };
-        let clamped = next.min(self.answers.len() - 1);
-        self.selection_state.select(Some(clamped));
+        let max_offset = self.answers.len().saturating_sub(1);
+        *self.selection_state.offset_mut() = next_offset.min(max_offset);
     }
 
     fn open_selected_question(&mut self) {
