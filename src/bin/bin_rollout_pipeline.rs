@@ -43,6 +43,8 @@ struct Args {
     model: Model,
     #[arg(long)]
     vllm_port: u16,
+    #[arg(long, default_value_t = 1000)]
+    max_tasks: usize,
 }
 
 // we want to log each action
@@ -51,7 +53,7 @@ struct Args {
 // Then reconstruct part of unfinished trajectories from the log and continue the rollout
 // If all trajectories finish, sort the trajectories, correctness and report the final accuracy.
 
-const MAX_TASKS: usize = 1000;
+// const MAX_TASKS: usize = 100;
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 async fn judge_rollout_answer_task(
@@ -108,6 +110,7 @@ async fn main() {
         model,
         num_samples,
         vllm_port,
+        max_tasks,
     } = Args::parse();
     assert!(vllm_port > 0, "--vllm-port must be greater than 0");
     set_vllm_port(vllm_port);
@@ -156,7 +159,7 @@ async fn main() {
     let mut unfinished_correctness_ids: HashSet<usize> = questions.keys().cloned().collect();
     unfinished_correctness_ids.retain(|id| !correctness_completed_ids.contains(id));
 
-    let sem = Arc::new(Semaphore::new(MAX_TASKS));
+    let sem = Arc::new(Semaphore::new(max_tasks));
     SHUTDOWN.store(false, Ordering::SeqCst);
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.unwrap();
