@@ -12,6 +12,7 @@ results
 scripts/*.sh
 pwd.txt
 examine.json
+activate_environment.sh
 # Added by cargo
 
 /target
