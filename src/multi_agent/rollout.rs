@@ -149,7 +149,7 @@ fn get_protocol_value<'a>(response: &'a str, key: &str) -> Option<&'a str> {
     let prefix = format!("{}:", key);
     for line in response.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with(&prefix) {
+        if trimmed.to_lowercase().starts_with(&prefix) {
             return Some(trimmed[prefix.len()..].trim());
         }
     }
