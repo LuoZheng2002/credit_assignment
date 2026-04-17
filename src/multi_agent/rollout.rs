@@ -139,9 +139,9 @@ fn parse_next_step_choice(choice: &str) -> Option<&'static str> {
     {
         let token_lower = token.to_ascii_lowercase();
         match token_lower.as_str() {
-            "continue" => has_continue = true,
-            "change" => has_change = true,
-            "overwrite" | "rewrite" => has_overwrite = true,
+            "continue" | "proceed" => has_continue = true,
+            "change" | "plan" => has_change = true,
+            "overwrite" | "rewrite" | "fix" | "last" | "step" => has_overwrite = true,
             _ => {}
         }
     }
