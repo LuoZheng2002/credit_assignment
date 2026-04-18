@@ -2,6 +2,8 @@ use std::{ffi::CString, time::Duration};
 
 use pyo3::{prelude::*, types::PyDict};
 
+use crate::multi_agent::session::ToolResponse;
+
 fn blocking_python_code_task(code: String) -> PyResult<String> {
     Python::attach(|py| -> PyResult<String> {
         // Persistent REPL namespace
@@ -82,7 +84,7 @@ fn format_limited_output(output: String, max_chars: usize) -> String {
     )
 }
 
-pub async fn execute_python_code(code: String) -> String {
+pub async fn execute_python_code(code: String) -> ToolResponse {
     let task = tokio::task::spawn_blocking(move || blocking_python_code_task(code));
     let result = tokio::time::timeout(Duration::from_millis(5000), task).await;
     match result {
@@ -91,14 +93,18 @@ pub async fn execute_python_code(code: String) -> String {
                 if output.trim().is_empty() {
                     // panic!("Python interpreter did not return any output. Please use print statements to retrieve results.");
                     println!("[Warning]: Python interpreter did not return any output.");
-                    return "Python interpreter did not return any output. Please use print statements to retrieve results.".to_string();
+                    return ToolResponse::PythonSuccess(
+                        "Python interpreter did not return any output. Please use print statements to retrieve results.".to_string(),
+                    );
                 }
-                format_limited_output(output, MAX_TOOL_OUTPUT_CHARS)
+                ToolResponse::PythonSuccess(format_limited_output(output, MAX_TOOL_OUTPUT_CHARS))
             }
-            Ok(Err(err)) => format!("Python error: {}", err),
-            Err(_) => "Sorry, unexpected error occurred. Please try again.".to_string(),
+            Ok(Err(err)) => ToolResponse::PythonError(err.to_string()),
+            Err(_) => ToolResponse::PythonError(
+                "Sorry, unexpected error occurred. Please try again.".to_string(),
+            ),
         },
-        Err(_) => "Python code execution timed out.".to_string(),
+        Err(_) => ToolResponse::PythonError("Python code execution timed out.".to_string()),
     }
 }
 

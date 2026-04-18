@@ -528,28 +528,26 @@ impl App {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(4),
+                Constraint::Length(8),
                 Constraint::Min(6),
                 Constraint::Length(3),
             ])
             .split(frame.area());
 
         let header_text = format!(
-            "Question {}: {}\nModel answer: {} | Correct answer: {}",
+            "Question {}: {}\nModel answer: {}\nCorrect answer: {}",
             view.answer.id,
-            view.answer
-                .question
-                .lines()
-                .next()
-                .unwrap_or("<empty question>"),
+            view.answer.question,
             view.answer.model_answer,
             view.answer.correct_answer,
         );
-        let header = Paragraph::new(header_text).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Session header"),
-        );
+        let header = Paragraph::new(header_text)
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Session header"),
+            );
         frame.render_widget(header, chunks[0]);
 
         let body_chunks = Layout::default()

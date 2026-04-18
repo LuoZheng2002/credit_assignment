@@ -17,7 +17,7 @@ use crate::{
         planner_updating_plan::get_planner_updating_plan_prompts,
         session::{
             NextStepDecision, RolloutAction, RolloutActionLogItem, Session, SessionState,
-            SessionStatus, StepQuality,
+            SessionStatus, StepQuality, ToolResponse,
         },
         verifier_commenting::get_verifier_commenting_prompts,
     },
@@ -188,7 +188,7 @@ fn parse_next_step_choice(choice: &str) -> Option<&'static str> {
     Some("overwrite_last_step")
 }
 
-pub async fn execute_planner_tool_call(tool_call: &str) -> String {
+pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
     let mut trimmed_tool_call = tool_call.trim_start().to_string();
     // trim <tool_wait>
     if trimmed_tool_call.starts_with("<tool_wait>") {
@@ -200,23 +200,21 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> String {
         tool_call
     );
     let Some(fence_end_index) = trimmed_tool_call.rfind("```") else {
-        return "<tool_response>Tool call markdown code block not properly closed.</tool_response>"
-            .to_string();
+        return ToolResponse::PythonError(
+            "Tool call markdown code block not properly closed.".to_string(),
+        );
     };
     let code_start = trimmed_tool_call
         .find('\n')
         .map(|idx| idx + 1)
         .unwrap_or("```python".len());
     if fence_end_index < code_start {
-        return "<tool_response>Tool call markdown code block not properly formatted.</tool_response>".to_string();
+        return ToolResponse::PythonError(
+            "Tool call markdown code block not properly formatted.".to_string(),
+        );
     }
     let code = &trimmed_tool_call[code_start..fence_end_index];
-    let python_code_result = execute_python_code(code.to_string()).await;
-    
-    format!(
-        "<tool_response>{}</tool_response>",
-        python_code_result.trim()
-    )
+    execute_python_code(code.to_string()).await
 }
 
 pub fn get_prompt_according_to_session_status(session_state: &SessionState) -> (String, String) {
@@ -251,6 +249,8 @@ pub const SUBMIT_ANSWER_HINT: &str = "\
 If you have got the answer, put it in \\boxed{} before ending with <end_step>.</hint>";
 pub const CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE: &str =
     "<error>Model context length exceeded, aborting.</error>";
+pub const IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE: &str =
+    "<error>Identical python tool error detected. Aborting current incomplete step.</error>";
 
 pub fn detect_repetition_three_times(response: &str) -> bool {
     let min_subsequence_length = 20; // minimum length of the repeated subsequence to avoid false positive from short common phrases
@@ -313,9 +313,9 @@ fn context_length_exceeded_result(session_status: &str) -> NewOperationsResult {
         session_status
     );
     NewOperationsResult {
-        operations: vec![RolloutAction::ToolCallResponse(
+        operations: vec![RolloutAction::ToolCallResponse(ToolResponse::Intervention(
             CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
-        )],
+        ))],
         should_end_session: true,
     }
 }
@@ -440,6 +440,7 @@ async fn build_new_operations(
             }
             let (reasoning, tool_call) = split_reasoning_and_tool_call(response.clone(), model);
             let mut push_end_step = false;
+            let mut found_identical_python_error_twice = false;
             let mut operations = Vec::new();
             if let Some(reasoning) = reasoning {
                 if reasoning.contains("<end_step>") {
@@ -449,13 +450,31 @@ async fn build_new_operations(
             }
             if let Some(tool_call) = tool_call {
                 let tool_response = execute_planner_tool_call(&tool_call).await;
+                let previous_python_error = session.session_state.current_step_last_python_error.clone();
                 operations.push(RolloutAction::PlannerToolCall(tool_call));
-                operations.push(RolloutAction::ToolCallResponse(tool_response));
+                if let ToolResponse::PythonError(current_python_error) = &tool_response {
+                    if previous_python_error.is_some()
+                        && Some(current_python_error.clone()) == previous_python_error
+                    {
+                        found_identical_python_error_twice = true;
+                        println!(
+                            "[Warning]: Identical python tool error detected. Aborting current step."
+                        );
+                        operations.push(RolloutAction::ToolCallResponse(tool_response));
+                        operations.push(RolloutAction::ToolCallResponse(ToolResponse::Intervention(
+                            IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
+                        )));
+                    } else {
+                        operations.push(RolloutAction::ToolCallResponse(tool_response));
+                    }
+                } else {
+                    operations.push(RolloutAction::ToolCallResponse(tool_response));
+                }
             }
             if hold_end_step {
-                operations.push(RolloutAction::ToolCallResponse(
+                operations.push(RolloutAction::ToolCallResponse(ToolResponse::Intervention(
                     SUBMIT_ANSWER_HINT.to_string(),
-                ));
+                )));
             }
             let num_additional_actions_allowed = session
                 .session_state
@@ -477,12 +496,17 @@ async fn build_new_operations(
                     response
                 );
                 operations.push(RolloutAction::ToolCallResponse(
-                    "<error>Repeated contents detected. This step is forced to abort without completion.</error>".to_string(),
+                    ToolResponse::Intervention(
+                        "<error>Repeated contents detected. This step is forced to abort without completion.</error>".to_string(),
+                    ),
                 ));
             }
 
             let current_step_full = operations.len() == num_additional_actions_allowed;
-            if (push_end_step && !hold_end_step) || current_step_full || found_repetition_three_times
+            if (push_end_step && !hold_end_step)
+                || current_step_full
+                || found_repetition_three_times
+                || found_identical_python_error_twice
             {
                 operations.push(RolloutAction::PlannerEndStep);
             }

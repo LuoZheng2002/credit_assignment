@@ -56,13 +56,34 @@ pub struct StepQuality {
     pub focused: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolResponse {
+    PythonSuccess(String),
+    PythonError(String),
+    Intervention(String),
+}
+
+impl ToolResponse {
+    pub fn to_raw_content(&self) -> String {
+        match self {
+            ToolResponse::PythonSuccess(output) => {
+                format!("<tool_response>{}</tool_response>", output)
+            }
+            ToolResponse::PythonError(error) => {
+                format!("<tool_response>Python error: {}</tool_response>", error)
+            }
+            ToolResponse::Intervention(content) => content.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RolloutAction {
     PlannerMakePlan(String), // this should be a mandatory process instead of a choice
     PlannerDecideNextStep(NextStepDecision),
     PlannerReasoning(String),
     PlannerToolCall(String),  // with <tool_call> ... </tool_call> wrapper
-    ToolCallResponse(String), // with <tool_response> ... </tool_response> wrapper
+    ToolCallResponse(ToolResponse),
     PlannerEndStep,
     // PlannerCompactStep(String, Option<StepQuality>),
     PlannerCompactStep{
@@ -103,7 +124,7 @@ impl RolloutAction {
                 format!("[PlannerUpdatePlan]:\n{}", updated_plan)
             }
             RolloutAction::ToolCallResponse(tool_response) => {
-                format!("[ToolCallResponse]:\n{}", tool_response)
+                format!("[ToolCallResponse]:\n{}", tool_response.to_raw_content())
             }
             RolloutAction::VerifierComment(comment) => {
                 format!("[VerifierComment]:\n{:?}", comment)
@@ -221,6 +242,7 @@ pub struct SessionState {
     pub num_plan_changes: usize,
     pub step_overwrite_streak: usize,
     pub current_step_num_actions: usize,
+    pub current_step_last_python_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +277,7 @@ impl SessionState {
             current_step_quality: None,
             num_plan_changes: 0,
             current_step_num_actions: 0,
+            current_step_last_python_error: None,
             step_overwrite_streak: 0,
             current_step_content_compacted: None,
             current_plan: None,
@@ -357,7 +380,19 @@ impl SessionState {
                     SessionStatus::PlannerWorkingOnStep,
                     "ToolCallResponse can only be called during PlannerTurn"
                 );
-                self.current_step_content_raw.push_str(&tool_response);
+                match &tool_response {
+                    ToolResponse::PythonSuccess(_output) => {
+                        self.current_step_last_python_error = None;
+                    }
+                    ToolResponse::PythonError(error) => {
+                        self.current_step_last_python_error = Some(error.clone());
+                    }
+                    ToolResponse::Intervention(_content) => {
+                        self.current_step_last_python_error = None;
+                    }
+                }
+                self.current_step_content_raw
+                    .push_str(&tool_response.to_raw_content());
             }
             RolloutAction::PlannerEndStep => {
                 assert_eq!(
@@ -366,6 +401,7 @@ impl SessionState {
                     "PlannerEndStep can only be called during PlannerTurn"
                 );
                 self.current_step_num_actions = 0;
+                self.current_step_last_python_error = None;
                 self.session_status = SessionStatus::PlannerCompactingStep;
             }
             RolloutAction::PlannerCompactStep{summary, step_quality} => {
@@ -378,6 +414,7 @@ impl SessionState {
                     self.final_answer = Some(boxed_answer);
                 }
                 if self.final_answer.is_some() {
+                    self.current_step_last_python_error = None;
                     should_end_session = true;
                 }
                 self.current_step_content_compacted = Some(summary);
