@@ -378,6 +378,44 @@ impl<'a> SessionState<'a> {
         }
         session_state
     }
+    pub fn collect_session_log_from_tree_node(current_node: Arc<Node>) -> SessionLog {
+        let mut nodes_from_current_to_root: Vec<Arc<Node>> = Vec::new();
+        let mut cursor = Some(current_node);
+        while let Some(node) = cursor {
+            nodes_from_current_to_root.push(node.clone());
+            let parent = node.parent.upgrade();
+            assert!(
+                parent.is_some() || node.node_id == 0,
+                "Non-root node must have a live parent"
+            );
+            cursor = parent;
+        }
+        assert!(
+            !nodes_from_current_to_root.is_empty(),
+            "Tree traversal should always include at least current node"
+        );
+        nodes_from_current_to_root.reverse();
+
+        let mut actions: Vec<RolloutAction> = Vec::new();
+        for node in nodes_from_current_to_root {
+            let step_ref = node.step.borrow();
+            actions.extend(step_ref.action_log.iter().cloned());
+        }
+        SessionLog(actions)
+    }
+    pub fn from_tree_node(
+        question: String,
+        current_node: Arc<Node>,
+        session_log: &'a SessionLog,
+    ) -> Self {
+        let rebuilt_session_log = Self::collect_session_log_from_tree_node(current_node);
+        assert_eq!(
+            rebuilt_session_log.0.len(),
+            session_log.0.len(),
+            "Provided session log length must match tree-derived session log length"
+        );
+        Self::from_session_log(question, session_log)
+    }
     pub fn can_change_plan(&self) -> bool {
         self.num_plan_changes < MAX_PLAN_CHANGES
     }
