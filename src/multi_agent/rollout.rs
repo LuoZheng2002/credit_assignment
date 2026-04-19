@@ -634,7 +634,7 @@ async fn build_new_operations(
         }
         SessionStatus::VerifierCommenting => {
             let mut verifier_comment = None;
-            if rng.random::<f32>() <= verifier_probability {
+            if !session.session_state.prev_steps.is_empty() && rng.random::<f32>() <= verifier_probability {
                 let (prompt_before_assistant, prompt_after_assistant) =
                     get_prompt_according_to_session_status(&session.session_state);
                 assert_eq!(

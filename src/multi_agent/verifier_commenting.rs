@@ -7,7 +7,12 @@ fn get_verifier_commenting_prompt_before_assistant(session_state: &SessionState)
     ));
     let question = &session_state.question;
     let history_prev_steps = session_state.to_history_prev_steps();
-    let current_step_content = session_state.current_step_content_raw.clone();
+    let last_step_content = session_state
+        .prev_steps
+        .last()
+        .expect("Verifier commenting prompt requires an existing previous step")
+        .content_raw
+        .clone();
     format!(
         "You are a verifier agent that is trying to evaluate the reasoning steps for the following problem:\n\
 <PROBLEM_BEGIN>\n\
@@ -34,7 +39,7 @@ Then at the very end, output a JSON markdown block in this exact format:\n\
 where `overwrite=true` means the current step should be overwritten, and `change=true` means the overall plan should be changed and restarted.\n\
 \n\n\
 Please start your comment and be concise:\n",
-        question, history_prev_steps, current_step_content,
+        question, history_prev_steps, last_step_content,
     )
 }
 

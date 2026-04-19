@@ -239,7 +239,6 @@ pub struct SessionState {
     pub current_step_content_raw: String,
     pub current_step_content_compacted: Option<String>,
     pub current_step_quality: Option<StepQuality>,
-    pub current_step_verifier_comment: Option<VerifierComment>,
     pub current_plan: Option<String>,
     pub session_status: SessionStatus,
     pub planner_chosen_mode: Option<NextStepDecision>,
@@ -281,7 +280,6 @@ impl SessionState {
             question,
             prev_steps: Vec::new(),
             current_step_content_raw: String::new(),
-            current_step_verifier_comment: None,
             current_step_quality: None,
             num_plan_changes: 0,
             current_step_num_actions: 0,
@@ -321,7 +319,7 @@ impl SessionState {
         match operation {
             RolloutAction::PlannerMakePlan(plan) => {
                 self.current_plan = Some(plan);
-                self.session_status = SessionStatus::PlannerChoosingMode;
+                self.session_status = SessionStatus::VerifierCommenting;
             }
             RolloutAction::PlannerDecideNextStep(mode) => {
                 self.planner_chosen_mode = Some(mode.clone());
@@ -442,20 +440,10 @@ impl SessionState {
                     "PlannerUpdatePlan can only be called after PlannerCompactStep"
                 );
                 self.current_plan = Some(updated_plan);
-                self.session_status = SessionStatus::VerifierCommenting;
-            }
-            RolloutAction::VerifierComment(comment) => {
-                assert_eq!(
-                    self.session_status,
-                    SessionStatus::VerifierCommenting,
-                    "VerifierComment can only be called during VerifierCommenting"
-                );
-                // this operation flushes the current step and moves it to prev_steps
-                self.current_step_verifier_comment = comment;
                 let step_mode = self
                     .planner_chosen_mode
                     .take()
-                    .expect("Planner must have chosen a mode before verifier commenting");
+                    .expect("Planner must have chosen a mode before planner updates plan");
                 match &step_mode {
                     NextStepDecision::Continue => {
                         let new_step = CompletedStep::new(
@@ -465,13 +453,12 @@ impl SessionState {
                                 .take()
                                 .expect("The compacted content must be available"),
                             self.current_step_quality.take(),
-                            self.current_step_verifier_comment.take(),
+                            None,
                         );
                         self.prev_steps.push(new_step);
                         self.current_step_content_raw.clear();
                         self.current_step_content_compacted = None;
                         self.current_step_quality = None;
-                        self.current_step_verifier_comment = None;
                     }
                     NextStepDecision::OverwriteLastStep(_overwrite_reason) => {
                         let new_step = CompletedStep::new(
@@ -481,20 +468,35 @@ impl SessionState {
                                 .take()
                                 .expect("The compacted content must be available"),
                             self.current_step_quality.take(),
-                            self.current_step_verifier_comment.take(),
+                            None,
                         );
                         self.prev_steps.pop();
                         self.prev_steps.push(new_step);
                         self.current_step_content_raw.clear();
                         self.current_step_content_compacted = None;
                         self.current_step_quality = None;
-                        self.current_step_verifier_comment = None;
                     }
                     NextStepDecision::ChangePlan(_) => {
                         panic!(
                             "ChangePlan should not be a valid step mode when the planner has entered the working on step status."
                         )
                     }
+                }
+                self.session_status = SessionStatus::VerifierCommenting;
+            }
+            RolloutAction::VerifierComment(comment) => {
+                assert_eq!(
+                    self.session_status,
+                    SessionStatus::VerifierCommenting,
+                    "VerifierComment can only be called during VerifierCommenting"
+                );
+                if let Some(last_step) = self.prev_steps.last_mut() {
+                    last_step.current_step_verifier_comment = comment;
+                } else {
+                    assert!(
+                        comment.is_none(),
+                        "Verifier comment must be None when there is no previous step"
+                    );
                 }
                 self.session_status = SessionStatus::PlannerChoosingMode;
             }
