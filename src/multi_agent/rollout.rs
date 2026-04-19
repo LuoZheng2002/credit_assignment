@@ -285,7 +285,7 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
     execute_python_code(code.to_string()).await
 }
 
-pub fn get_prompt_according_to_session_status(session_state: &SessionState) -> (String, String) {
+pub fn get_prompt_according_to_session_status(session_state: &SessionState<'_>) -> (String, String) {
     match session_state.session_status {
         SessionStatus::PlannerMakingOrChangingPlan => {
             get_planner_making_plan_prompts(session_state)
@@ -393,21 +393,20 @@ fn context_length_exceeded_result(session_status: &str) -> NewOperationsResult {
 }
 
 async fn build_new_operations(
-    session: &Session,
+    session_state: &SessionState<'_>,
     client: Client,
     model: Model,
     verifier_probability: f32,
     rng: &mut impl rand::Rng,
 ) -> NewOperationsResult {
-    match &session.session_state.session_status {
+    match &session_state.session_status {
         SessionStatus::PlannerMakingOrChangingPlan => {
-            let chosen_mode = session
-                .session_state
+            let chosen_mode = session_state
                 .planner_chosen_mode
                 .as_ref()
                 .expect("planner_chosen_mode must be set before PlannerMakingOrChangingPlan");
             let (prompt_before_assistant, prompt_after_assistant) =
-                get_prompt_according_to_session_status(&session.session_state);
+                get_prompt_according_to_session_status(session_state);
             let response = call_llm_with_prefix(
                 client.clone(),
                 prompt_before_assistant,
@@ -438,7 +437,7 @@ async fn build_new_operations(
         },
         SessionStatus::PlannerChoosingMode => {
             let (prompt_before_assistant, prompt_after_assistant) =
-                get_prompt_according_to_session_status(&session.session_state);
+                get_prompt_according_to_session_status(session_state);
             assert_eq!(
                 prompt_after_assistant,
                 String::new(),
@@ -467,7 +466,7 @@ async fn build_new_operations(
             let chosen_mode = match choice {
                 "continue" => NextStepDecision::Continue,
                 "overwrite_last_step" => {
-                    if session.session_state.can_overwrite_step() {
+                    if session_state.can_overwrite_step() {
                         let reason = get_protocol_value(trimmed_response, "reason").expect(
                             &format!(
                                 "Planner choosing mode response with 'overwrite_last_step' choice does not contain 'reason: ...' line. Response: {}",
@@ -481,7 +480,7 @@ async fn build_new_operations(
                     }
                 }
                 "change_plan" => {
-                    if session.session_state.can_change_plan() {
+                    if session_state.can_change_plan() {
                         let reason = get_protocol_value(trimmed_response, "reason").expect(
                             &format!(
                                 "Planner choosing mode response with 'change_plan' choice does not contain 'reason: ...' line. Response: {}",
@@ -506,7 +505,7 @@ async fn build_new_operations(
         }
         SessionStatus::PlannerWorkingOnStep => {
             let (prompt_before_assistant, prompt_after_assistant) =
-                get_prompt_according_to_session_status(&session.session_state);
+                get_prompt_according_to_session_status(session_state);
             let mut response = call_llm_with_prefix(
                 client.clone(),
                 prompt_before_assistant,
@@ -521,7 +520,7 @@ async fn build_new_operations(
                 response = "<end_step>".to_string(); // if the model does not output anything, we treat it as if it outputs <end_step> to prevent getting stuck
             }
             let mut hold_end_step = false;
-            if &response == "<end_step>" && &session.session_state.current_step_content_raw == "" {
+            if &response == "<end_step>" && &session_state.current_step_content_raw == "" {
                 println!(
                     "[Warning]: model tries to end the step without providing any content for the step."
                 );
@@ -539,8 +538,7 @@ async fn build_new_operations(
             }
             if let Some(tool_call) = tool_call {
                 let tool_response = execute_planner_tool_call(&tool_call).await;
-                let previous_python_error =
-                    session.session_state.current_step_last_python_error.clone();
+                let previous_python_error = session_state.current_step_last_python_error.clone();
                 operations.push(RolloutAction::PlannerToolCall(tool_call));
                 if let ToolResponse::PythonError(current_python_error) = &tool_response {
                     if previous_python_error.is_some()
@@ -568,9 +566,8 @@ async fn build_new_operations(
                     SUBMIT_ANSWER_HINT.to_string(),
                 )));
             }
-            let num_additional_actions_allowed = session
-                .session_state
-                .num_additional_actions_allowed_in_current_step();
+            let num_additional_actions_allowed =
+                session_state.num_additional_actions_allowed_in_current_step();
             if operations.len() > num_additional_actions_allowed {
                 println!(
                     "[Warning] Number of actions in the current step {} exceeds the limit {}. Only the first {} actions will be applied.",
@@ -609,7 +606,7 @@ async fn build_new_operations(
         }
         SessionStatus::PlannerCompactingStep => {
             let (prompt_before_assistant, prompt_after_assistant) =
-                get_prompt_according_to_session_status(&session.session_state);
+                get_prompt_according_to_session_status(session_state);
             let response = call_llm_with_prefix(
                 client.clone(),
                 prompt_before_assistant,
@@ -631,7 +628,7 @@ async fn build_new_operations(
         }
         SessionStatus::PlannerUpdatingPlan => {
             let (prompt_before_assistant, prompt_after_assistant) =
-                get_prompt_according_to_session_status(&session.session_state);
+                get_prompt_according_to_session_status(session_state);
             let response = call_llm_with_prefix(
                 client.clone(),
                 prompt_before_assistant,
@@ -650,9 +647,9 @@ async fn build_new_operations(
         }
         SessionStatus::VerifierCommenting => {
             let mut verifier_comment = None;
-            if !session.session_state.prev_steps.is_empty() && rng.random::<f32>() <= verifier_probability {
+            if !session_state.prev_steps.is_empty() && rng.random::<f32>() <= verifier_probability {
                 let (prompt_before_assistant, prompt_after_assistant) =
-                    get_prompt_according_to_session_status(&session.session_state);
+                    get_prompt_according_to_session_status(session_state);
                 assert_eq!(
                     prompt_after_assistant,
                     String::new(),
@@ -695,52 +692,67 @@ pub async fn rollout(
     // create a state machine
     let mut session = Session::new(question.clone());
     let mut session_should_end = false;
+    let mut forced_final_answer: Option<String> = None;
     for log in loaded_session_log {
-        if session.apply_parsed_operation(log) {
+        session.apply_parsed_operation(log);
+        let loaded_state = session.get_session_state();
+        if loaded_state.final_answer.is_some() {
             session_should_end = true;
         }
     }
     let mut sub_step_counter = 0; // to prevent infinite loop in case of bugs
     loop {
         if session_should_end {
+            let session_state = session.get_session_state();
+            let displayed_final_answer = forced_final_answer
+                .as_deref()
+                .or(session_state.final_answer.as_deref())
+                .unwrap_or("None");
             println!(
                 "[rollout finished] question index: {}, total actual rounds: {}, final answer: {}, correct answer: {}",
                 question_id,
                 session.session_log.total_actual_rounds(),
-                session
-                    .session_state
-                    .final_answer
-                    .as_deref()
-                    .unwrap_or("None"),
+                displayed_final_answer,
                 reference_answer
             );
             break;
         }
         sub_step_counter += 1;
-        if session.session_state.prev_steps.len() > 20 {
-            session.session_state.final_answer = Some("The model does not manage to provide a final answer within allowed number of turns.".to_string());
+        let session_state = session.get_session_state();
+        if session_state.prev_steps.len() > 20 {
+            forced_final_answer = Some(
+                "The model does not manage to provide a final answer within allowed number of turns."
+                    .to_string(),
+            );
             session_should_end = true;
             println!(
                 "[Warning] Number of steps exceeds the limit {}, ending the session.",
                 20
             );
         } else if session.session_log.total_actual_rounds() > 150 {
-            session.session_state.final_answer = Some("The model does not manage to provide a final answer within allowed number of turns.".to_string());
+            forced_final_answer = Some(
+                "The model does not manage to provide a final answer within allowed number of turns."
+                    .to_string(),
+            );
             session_should_end = true;
             println!(
                 "[Warning] Total actual rounds exceeds the limit {}, ending the session.",
                 150
             );
         }
+        let session_state = session.get_session_state();
         let new_operations_result =
-            build_new_operations(&session, client.clone(), model, verifier_probability, rng).await;
+            build_new_operations(&session_state, client.clone(), model, verifier_probability, rng)
+                .await;
         if new_operations_result.should_end_session {
             session_should_end = true;
         }
         let new_operations = new_operations_result.operations;
 
         for operation in new_operations {
-            if session.apply_parsed_operation(operation.clone()) {
+            let should_end_from_operation = matches!(operation, RolloutAction::PlannerCompactStep { .. });
+            session.apply_parsed_operation(operation.clone());
+            if should_end_from_operation && session.get_session_state().final_answer.is_some() {
                 session_should_end = true;
             }
             // log the action
@@ -754,18 +766,17 @@ pub async fn rollout(
             "[rollout] question index: {}, sub-step: {} finished, num prev steps: {}",
             question_id,
             sub_step_counter,
-            session.session_state.prev_steps.len()
+            session.get_session_state().prev_steps.len()
         );
     }
     let step_quality_accuracy = session.session_log.step_quality_accuracy();
 
+    let final_state = session.get_session_state();
     let rollout_trajectory = RolloutTrajectory {
         id: question_id,
         question,
-        model_answer: session
-            .session_state
-            .final_answer
-            .clone()
+        model_answer: forced_final_answer
+            .or(final_state.final_answer.clone())
             .unwrap_or("No answer found".into()),
         correct_answer: reference_answer, // we will fill in the correct answer later when we evaluate the trajectory, to avoid data leakage
         step_quality_accuracy,

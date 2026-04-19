@@ -1,6 +1,6 @@
 use crate::multi_agent::session::SessionState;
 
-fn get_planner_updating_plan_prompt_before_assistant(session_state: &SessionState) -> String {
+fn get_planner_updating_plan_prompt_before_assistant(session_state: &SessionState<'_>) -> String {
     let question = &session_state.question;
     let history_prev_steps = session_state.to_history_prev_steps();
     let current_step_raw_content = session_state.current_step_content_raw.clone();
@@ -44,7 +44,7 @@ Please only output the steps without the backticks.\n\
     )
 }
 
-pub fn get_planner_updating_plan_prompts(session_state: &SessionState) -> (String, String) {
+pub fn get_planner_updating_plan_prompts(session_state: &SessionState<'_>) -> (String, String) {
     let prompt_before_assistant = get_planner_updating_plan_prompt_before_assistant(session_state);
     (prompt_before_assistant, String::new())
 }

@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
@@ -28,7 +27,7 @@ use std::hash::{Hash, Hasher};
 use credit_assignment::deepmath::judge_answers::DeepMathCorrectness;
 use credit_assignment::multi_agent::generate_rollout_answers::RolloutTrajectory;
 use credit_assignment::multi_agent::rollout::get_prompt_according_to_session_status;
-use credit_assignment::multi_agent::session::{RolloutAction, SessionState};
+use credit_assignment::multi_agent::session::{RolloutAction, SessionLog, SessionState};
 
 /// Command line arguments for browsing rollout session logs.
 #[derive(Parser, Debug)]
@@ -780,7 +779,6 @@ struct SessionView {
     answer: RolloutTrajectory,
     operations: Vec<RolloutAction>,
     current_pos: usize,
-    cached_session_state: RefCell<Option<(usize, SessionState)>>,
     total_display_turns: usize,
     total_actual_turns: usize,
 }
@@ -788,10 +786,8 @@ struct SessionView {
 impl SessionView {
     fn new(answer: RolloutTrajectory) -> Self {
         let operations = answer.trajectory.0.clone();
-        let mut final_state = SessionState::new(answer.question.clone());
-        for operation in operations.iter() {
-            final_state.update(operation.clone());
-        }
+        let final_log = SessionLog(operations.clone());
+        let final_state = SessionState::from_session_log(answer.question.clone(), &final_log);
         let total_display_turns = final_state.total_display_rounds();
         let total_actual_turns = answer.trajectory.total_actual_rounds();
         Self {
@@ -800,7 +796,6 @@ impl SessionView {
             current_pos: 0,
             total_display_turns,
             total_actual_turns,
-            cached_session_state: RefCell::new(None),
         }
     }
 
@@ -857,7 +852,14 @@ impl SessionView {
         if self.operations.is_empty() {
             return None;
         }
-        let state = self.session_state_at(self.current_pos.saturating_sub(1));
+        let prefix_log = SessionLog(
+            self.operations
+                .iter()
+                .take(self.current_pos.saturating_sub(1))
+                .cloned()
+                .collect(),
+        );
+        let state = SessionState::from_session_log(self.answer.question.clone(), &prefix_log);
         let (prompt_before_assistant, prompt_after_assistant) =
             get_prompt_according_to_session_status(&state);
 
@@ -867,20 +869,5 @@ impl SessionView {
         );
 
         Some(prompt_combined)
-    }
-
-    fn session_state_at(&self, upto: usize) -> SessionState {
-        // use cache
-        if let Some((cached_pos, cached_state)) = &*self.cached_session_state.borrow() {
-            if *cached_pos == upto {
-                return cached_state.clone();
-            }
-        }
-        let mut state = SessionState::new(self.answer.question.clone());
-        for operation in self.operations.iter().take(upto) {
-            state.update(operation.clone());
-        }
-        *self.cached_session_state.borrow_mut() = Some((upto, state.clone()));
-        state
     }
 }
