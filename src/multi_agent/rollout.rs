@@ -419,7 +419,10 @@ async fn build_new_operations(
                 return context_length_exceeded_result("PlannerMakingOrChangingPlan");
             }
             let plan_content = match chosen_mode {
-                NextStepDecision::ChangePlan(_) => Some(MakeOrChangePlan::ChangePlan(response)),
+                NextStepDecision::ChangePlan(reason) => Some(MakeOrChangePlan::ChangePlan {
+                    plan: response,
+                    prev_failed_reason: reason.clone(),
+                }),
                 NextStepDecision::Continue | NextStepDecision::OverwriteLastStep(_) => {
                     Some(MakeOrChangePlan::MakePlan(response))
                 }

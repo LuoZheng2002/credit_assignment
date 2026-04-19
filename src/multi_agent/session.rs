@@ -13,7 +13,10 @@ pub enum NextStepDecision {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MakeOrChangePlan {
     MakePlan(String),
-    ChangePlan(String),
+    ChangePlan {
+        plan: String,
+        prev_failed_reason: String,
+    },
 }
 
 impl NextStepDecision {
@@ -337,33 +340,35 @@ impl SessionState {
                     ),
                     "PlannerMakeOrChangePlan can only be called during PlannerMakingOrChangingPlan or PlannerKeepingCurrentPlan"
                 );
-                let step_mode = self
-                    .planner_chosen_mode
-                    .as_ref()
-                    .expect("Planner must choose step mode before PlannerMakeOrChangePlan")
-                    .clone();
-                match step_mode {
-                    NextStepDecision::Continue | NextStepDecision::OverwriteLastStep(_) => {
-                        if self.session_status == SessionStatus::PlannerMakingOrChangingPlan {
-                            let Some(MakeOrChangePlan::MakePlan(plan_content)) = plan else {
-                                panic!("PlannerMakeOrChangePlan must carry Some(MakePlan(_)) when initial plan is needed");
-                            };
-                            self.current_plan = Some(plan_content);
-                        } else {
-                            assert!(
-                                plan.is_none(),
-                                "PlannerMakeOrChangePlan must carry None when no plan update is needed"
-                            );
-                        }
+                match plan {
+                    None => {
+                        assert_eq!(
+                            self.session_status,
+                            SessionStatus::PlannerKeepingCurrentPlan,
+                            "PlannerMakeOrChangePlan(None) must be emitted in PlannerKeepingCurrentPlan"
+                        );
                     }
-                    NextStepDecision::ChangePlan(reason) => {
+                    Some(MakeOrChangePlan::MakePlan(plan_content)) => {
+                        assert_eq!(
+                            self.session_status,
+                            SessionStatus::PlannerMakingOrChangingPlan,
+                            "PlannerMakeOrChangePlan(Some(MakePlan)) must be emitted in PlannerMakingOrChangingPlan"
+                        );
+                        self.current_plan = Some(plan_content);
+                    }
+                    Some(MakeOrChangePlan::ChangePlan {
+                        plan: new_plan,
+                        prev_failed_reason,
+                    }) => {
+                        assert_eq!(
+                            self.session_status,
+                            SessionStatus::PlannerMakingOrChangingPlan,
+                            "PlannerMakeOrChangePlan(Some(ChangePlan)) must be emitted in PlannerMakingOrChangingPlan"
+                        );
                         assert!(
                             self.can_change_plan(),
                             "Exceed maximum number of plan changes"
                         );
-                        let Some(MakeOrChangePlan::ChangePlan(new_plan)) = plan else {
-                            panic!("PlannerMakeOrChangePlan must carry Some(ChangePlan(_)) when changing plan");
-                        };
                         let old_plan = self
                             .current_plan
                             .clone()
@@ -371,7 +376,7 @@ impl SessionState {
                             .expect("There must be an existing plan before changing plan");
                         let failed_attempt = FailedAttempt {
                             plan: old_plan,
-                            reason,
+                            reason: prev_failed_reason,
                         };
                         self.failed_attempts.push(failed_attempt);
                         self.prev_steps.clear();
