@@ -254,12 +254,13 @@ pub const CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE: &str =
 pub const IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE: &str =
     "<error>Identical python tool error detected. Aborting current incomplete step.</error>";
 
-pub fn detect_repetition_three_times(response: &str) -> bool {
-    let min_subsequence_length = 20; // minimum length of the repeated subsequence to avoid false positive from short common phrases
+// we increased the repetition times to 5, there might be code that hasn't reflected this change.
+pub fn detect_repetition_five_times(response: &str) -> bool {
+    let min_subsequence_length = 50; // minimum length of the repeated subsequence to avoid false positive from short common phrases
 
     let bytes = response.as_bytes();
     let n = bytes.len();
-    if n < min_subsequence_length * 3 {
+    if n < min_subsequence_length * 5 {
         return false;
     }
 
@@ -279,19 +280,23 @@ pub fn detect_repetition_three_times(response: &str) -> bool {
         prefix[start + len].wrapping_sub(prefix[start].wrapping_mul(pow[len]))
     };
 
-    for len in min_subsequence_length..=(n / 3) {
-        for start in 0..=(n - 3 * len) {
+    for len in min_subsequence_length..=(n / 5) {
+        for start in 0..=(n - 5 * len) {
             let h1 = hash(start, len);
             let h2 = hash(start + len, len);
             let h3 = hash(start + 2 * len, len);
-            if h1 != h2 || h1 != h3 {
+            let h4 = hash(start + 3 * len, len);
+            let h5 = hash(start + 4 * len, len);
+            if h1 != h2 || h1 != h3 || h1 != h4 || h1 != h5 {
                 continue;
             }
 
             let s1 = &bytes[start..start + len];
             let s2 = &bytes[start + len..start + 2 * len];
             let s3 = &bytes[start + 2 * len..start + 3 * len];
-            if s1 == s2 && s1 == s3 {
+            let s4 = &bytes[start + 3 * len..start + 4 * len];
+            let s5 = &bytes[start + 4 * len..start + 5 * len];
+            if s1 == s2 && s1 == s3 && s1 == s4 && s1 == s5 {
                 return true;
             }
         }
@@ -494,7 +499,7 @@ async fn build_new_operations(
                 operations.truncate(num_additional_actions_allowed);
             }
             // detect repetition
-            let found_repetition_three_times = detect_repetition_three_times(&response);
+            let found_repetition_three_times = detect_repetition_five_times(&response);
             if found_repetition_three_times {
                 println!(
                     "[Warning] Detected repetition of the same response at least three times. This may indicate that the model is stuck in a loop. Response: {}",
