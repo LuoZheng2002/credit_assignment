@@ -173,9 +173,9 @@ impl RolloutAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionLog(pub Vec<RolloutAction>);
+pub struct TrajectoryActionLog(pub Vec<RolloutAction>);
 
-impl SessionLog {
+impl TrajectoryActionLog {
     pub fn total_actual_rounds(&self) -> usize {
         self.0
             .iter()
@@ -229,7 +229,7 @@ impl SessionLog {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStatus {
     PlannerMakingOrChangingPlan, // this status always pushes PlannerMakeOrChangePlan(Some(...))
-    PlannerKeepingCurrentPlan,    // this status always pushes PlannerMakeOrChangePlan(None)
+    PlannerKeepingCurrentPlan,   // this status always pushes PlannerMakeOrChangePlan(None)
     PlannerChoosingMode,
     PlannerWorkingOnStep,
     PlannerCompactingStep,
@@ -244,7 +244,7 @@ pub struct FailedAttempt {
 }
 
 #[derive(Debug, Clone)]
-pub struct SessionState {
+pub struct TrajectoryState {
     pub question: String,
     pub prev_steps: Vec<CompletedStep>,
     pub current_step_content_raw: String,
@@ -278,7 +278,7 @@ pub enum VerifierAndModeSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Step{
+pub struct Step {
     pub verifier_and_mode_summary: Option<VerifierAndModeSummary>, // Some after verifier comment and next step decision
     pub step_finalized: bool, // initialized as false, true if the step has been finalized and becomes immutable
     pub action_log: Vec<RolloutAction>, // starting from verifier comment, and ending with planner end step or force end step
@@ -325,6 +325,7 @@ pub struct Tree {
     pub question_id: usize,
     pub question: String,
     pub root: Arc<Node>,
+    pub current_node: AtomicRefCell<Arc<Node>>,
     pub leaf_nodes: Vec<Weak<Node>>, // this is only for trajectories that have reached the final answer or is forced to end
     pub next_node_id: usize,
 }
@@ -337,17 +338,26 @@ pub enum TreeUpdateEvent {
         node_id: usize,
         parent_id: Option<usize>, // None for root node
     },
-    AddAction {
+    SetCurrentNode {
         question_id: usize,
         node_id: usize,
+    },
+    AddAction {
+        question_id: usize,
         action: RolloutAction,
     },
 }
+
+// we need a status after a trajectory is finished to randomly sample a node position for branching
+// TrajectoryState is used for indicating the current status and what action should be generated in rollout.rs
+// Eventually we apply the action to the Tree, and then we construct a TrajectoryState from the Tree for the current status and determine the next action to generate.
+
 
 impl TreeUpdateEvent {
     pub fn question_id(&self) -> usize {
         match self {
             TreeUpdateEvent::CreateNode { question_id, .. } => *question_id,
+            TreeUpdateEvent::SetCurrentNode { question_id, .. } => *question_id,
             TreeUpdateEvent::AddAction { question_id, .. } => *question_id,
         }
     }
@@ -369,23 +379,68 @@ impl Tree {
         Self {
             question_id,
             question,
+            current_node: AtomicRefCell::new(root.clone()),
             root,
             leaf_nodes: Vec::new(),
             next_node_id: 1,
         }
     }
 
-    pub fn append_action_to_node(&self, node: &Arc<Node>, action: RolloutAction) {
+    pub fn current_node(&self) -> Arc<Node> {
+        self.current_node.borrow().clone()
+    }
+
+    pub fn append_action_to_current_node(&self, action: RolloutAction) {
+        let node = self.current_node();
         let mut step = node.step.borrow_mut();
-        assert!(!step.step_finalized, "Cannot append action to finalized step");
+        assert!(
+            !step.step_finalized,
+            "Cannot append action to finalized step"
+        );
         step.action_log.push(action);
     }
 
-    pub fn current_session_log(&self, current_node: Arc<Node>) -> SessionLog {
-        SessionState::collect_session_log_from_tree_node(current_node)
+    pub fn set_current_node_by_id(&self, node_id: usize) {
+        let node = self
+            .find_node_by_id(node_id)
+            .expect("SetCurrentNode node_id must exist in tree");
+        *self.current_node.borrow_mut() = node;
     }
 
-    pub fn to_file_model(&self, current_node_id: usize) -> TreeFileModel {
+    pub fn apply_event(&self, event: TreeUpdateEvent) {
+        match event {
+            TreeUpdateEvent::CreateNode { .. } => {
+                // CreateNode is currently only used for logging/recovery marker.
+                // Node creation during branching is not implemented yet.
+            }
+            TreeUpdateEvent::SetCurrentNode { node_id, .. } => {
+                self.set_current_node_by_id(node_id);
+            }
+            TreeUpdateEvent::AddAction { action, .. } => {
+                self.append_action_to_current_node(action);
+            }
+        }
+    }
+
+    fn find_node_by_id(&self, node_id: usize) -> Option<Arc<Node>> {
+        fn dfs(node: &Arc<Node>, target_id: usize) -> Option<Arc<Node>> {
+            if node.node_id == target_id {
+                return Some(node.clone());
+            }
+            let child = node
+                .children
+                .borrow()
+                .as_ref()
+                .and_then(|children| children.child.clone());
+            if let Some(child_node) = child {
+                return dfs(&child_node, target_id);
+            }
+            None
+        }
+        dfs(&self.root, node_id)
+    }
+
+    pub fn to_file_model(&self) -> TreeFileModel {
         fn collect_nodes(
             node: &Arc<Node>,
             parent_id: Option<usize>,
@@ -417,7 +472,7 @@ impl Tree {
         TreeFileModel {
             question_id: self.question_id,
             question: self.question.clone(),
-            current_node_id,
+            current_node_id: self.current_node().node_id,
             next_node_id: self.next_node_id,
             leaf_node_ids,
             nodes,
@@ -426,7 +481,7 @@ impl Tree {
 }
 
 impl TreeFileModel {
-    pub fn to_session_log_on_current_path(&self) -> SessionLog {
+    pub fn to_trajectory_log_on_current_path(&self) -> TrajectoryActionLog {
         let mut by_id = std::collections::HashMap::new();
         for node in &self.nodes {
             by_id.insert(node.node_id, node);
@@ -445,28 +500,28 @@ impl TreeFileModel {
             let node = by_id[&node_id];
             actions.extend(node.step.action_log.iter().cloned());
         }
-        SessionLog(actions)
+        TrajectoryActionLog(actions)
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Session {
     pub question: String,
-    pub session_log: SessionLog,
+    pub session_log: TrajectoryActionLog,
 }
 
 impl Session {
     pub fn new(question: String) -> Self {
         Self {
             question,
-            session_log: SessionLog(Vec::new()),
+            session_log: TrajectoryActionLog(Vec::new()),
         }
     }
     pub fn apply_parsed_operation(&mut self, operation: RolloutAction) {
         self.session_log.0.push(operation);
     }
-    pub fn get_session_state(&self) -> SessionState {
-        SessionState::from_session_log(self.question.clone(), self.session_log.clone())
+    pub fn get_session_state(&self) -> TrajectoryState {
+        TrajectoryState::from_session_log(self.question.clone(), self.session_log.clone())
     }
 }
 
@@ -474,7 +529,7 @@ pub const MAX_PLAN_CHANGES: usize = 2;
 pub const MAX_STEP_OVERWRITE_STREAK: usize = 2;
 pub const MAX_TOTAL_STEP_OVERWRITES: usize = 6;
 pub const MAX_ACTIONS_PER_STEP: usize = 30;
-impl SessionState {
+impl TrajectoryState {
     pub fn new(question: String) -> Self {
         Self {
             question,
@@ -501,14 +556,14 @@ impl SessionState {
             step_quality_focused_total_count: 0,
         }
     }
-    pub fn from_session_log(question: String, session_log: SessionLog) -> Self {
-        let mut session_state = SessionState::new(question);
+    pub fn from_session_log(question: String, session_log: TrajectoryActionLog) -> Self {
+        let mut session_state = TrajectoryState::new(question);
         for operation in &session_log.0 {
             session_state.update(operation.clone());
         }
         session_state
     }
-    pub fn collect_session_log_from_tree_node(current_node: Arc<Node>) -> SessionLog {
+    pub fn collect_session_log_from_tree_node(current_node: Arc<Node>) -> TrajectoryActionLog {
         let mut nodes_from_current_to_root: Vec<Arc<Node>> = Vec::new();
         let mut cursor = Some(current_node);
         while let Some(node) = cursor {
@@ -531,7 +586,7 @@ impl SessionState {
             let step_ref = node.step.borrow();
             actions.extend(step_ref.action_log.iter().cloned());
         }
-        SessionLog(actions)
+        TrajectoryActionLog(actions)
     }
     pub fn from_tree_node(question: String, current_node: Arc<Node>) -> Self {
         let rebuilt_session_log = Self::collect_session_log_from_tree_node(current_node);
@@ -840,9 +895,7 @@ impl SessionState {
     }
     pub fn to_history_prev_steps(&self) -> String {
         let (planner_turn, making_plan) = match self.session_status {
-            SessionStatus::PlannerMakingOrChangingPlan => {
-                (true, true)
-            }
+            SessionStatus::PlannerMakingOrChangingPlan => (true, true),
             SessionStatus::PlannerKeepingCurrentPlan => (true, false),
             SessionStatus::PlannerChoosingMode => (true, false), // should see last step verifier comment if there is any
             SessionStatus::PlannerWorkingOnStep => (true, false), // should see last step verifier comment if there is any

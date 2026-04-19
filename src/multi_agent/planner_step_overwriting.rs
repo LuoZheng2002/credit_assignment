@@ -1,7 +1,7 @@
 use crate::multi_agent::{
     planner_deciding_next_step::get_planner_prompt_before_assistant,
     planner_step_continuing::{STEP_HALT_PROMPT, TOOL_PROMPT, get_planner_prompt_after_assistant},
-    session::{NextStepDecision, SessionState, SessionStatus},
+    session::{NextStepDecision, TrajectoryState, SessionStatus},
 };
 
 fn get_planner_step_overwriting_status_prompt(step_mode: NextStepDecision) -> String {
@@ -23,7 +23,7 @@ Begin your step:",
     )
 }
 
-fn get_planner_step_overwriting_prompt_before_assistant(session_state: &SessionState) -> String {
+fn get_planner_step_overwriting_prompt_before_assistant(session_state: &TrajectoryState) -> String {
     assert!(matches!(
         session_state.session_status,
         SessionStatus::PlannerWorkingOnStep
@@ -38,7 +38,7 @@ fn get_planner_step_overwriting_prompt_before_assistant(session_state: &SessionS
     get_planner_prompt_before_assistant(question, &history_prev_steps, planner_status_prompt)
 }
 
-pub fn get_planner_step_overwriting_prompts(session_state: &SessionState) -> (String, String) {
+pub fn get_planner_step_overwriting_prompts(session_state: &TrajectoryState) -> (String, String) {
     let prompt_before_assistant =
         get_planner_step_overwriting_prompt_before_assistant(session_state);
     let prompt_after_assistant = get_planner_prompt_after_assistant(session_state);

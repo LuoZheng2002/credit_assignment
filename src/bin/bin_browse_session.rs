@@ -27,7 +27,9 @@ use std::hash::{Hash, Hasher};
 use credit_assignment::deepmath::judge_answers::DeepMathCorrectness;
 use credit_assignment::multi_agent::generate_rollout_answers::RolloutTrajectory;
 use credit_assignment::multi_agent::rollout::get_prompt_according_to_session_status;
-use credit_assignment::multi_agent::session::{RolloutAction, SessionLog, SessionState};
+use credit_assignment::multi_agent::session::{
+    RolloutAction, TrajectoryActionLog, TrajectoryState,
+};
 
 /// Command line arguments for browsing rollout session logs.
 #[derive(Parser, Debug)]
@@ -785,9 +787,9 @@ struct SessionView {
 
 impl SessionView {
     fn new(answer: RolloutTrajectory) -> Self {
-        let operations = answer.trajectory.to_session_log_on_current_path().0;
-        let final_log = SessionLog(operations.clone());
-        let final_state = SessionState::from_session_log(answer.question.clone(), final_log);
+        let operations = answer.trajectory.to_trajectory_log_on_current_path().0;
+        let final_log = TrajectoryActionLog(operations.clone());
+        let final_state = TrajectoryState::from_session_log(answer.question.clone(), final_log);
         let total_display_turns = final_state.total_display_rounds();
         let total_actual_turns = final_state.total_actual_rounds();
         Self {
@@ -852,14 +854,14 @@ impl SessionView {
         if self.operations.is_empty() {
             return None;
         }
-        let prefix_log = SessionLog(
+        let prefix_log = TrajectoryActionLog(
             self.operations
                 .iter()
                 .take(self.current_pos.saturating_sub(1))
                 .cloned()
                 .collect(),
         );
-        let state = SessionState::from_session_log(self.answer.question.clone(), prefix_log);
+        let state = TrajectoryState::from_session_log(self.answer.question.clone(), prefix_log);
         let (prompt_before_assistant, prompt_after_assistant) =
             get_prompt_according_to_session_status(&state);
 

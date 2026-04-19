@@ -1,6 +1,4 @@
 use core::panic;
-use std::sync::Arc;
-
 use rand::RngExt;
 use reqwest::Client;
 
@@ -17,8 +15,8 @@ use crate::{
         planner_step_overwriting::get_planner_step_overwriting_prompts,
         planner_updating_plan::get_planner_updating_plan_prompts,
         session::{
-            MakeOrChangePlan, NextStepDecision, RolloutAction, SessionState, SessionStatus,
-            StepQuality, ToolResponse, Tree, TreeUpdateEvent, VerifierComment,
+            MakeOrChangePlan, NextStepDecision, RolloutAction, SessionStatus, StepQuality,
+            ToolResponse, TrajectoryState, Tree, TreeUpdateEvent, VerifierComment,
         },
         verifier_commenting::get_verifier_commenting_prompts,
     },
@@ -158,7 +156,10 @@ fn parse_verifier_decision_json_manual(json_str: &str) -> Option<(bool, bool)> {
             continue;
         };
 
-        if key_lower.contains("change") || key_lower.contains("restart") || key_lower.contains("plan") {
+        if key_lower.contains("change")
+            || key_lower.contains("restart")
+            || key_lower.contains("plan")
+        {
             change_plan = Some(value_bool);
             continue;
         }
@@ -286,7 +287,7 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
     execute_python_code(code.to_string()).await
 }
 
-pub fn get_prompt_according_to_session_status(session_state: &SessionState) -> (String, String) {
+pub fn get_prompt_according_to_session_status(session_state: &TrajectoryState) -> (String, String) {
     match session_state.session_status {
         SessionStatus::PlannerMakingOrChangingPlan => {
             get_planner_making_plan_prompts(session_state)
@@ -303,7 +304,9 @@ pub fn get_prompt_according_to_session_status(session_state: &SessionState) -> (
                 NextStepDecision::OverwriteLastStep(_) => {
                     get_planner_step_overwriting_prompts(session_state)
                 }
-                NextStepDecision::ChangePlan(_) => get_planner_step_continuing_prompts(session_state),
+                NextStepDecision::ChangePlan(_) => {
+                    get_planner_step_continuing_prompts(session_state)
+                }
             }
         }
         SessionStatus::PlannerCompactingStep => get_planner_compacting_prompts(session_state),
@@ -376,25 +379,29 @@ fn is_context_length_exceeded_response(response: &str) -> bool {
 }
 
 struct NewOperationsResult {
-    operations: Vec<RolloutAction>,
+    operations: Vec<TreeUpdateEvent>,
     should_end_session: bool,
 }
 
-fn context_length_exceeded_result(session_status: &str) -> NewOperationsResult {
+fn context_length_exceeded_result(question_id: usize, session_status: &str) -> NewOperationsResult {
     println!(
         "[Warning] Model context length exceeded in {}, ending session.",
         session_status
     );
     NewOperationsResult {
-        operations: vec![RolloutAction::ToolCallResponse(ToolResponse::Intervention(
-            CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
-        ))],
+        operations: vec![TreeUpdateEvent::AddAction {
+            question_id,
+            action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
+                CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
+            )),
+        }],
         should_end_session: true,
     }
 }
 
 async fn build_new_operations(
-    session_state: &SessionState,
+    question_id: usize,
+    session_state: &TrajectoryState,
     client: Client,
     model: Model,
     verifier_probability: f32,
@@ -416,7 +423,7 @@ async fn build_new_operations(
             )
             .await;
             if is_context_length_exceeded_response(&response) {
-                return context_length_exceeded_result("PlannerMakingOrChangingPlan");
+                return context_length_exceeded_result(question_id, "PlannerMakingOrChangingPlan");
             }
             let plan_content = match chosen_mode {
                 NextStepDecision::ChangePlan(reason) => Some(MakeOrChangePlan::ChangePlan {
@@ -428,12 +435,18 @@ async fn build_new_operations(
                 }
             }; // we change to not require the plan to be in a markdown code block
             NewOperationsResult {
-                operations: vec![RolloutAction::PlannerMakeOrChangePlan(plan_content)],
+                operations: vec![TreeUpdateEvent::AddAction {
+                    question_id,
+                    action: RolloutAction::PlannerMakeOrChangePlan(plan_content),
+                }],
                 should_end_session: false,
             }
         }
         SessionStatus::PlannerKeepingCurrentPlan => NewOperationsResult {
-            operations: vec![RolloutAction::PlannerMakeOrChangePlan(None)],
+            operations: vec![TreeUpdateEvent::AddAction {
+                question_id,
+                action: RolloutAction::PlannerMakeOrChangePlan(None),
+            }],
             should_end_session: false,
         },
         SessionStatus::PlannerChoosingMode => {
@@ -452,7 +465,7 @@ async fn build_new_operations(
             )
             .await;
             if is_context_length_exceeded_response(&response) {
-                return context_length_exceeded_result("PlannerChoosingMode");
+                return context_length_exceeded_result(question_id, "PlannerChoosingMode");
             }
             let trimmed_response = response.trim();
             let raw_choice = get_protocol_value(trimmed_response, "choice").expect(&format!(
@@ -500,7 +513,10 @@ async fn build_new_operations(
                 ),
             };
             NewOperationsResult {
-                operations: vec![RolloutAction::PlannerDecideNextStep(chosen_mode)],
+                operations: vec![TreeUpdateEvent::AddAction {
+                    question_id,
+                    action: RolloutAction::PlannerDecideNextStep(chosen_mode),
+                }],
                 should_end_session: false,
             }
         }
@@ -515,7 +531,7 @@ async fn build_new_operations(
             )
             .await;
             if is_context_length_exceeded_response(&response) {
-                return context_length_exceeded_result("PlannerWorkingOnStep");
+                return context_length_exceeded_result(question_id, "PlannerWorkingOnStep");
             }
             if response.trim().is_empty() {
                 response = "<end_step>".to_string(); // if the model does not output anything, we treat it as if it outputs <end_step> to prevent getting stuck
@@ -530,17 +546,23 @@ async fn build_new_operations(
             let (reasoning, tool_call) = split_reasoning_and_tool_call(response.clone(), model);
             let mut push_end_step = false;
             let mut found_identical_python_error_twice = false;
-            let mut operations = Vec::new();
+            let mut operations: Vec<TreeUpdateEvent> = Vec::new();
             if let Some(reasoning) = reasoning {
                 if reasoning.contains("<end_step>") {
                     push_end_step = true;
                 }
-                operations.push(RolloutAction::PlannerReasoning(reasoning));
+                operations.push(TreeUpdateEvent::AddAction {
+                    question_id,
+                    action: RolloutAction::PlannerReasoning(reasoning),
+                });
             }
             if let Some(tool_call) = tool_call {
                 let tool_response = execute_planner_tool_call(&tool_call).await;
                 let previous_python_error = session_state.current_step_last_python_error.clone();
-                operations.push(RolloutAction::PlannerToolCall(tool_call));
+                operations.push(TreeUpdateEvent::AddAction {
+                    question_id,
+                    action: RolloutAction::PlannerToolCall(tool_call),
+                });
                 if let ToolResponse::PythonError(current_python_error) = &tool_response {
                     if previous_python_error.is_some()
                         && Some(current_python_error.clone()) == previous_python_error
@@ -549,23 +571,36 @@ async fn build_new_operations(
                         println!(
                             "[Warning]: Identical python tool error detected. Aborting current step."
                         );
-                        operations.push(RolloutAction::ToolCallResponse(tool_response));
-                        operations.push(RolloutAction::ToolCallResponse(
-                            ToolResponse::Intervention(
+                        operations.push(TreeUpdateEvent::AddAction {
+                            question_id,
+                            action: RolloutAction::ToolCallResponse(tool_response),
+                        });
+                        operations.push(TreeUpdateEvent::AddAction {
+                            question_id,
+                            action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
                                 IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
-                            ),
-                        ));
+                            )),
+                        });
                     } else {
-                        operations.push(RolloutAction::ToolCallResponse(tool_response));
+                        operations.push(TreeUpdateEvent::AddAction {
+                            question_id,
+                            action: RolloutAction::ToolCallResponse(tool_response),
+                        });
                     }
                 } else {
-                    operations.push(RolloutAction::ToolCallResponse(tool_response));
+                    operations.push(TreeUpdateEvent::AddAction {
+                        question_id,
+                        action: RolloutAction::ToolCallResponse(tool_response),
+                    });
                 }
             }
             if hold_end_step {
-                operations.push(RolloutAction::ToolCallResponse(ToolResponse::Intervention(
-                    SUBMIT_ANSWER_HINT.to_string(),
-                )));
+                operations.push(TreeUpdateEvent::AddAction {
+                    question_id,
+                    action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
+                        SUBMIT_ANSWER_HINT.to_string(),
+                    )),
+                });
             }
             let num_additional_actions_allowed =
                 session_state.num_additional_actions_allowed_in_current_step();
@@ -585,11 +620,12 @@ async fn build_new_operations(
                     "[Warning] Detected repetition of the same response at least three times. This may indicate that the model is stuck in a loop. Response: {}",
                     response
                 );
-                operations.push(RolloutAction::ToolCallResponse(
-                    ToolResponse::Intervention(
+                operations.push(TreeUpdateEvent::AddAction {
+                    question_id,
+                    action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
                         "<error>Repeated contents detected. This step is forced to abort without completion.</error>".to_string(),
-                    ),
-                ));
+                    )),
+                });
             }
 
             let current_step_full = operations.len() == num_additional_actions_allowed;
@@ -598,7 +634,10 @@ async fn build_new_operations(
                 || found_repetition_three_times
                 || found_identical_python_error_twice
             {
-                operations.push(RolloutAction::PlannerEndStep);
+                operations.push(TreeUpdateEvent::AddAction {
+                    question_id,
+                    action: RolloutAction::PlannerEndStep,
+                });
             }
             NewOperationsResult {
                 operations,
@@ -616,13 +655,16 @@ async fn build_new_operations(
             )
             .await;
             if is_context_length_exceeded_response(&response) {
-                return context_length_exceeded_result("PlannerCompactingStep");
+                return context_length_exceeded_result(question_id, "PlannerCompactingStep");
             }
             let (summary, step_quality) = parse_compactor_response(response);
             NewOperationsResult {
-                operations: vec![RolloutAction::PlannerCompactStep {
-                    summary,
-                    step_quality,
+                operations: vec![TreeUpdateEvent::AddAction {
+                    question_id,
+                    action: RolloutAction::PlannerCompactStep {
+                        summary,
+                        step_quality,
+                    },
                 }],
                 should_end_session: false,
             }
@@ -638,11 +680,14 @@ async fn build_new_operations(
             )
             .await;
             if is_context_length_exceeded_response(&response) {
-                return context_length_exceeded_result("PlannerUpdatingPlan");
+                return context_length_exceeded_result(question_id, "PlannerUpdatingPlan");
             }
             let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
             NewOperationsResult {
-                operations: vec![RolloutAction::PlannerUpdatePlan(updated_plan_content)],
+                operations: vec![TreeUpdateEvent::AddAction {
+                    question_id,
+                    action: RolloutAction::PlannerUpdatePlan(updated_plan_content),
+                }],
                 should_end_session: false,
             }
         }
@@ -664,12 +709,15 @@ async fn build_new_operations(
                 )
                 .await;
                 if is_context_length_exceeded_response(&response) {
-                    return context_length_exceeded_result("VerifierCommenting");
+                    return context_length_exceeded_result(question_id, "VerifierCommenting");
                 }
                 verifier_comment = Some(parse_verifier_comment_response(response));
             }
             NewOperationsResult {
-                operations: vec![RolloutAction::VerifierComment(verifier_comment)],
+                operations: vec![TreeUpdateEvent::AddAction {
+                    question_id,
+                    action: RolloutAction::VerifierComment(verifier_comment),
+                }],
                 should_end_session: false,
             }
         }
@@ -682,7 +730,7 @@ pub async fn rollout(
     question_id: usize,
     question: String,
     reference_answer: String,
-    loaded_session_log: Vec<RolloutAction>,
+    loaded_events: Vec<TreeUpdateEvent>,
     client: Client,
     model: Model,
     verifier_probability: f32,
@@ -692,21 +740,20 @@ pub async fn rollout(
 ) {
     // create a state machine
     let tree = Tree::new(question_id, question.clone());
-    let current_node: Arc<_> = tree.root.clone();
     let mut session_should_end = false;
     let mut forced_final_answer: Option<String> = None;
-    if loaded_session_log.is_empty() {
+    if loaded_events.is_empty() {
         action_tx
             .send(TreeUpdateEvent::CreateNode {
                 question_id,
-                node_id: current_node.node_id,
+                node_id: tree.root.node_id,
                 parent_id: None,
             })
             .unwrap();
     }
-    for log in loaded_session_log {
-        tree.append_action_to_node(&current_node, log);
-        let loaded_state = SessionState::from_tree_node(question.clone(), current_node.clone());
+    for event in loaded_events {
+        tree.apply_event(event);
+        let loaded_state = TrajectoryState::from_tree_node(question.clone(), tree.current_node());
         if loaded_state.final_answer.is_some() {
             session_should_end = true;
         }
@@ -714,7 +761,7 @@ pub async fn rollout(
     let mut sub_step_counter = 0; // to prevent infinite loop in case of bugs
     loop {
         if session_should_end {
-            let session_state = SessionState::from_tree_node(question.clone(), current_node.clone());
+            let session_state = TrajectoryState::from_tree_node(question.clone(), tree.current_node());
             let displayed_final_answer = forced_final_answer
                 .as_deref()
                 .or(session_state.final_answer.as_deref())
@@ -729,7 +776,7 @@ pub async fn rollout(
             break;
         }
         sub_step_counter += 1;
-        let session_state = SessionState::from_tree_node(question.clone(), current_node.clone());
+        let session_state = TrajectoryState::from_tree_node(question.clone(), tree.current_node());
         if session_state.prev_steps.len() > 20 {
             forced_final_answer = Some(
                 "The model does not manage to provide a final answer within allowed number of turns."
@@ -751,45 +798,47 @@ pub async fn rollout(
                 150
             );
         }
-        let session_state = SessionState::from_tree_node(question.clone(), current_node.clone());
-        let new_operations_result =
-            build_new_operations(&session_state, client.clone(), model, verifier_probability, rng)
-                .await;
+        let session_state = TrajectoryState::from_tree_node(question.clone(), tree.current_node());
+        let new_operations_result = build_new_operations(
+            question_id,
+            &session_state,
+            client.clone(),
+            model,
+            verifier_probability,
+            rng,
+        )
+        .await;
         if new_operations_result.should_end_session {
             session_should_end = true;
         }
         let new_operations = new_operations_result.operations;
 
-        for operation in new_operations {
-            let should_end_from_operation = matches!(operation, RolloutAction::PlannerCompactStep { .. });
-            tree.append_action_to_node(&current_node, operation.clone());
+        for event in new_operations {
+            let should_end_from_operation = matches!(
+                &event,
+                TreeUpdateEvent::AddAction {
+                    action: RolloutAction::PlannerCompactStep { .. },
+                    ..
+                }
+            );
+            tree.apply_event(event.clone());
             if should_end_from_operation
-                && SessionState::from_tree_node(question.clone(), current_node.clone())
-                    .final_answer
-                    .is_some()
+                && TrajectoryState::from_tree_node(question.clone(), tree.current_node()).final_answer.is_some()
             {
                 session_should_end = true;
             }
-            // log the action
-            let log_item = TreeUpdateEvent::AddAction {
-                question_id,
-                node_id: current_node.node_id,
-                action: operation,
-            };
-            action_tx.send(log_item).unwrap();
+            action_tx.send(event).unwrap();
         }
         println!(
             "[rollout] question index: {}, sub-step: {} finished, num prev steps: {}",
             question_id,
             sub_step_counter,
-            SessionState::from_tree_node(question.clone(), current_node.clone())
-                .prev_steps
-                .len()
+            TrajectoryState::from_tree_node(question.clone(), tree.current_node()).prev_steps.len()
         );
     }
-    let final_state = SessionState::from_tree_node(question.clone(), current_node.clone());
+    let final_state = TrajectoryState::from_tree_node(question.clone(), tree.current_node());
     let step_quality_accuracy = final_state.step_quality_accuracy();
-    let trajectory_tree = tree.to_file_model(current_node.node_id);
+    let trajectory_tree = tree.to_file_model();
     let rollout_trajectory = RolloutTrajectory {
         id: question_id,
         question,

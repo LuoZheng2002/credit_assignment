@@ -20,7 +20,7 @@ use credit_assignment::{
             RolloutTrajectory, get_rollout_trajectory_path, get_session_log_path,
         },
         rollout::rollout,
-        session::{RolloutAction, TreeUpdateEvent},
+        session::TreeUpdateEvent,
     },
     parallel_process_jsonl::{read_json_lines, read_json_lines_indexed, write_jsonl_file},
 };
@@ -140,17 +140,12 @@ async fn main() {
     session_log_items.retain(|item| !trajectory_completed_ids.contains(&item.question_id()));
     write_jsonl_file(&session_log_path, &session_log_items).unwrap();
     // construct a hashmap of loaded session logs
-    let mut loaded_session_logs: IndexMap<usize, Vec<RolloutAction>> = IndexMap::new();
+    let mut loaded_session_logs: IndexMap<usize, Vec<TreeUpdateEvent>> = IndexMap::new();
     for log_item in session_log_items {
-        if let TreeUpdateEvent::AddAction {
-            question_id, action, ..
-        } = log_item
-        {
-            loaded_session_logs
-                .entry(question_id)
-                .or_insert_with(Vec::new)
-                .push(action);
-        }
+        loaded_session_logs
+            .entry(log_item.question_id())
+            .or_insert_with(Vec::new)
+            .push(log_item);
     }
     // load questions and answers for unfinished trajectories
     let question_path = get_question_path(&dataset_name, num_samples);
