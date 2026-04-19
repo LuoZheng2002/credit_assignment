@@ -1,5 +1,5 @@
 use crate::{
-    deepmath::generate_raw_answers::Model, multi_agent::session::TreeFileModel,
+    deepmath::generate_raw_answers::Model, multi_agent::session::Tree,
     parallel_process_jsonl::HasId,
 };
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ pub struct RolloutTrajectory {
     pub model_answer: String,
     pub correct_answer: String,
     pub step_quality_accuracy: Option<StepQualityAccuracy>,
-    pub trajectory: TreeFileModel,
+    pub trajectory: Tree,
     pub question: String,
 }
 

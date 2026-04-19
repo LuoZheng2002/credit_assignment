@@ -821,6 +821,13 @@ pub async fn rollout(
                     ..
                 }
             );
+            let should_branch_after_event = matches!(
+                &event,
+                TreeUpdateEvent::AddAction {
+                    action: RolloutAction::PlannerUpdatePlan(_),
+                    ..
+                }
+            );
             tree.apply_event(event.clone());
             if should_end_from_operation
                 && TrajectoryState::from_tree(&tree).final_answer.is_some()
@@ -828,6 +835,25 @@ pub async fn rollout(
                 session_should_end = true;
             }
             action_tx.send(event).unwrap();
+
+            if should_branch_after_event {
+                let parent_id = tree.current_node_id;
+                let new_node_id = tree.next_node_id;
+                let create_node_event = TreeUpdateEvent::CreateNode {
+                    question_id,
+                    node_id: new_node_id,
+                    parent_id: Some(parent_id),
+                };
+                tree.apply_event(create_node_event.clone());
+                action_tx.send(create_node_event).unwrap();
+
+                let set_current_node_event = TreeUpdateEvent::SetCurrentNode {
+                    question_id,
+                    node_id: new_node_id,
+                };
+                tree.apply_event(set_current_node_event.clone());
+                action_tx.send(set_current_node_event).unwrap();
+            }
         }
         println!(
             "[rollout] question index: {}, sub-step: {} finished, num prev steps: {}",
@@ -838,7 +864,7 @@ pub async fn rollout(
     }
     let final_state = TrajectoryState::from_tree(&tree);
     let step_quality_accuracy = final_state.step_quality_accuracy();
-    let trajectory_tree = tree.to_file_model();
+    let trajectory_tree = tree.clone();
     let rollout_trajectory = RolloutTrajectory {
         id: question_id,
         question,

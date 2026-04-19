@@ -281,23 +281,6 @@ pub struct Step {
     pub action_log: Vec<RolloutAction>, // starting from verifier comment, and ending with planner end step or force end step
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TreeFileNodeModel {
-    pub node_id: usize,
-    pub parent_id: Option<usize>,
-    pub step: Step,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TreeFileModel {
-    pub question_id: usize,
-    pub question: String,
-    pub current_node_id: usize,
-    pub next_node_id: usize,
-    pub leaf_node_ids: Vec<usize>,
-    pub nodes: Vec<TreeFileNodeModel>,
-}
-
 impl Step {
     pub fn new() -> Self {
         Self {
@@ -308,7 +291,7 @@ impl Step {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub node_id: usize,
     pub step: Step,
@@ -317,7 +300,7 @@ pub struct Node {
 }
 
 // only working on one node at a time
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tree {
     pub question_id: usize,
     pub question: String,
@@ -460,37 +443,13 @@ impl Tree {
         Some(node)
     }
 
-    pub fn to_file_model(&self) -> TreeFileModel {
-        let nodes = self
-            .nodes
-            .iter()
-            .map(|node| TreeFileNodeModel {
-                node_id: node.node_id,
-                parent_id: node.parent_id,
-                step: node.step.clone(),
-            })
-            .collect();
-        TreeFileModel {
-            question_id: self.question_id,
-            question: self.question.clone(),
-            current_node_id: self.current_node_id,
-            next_node_id: self.next_node_id,
-            leaf_node_ids: self.leaf_node_ids.clone(),
-            nodes,
-        }
-    }
-}
-
-impl TreeFileModel {
     pub fn to_trajectory_log_on_current_path(&self) -> TrajectoryActionLog {
-        let mut by_id = std::collections::HashMap::new();
-        for node in &self.nodes {
-            by_id.insert(node.node_id, node);
-        }
         let mut path_ids = Vec::new();
         let mut cursor = Some(self.current_node_id);
         while let Some(node_id) = cursor {
-            let node = by_id[&node_id];
+            let node = self
+                .find_node_by_id(node_id)
+                .expect("Current-path node_id must exist in tree");
             path_ids.push(node_id);
             cursor = node.parent_id;
         }
@@ -498,31 +457,12 @@ impl TreeFileModel {
 
         let mut actions = Vec::new();
         for node_id in path_ids {
-            let node = by_id[&node_id];
+            let node = self
+                .find_node_by_id(node_id)
+                .expect("Current-path node_id must exist while collecting actions");
             actions.extend(node.step.action_log.iter().cloned());
         }
         TrajectoryActionLog(actions)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Session {
-    pub question: String,
-    pub session_log: TrajectoryActionLog,
-}
-
-impl Session {
-    pub fn new(question: String) -> Self {
-        Self {
-            question,
-            session_log: TrajectoryActionLog(Vec::new()),
-        }
-    }
-    pub fn apply_parsed_operation(&mut self, operation: RolloutAction) {
-        self.session_log.0.push(operation);
-    }
-    pub fn get_session_state(&self) -> TrajectoryState {
-        TrajectoryState::from_session_log(self.question.clone(), self.session_log.clone())
     }
 }
 
