@@ -788,8 +788,8 @@ pub async fn rollout(
         );
     }
     let final_state = SessionState::from_tree_node(question.clone(), current_node.clone());
-    let final_session_log = tree.current_session_log(current_node.clone());
     let step_quality_accuracy = final_state.step_quality_accuracy();
+    let trajectory_tree = tree.to_file_model(current_node.node_id);
     let rollout_trajectory = RolloutTrajectory {
         id: question_id,
         question,
@@ -798,7 +798,7 @@ pub async fn rollout(
             .unwrap_or("No answer found".into()),
         correct_answer: reference_answer, // we will fill in the correct answer later when we evaluate the trajectory, to avoid data leakage
         step_quality_accuracy,
-        trajectory: final_session_log,
+        trajectory: trajectory_tree,
     };
     trajectory_tx.send(rollout_trajectory).unwrap();
 }

@@ -269,7 +269,7 @@ pub struct SessionState {
     pub step_quality_focused_total_count: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum VerifierAndModeSummary {
     VerifierOff,
     VerifierOn,
@@ -277,11 +277,28 @@ pub enum VerifierAndModeSummary {
     VerifierOnAndChangePlan,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Step{
     pub verifier_and_mode_summary: Option<VerifierAndModeSummary>, // Some after verifier comment and next step decision
     pub step_finalized: bool, // initialized as false, true if the step has been finalized and becomes immutable
     pub action_log: Vec<RolloutAction>, // starting from verifier comment, and ending with planner end step or force end step
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TreeFileNodeModel {
+    pub node_id: usize,
+    pub parent_id: Option<usize>,
+    pub step: Step,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TreeFileModel {
+    pub question_id: usize,
+    pub question: String,
+    pub current_node_id: usize,
+    pub next_node_id: usize,
+    pub leaf_node_ids: Vec<usize>,
+    pub nodes: Vec<TreeFileNodeModel>,
 }
 
 impl Step {
@@ -366,6 +383,69 @@ impl Tree {
 
     pub fn current_session_log(&self, current_node: Arc<Node>) -> SessionLog {
         SessionState::collect_session_log_from_tree_node(current_node)
+    }
+
+    pub fn to_file_model(&self, current_node_id: usize) -> TreeFileModel {
+        fn collect_nodes(
+            node: &Arc<Node>,
+            parent_id: Option<usize>,
+            output: &mut Vec<TreeFileNodeModel>,
+        ) {
+            let step = node.step.borrow().clone();
+            output.push(TreeFileNodeModel {
+                node_id: node.node_id,
+                parent_id,
+                step,
+            });
+            let child = node
+                .children
+                .borrow()
+                .as_ref()
+                .and_then(|children| children.child.clone());
+            if let Some(child_node) = child {
+                collect_nodes(&child_node, Some(node.node_id), output);
+            }
+        }
+
+        let mut nodes = Vec::new();
+        collect_nodes(&self.root, None, &mut nodes);
+        let leaf_node_ids = self
+            .leaf_nodes
+            .iter()
+            .map(|weak| weak.upgrade().expect("Leaf node must be alive").node_id)
+            .collect();
+        TreeFileModel {
+            question_id: self.question_id,
+            question: self.question.clone(),
+            current_node_id,
+            next_node_id: self.next_node_id,
+            leaf_node_ids,
+            nodes,
+        }
+    }
+}
+
+impl TreeFileModel {
+    pub fn to_session_log_on_current_path(&self) -> SessionLog {
+        let mut by_id = std::collections::HashMap::new();
+        for node in &self.nodes {
+            by_id.insert(node.node_id, node);
+        }
+        let mut path_ids = Vec::new();
+        let mut cursor = Some(self.current_node_id);
+        while let Some(node_id) = cursor {
+            let node = by_id[&node_id];
+            path_ids.push(node_id);
+            cursor = node.parent_id;
+        }
+        path_ids.reverse();
+
+        let mut actions = Vec::new();
+        for node_id in path_ids {
+            let node = by_id[&node_id];
+            actions.extend(node.step.action_log.iter().cloned());
+        }
+        SessionLog(actions)
     }
 }
 
