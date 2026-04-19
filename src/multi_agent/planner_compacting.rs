@@ -1,6 +1,6 @@
 use crate::multi_agent::session::TrajectoryState;
 
-fn get_planner_compacting_prompt_before_assistant(session_state: &TrajectoryState) -> String {
+fn get_planner_compacting_prompt_before_assistant(session_state: &TrajectoryState<'_>) -> String {
     let question = &session_state.question;
     let history_prev_steps = session_state.to_history_prev_steps();
     let current_step_raw_content = session_state.current_step_content_raw.clone();
@@ -33,7 +33,7 @@ Please provide the summary and the JSON evaluation. Start with \"In this step, \
     )
 }
 
-pub fn get_planner_compacting_prompts(session_state: &TrajectoryState) -> (String, String) {
+pub fn get_planner_compacting_prompts(session_state: &TrajectoryState<'_>) -> (String, String) {
     let prompt_before_assistant = get_planner_compacting_prompt_before_assistant(session_state);
     (prompt_before_assistant, String::new())
 }

@@ -788,8 +788,10 @@ struct SessionView {
 impl SessionView {
     fn new(answer: RolloutTrajectory) -> Self {
         let operations = answer.trajectory.to_trajectory_log_on_current_path().0;
-        let final_log = TrajectoryActionLog(operations.clone());
-        let final_state = TrajectoryState::from_session_log(answer.question.clone(), final_log);
+        let _final_log = TrajectoryActionLog(operations.clone());
+        let final_state: TrajectoryState<'_> = todo!(
+            "Migrate browser to construct TrajectoryState from Tree reference instead of from_session_log"
+        );
         let total_display_turns = final_state.total_display_rounds();
         let total_actual_turns = final_state.total_actual_rounds();
         Self {
@@ -861,7 +863,10 @@ impl SessionView {
                 .cloned()
                 .collect(),
         );
-        let state = TrajectoryState::from_session_log(self.answer.question.clone(), prefix_log);
+        let _prefix_log = prefix_log;
+        let state: TrajectoryState<'_> = todo!(
+            "Migrate browser prefix-state reconstruction to use Tree reference"
+        );
         let (prompt_before_assistant, prompt_after_assistant) =
             get_prompt_according_to_session_status(&state);
 

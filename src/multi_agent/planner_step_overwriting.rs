@@ -23,7 +23,7 @@ Begin your step:",
     )
 }
 
-fn get_planner_step_overwriting_prompt_before_assistant(session_state: &TrajectoryState) -> String {
+fn get_planner_step_overwriting_prompt_before_assistant(session_state: &TrajectoryState<'_>) -> String {
     assert!(matches!(
         session_state.session_status,
         SessionStatus::PlannerWorkingOnStep
@@ -38,7 +38,7 @@ fn get_planner_step_overwriting_prompt_before_assistant(session_state: &Trajecto
     get_planner_prompt_before_assistant(question, &history_prev_steps, planner_status_prompt)
 }
 
-pub fn get_planner_step_overwriting_prompts(session_state: &TrajectoryState) -> (String, String) {
+pub fn get_planner_step_overwriting_prompts(session_state: &TrajectoryState<'_>) -> (String, String) {
     let prompt_before_assistant =
         get_planner_step_overwriting_prompt_before_assistant(session_state);
     let prompt_after_assistant = get_planner_prompt_after_assistant(session_state);

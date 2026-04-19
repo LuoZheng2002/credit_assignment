@@ -287,7 +287,7 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
     execute_python_code(code.to_string()).await
 }
 
-pub fn get_prompt_according_to_session_status(session_state: &TrajectoryState) -> (String, String) {
+pub fn get_prompt_according_to_session_status(session_state: &TrajectoryState<'_>) -> (String, String) {
     match session_state.session_status {
         SessionStatus::PlannerMakingOrChangingPlan => {
             get_planner_making_plan_prompts(session_state)
@@ -401,7 +401,7 @@ fn context_length_exceeded_result(question_id: usize, session_status: &str) -> N
 
 async fn build_new_operations(
     question_id: usize,
-    session_state: &TrajectoryState,
+    session_state: &TrajectoryState<'_>,
     client: Client,
     model: Model,
     verifier_probability: f32,
@@ -760,8 +760,8 @@ pub async fn rollout(
     }
     let mut sub_step_counter = 0; // to prevent infinite loop in case of bugs
     loop {
+        let session_state = TrajectoryState::from_tree(&tree);
         if session_should_end {
-            let session_state = TrajectoryState::from_tree(&tree);
             let displayed_final_answer = forced_final_answer
                 .as_deref()
                 .or(session_state.final_answer.as_deref())
@@ -776,7 +776,6 @@ pub async fn rollout(
             break;
         }
         sub_step_counter += 1;
-        let session_state = TrajectoryState::from_tree(&tree);
         if session_state.prev_steps.len() > 20 {
             forced_final_answer = Some(
                 "The model does not manage to provide a final answer within allowed number of turns."
@@ -798,7 +797,6 @@ pub async fn rollout(
                 150
             );
         }
-        let session_state = TrajectoryState::from_tree(&tree);
         let new_operations_result = build_new_operations(
             question_id,
             &session_state,
@@ -811,7 +809,9 @@ pub async fn rollout(
         if new_operations_result.should_end_session {
             session_should_end = true;
         }
+        drop(session_state);
         let new_operations = new_operations_result.operations;
+        let mut saw_compact_step = false;
 
         for event in new_operations {
             let should_end_from_operation = matches!(
@@ -821,45 +821,21 @@ pub async fn rollout(
                     ..
                 }
             );
-            let should_branch_after_event = matches!(
-                &event,
-                TreeUpdateEvent::AddAction {
-                    action: RolloutAction::PlannerUpdatePlan(_),
-                    ..
-                }
-            );
+            if should_end_from_operation {
+                saw_compact_step = true;
+            }
             tree.apply_event(event.clone());
-            if should_end_from_operation
-                && TrajectoryState::from_tree(&tree).final_answer.is_some()
-            {
-                session_should_end = true;
-            }
             action_tx.send(event).unwrap();
-
-            if should_branch_after_event {
-                let parent_id = tree.current_node_id;
-                let new_node_id = tree.next_node_id;
-                let create_node_event = TreeUpdateEvent::CreateNode {
-                    question_id,
-                    node_id: new_node_id,
-                    parent_id: Some(parent_id),
-                };
-                tree.apply_event(create_node_event.clone());
-                action_tx.send(create_node_event).unwrap();
-
-                let set_current_node_event = TreeUpdateEvent::SetCurrentNode {
-                    question_id,
-                    node_id: new_node_id,
-                };
-                tree.apply_event(set_current_node_event.clone());
-                action_tx.send(set_current_node_event).unwrap();
-            }
+        }
+        let post_update_state = TrajectoryState::from_tree(&tree);
+        if saw_compact_step && post_update_state.final_answer.is_some() {
+            session_should_end = true;
         }
         println!(
             "[rollout] question index: {}, sub-step: {} finished, num prev steps: {}",
             question_id,
             sub_step_counter,
-            TrajectoryState::from_tree(&tree).prev_steps.len()
+            post_update_state.prev_steps.len()
         );
     }
     let final_state = TrajectoryState::from_tree(&tree);

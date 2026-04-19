@@ -241,7 +241,8 @@ pub struct FailedAttempt {
 }
 
 #[derive(Debug, Clone)]
-pub struct TrajectoryState {
+pub struct TrajectoryState<'a> {
+    pub source_tree: &'a Tree,
     pub question: String,
     pub prev_steps: Vec<CompletedStep>,
     pub current_step_content_raw: String,
@@ -470,9 +471,10 @@ pub const MAX_PLAN_CHANGES: usize = 2;
 pub const MAX_STEP_OVERWRITE_STREAK: usize = 2;
 pub const MAX_TOTAL_STEP_OVERWRITES: usize = 6;
 pub const MAX_ACTIONS_PER_STEP: usize = 30;
-impl TrajectoryState {
-    pub fn new(question: String) -> Self {
+impl<'a> TrajectoryState<'a> {
+    fn new(question: String, source_tree: &'a Tree) -> Self {
         Self {
+            source_tree,
             question,
             prev_steps: Vec::new(),
             current_step_content_raw: String::new(),
@@ -497,8 +499,12 @@ impl TrajectoryState {
             step_quality_focused_total_count: 0,
         }
     }
-    pub fn from_session_log(question: String, session_log: TrajectoryActionLog) -> Self {
-        let mut session_state = TrajectoryState::new(question);
+    fn from_session_log(
+        question: String,
+        session_log: TrajectoryActionLog,
+        source_tree: &'a Tree,
+    ) -> Self {
+        let mut session_state = TrajectoryState::new(question, source_tree);
         for operation in &session_log.0 {
             session_state.update(operation.clone());
         }
@@ -534,10 +540,10 @@ impl TrajectoryState {
         }
         TrajectoryActionLog(actions)
     }
-    pub fn from_tree(tree: &Tree) -> Self {
+    pub fn from_tree(tree: &'a Tree) -> Self {
         let rebuilt_session_log = Self::collect_session_log_from_tree(tree);
         let question = tree.question.clone();
-        Self::from_session_log(question, rebuilt_session_log)
+        Self::from_session_log(question, rebuilt_session_log, tree)
     }
     pub fn can_change_plan(&self) -> bool {
         self.num_plan_changes < MAX_PLAN_CHANGES
