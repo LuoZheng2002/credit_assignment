@@ -29,7 +29,7 @@ pub struct CompletedStep {
     pub content_raw: String,
     pub content_compacted: String,
     pub step_quality: Option<StepQuality>,
-    pub current_step_verifier_comment: Option<String>,
+    pub current_step_verifier_comment: Option<VerifierComment>,
 }
 impl CompletedStep {
     pub fn new(
@@ -37,7 +37,7 @@ impl CompletedStep {
         content_raw: String,
         content_compacted: String,
         step_quality: Option<StepQuality>,
-        current_step_verifier_comment: Option<String>,
+        current_step_verifier_comment: Option<VerifierComment>,
     ) -> Self {
         Self {
             current_step_mode,
@@ -54,6 +54,13 @@ pub struct StepQuality {
     pub tool: bool,
     pub complete: bool,
     pub focused: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifierComment {
+    pub comment: String,
+    pub overwrite: bool,
+    pub change_plan: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,7 +98,7 @@ pub enum RolloutAction {
         step_quality: Option<StepQuality>,
     },
     PlannerUpdatePlan(String),
-    VerifierComment(Option<String>),
+    VerifierComment(Option<VerifierComment>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,10 +155,9 @@ impl RolloutAction {
             }
             RolloutAction::PlannerUpdatePlan(_updated_plan) => "[PlannerUpdatePlan]".to_string(),
             RolloutAction::ToolCallResponse(_tool_response) => "[ToolCallResponse]".to_string(),
-            RolloutAction::VerifierComment(comment) => format!(
-                "[VerifierComment]\n{}",
-                comment.clone().unwrap_or_else(|| "None".to_string())
-            ),
+            RolloutAction::VerifierComment(comment) => {
+                format!("[VerifierComment]\n{:?}", comment)
+            }
         }
     }
 }
@@ -233,7 +239,7 @@ pub struct SessionState {
     pub current_step_content_raw: String,
     pub current_step_content_compacted: Option<String>,
     pub current_step_quality: Option<StepQuality>,
-    pub current_step_verifier_comment: Option<String>,
+    pub current_step_verifier_comment: Option<VerifierComment>,
     pub current_plan: Option<String>,
     pub session_status: SessionStatus,
     pub planner_chosen_mode: Option<NextStepDecision>,
@@ -528,7 +534,7 @@ impl SessionState {
                     history.push_str(&format!(
                         "Verifier comment on step {}: {}\n",
                         i + 1,
-                        comment
+                        comment.comment
                     ));
                 }
             }

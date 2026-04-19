@@ -27,6 +27,12 @@ Your job is to generate the comment for the reasoning of the current step only. 
 3. Is the length and scope of the current step appropriate? An appropriate step should have a single concrete sub-goal, neither too large nor too small.\n\
 4. Does the current step utilize the Python tools when necessary? If the planner attempts to do complex calculations by hand, point it out.\n\
 \n\n\
+Then at the very end, output a JSON markdown block in this exact format:\n\
+```json\n\
+{{\"overwrite\": <boolean>, \"change\": <boolean>}}\n\
+```\n\
+where `overwrite=true` means the current step should be overwritten, and `change=true` means the overall plan should be changed and restarted.\n\
+\n\n\
 Please start your comment and be concise:\n",
         question, history_prev_steps, current_step_content,
     )

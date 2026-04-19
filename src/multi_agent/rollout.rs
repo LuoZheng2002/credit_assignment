@@ -17,7 +17,7 @@ use crate::{
         planner_updating_plan::get_planner_updating_plan_prompts,
         session::{
             NextStepDecision, RolloutAction, RolloutActionLogItem, Session, SessionState,
-            SessionStatus, StepQuality, ToolResponse,
+            SessionStatus, StepQuality, ToolResponse, VerifierComment,
         },
         verifier_commenting::get_verifier_commenting_prompts,
     },
@@ -143,6 +143,72 @@ fn parse_compactor_response(response: String) -> (String, Option<StepQuality>) {
     }
     println!("[Warning] Failed to parse step quality from compactor response.",);
     (response, None)
+}
+
+fn parse_verifier_decision_json_manual(json_str: &str) -> Option<(bool, bool)> {
+    let value: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let object = value.as_object()?;
+    let mut overwrite = None;
+    let mut change_plan = None;
+
+    for (key, value) in object {
+        let key_lower = key.to_lowercase();
+        let Some(value_bool) = value.as_bool() else {
+            continue;
+        };
+
+        if key_lower.contains("change") || key_lower.contains("restart") || key_lower.contains("plan") {
+            change_plan = Some(value_bool);
+            continue;
+        }
+        if key_lower.contains("overwrite")
+            || key_lower.contains("rewrite")
+            || key_lower.contains("last")
+            || key_lower.contains("current")
+            || key_lower.contains("step")
+        {
+            overwrite = Some(value_bool);
+        }
+    }
+
+    Some((overwrite?, change_plan?))
+}
+
+fn parse_verifier_comment_response(response: String) -> VerifierComment {
+    if let Some(json_block) = extract_content_in_json_markdown_code_block(&response) {
+        if let Some((overwrite, change_plan)) =
+            parse_verifier_decision_json_manual(json_block.trim())
+        {
+            let json_fence_start = response
+                .find("```json")
+                .expect("The json code fence start must exist if extraction succeeded");
+            let comment = response[..json_fence_start].trim_end().to_string();
+            return VerifierComment {
+                comment,
+                overwrite,
+                change_plan,
+            };
+        }
+    }
+
+    for (start_idx, _) in response.match_indices('{').rev() {
+        let candidate = response[start_idx..].trim();
+        if let Some((overwrite, change_plan)) = parse_verifier_decision_json_manual(candidate) {
+            let comment = response[..start_idx].trim_end().to_string();
+            return VerifierComment {
+                comment,
+                overwrite,
+                change_plan,
+            };
+        }
+    }
+
+    println!("[Warning] Failed to parse verifier decision JSON from verifier response.");
+    VerifierComment {
+        comment: response.trim().to_string(),
+        overwrite: false,
+        change_plan: false,
+    }
 }
 
 fn get_protocol_value<'a>(response: &'a str, key: &str) -> Option<&'a str> {
@@ -586,7 +652,7 @@ async fn build_new_operations(
                 if is_context_length_exceeded_response(&response) {
                     return context_length_exceeded_result("VerifierCommenting");
                 }
-                verifier_comment = Some(response.trim().to_string());
+                verifier_comment = Some(parse_verifier_comment_response(response));
             }
             NewOperationsResult {
                 operations: vec![RolloutAction::VerifierComment(verifier_comment)],
