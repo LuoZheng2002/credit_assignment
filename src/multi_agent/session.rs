@@ -247,6 +247,7 @@ pub struct SessionState {
     pub failed_attempts: Vec<FailedAttempt>,
     pub num_plan_changes: usize,
     pub step_overwrite_streak: usize,
+    pub total_step_overwrites: usize,
     pub current_step_num_actions: usize,
     pub current_step_last_python_error: Option<String>,
 }
@@ -272,6 +273,7 @@ impl Session {
 
 pub const MAX_PLAN_CHANGES: usize = 2;
 pub const MAX_STEP_OVERWRITE_STREAK: usize = 2;
+pub const MAX_TOTAL_STEP_OVERWRITES: usize = 6;
 pub const MAX_ACTIONS_PER_STEP: usize = 30;
 impl SessionState {
     pub fn new(question: String) -> Self {
@@ -285,6 +287,7 @@ impl SessionState {
             current_step_num_actions: 0,
             current_step_last_python_error: None,
             step_overwrite_streak: 0,
+            total_step_overwrites: 0,
             current_step_content_compacted: None,
             current_plan: None,
             session_status: SessionStatus::PlannerMakingPlan,
@@ -305,6 +308,7 @@ impl SessionState {
     }
     pub fn can_overwrite_step(&self) -> bool {
         self.step_overwrite_streak < MAX_STEP_OVERWRITE_STREAK
+            && self.total_step_overwrites < MAX_TOTAL_STEP_OVERWRITES
     }
     pub fn can_take_action_in_current_step(&self) -> bool {
         self.current_step_num_actions < MAX_ACTIONS_PER_STEP
@@ -344,9 +348,10 @@ impl SessionState {
                     NextStepDecision::OverwriteLastStep(_overwrite_reason) => {
                         assert!(
                             self.can_overwrite_step(),
-                            "Exceed maximum step overwrite streak"
+                            "Exceed maximum step overwrite limit"
                         );
                         self.step_overwrite_streak += 1;
+                        self.total_step_overwrites += 1;
                         self.session_status = SessionStatus::PlannerWorkingOnStep;
                     }
                     NextStepDecision::Continue => {
