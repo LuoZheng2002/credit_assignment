@@ -285,7 +285,7 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
     execute_python_code(code.to_string()).await
 }
 
-pub fn get_prompt_according_to_session_status(session_state: &SessionState<'_>) -> (String, String) {
+pub fn get_prompt_according_to_session_status(session_state: &SessionState) -> (String, String) {
     match session_state.session_status {
         SessionStatus::PlannerMakingOrChangingPlan => {
             get_planner_making_plan_prompts(session_state)
@@ -393,7 +393,7 @@ fn context_length_exceeded_result(session_status: &str) -> NewOperationsResult {
 }
 
 async fn build_new_operations(
-    session_state: &SessionState<'_>,
+    session_state: &SessionState,
     client: Client,
     model: Model,
     verifier_probability: f32,

@@ -244,8 +244,7 @@ pub struct FailedAttempt {
 }
 
 #[derive(Debug, Clone)]
-pub struct SessionState<'a> {
-    pub session_log: &'a SessionLog,
+pub struct SessionState {
     pub question: String,
     pub prev_steps: Vec<CompletedStep>,
     pub current_step_content_raw: String,
@@ -341,8 +340,8 @@ impl Session {
     pub fn apply_parsed_operation(&mut self, operation: RolloutAction) {
         self.session_log.0.push(operation);
     }
-    pub fn get_session_state(&self) -> SessionState<'_> {
-        SessionState::from_session_log(self.question.clone(), &self.session_log)
+    pub fn get_session_state(&self) -> SessionState {
+        SessionState::from_session_log(self.question.clone(), self.session_log.clone())
     }
 }
 
@@ -350,10 +349,9 @@ pub const MAX_PLAN_CHANGES: usize = 2;
 pub const MAX_STEP_OVERWRITE_STREAK: usize = 2;
 pub const MAX_TOTAL_STEP_OVERWRITES: usize = 6;
 pub const MAX_ACTIONS_PER_STEP: usize = 30;
-impl<'a> SessionState<'a> {
-    pub fn new(question: String, session_log: &'a SessionLog) -> Self {
+impl SessionState {
+    pub fn new(question: String) -> Self {
         Self {
-            session_log,
             question,
             prev_steps: Vec::new(),
             current_step_content_raw: String::new(),
@@ -371,8 +369,8 @@ impl<'a> SessionState<'a> {
             failed_attempts: Vec::new(),
         }
     }
-    pub fn from_session_log(question: String, session_log: &'a SessionLog) -> Self {
-        let mut session_state = SessionState::new(question, session_log);
+    pub fn from_session_log(question: String, session_log: SessionLog) -> Self {
+        let mut session_state = SessionState::new(question);
         for operation in &session_log.0 {
             session_state.update(operation.clone());
         }
@@ -403,18 +401,9 @@ impl<'a> SessionState<'a> {
         }
         SessionLog(actions)
     }
-    pub fn from_tree_node(
-        question: String,
-        current_node: Arc<Node>,
-        session_log: &'a SessionLog,
-    ) -> Self {
+    pub fn from_tree_node(question: String, current_node: Arc<Node>) -> Self {
         let rebuilt_session_log = Self::collect_session_log_from_tree_node(current_node);
-        assert_eq!(
-            rebuilt_session_log.0.len(),
-            session_log.0.len(),
-            "Provided session log length must match tree-derived session log length"
-        );
-        Self::from_session_log(question, session_log)
+        Self::from_session_log(question, rebuilt_session_log)
     }
     pub fn can_change_plan(&self) -> bool {
         self.num_plan_changes < MAX_PLAN_CHANGES

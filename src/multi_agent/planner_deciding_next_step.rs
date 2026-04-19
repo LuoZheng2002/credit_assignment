@@ -41,7 +41,7 @@ choice: Change Plan\n\
 reason: [Describe both why the current plan is not promising and what possible future direction you suggest, in one single-line sentence.]".to_string()
 }
 
-fn get_planner_deciding_next_step_prompt_before_assistant(session_state: &SessionState<'_>) -> String {
+fn get_planner_deciding_next_step_prompt_before_assistant(session_state: &SessionState) -> String {
     assert!(matches!(
         session_state.session_status,
         SessionStatus::PlannerChoosingMode
@@ -52,7 +52,7 @@ fn get_planner_deciding_next_step_prompt_before_assistant(session_state: &Sessio
     get_planner_prompt_before_assistant(question, &history_prev_steps, planner_status_prompt)
 }
 
-pub fn get_planner_deciding_next_step_prompts(session_state: &SessionState<'_>) -> (String, String) {
+pub fn get_planner_deciding_next_step_prompts(session_state: &SessionState) -> (String, String) {
     let prompt_before_assistant =
         get_planner_deciding_next_step_prompt_before_assistant(session_state);
     (prompt_before_assistant, String::new())

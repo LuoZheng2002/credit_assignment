@@ -786,9 +786,8 @@ struct SessionView {
 impl SessionView {
     fn new(answer: RolloutTrajectory) -> Self {
         let operations = answer.trajectory.0.clone();
-        let final_log = SessionLog(operations.clone());
-        let final_state = SessionState::from_session_log(answer.question.clone(), &final_log);
-        let total_display_turns = final_state.total_display_rounds();
+        let _final_log = SessionLog(operations.clone());
+        let total_display_turns = todo!("Migrate session browser to Tree + SessionState::from_tree_node");
         let total_actual_turns = answer.trajectory.total_actual_rounds();
         Self {
             answer,
@@ -852,14 +851,14 @@ impl SessionView {
         if self.operations.is_empty() {
             return None;
         }
-        let prefix_log = SessionLog(
+        let _prefix_log = SessionLog(
             self.operations
                 .iter()
                 .take(self.current_pos.saturating_sub(1))
                 .cloned()
                 .collect(),
         );
-        let state = SessionState::from_session_log(self.answer.question.clone(), &prefix_log);
+        let state = todo!("Migrate prompt preview to Tree + SessionState::from_tree_node");
         let (prompt_before_assistant, prompt_after_assistant) =
             get_prompt_according_to_session_status(&state);
 

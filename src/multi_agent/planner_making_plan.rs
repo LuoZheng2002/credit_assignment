@@ -25,7 +25,7 @@ Please only output the steps.\n\
     .to_string()
 }
 
-pub fn get_planner_making_plan_before_assistant(session_state: &SessionState<'_>) -> String {
+pub fn get_planner_making_plan_before_assistant(session_state: &SessionState) -> String {
     assert!(matches!(
         session_state.session_status,
         SessionStatus::PlannerMakingOrChangingPlan
@@ -51,7 +51,7 @@ You are a planner agent that makes a plan to solve the following problem step by
     )
 }
 
-pub fn get_planner_making_plan_prompts(session_state: &SessionState<'_>) -> (String, String) {
+pub fn get_planner_making_plan_prompts(session_state: &SessionState) -> (String, String) {
     let prompt_before_assistant = get_planner_making_plan_before_assistant(session_state);
     (prompt_before_assistant, String::new())
 }

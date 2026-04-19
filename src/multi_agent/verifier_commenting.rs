@@ -1,6 +1,6 @@
 use crate::multi_agent::session::{SessionState, SessionStatus};
 
-fn get_verifier_commenting_prompt_before_assistant(session_state: &SessionState<'_>) -> String {
+fn get_verifier_commenting_prompt_before_assistant(session_state: &SessionState) -> String {
     assert!(matches!(
         session_state.session_status,
         SessionStatus::VerifierCommenting
@@ -43,7 +43,7 @@ Please start your comment and be concise:\n",
     )
 }
 
-pub fn get_verifier_commenting_prompts(session_state: &SessionState<'_>) -> (String, String) {
+pub fn get_verifier_commenting_prompts(session_state: &SessionState) -> (String, String) {
     let prompt_before_assistant = get_verifier_commenting_prompt_before_assistant(session_state);
     (prompt_before_assistant, String::new())
 }
