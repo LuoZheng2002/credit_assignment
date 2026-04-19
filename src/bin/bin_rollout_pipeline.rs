@@ -20,7 +20,7 @@ use credit_assignment::{
             RolloutTrajectory, get_rollout_trajectory_path, get_session_log_path,
         },
         rollout::rollout,
-        session::{RolloutAction, RolloutActionLogItem},
+        session::{RolloutAction, TreeUpdateEvent},
     },
     parallel_process_jsonl::{read_json_lines, read_json_lines_indexed, write_jsonl_file},
 };
@@ -125,7 +125,7 @@ async fn main() {
     let verifier_probability = 1.0;
     // read log file
     let session_log_path = get_session_log_path(model, &dataset_name, num_samples);
-    let mut session_log_items: Vec<RolloutActionLogItem> =
+    let mut session_log_items: Vec<TreeUpdateEvent> =
         read_json_lines(&session_log_path).unwrap_or_default();
     // read trajectory file
     let trajectory_path = get_rollout_trajectory_path(model, &dataset_name, num_samples);
@@ -137,15 +137,20 @@ async fn main() {
     let trajectory_completed_ids: HashSet<usize> = trajectory_items.keys().cloned().collect();
     let correctness_completed_ids: HashSet<usize> = correctness_items.keys().cloned().collect();
     // delete parts in log file that is already finished and write back
-    session_log_items.retain(|item| !trajectory_completed_ids.contains(&item.question_id));
+    session_log_items.retain(|item| !trajectory_completed_ids.contains(&item.question_id()));
     write_jsonl_file(&session_log_path, &session_log_items).unwrap();
     // construct a hashmap of loaded session logs
     let mut loaded_session_logs: IndexMap<usize, Vec<RolloutAction>> = IndexMap::new();
     for log_item in session_log_items {
-        loaded_session_logs
-            .entry(log_item.question_id)
-            .or_insert_with(Vec::new)
-            .push(log_item.action);
+        if let TreeUpdateEvent::AddAction {
+            question_id, action, ..
+        } = log_item
+        {
+            loaded_session_logs
+                .entry(question_id)
+                .or_insert_with(Vec::new)
+                .push(action);
+        }
     }
     // load questions and answers for unfinished trajectories
     let question_path = get_question_path(&dataset_name, num_samples);
@@ -166,7 +171,7 @@ async fn main() {
         println!("Ctrl+C received, shutting down...");
         SHUTDOWN.store(true, Ordering::SeqCst);
     });
-    let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<RolloutActionLogItem>();
+    let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<TreeUpdateEvent>();
     let (trajectory_tx, mut trajectory_rx) =
         tokio::sync::mpsc::unbounded_channel::<RolloutTrajectory>();
     let (correctness_input_tx, mut correctness_input_rx) =

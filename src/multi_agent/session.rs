@@ -1,5 +1,6 @@
 use std::sync::{Arc, Weak};
 
+use atomic_refcell::AtomicRefCell;
 use serde::{Deserialize, Serialize};
 
 use crate::deepmath::parse_answers::extract_boxed_content;
@@ -110,12 +111,6 @@ pub enum RolloutAction {
     },
     PlannerUpdatePlan(String),
     VerifierComment(Option<VerifierComment>),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RolloutActionLogItem {
-    pub question_id: usize,
-    pub action: RolloutAction,
 }
 
 impl RolloutAction {
@@ -283,11 +278,11 @@ pub struct Step{
     pub action_log: Vec<RolloutAction>, // starting from verifier comment, and ending with planner end step or force end step
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Node {
     pub node_id: usize,
-    pub step: Step,
-    pub children: Option<Children>, // Some only after the step is finalized
+    pub step: AtomicRefCell<Step>,
+    pub children: AtomicRefCell<Option<Children>>, // Some only after the step is finalized
     pub parent: Weak<Node>,
 }
 
@@ -302,16 +297,27 @@ pub struct Tree {
 }
 
 // the following is the signature of each entry in a jsonl log file for reconstructing current tree progress when the program exits abruptly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TreeUpdateEvent {
     CreateNode {
+        question_id: usize,
         node_id: usize,
         parent_id: Option<usize>, // None for root node
     },
     AddAction {
+        question_id: usize,
         node_id: usize,
         action: RolloutAction,
     },
+}
+
+impl TreeUpdateEvent {
+    pub fn question_id(&self) -> usize {
+        match self {
+            TreeUpdateEvent::CreateNode { question_id, .. } => *question_id,
+            TreeUpdateEvent::AddAction { question_id, .. } => *question_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

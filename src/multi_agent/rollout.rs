@@ -16,8 +16,8 @@ use crate::{
         planner_step_overwriting::get_planner_step_overwriting_prompts,
         planner_updating_plan::get_planner_updating_plan_prompts,
         session::{
-            MakeOrChangePlan, NextStepDecision, RolloutAction, RolloutActionLogItem, Session,
-            SessionState, SessionStatus, StepQuality, ToolResponse, VerifierComment,
+            MakeOrChangePlan, NextStepDecision, RolloutAction, Session, SessionState,
+            SessionStatus, StepQuality, ToolResponse, TreeUpdateEvent, VerifierComment,
         },
         verifier_commenting::get_verifier_commenting_prompts,
     },
@@ -686,7 +686,7 @@ pub async fn rollout(
     model: Model,
     verifier_probability: f32,
     rng: &mut impl rand::Rng,
-    action_tx: tokio::sync::mpsc::UnboundedSender<RolloutActionLogItem>,
+    action_tx: tokio::sync::mpsc::UnboundedSender<TreeUpdateEvent>,
     trajectory_tx: tokio::sync::mpsc::UnboundedSender<RolloutTrajectory>,
 ) {
     // create a state machine
@@ -756,8 +756,9 @@ pub async fn rollout(
                 session_should_end = true;
             }
             // log the action
-            let log_item = RolloutActionLogItem {
+            let log_item = TreeUpdateEvent::AddAction {
                 question_id,
+                node_id: 0,
                 action: operation,
             };
             action_tx.send(log_item).unwrap();
