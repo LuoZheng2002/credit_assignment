@@ -6,7 +6,8 @@ use crate::deepmath::generate_raw_answers::Model;
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
 static VLLM_PORT_OVERRIDE: AtomicU16 = AtomicU16::new(0);
-pub const QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE: &str = "<error>QWEN_CONTEXT_LENGTH_EXCEEDED</error>";
+pub const QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE: &str =
+    "<error>QWEN_CONTEXT_LENGTH_EXCEEDED</error>";
 
 pub fn set_vllm_port(port: u16) {
     assert!(port > 0, "vLLM port must be greater than 0");

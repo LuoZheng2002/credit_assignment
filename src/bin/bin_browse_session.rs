@@ -12,14 +12,14 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::prelude::Widget;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
-use ratatui::Terminal;
 use ratatui_core::buffer::Buffer;
 use serde_json;
 use std::collections::hash_map::DefaultHasher;
@@ -487,11 +487,7 @@ impl App {
                     let correctness_prefix = match &self.correctness_by_id {
                         Some(map) => {
                             let correct = map.get(&answer.id).copied().unwrap_or(false);
-                            if correct {
-                                "✓ "
-                            } else {
-                                "✗ "
-                            }
+                            if correct { "✓ " } else { "✗ " }
                         }
                         None => "",
                     };

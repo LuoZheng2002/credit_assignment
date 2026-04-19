@@ -82,11 +82,11 @@ pub enum RolloutAction {
     PlannerMakePlan(String), // this should be a mandatory process instead of a choice
     PlannerDecideNextStep(NextStepDecision),
     PlannerReasoning(String),
-    PlannerToolCall(String),  // with <tool_call> ... </tool_call> wrapper
+    PlannerToolCall(String), // with <tool_call> ... </tool_call> wrapper
     ToolCallResponse(ToolResponse),
     PlannerEndStep,
     // PlannerCompactStep(String, Option<StepQuality>),
-    PlannerCompactStep{
+    PlannerCompactStep {
         summary: String,
         step_quality: Option<StepQuality>,
     },
@@ -114,7 +114,10 @@ impl RolloutAction {
                 format!("[PlannerToolCall]:\n{}", tool_call)
             }
             RolloutAction::PlannerEndStep => "[PlannerEndStep]".to_string(),
-            RolloutAction::PlannerCompactStep{summary, step_quality} => {
+            RolloutAction::PlannerCompactStep {
+                summary,
+                step_quality,
+            } => {
                 format!(
                     "[PlannerCompactStep]:\n{}\n[StepQuality]: {:?}",
                     summary, step_quality
@@ -140,11 +143,8 @@ impl RolloutAction {
             RolloutAction::PlannerReasoning(_reasoning) => "[PlannerReasoning]".to_string(),
             RolloutAction::PlannerToolCall(_tool_call) => "[PlannerToolCall]".to_string(),
             RolloutAction::PlannerEndStep => "[PlannerEndStep]".to_string(),
-            RolloutAction::PlannerCompactStep{step_quality, ..} => {
-                format!(
-                    "[PlannerCompactStep]\n[StepQuality]: {:?}",
-                    step_quality
-                )
+            RolloutAction::PlannerCompactStep { step_quality, .. } => {
+                format!("[PlannerCompactStep]\n[StepQuality]: {:?}", step_quality)
             }
             RolloutAction::PlannerUpdatePlan(_updated_plan) => "[PlannerUpdatePlan]".to_string(),
             RolloutAction::ToolCallResponse(_tool_response) => "[ToolCallResponse]".to_string(),
@@ -404,7 +404,10 @@ impl SessionState {
                 self.current_step_last_python_error = None;
                 self.session_status = SessionStatus::PlannerCompactingStep;
             }
-            RolloutAction::PlannerCompactStep{summary, step_quality} => {
+            RolloutAction::PlannerCompactStep {
+                summary,
+                step_quality,
+            } => {
                 assert_eq!(
                     self.session_status,
                     SessionStatus::PlannerCompactingStep,

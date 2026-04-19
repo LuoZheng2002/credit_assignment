@@ -1,4 +1,4 @@
-use credit_assignment::multi_agent::rollout::execute_planner_tool_call;
+use credit_assignment::multi_agent::{rollout::execute_planner_tool_call, session::ToolResponse};
 use pyo3::Python;
 
 // #[test]
@@ -70,9 +70,12 @@ print(results)
     // print(comb(10, 3))
     // ```"#;
     let response = execute_planner_tool_call(markdown_tool_call).await;
+    let ToolResponse::PythonSuccess(output) = response else {
+        panic!("Expected PythonSuccess, got PythonError");
+    };
     // assert!(response.contains("<tool_response>5</tool_response>"));
     assert_eq!(
-        response.trim(),
+        output.trim(),
         "<tool_response>{0: 1, 1: 5, 2: 25, 3: 125, 4: 625}</tool_response>"
     );
 }
@@ -82,5 +85,8 @@ async fn execute_json_planner_tool_call_runs_python() {
     Python::initialize();
     let json_tool_call = r#"<tool_call>{"name": "python", "code": "print(7)"}</tool_call>"#;
     let response = execute_planner_tool_call(json_tool_call).await;
-    assert!(response.contains("<tool_response>7</tool_response>"));
+    let ToolResponse::PythonSuccess(output) = response else {
+        panic!("Expected PythonSuccess, got PythonError");
+    };
+    assert!(output.contains("<tool_response>7</tool_response>"));
 }

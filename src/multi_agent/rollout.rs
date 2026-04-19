@@ -4,7 +4,7 @@ use rand::RngExt;
 use reqwest::Client;
 
 use crate::{
-    call_llm::{call_llm_with_prefix, QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE},
+    call_llm::{QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE, call_llm_with_prefix},
     deepmath::generate_raw_answers::Model,
     execute_python_code::execute_python_code,
     multi_agent::{
@@ -192,7 +192,9 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
     let mut trimmed_tool_call = tool_call.trim_start().to_string();
     // trim <tool_wait>
     if trimmed_tool_call.starts_with("<tool_wait>") {
-        trimmed_tool_call = trimmed_tool_call["<tool_wait>".len()..].trim_start().to_string();
+        trimmed_tool_call = trimmed_tool_call["<tool_wait>".len()..]
+            .trim_start()
+            .to_string();
     }
     assert!(
         trimmed_tool_call.starts_with("```python"),
@@ -450,7 +452,8 @@ async fn build_new_operations(
             }
             if let Some(tool_call) = tool_call {
                 let tool_response = execute_planner_tool_call(&tool_call).await;
-                let previous_python_error = session.session_state.current_step_last_python_error.clone();
+                let previous_python_error =
+                    session.session_state.current_step_last_python_error.clone();
                 operations.push(RolloutAction::PlannerToolCall(tool_call));
                 if let ToolResponse::PythonError(current_python_error) = &tool_response {
                     if previous_python_error.is_some()
@@ -461,9 +464,11 @@ async fn build_new_operations(
                             "[Warning]: Identical python tool error detected. Aborting current step."
                         );
                         operations.push(RolloutAction::ToolCallResponse(tool_response));
-                        operations.push(RolloutAction::ToolCallResponse(ToolResponse::Intervention(
-                            IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
-                        )));
+                        operations.push(RolloutAction::ToolCallResponse(
+                            ToolResponse::Intervention(
+                                IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
+                            ),
+                        ));
                     } else {
                         operations.push(RolloutAction::ToolCallResponse(tool_response));
                     }

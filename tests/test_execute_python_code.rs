@@ -1,4 +1,6 @@
-use credit_assignment::execute_python_code::execute_python_code;
+use credit_assignment::{
+    execute_python_code::execute_python_code, multi_agent::session::ToolResponse,
+};
 use pyo3::Python;
 
 #[tokio::test]
@@ -16,5 +18,8 @@ time.sleep(6000)
 "#
     .to_string();
     let output = execute_python_code(code).await;
+    let ToolResponse::PythonSuccess(output) = output else {
+        panic!("Expected PythonSuccess, got PythonError");
+    };
     assert_eq!(output.trim(), "3");
 }

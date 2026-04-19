@@ -237,7 +237,11 @@ async fn main() {
                     .await;
                     drop(permit);
                     finished_count.fetch_add(1, Ordering::SeqCst);
-                    println!("Trajectory {}/{} finished", finished_count.load(Ordering::SeqCst), total_count);
+                    println!(
+                        "Trajectory {}/{} finished",
+                        finished_count.load(Ordering::SeqCst),
+                        total_count
+                    );
                 });
             }
             drop(action_tx);
@@ -304,7 +308,12 @@ async fn main() {
             }
             total_count += 1;
             let accuracy = correct_count as f64 / total_count as f64;
-            println!("Running accuracy: {}/{} ({:.2}%)", correct_count, total_count, accuracy * 100.0);
+            println!(
+                "Running accuracy: {}/{} ({:.2}%)",
+                correct_count,
+                total_count,
+                accuracy * 100.0
+            );
         }
     });
 
@@ -351,6 +360,9 @@ async fn main() {
     .unwrap();
     println!(
         "Rollout evaluation completed for model {} on {} dataset with {} samples. Accuracy: {:.2}%",
-        model_name, dataset_name, num_samples, accuracy * 100.0
+        model_name,
+        dataset_name,
+        num_samples,
+        accuracy * 100.0
     );
 }
