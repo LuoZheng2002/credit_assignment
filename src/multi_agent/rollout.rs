@@ -739,21 +739,21 @@ pub async fn rollout(
     trajectory_tx: tokio::sync::mpsc::UnboundedSender<RolloutTrajectory>,
 ) {
     // create a state machine
-    let tree = Tree::new(question_id, question.clone());
+    let mut tree = Tree::new(question_id, question.clone());
     let mut session_should_end = false;
     let mut forced_final_answer: Option<String> = None;
     if loaded_events.is_empty() {
         action_tx
-            .send(TreeUpdateEvent::CreateNode {
+                .send(TreeUpdateEvent::CreateNode {
                 question_id,
-                node_id: tree.root.node_id,
+                node_id: tree.root_node_id,
                 parent_id: None,
             })
             .unwrap();
     }
     for event in loaded_events {
         tree.apply_event(event);
-        let loaded_state = TrajectoryState::from_tree_node(question.clone(), tree.current_node());
+        let loaded_state = TrajectoryState::from_tree(&tree);
         if loaded_state.final_answer.is_some() {
             session_should_end = true;
         }
@@ -761,7 +761,7 @@ pub async fn rollout(
     let mut sub_step_counter = 0; // to prevent infinite loop in case of bugs
     loop {
         if session_should_end {
-            let session_state = TrajectoryState::from_tree_node(question.clone(), tree.current_node());
+            let session_state = TrajectoryState::from_tree(&tree);
             let displayed_final_answer = forced_final_answer
                 .as_deref()
                 .or(session_state.final_answer.as_deref())
@@ -776,7 +776,7 @@ pub async fn rollout(
             break;
         }
         sub_step_counter += 1;
-        let session_state = TrajectoryState::from_tree_node(question.clone(), tree.current_node());
+        let session_state = TrajectoryState::from_tree(&tree);
         if session_state.prev_steps.len() > 20 {
             forced_final_answer = Some(
                 "The model does not manage to provide a final answer within allowed number of turns."
@@ -798,7 +798,7 @@ pub async fn rollout(
                 150
             );
         }
-        let session_state = TrajectoryState::from_tree_node(question.clone(), tree.current_node());
+        let session_state = TrajectoryState::from_tree(&tree);
         let new_operations_result = build_new_operations(
             question_id,
             &session_state,
@@ -823,7 +823,7 @@ pub async fn rollout(
             );
             tree.apply_event(event.clone());
             if should_end_from_operation
-                && TrajectoryState::from_tree_node(question.clone(), tree.current_node()).final_answer.is_some()
+                && TrajectoryState::from_tree(&tree).final_answer.is_some()
             {
                 session_should_end = true;
             }
@@ -833,10 +833,10 @@ pub async fn rollout(
             "[rollout] question index: {}, sub-step: {} finished, num prev steps: {}",
             question_id,
             sub_step_counter,
-            TrajectoryState::from_tree_node(question.clone(), tree.current_node()).prev_steps.len()
+            TrajectoryState::from_tree(&tree).prev_steps.len()
         );
     }
-    let final_state = TrajectoryState::from_tree_node(question.clone(), tree.current_node());
+    let final_state = TrajectoryState::from_tree(&tree);
     let step_quality_accuracy = final_state.step_quality_accuracy();
     let trajectory_tree = tree.to_file_model();
     let rollout_trajectory = RolloutTrajectory {

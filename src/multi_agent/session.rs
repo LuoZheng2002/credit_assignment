@@ -1,6 +1,3 @@
-use std::sync::{Arc, Weak};
-
-use atomic_refcell::AtomicRefCell;
 use serde::{Deserialize, Serialize};
 
 use crate::deepmath::parse_answers::extract_boxed_content;
@@ -311,12 +308,12 @@ impl Step {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Node {
     pub node_id: usize,
-    pub step: AtomicRefCell<Step>,
-    pub children: AtomicRefCell<Option<Children>>, // Some only after the step is finalized
-    pub parent: Weak<Node>,
+    pub step: Step,
+    pub child_id: Option<usize>, // placeholder for future multi-child expansion
+    pub parent_id: Option<usize>,
 }
 
 // only working on one node at a time
@@ -324,9 +321,10 @@ pub struct Node {
 pub struct Tree {
     pub question_id: usize,
     pub question: String,
-    pub root: Arc<Node>,
-    pub current_node: AtomicRefCell<Arc<Node>>,
-    pub leaf_nodes: Vec<Weak<Node>>, // this is only for trajectories that have reached the final answer or is forced to end
+    pub nodes: Vec<Node>,
+    pub root_node_id: usize,
+    pub current_node_id: usize,
+    pub leaf_node_ids: Vec<usize>, // this is only for trajectories that have reached the final answer or is forced to end
     pub next_node_id: usize,
 }
 
@@ -363,36 +361,28 @@ impl TreeUpdateEvent {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Children {
-    pub child: Option<Arc<Node>>, // a placeholder for now, going to expand to 2 children in the future
-}
-
 impl Tree {
     pub fn new(question_id: usize, question: String) -> Self {
-        let root = Arc::new(Node {
+        let root = Node {
             node_id: 0,
-            step: AtomicRefCell::new(Step::new()),
-            children: AtomicRefCell::new(None),
-            parent: Weak::new(),
-        });
+            step: Step::new(),
+            child_id: None,
+            parent_id: None,
+        };
         Self {
             question_id,
             question,
-            current_node: AtomicRefCell::new(root.clone()),
-            root,
-            leaf_nodes: Vec::new(),
+            nodes: vec![root],
+            root_node_id: 0,
+            current_node_id: 0,
+            leaf_node_ids: Vec::new(),
             next_node_id: 1,
         }
     }
 
-    pub fn current_node(&self) -> Arc<Node> {
-        self.current_node.borrow().clone()
-    }
-
-    pub fn append_action_to_current_node(&self, action: RolloutAction) {
-        let node = self.current_node();
-        let mut step = node.step.borrow_mut();
+    pub fn append_action_to_current_node(&mut self, action: RolloutAction) {
+        let node = &mut self.nodes[self.current_node_id];
+        let step = &mut node.step;
         assert!(
             !step.step_finalized,
             "Cannot append action to finalized step"
@@ -400,18 +390,60 @@ impl Tree {
         step.action_log.push(action);
     }
 
-    pub fn set_current_node_by_id(&self, node_id: usize) {
+    pub fn set_current_node_by_id(&mut self, node_id: usize) {
         let node = self
             .find_node_by_id(node_id)
             .expect("SetCurrentNode node_id must exist in tree");
-        *self.current_node.borrow_mut() = node;
+        self.current_node_id = node.node_id;
     }
 
-    pub fn apply_event(&self, event: TreeUpdateEvent) {
+    pub fn apply_event(&mut self, event: TreeUpdateEvent) {
         match event {
-            TreeUpdateEvent::CreateNode { .. } => {
-                // CreateNode is currently only used for logging/recovery marker.
-                // Node creation during branching is not implemented yet.
+            TreeUpdateEvent::CreateNode {
+                node_id,
+                parent_id,
+                ..
+            } => {
+                match parent_id {
+                    None => {
+                        assert_eq!(node_id, 0, "Root node id must be 0");
+                        assert_eq!(
+                            self.root_node_id, 0,
+                            "Tree root id must remain 0 during replay"
+                        );
+                        assert!(
+                            self.find_node_by_id(0).is_some(),
+                            "Tree must have root node before applying root CreateNode"
+                        );
+                    }
+                    Some(parent_id) => {
+                        assert!(
+                            self.find_node_by_id(node_id).is_none(),
+                            "CreateNode node_id must be unique"
+                        );
+                        let parent = self
+                            .find_node_by_id(parent_id)
+                            .expect("CreateNode parent_id must exist");
+                        let parent_node_id = parent.node_id;
+                        let parent_children = self.nodes[parent_node_id].child_id;
+                        assert!(
+                            parent_children.is_none(),
+                            "CreateNode parent already has child in current single-child tree"
+                        );
+                        let child = Node {
+                            node_id,
+                            step: Step::new(),
+                            child_id: None,
+                            parent_id: Some(parent_node_id),
+                        };
+                        self.nodes.push(child);
+                        self.nodes[parent_node_id].child_id = Some(node_id);
+                    }
+                }
+                assert!(node_id <= self.next_node_id, "CreateNode node_id must not skip next_node_id");
+                if node_id == self.next_node_id {
+                    self.next_node_id += 1;
+                }
             }
             TreeUpdateEvent::SetCurrentNode { node_id, .. } => {
                 self.set_current_node_by_id(node_id);
@@ -422,59 +454,28 @@ impl Tree {
         }
     }
 
-    fn find_node_by_id(&self, node_id: usize) -> Option<Arc<Node>> {
-        fn dfs(node: &Arc<Node>, target_id: usize) -> Option<Arc<Node>> {
-            if node.node_id == target_id {
-                return Some(node.clone());
-            }
-            let child = node
-                .children
-                .borrow()
-                .as_ref()
-                .and_then(|children| children.child.clone());
-            if let Some(child_node) = child {
-                return dfs(&child_node, target_id);
-            }
-            None
-        }
-        dfs(&self.root, node_id)
+    fn find_node_by_id(&self, node_id: usize) -> Option<&Node> {
+        let node = self.nodes.get(node_id)?;
+        assert_eq!(node.node_id, node_id, "Node index must equal node_id");
+        Some(node)
     }
 
     pub fn to_file_model(&self) -> TreeFileModel {
-        fn collect_nodes(
-            node: &Arc<Node>,
-            parent_id: Option<usize>,
-            output: &mut Vec<TreeFileNodeModel>,
-        ) {
-            let step = node.step.borrow().clone();
-            output.push(TreeFileNodeModel {
-                node_id: node.node_id,
-                parent_id,
-                step,
-            });
-            let child = node
-                .children
-                .borrow()
-                .as_ref()
-                .and_then(|children| children.child.clone());
-            if let Some(child_node) = child {
-                collect_nodes(&child_node, Some(node.node_id), output);
-            }
-        }
-
-        let mut nodes = Vec::new();
-        collect_nodes(&self.root, None, &mut nodes);
-        let leaf_node_ids = self
-            .leaf_nodes
+        let nodes = self
+            .nodes
             .iter()
-            .map(|weak| weak.upgrade().expect("Leaf node must be alive").node_id)
+            .map(|node| TreeFileNodeModel {
+                node_id: node.node_id,
+                parent_id: node.parent_id,
+                step: node.step.clone(),
+            })
             .collect();
         TreeFileModel {
             question_id: self.question_id,
             question: self.question.clone(),
-            current_node_id: self.current_node().node_id,
+            current_node_id: self.current_node_id,
             next_node_id: self.next_node_id,
-            leaf_node_ids,
+            leaf_node_ids: self.leaf_node_ids.clone(),
             nodes,
         }
     }
@@ -563,33 +564,39 @@ impl TrajectoryState {
         }
         session_state
     }
-    pub fn collect_session_log_from_tree_node(current_node: Arc<Node>) -> TrajectoryActionLog {
-        let mut nodes_from_current_to_root: Vec<Arc<Node>> = Vec::new();
-        let mut cursor = Some(current_node);
-        while let Some(node) = cursor {
-            nodes_from_current_to_root.push(node.clone());
-            let parent = node.parent.upgrade();
+    pub fn collect_session_log_from_tree(tree: &Tree) -> TrajectoryActionLog {
+        let mut node_ids_from_current_to_root: Vec<usize> = Vec::new();
+        let mut cursor = Some(tree.current_node_id);
+        while let Some(node_id) = cursor {
+            node_ids_from_current_to_root.push(node_id);
+            let node = tree
+                .find_node_by_id(node_id)
+                .expect("Current path node_id must exist in tree");
+            let parent = node.parent_id;
             assert!(
-                parent.is_some() || node.node_id == 0,
+                parent.is_some() || node.node_id == tree.root_node_id,
                 "Non-root node must have a live parent"
             );
             cursor = parent;
         }
         assert!(
-            !nodes_from_current_to_root.is_empty(),
+            !node_ids_from_current_to_root.is_empty(),
             "Tree traversal should always include at least current node"
         );
-        nodes_from_current_to_root.reverse();
+        node_ids_from_current_to_root.reverse();
 
         let mut actions: Vec<RolloutAction> = Vec::new();
-        for node in nodes_from_current_to_root {
-            let step_ref = node.step.borrow();
-            actions.extend(step_ref.action_log.iter().cloned());
+        for node_id in node_ids_from_current_to_root {
+            let node = tree
+                .find_node_by_id(node_id)
+                .expect("Path node_id must exist while collecting action log");
+            actions.extend(node.step.action_log.iter().cloned());
         }
         TrajectoryActionLog(actions)
     }
-    pub fn from_tree_node(question: String, current_node: Arc<Node>) -> Self {
-        let rebuilt_session_log = Self::collect_session_log_from_tree_node(current_node);
+    pub fn from_tree(tree: &Tree) -> Self {
+        let rebuilt_session_log = Self::collect_session_log_from_tree(tree);
+        let question = tree.question.clone();
         Self::from_session_log(question, rebuilt_session_log)
     }
     pub fn can_change_plan(&self) -> bool {
