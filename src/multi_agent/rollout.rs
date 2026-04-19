@@ -402,21 +402,24 @@ async fn build_new_operations(
 ) -> NewOperationsResult {
     match &session.session_state.session_status {
         SessionStatus::PlannerMakingPlan => {
-            let (prompt_before_assistant, prompt_after_assistant) =
-                get_prompt_according_to_session_status(&session.session_state);
-            let response = call_llm_with_prefix(
-                client.clone(),
-                prompt_before_assistant,
-                prompt_after_assistant,
-                model,
-            )
-            .await;
-            if is_context_length_exceeded_response(&response) {
-                return context_length_exceeded_result("PlannerMakingPlan");
+            let mut plan_content = None;
+            if session.session_state.current_plan.is_none() {
+                let (prompt_before_assistant, prompt_after_assistant) =
+                    get_prompt_according_to_session_status(&session.session_state);
+                let response = call_llm_with_prefix(
+                    client.clone(),
+                    prompt_before_assistant,
+                    prompt_after_assistant,
+                    model,
+                )
+                .await;
+                if is_context_length_exceeded_response(&response) {
+                    return context_length_exceeded_result("PlannerMakingPlan");
+                }
+                plan_content = Some(response); // we change to not require the plan to be in a markdown code block
             }
-            let plan_content = response; // we change to not require the plan to be in a markdown code block
             NewOperationsResult {
-                operations: vec![RolloutAction::PlannerMakePlan(plan_content)],
+                operations: vec![RolloutAction::PlannerMakeOrChangePlan(plan_content)],
                 should_end_session: false,
             }
         }

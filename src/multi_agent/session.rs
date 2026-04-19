@@ -86,7 +86,7 @@ impl ToolResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RolloutAction {
-    PlannerMakePlan(String), // this should be a mandatory process instead of a choice
+    PlannerMakeOrChangePlan(Option<String>), // this action is always part of the routine; None means no new plan is made
     PlannerDecideNextStep(NextStepDecision),
     PlannerReasoning(String),
     PlannerToolCall(String), // with <tool_call> ... </tool_call> wrapper
@@ -110,7 +110,9 @@ pub struct RolloutActionLogItem {
 impl RolloutAction {
     pub fn to_pretty_string(&self) -> String {
         match self {
-            RolloutAction::PlannerMakePlan(plan) => format!("[PlannerMakePlan]:\n{}", plan),
+            RolloutAction::PlannerMakeOrChangePlan(plan) => {
+                format!("[PlannerMakeOrChangePlan]:\n{:?}", plan)
+            }
             RolloutAction::PlannerDecideNextStep(mode) => {
                 format!("[PlannerChooseMode]: {:?}", mode)
             }
@@ -143,7 +145,9 @@ impl RolloutAction {
     }
     pub fn to_concise_string(&self) -> String {
         match self {
-            RolloutAction::PlannerMakePlan(_plan) => format!("[PlannerMakePlan]"),
+            RolloutAction::PlannerMakeOrChangePlan(_plan) => {
+                format!("[PlannerMakeOrChangePlan]")
+            }
             RolloutAction::PlannerDecideNextStep(mode) => {
                 format!("[PlannerChooseMode]: {:?}", mode)
             }
@@ -288,7 +292,7 @@ impl SessionState {
             total_step_overwrites: 0,
             current_step_content_compacted: None,
             current_plan: None,
-            session_status: SessionStatus::PlannerMakingPlan,
+            session_status: SessionStatus::VerifierCommenting,
             planner_chosen_mode: None,
             final_answer: None,
             failed_attempts: Vec::new(),
@@ -317,9 +321,15 @@ impl SessionState {
     pub fn update(&mut self, operation: RolloutAction) -> bool {
         let mut should_end_session = false;
         match operation {
-            RolloutAction::PlannerMakePlan(plan) => {
-                self.current_plan = Some(plan);
-                self.session_status = SessionStatus::VerifierCommenting;
+            RolloutAction::PlannerMakeOrChangePlan(plan) => {
+                if let Some(plan_content) = plan {
+                    self.current_plan = Some(plan_content);
+                }
+                assert!(
+                    self.current_plan.is_some(),
+                    "A plan must exist after PlannerMakeOrChangePlan"
+                );
+                self.session_status = SessionStatus::PlannerChoosingMode;
             }
             RolloutAction::PlannerDecideNextStep(mode) => {
                 self.planner_chosen_mode = Some(mode.clone());
@@ -498,14 +508,16 @@ impl SessionState {
                         "Verifier comment must be None when there is no previous step"
                     );
                 }
-                self.session_status = SessionStatus::PlannerChoosingMode;
+                self.session_status = SessionStatus::PlannerMakingPlan;
             }
         }
         should_end_session
     }
     pub fn to_history_prev_steps(&self) -> String {
         let (planner_turn, making_plan) = match self.session_status {
-            SessionStatus::PlannerMakingPlan => (true, true), // it should only show the attempts, but not steps
+            SessionStatus::PlannerMakingPlan => {
+                (true, self.current_plan.is_none()) // if no current plan, this is real plan-making; otherwise it's a no-op routine action
+            }
             SessionStatus::PlannerChoosingMode => (true, false), // should see last step verifier comment if there is any
             SessionStatus::PlannerWorkingOnStep => (true, false), // should see last step verifier comment if there is any
             SessionStatus::PlannerCompactingStep => (true, false), // same as working on step
