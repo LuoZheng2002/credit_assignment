@@ -28,7 +28,7 @@ Please only output the steps.\n\
 pub fn get_planner_making_plan_before_assistant(session_state: &SessionState) -> String {
     assert!(matches!(
         session_state.session_status,
-        SessionStatus::PlannerMakingPlan
+        SessionStatus::PlannerMakingOrChangingPlan
     ));
     let question = &session_state.question;
     let history_prev_steps = if !session_state.failed_attempts.is_empty() {

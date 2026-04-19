@@ -10,6 +10,12 @@ pub enum NextStepDecision {
     ChangePlan(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MakeOrChangePlan {
+    MakePlan(String),
+    ChangePlan(String),
+}
+
 impl NextStepDecision {
     pub fn is_overwriting(&self) -> bool {
         match self {
@@ -86,7 +92,7 @@ impl ToolResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RolloutAction {
-    PlannerMakeOrChangePlan(Option<String>), // this action is always part of the routine; None means no new plan is made
+    PlannerMakeOrChangePlan(Option<MakeOrChangePlan>), // this action is always part of the routine; None means no new plan is made
     PlannerDecideNextStep(NextStepDecision),
     PlannerReasoning(String),
     PlannerToolCall(String), // with <tool_call> ... </tool_call> wrapper
@@ -222,7 +228,8 @@ impl SessionLog {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStatus {
-    PlannerMakingPlan, // this should be a mandatory process instead of a choice
+    PlannerMakingOrChangingPlan, // this status always pushes PlannerMakeOrChangePlan(Some(...))
+    PlannerKeepingCurrentPlan,    // this status always pushes PlannerMakeOrChangePlan(None)
     PlannerChoosingMode,
     PlannerWorkingOnStep,
     PlannerCompactingStep,
@@ -322,36 +329,68 @@ impl SessionState {
         let mut should_end_session = false;
         match operation {
             RolloutAction::PlannerMakeOrChangePlan(plan) => {
-                if let Some(plan_content) = plan {
-                    self.current_plan = Some(plan_content);
+                assert!(
+                    matches!(
+                        self.session_status,
+                        SessionStatus::PlannerMakingOrChangingPlan
+                            | SessionStatus::PlannerKeepingCurrentPlan
+                    ),
+                    "PlannerMakeOrChangePlan can only be called during PlannerMakingOrChangingPlan or PlannerKeepingCurrentPlan"
+                );
+                let step_mode = self
+                    .planner_chosen_mode
+                    .as_ref()
+                    .expect("Planner must choose step mode before PlannerMakeOrChangePlan")
+                    .clone();
+                match step_mode {
+                    NextStepDecision::Continue | NextStepDecision::OverwriteLastStep(_) => {
+                        if self.session_status == SessionStatus::PlannerMakingOrChangingPlan {
+                            let Some(MakeOrChangePlan::MakePlan(plan_content)) = plan else {
+                                panic!("PlannerMakeOrChangePlan must carry Some(MakePlan(_)) when initial plan is needed");
+                            };
+                            self.current_plan = Some(plan_content);
+                        } else {
+                            assert!(
+                                plan.is_none(),
+                                "PlannerMakeOrChangePlan must carry None when no plan update is needed"
+                            );
+                        }
+                    }
+                    NextStepDecision::ChangePlan(reason) => {
+                        assert!(
+                            self.can_change_plan(),
+                            "Exceed maximum number of plan changes"
+                        );
+                        let Some(MakeOrChangePlan::ChangePlan(new_plan)) = plan else {
+                            panic!("PlannerMakeOrChangePlan must carry Some(ChangePlan(_)) when changing plan");
+                        };
+                        let old_plan = self
+                            .current_plan
+                            .clone()
+                            .take()
+                            .expect("There must be an existing plan before changing plan");
+                        let failed_attempt = FailedAttempt {
+                            plan: old_plan,
+                            reason,
+                        };
+                        self.failed_attempts.push(failed_attempt);
+                        self.prev_steps.clear();
+                        self.num_plan_changes += 1;
+                        self.current_plan = Some(new_plan);
+                    }
                 }
                 assert!(
                     self.current_plan.is_some(),
                     "A plan must exist after PlannerMakeOrChangePlan"
                 );
-                self.session_status = SessionStatus::PlannerChoosingMode;
+                self.session_status = SessionStatus::PlannerWorkingOnStep;
             }
             RolloutAction::PlannerDecideNextStep(mode) => {
                 self.planner_chosen_mode = Some(mode.clone());
                 match mode {
-                    NextStepDecision::ChangePlan(reason) => {
-                        let old_plan = self
-                            .current_plan
-                            .clone()
-                            .take()
-                            .expect("There must be a plan to change");
-                        let failed_attempt = FailedAttempt {
-                            plan: old_plan,
-                            reason: reason.clone(),
-                        };
-                        self.failed_attempts.push(failed_attempt);
-                        self.prev_steps.clear();
-                        assert!(
-                            self.can_change_plan(),
-                            "Exceed maximum number of plan changes"
-                        );
-                        self.num_plan_changes += 1;
-                        self.session_status = SessionStatus::PlannerMakingPlan;
+                    NextStepDecision::ChangePlan(_reason) => {
+                        self.step_overwrite_streak = 0;
+                        self.session_status = SessionStatus::PlannerMakingOrChangingPlan;
                     }
                     NextStepDecision::OverwriteLastStep(_overwrite_reason) => {
                         assert!(
@@ -360,11 +399,19 @@ impl SessionState {
                         );
                         self.step_overwrite_streak += 1;
                         self.total_step_overwrites += 1;
-                        self.session_status = SessionStatus::PlannerWorkingOnStep;
+                        if self.current_plan.is_none() {
+                            self.session_status = SessionStatus::PlannerMakingOrChangingPlan;
+                        } else {
+                            self.session_status = SessionStatus::PlannerKeepingCurrentPlan;
+                        }
                     }
                     NextStepDecision::Continue => {
                         self.step_overwrite_streak = 0;
-                        self.session_status = SessionStatus::PlannerWorkingOnStep;
+                        if self.current_plan.is_none() {
+                            self.session_status = SessionStatus::PlannerMakingOrChangingPlan;
+                        } else {
+                            self.session_status = SessionStatus::PlannerKeepingCurrentPlan;
+                        }
                     }
                 }
             }
@@ -487,9 +534,19 @@ impl SessionState {
                         self.current_step_quality = None;
                     }
                     NextStepDecision::ChangePlan(_) => {
-                        panic!(
-                            "ChangePlan should not be a valid step mode when the planner has entered the working on step status."
-                        )
+                        let new_step = CompletedStep::new(
+                            NextStepDecision::Continue,
+                            self.current_step_content_raw.clone(),
+                            self.current_step_content_compacted
+                                .take()
+                                .expect("The compacted content must be available"),
+                            self.current_step_quality.take(),
+                            None,
+                        );
+                        self.prev_steps.push(new_step);
+                        self.current_step_content_raw.clear();
+                        self.current_step_content_compacted = None;
+                        self.current_step_quality = None;
                     }
                 }
                 self.session_status = SessionStatus::VerifierCommenting;
@@ -502,22 +559,25 @@ impl SessionState {
                 );
                 if let Some(last_step) = self.prev_steps.last_mut() {
                     last_step.current_step_verifier_comment = comment;
+                    self.session_status = SessionStatus::PlannerChoosingMode;
                 } else {
                     assert!(
                         comment.is_none(),
                         "Verifier comment must be None when there is no previous step"
                     );
+                    self.planner_chosen_mode = Some(NextStepDecision::Continue);
+                    self.session_status = SessionStatus::PlannerMakingOrChangingPlan;
                 }
-                self.session_status = SessionStatus::PlannerMakingPlan;
             }
         }
         should_end_session
     }
     pub fn to_history_prev_steps(&self) -> String {
         let (planner_turn, making_plan) = match self.session_status {
-            SessionStatus::PlannerMakingPlan => {
-                (true, self.current_plan.is_none()) // if no current plan, this is real plan-making; otherwise it's a no-op routine action
+            SessionStatus::PlannerMakingOrChangingPlan => {
+                (true, true)
             }
+            SessionStatus::PlannerKeepingCurrentPlan => (true, false),
             SessionStatus::PlannerChoosingMode => (true, false), // should see last step verifier comment if there is any
             SessionStatus::PlannerWorkingOnStep => (true, false), // should see last step verifier comment if there is any
             SessionStatus::PlannerCompactingStep => (true, false), // same as working on step
@@ -538,8 +598,8 @@ impl SessionState {
             history.push_str(&format!("Current plan:\n{}\n", current_plan));
         }
         assert!(
-            !making_plan || self.prev_steps.is_empty(),
-            "When making plan, there should be no previous steps"
+            !(making_plan && self.current_plan.is_none()) || self.prev_steps.is_empty(),
+            "When making the initial plan, there should be no previous steps"
         );
         for (i, step) in self.prev_steps.iter().enumerate() {
             history.push_str(&format!("Step {}:\n", i + 1));

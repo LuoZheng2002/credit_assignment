@@ -16,8 +16,8 @@ use crate::{
         planner_step_overwriting::get_planner_step_overwriting_prompts,
         planner_updating_plan::get_planner_updating_plan_prompts,
         session::{
-            NextStepDecision, RolloutAction, RolloutActionLogItem, Session, SessionState,
-            SessionStatus, StepQuality, ToolResponse, VerifierComment,
+            MakeOrChangePlan, NextStepDecision, RolloutAction, RolloutActionLogItem, Session,
+            SessionState, SessionStatus, StepQuality, ToolResponse, VerifierComment,
         },
         verifier_commenting::get_verifier_commenting_prompts,
     },
@@ -287,7 +287,10 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
 
 pub fn get_prompt_according_to_session_status(session_state: &SessionState) -> (String, String) {
     match session_state.session_status {
-        SessionStatus::PlannerMakingPlan => get_planner_making_plan_prompts(session_state),
+        SessionStatus::PlannerMakingOrChangingPlan => {
+            get_planner_making_plan_prompts(session_state)
+        }
+        SessionStatus::PlannerKeepingCurrentPlan => (String::new(), String::new()),
         SessionStatus::PlannerChoosingMode => get_planner_deciding_next_step_prompts(session_state),
         SessionStatus::PlannerWorkingOnStep => {
             match session_state
@@ -299,11 +302,7 @@ pub fn get_prompt_according_to_session_status(session_state: &SessionState) -> (
                 NextStepDecision::OverwriteLastStep(_) => {
                     get_planner_step_overwriting_prompts(session_state)
                 }
-                NextStepDecision::ChangePlan(_) => {
-                    panic!(
-                        "In PlannerWorkingOnStep status, planner_chosen_mode should not be ChangePlan"
-                    );
-                }
+                NextStepDecision::ChangePlan(_) => get_planner_step_continuing_prompts(session_state),
             }
         }
         SessionStatus::PlannerCompactingStep => get_planner_compacting_prompts(session_state),
@@ -401,28 +400,39 @@ async fn build_new_operations(
     rng: &mut impl rand::Rng,
 ) -> NewOperationsResult {
     match &session.session_state.session_status {
-        SessionStatus::PlannerMakingPlan => {
-            let mut plan_content = None;
-            if session.session_state.current_plan.is_none() {
-                let (prompt_before_assistant, prompt_after_assistant) =
-                    get_prompt_according_to_session_status(&session.session_state);
-                let response = call_llm_with_prefix(
-                    client.clone(),
-                    prompt_before_assistant,
-                    prompt_after_assistant,
-                    model,
-                )
-                .await;
-                if is_context_length_exceeded_response(&response) {
-                    return context_length_exceeded_result("PlannerMakingPlan");
-                }
-                plan_content = Some(response); // we change to not require the plan to be in a markdown code block
+        SessionStatus::PlannerMakingOrChangingPlan => {
+            let chosen_mode = session
+                .session_state
+                .planner_chosen_mode
+                .as_ref()
+                .expect("planner_chosen_mode must be set before PlannerMakingOrChangingPlan");
+            let (prompt_before_assistant, prompt_after_assistant) =
+                get_prompt_according_to_session_status(&session.session_state);
+            let response = call_llm_with_prefix(
+                client.clone(),
+                prompt_before_assistant,
+                prompt_after_assistant,
+                model,
+            )
+            .await;
+            if is_context_length_exceeded_response(&response) {
+                return context_length_exceeded_result("PlannerMakingOrChangingPlan");
             }
+            let plan_content = match chosen_mode {
+                NextStepDecision::ChangePlan(_) => Some(MakeOrChangePlan::ChangePlan(response)),
+                NextStepDecision::Continue | NextStepDecision::OverwriteLastStep(_) => {
+                    Some(MakeOrChangePlan::MakePlan(response))
+                }
+            }; // we change to not require the plan to be in a markdown code block
             NewOperationsResult {
                 operations: vec![RolloutAction::PlannerMakeOrChangePlan(plan_content)],
                 should_end_session: false,
             }
         }
+        SessionStatus::PlannerKeepingCurrentPlan => NewOperationsResult {
+            operations: vec![RolloutAction::PlannerMakeOrChangePlan(None)],
+            should_end_session: false,
+        },
         SessionStatus::PlannerChoosingMode => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(&session.session_state);
