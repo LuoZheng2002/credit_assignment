@@ -260,6 +260,13 @@ pub struct SessionState {
     pub total_step_overwrites: usize,
     pub current_step_num_actions: usize,
     pub current_step_last_python_error: Option<String>,
+    pub total_actual_rounds_count: usize,
+    pub step_quality_tool_true_count: usize,
+    pub step_quality_tool_total_count: usize,
+    pub step_quality_complete_true_count: usize,
+    pub step_quality_complete_total_count: usize,
+    pub step_quality_focused_true_count: usize,
+    pub step_quality_focused_total_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -275,6 +282,16 @@ pub struct Step{
     pub verifier_and_mode_summary: Option<VerifierAndModeSummary>, // Some after verifier comment and next step decision
     pub step_finalized: bool, // initialized as false, true if the step has been finalized and becomes immutable
     pub action_log: Vec<RolloutAction>, // starting from verifier comment, and ending with planner end step or force end step
+}
+
+impl Step {
+    pub fn new() -> Self {
+        Self {
+            verifier_and_mode_summary: None,
+            step_finalized: false,
+            action_log: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -324,6 +341,34 @@ pub struct Children {
     pub child: Option<Arc<Node>>, // a placeholder for now, going to expand to 2 children in the future
 }
 
+impl Tree {
+    pub fn new(question_id: usize, question: String) -> Self {
+        let root = Arc::new(Node {
+            node_id: 0,
+            step: AtomicRefCell::new(Step::new()),
+            children: AtomicRefCell::new(None),
+            parent: Weak::new(),
+        });
+        Self {
+            question_id,
+            question,
+            root,
+            leaf_nodes: Vec::new(),
+            next_node_id: 1,
+        }
+    }
+
+    pub fn append_action_to_node(&self, node: &Arc<Node>, action: RolloutAction) {
+        let mut step = node.step.borrow_mut();
+        assert!(!step.step_finalized, "Cannot append action to finalized step");
+        step.action_log.push(action);
+    }
+
+    pub fn current_session_log(&self, current_node: Arc<Node>) -> SessionLog {
+        SessionState::collect_session_log_from_tree_node(current_node)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Session {
     pub question: String,
@@ -367,6 +412,13 @@ impl SessionState {
             planner_chosen_mode: None,
             final_answer: None,
             failed_attempts: Vec::new(),
+            total_actual_rounds_count: 0,
+            step_quality_tool_true_count: 0,
+            step_quality_tool_total_count: 0,
+            step_quality_complete_true_count: 0,
+            step_quality_complete_total_count: 0,
+            step_quality_focused_true_count: 0,
+            step_quality_focused_total_count: 0,
         }
     }
     pub fn from_session_log(question: String, session_log: SessionLog) -> Self {
@@ -407,6 +459,30 @@ impl SessionState {
     }
     pub fn can_change_plan(&self) -> bool {
         self.num_plan_changes < MAX_PLAN_CHANGES
+    }
+    pub fn total_actual_rounds(&self) -> usize {
+        self.total_actual_rounds_count
+    }
+    pub fn step_quality_accuracy(&self) -> Option<StepQualityAccuracy> {
+        assert_eq!(
+            self.step_quality_tool_total_count,
+            self.step_quality_complete_total_count
+        );
+        assert_eq!(
+            self.step_quality_tool_total_count,
+            self.step_quality_focused_total_count
+        );
+        if self.step_quality_tool_total_count == 0 {
+            return None;
+        }
+        Some(StepQualityAccuracy {
+            tool_accuracy: self.step_quality_tool_true_count as f32
+                / self.step_quality_tool_total_count as f32,
+            complete_accuracy: self.step_quality_complete_true_count as f32
+                / self.step_quality_complete_total_count as f32,
+            focused_accuracy: self.step_quality_focused_true_count as f32
+                / self.step_quality_focused_total_count as f32,
+        })
     }
     pub fn can_overwrite_step(&self) -> bool {
         self.step_overwrite_streak < MAX_STEP_OVERWRITE_STREAK
@@ -481,6 +557,7 @@ impl SessionState {
                 self.session_status = SessionStatus::PlannerWorkingOnStep;
             }
             RolloutAction::PlannerDecideNextStep(mode) => {
+                self.total_actual_rounds_count += 1;
                 self.planner_chosen_mode = Some(mode.clone());
                 match mode {
                     NextStepDecision::ChangePlan(_reason) => {
@@ -580,6 +657,20 @@ impl SessionState {
                 if self.final_answer.is_some() {
                     self.current_step_last_python_error = None;
                     should_end_session = true;
+                }
+                if let Some(step_quality) = &step_quality {
+                    self.step_quality_tool_total_count += 1;
+                    self.step_quality_complete_total_count += 1;
+                    self.step_quality_focused_total_count += 1;
+                    if step_quality.tool {
+                        self.step_quality_tool_true_count += 1;
+                    }
+                    if step_quality.complete {
+                        self.step_quality_complete_true_count += 1;
+                    }
+                    if step_quality.focused {
+                        self.step_quality_focused_true_count += 1;
+                    }
                 }
                 self.current_step_content_compacted = Some(summary);
                 self.current_step_quality = step_quality;

@@ -1,4 +1,5 @@
 use core::panic;
+use std::sync::Arc;
 
 use rand::RngExt;
 use reqwest::Client;
@@ -16,8 +17,8 @@ use crate::{
         planner_step_overwriting::get_planner_step_overwriting_prompts,
         planner_updating_plan::get_planner_updating_plan_prompts,
         session::{
-            MakeOrChangePlan, NextStepDecision, RolloutAction, Session, SessionState,
-            SessionStatus, StepQuality, ToolResponse, TreeUpdateEvent, VerifierComment,
+            MakeOrChangePlan, NextStepDecision, RolloutAction, SessionState, SessionStatus,
+            StepQuality, ToolResponse, Tree, TreeUpdateEvent, VerifierComment,
         },
         verifier_commenting::get_verifier_commenting_prompts,
     },
@@ -690,12 +691,22 @@ pub async fn rollout(
     trajectory_tx: tokio::sync::mpsc::UnboundedSender<RolloutTrajectory>,
 ) {
     // create a state machine
-    let mut session = Session::new(question.clone());
+    let tree = Tree::new(question_id, question.clone());
+    let current_node: Arc<_> = tree.root.clone();
     let mut session_should_end = false;
     let mut forced_final_answer: Option<String> = None;
+    if loaded_session_log.is_empty() {
+        action_tx
+            .send(TreeUpdateEvent::CreateNode {
+                question_id,
+                node_id: current_node.node_id,
+                parent_id: None,
+            })
+            .unwrap();
+    }
     for log in loaded_session_log {
-        session.apply_parsed_operation(log);
-        let loaded_state = session.get_session_state();
+        tree.append_action_to_node(&current_node, log);
+        let loaded_state = SessionState::from_tree_node(question.clone(), current_node.clone());
         if loaded_state.final_answer.is_some() {
             session_should_end = true;
         }
@@ -703,7 +714,7 @@ pub async fn rollout(
     let mut sub_step_counter = 0; // to prevent infinite loop in case of bugs
     loop {
         if session_should_end {
-            let session_state = session.get_session_state();
+            let session_state = SessionState::from_tree_node(question.clone(), current_node.clone());
             let displayed_final_answer = forced_final_answer
                 .as_deref()
                 .or(session_state.final_answer.as_deref())
@@ -711,14 +722,14 @@ pub async fn rollout(
             println!(
                 "[rollout finished] question index: {}, total actual rounds: {}, final answer: {}, correct answer: {}",
                 question_id,
-                session.session_log.total_actual_rounds(),
+                session_state.total_actual_rounds(),
                 displayed_final_answer,
                 reference_answer
             );
             break;
         }
         sub_step_counter += 1;
-        let session_state = session.get_session_state();
+        let session_state = SessionState::from_tree_node(question.clone(), current_node.clone());
         if session_state.prev_steps.len() > 20 {
             forced_final_answer = Some(
                 "The model does not manage to provide a final answer within allowed number of turns."
@@ -729,7 +740,7 @@ pub async fn rollout(
                 "[Warning] Number of steps exceeds the limit {}, ending the session.",
                 20
             );
-        } else if session.session_log.total_actual_rounds() > 150 {
+        } else if session_state.total_actual_rounds() > 150 {
             forced_final_answer = Some(
                 "The model does not manage to provide a final answer within allowed number of turns."
                     .to_string(),
@@ -740,7 +751,7 @@ pub async fn rollout(
                 150
             );
         }
-        let session_state = session.get_session_state();
+        let session_state = SessionState::from_tree_node(question.clone(), current_node.clone());
         let new_operations_result =
             build_new_operations(&session_state, client.clone(), model, verifier_probability, rng)
                 .await;
@@ -751,14 +762,18 @@ pub async fn rollout(
 
         for operation in new_operations {
             let should_end_from_operation = matches!(operation, RolloutAction::PlannerCompactStep { .. });
-            session.apply_parsed_operation(operation.clone());
-            if should_end_from_operation && session.get_session_state().final_answer.is_some() {
+            tree.append_action_to_node(&current_node, operation.clone());
+            if should_end_from_operation
+                && SessionState::from_tree_node(question.clone(), current_node.clone())
+                    .final_answer
+                    .is_some()
+            {
                 session_should_end = true;
             }
             // log the action
             let log_item = TreeUpdateEvent::AddAction {
                 question_id,
-                node_id: 0,
+                node_id: current_node.node_id,
                 action: operation,
             };
             action_tx.send(log_item).unwrap();
@@ -767,12 +782,14 @@ pub async fn rollout(
             "[rollout] question index: {}, sub-step: {} finished, num prev steps: {}",
             question_id,
             sub_step_counter,
-            session.get_session_state().prev_steps.len()
+            SessionState::from_tree_node(question.clone(), current_node.clone())
+                .prev_steps
+                .len()
         );
     }
-    let step_quality_accuracy = session.session_log.step_quality_accuracy();
-
-    let final_state = session.get_session_state();
+    let final_state = SessionState::from_tree_node(question.clone(), current_node.clone());
+    let final_session_log = tree.current_session_log(current_node.clone());
+    let step_quality_accuracy = final_state.step_quality_accuracy();
     let rollout_trajectory = RolloutTrajectory {
         id: question_id,
         question,
@@ -781,7 +798,7 @@ pub async fn rollout(
             .unwrap_or("No answer found".into()),
         correct_answer: reference_answer, // we will fill in the correct answer later when we evaluate the trajectory, to avoid data leakage
         step_quality_accuracy,
-        trajectory: session.session_log,
+        trajectory: final_session_log,
     };
     trajectory_tx.send(rollout_trajectory).unwrap();
 }
