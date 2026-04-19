@@ -1,3 +1,5 @@
+use std::sync::{Arc, Weak};
+
 use serde::{Deserialize, Serialize};
 
 use crate::deepmath::parse_answers::extract_boxed_content;
@@ -264,6 +266,57 @@ pub struct SessionState<'a> {
     pub total_step_overwrites: usize,
     pub current_step_num_actions: usize,
     pub current_step_last_python_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum VerifierAndModeSummary {
+    VerifierOff,
+    VerifierOn,
+    VerifierOnAndOverwriteLastStep,
+    VerifierOnAndChangePlan,
+}
+
+#[derive(Debug, Clone)]
+pub struct Step{
+    pub verifier_and_mode_summary: Option<VerifierAndModeSummary>, // Some after verifier comment and next step decision
+    pub step_finalized: bool, // initialized as false, true if the step has been finalized and becomes immutable
+    pub action_log: Vec<RolloutAction>, // starting from verifier comment, and ending with planner end step or force end step
+}
+
+#[derive(Debug, Clone)]
+pub struct Node {
+    pub node_id: usize,
+    pub step: Step,
+    pub children: Option<Children>, // Some only after the step is finalized
+    pub parent: Weak<Node>,
+}
+
+// only working on one node at a time
+#[derive(Debug, Clone)]
+pub struct Tree {
+    pub question_id: usize,
+    pub question: String,
+    pub root: Arc<Node>,
+    pub leaf_nodes: Vec<Weak<Node>>, // this is only for trajectories that have reached the final answer or is forced to end
+    pub next_node_id: usize,
+}
+
+// the following is the signature of each entry in a jsonl log file for reconstructing current tree progress when the program exits abruptly.
+#[derive(Debug, Clone)]
+pub enum TreeUpdateEvent {
+    CreateNode {
+        node_id: usize,
+        parent_id: Option<usize>, // None for root node
+    },
+    AddAction {
+        node_id: usize,
+        action: RolloutAction,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct Children {
+    pub child: Option<Arc<Node>>, // a placeholder for now, going to expand to 2 children in the future
 }
 
 #[derive(Debug, Clone)]
