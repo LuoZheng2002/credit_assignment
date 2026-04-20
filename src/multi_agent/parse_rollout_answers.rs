@@ -3,6 +3,7 @@ use crate::deepmath::parse_answers::{AnswerParsed, get_parsed_path};
 use crate::multi_agent::generate_rollout_answers::{
     RolloutTrajectory, get_rollout_trajectory_path,
 };
+use crate::multi_agent::session::TrajectoryState;
 use crate::parallel_process_jsonl::parallel_process_jsonl;
 
 pub fn extract_boxed_content(text: &str) -> Option<String> {
@@ -30,9 +31,14 @@ pub fn extract_boxed_content(text: &str) -> Option<String> {
 }
 
 async fn parse_rollout_answer_task(answer: RolloutTrajectory) -> AnswerParsed {
+    let final_state = TrajectoryState::from_tree(&answer.trajectory);
+    let model_answer = final_state
+        .final_answer
+        .clone()
+        .expect("Rollout trajectory should have final answer on current path for parsing");
     AnswerParsed {
         id: answer.id,
-        model_answer: answer.model_answer,
+        model_answer,
         correct_answer: answer.correct_answer,
         question: answer.question,
     }

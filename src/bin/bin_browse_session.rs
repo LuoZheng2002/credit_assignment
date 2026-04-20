@@ -739,7 +739,7 @@ impl App {
             "Question {}: {}\nModel answer: {}\nCorrect answer: {}",
             view.answer.id,
             view.answer.question,
-            view.answer.model_answer,
+            view.model_answer,
             view.answer.correct_answer,
         );
         let header = Paragraph::new(header_text)
@@ -979,6 +979,7 @@ fn compute_wrapped_line_count(
 
 struct SessionView {
     answer: RolloutTrajectory,
+    model_answer: String,
     operations: Vec<RolloutAction>,
     current_pos: usize,
     total_display_turns: usize,
@@ -1296,10 +1297,18 @@ impl SessionView {
         validate_tree_for_browser(&answer.trajectory);
         let operations = collect_root_to_node_action_sequence(&answer.trajectory, selected_node_id);
         validate_session_log_for_prompt_replay(&answer.question, &answer.trajectory, &operations);
+        let model_answer = answer
+            .trajectory
+            .leaf_node_judgments
+            .get(&selected_node_id)
+            .expect("SessionView requires selected leaf to have correctness judgment")
+            .model_answer
+            .clone();
         let total_display_turns = count_display_turns(&operations);
         let total_actual_turns = total_display_turns;
         Self {
             answer,
+            model_answer,
             operations,
             current_pos: 0,
             total_display_turns,

@@ -5,18 +5,27 @@ use crate::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct StepQualityAccuracy {
-    pub tool_accuracy: f32,
-    pub complete_accuracy: f32,
-    pub focused_accuracy: f32,
+pub struct StepQualityRatio {
+    pub tool_numerator: usize,
+    pub tool_denominator: usize,
+    pub complete_numerator: usize,
+    pub complete_denominator: usize,
+    pub focused_numerator: usize,
+    pub focused_denominator: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CountRatio {
+    pub numerator: usize,
+    pub denominator: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RolloutTrajectory {
     pub id: usize,
-    pub model_answer: String,
     pub correct_answer: String,
-    pub step_quality_accuracy: Option<StepQualityAccuracy>,
+    pub step_quality_ratio: StepQualityRatio,
+    pub failed_and_aborted_ratio: CountRatio,
     pub trajectory: Tree,
     pub question: String,
 }

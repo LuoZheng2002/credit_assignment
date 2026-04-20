@@ -169,21 +169,44 @@ pub fn extract_content_in_json_markdown_code_block(content: &str) -> Option<Stri
 }
 
 fn parse_compactor_response(response: String) -> (String, Option<StepQuality>) {
+    #[derive(serde::Deserialize)]
+    struct ProperlyEndedStepQualityFields {
+        tool: bool,
+        complete: bool,
+        focused: bool,
+    }
+
     if let Some(json_block) = extract_content_in_json_markdown_code_block(&response) {
-        if let Ok(step_quality) = serde_json::from_str::<StepQuality>(json_block.trim()) {
+        if let Ok(step_quality_fields) =
+            serde_json::from_str::<ProperlyEndedStepQualityFields>(json_block.trim())
+        {
             let json_fence_start = response
                 .find("```json")
                 .expect("The json code fence start must exist if extraction succeeded");
             let summary = response[..json_fence_start].trim_end().to_string();
-            return (summary, Some(step_quality));
+            return (
+                summary,
+                Some(StepQuality::ProperlyEnded {
+                    tool: step_quality_fields.tool,
+                    complete: step_quality_fields.complete,
+                    focused: step_quality_fields.focused,
+                }),
+            );
         }
     }
 
     for (start_idx, _) in response.match_indices('{').rev() {
         let candidate = response[start_idx..].trim();
-        if let Ok(step_quality) = serde_json::from_str::<StepQuality>(candidate) {
+        if let Ok(step_quality_fields) = serde_json::from_str::<ProperlyEndedStepQualityFields>(candidate) {
             let summary = response[..start_idx].trim_end().to_string();
-            return (summary, Some(step_quality));
+            return (
+                summary,
+                Some(StepQuality::ProperlyEnded {
+                    tool: step_quality_fields.tool,
+                    complete: step_quality_fields.complete,
+                    focused: step_quality_fields.focused,
+                }),
+            );
         }
     }
     println!("[Warning] Failed to parse step quality from compactor response.",);
@@ -1072,18 +1095,15 @@ pub async fn rollout(
             }
         }
     }
-    let final_state = TrajectoryState::from_tree(&tree);
-    let step_quality_accuracy = final_state.step_quality_accuracy();
+    let step_quality_ratio = tree.get_step_quality_ratio();
+    let failed_and_aborted_ratio = tree.get_failed_and_aborted_ratio();
     let trajectory_tree = tree.clone();
     let rollout_trajectory = RolloutTrajectory {
         id: question_id,
         question,
-        model_answer: final_state
-            .final_answer
-            .clone()
-            .unwrap_or("No answer found".into()),
         correct_answer: reference_answer,
-        step_quality_accuracy,
+        step_quality_ratio,
+        failed_and_aborted_ratio,
         trajectory: trajectory_tree,
     };
     trajectory_tx.send(rollout_trajectory).unwrap();

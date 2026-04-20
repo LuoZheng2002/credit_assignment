@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::deepmath::parse_answers::extract_boxed_content;
-use crate::multi_agent::generate_rollout_answers::StepQualityAccuracy;
+use crate::multi_agent::generate_rollout_answers::{CountRatio, StepQualityRatio};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NextStepDecision {
@@ -60,10 +60,13 @@ impl CompletedStep {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StepQuality {
-    pub tool: bool,
-    pub complete: bool,
-    pub focused: bool,
+pub enum StepQuality {
+    ProperlyEnded {
+        tool: bool,
+        complete: bool,
+        focused: bool,
+    },
+    FailedAndAborted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,7 +200,6 @@ pub struct TrajectoryState<'a> {
     pub prev_steps: Vec<CompletedStep>,
     pub current_step_content_raw: String,
     pub current_step_content_compacted: Option<String>,
-    pub current_step_quality: Option<StepQuality>,
     pub current_plan: Option<String>,
     pub status: TrajectoryStatus,
     pub planner_chosen_mode: Option<NextStepDecision>,
@@ -210,12 +212,6 @@ pub struct TrajectoryState<'a> {
     pub current_step_last_python_error: Option<String>,
     pub total_actions: usize,
     pub total_actual_steps: usize,
-    pub step_quality_tool_true_count: usize,
-    pub step_quality_tool_total_count: usize,
-    pub step_quality_complete_true_count: usize,
-    pub step_quality_complete_total_count: usize,
-    pub step_quality_focused_true_count: usize,
-    pub step_quality_focused_total_count: usize,
     pub should_end_session: bool,
 }
 
@@ -240,6 +236,7 @@ pub enum VerifierAndModeSummary {
 pub struct Step {
     pub verifier_and_mode_summary: Option<VerifierAndModeSummary>, // Some after verifier comment and next step decision
     pub step_finalized: bool, // initialized as false, true once PlannerUpdatePlan or terminal intervention has been emitted
+    pub step_quality: Option<StepQuality>,
     pub action_log: Vec<RolloutAction>, // starting from verifier comment, and ending with planner end step or force end step
 }
 
@@ -248,6 +245,7 @@ impl Step {
         Self {
             verifier_and_mode_summary: None,
             step_finalized: false,
+            step_quality: None,
             action_log: Vec::new(),
         }
     }
@@ -386,12 +384,24 @@ impl Tree {
         if let RolloutAction::PlannerUpdatePlan(_) = &action {
             step.step_finalized = true;
         }
+        if let RolloutAction::PlannerCompactStep { step_quality, .. } = &action {
+            assert!(
+                step.step_quality.is_none(),
+                "PlannerCompactStep should set step_quality at most once per step"
+            );
+            step.step_quality = step_quality.clone();
+        }
         if let RolloutAction::ToolCallResponse(ToolResponse::Intervention(content)) = &action {
             if content == CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE
                 || content == IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE
                 || content == REPETITION_ABORT_MESSAGE
             {
                 step.step_finalized = true;
+                assert!(
+                    step.step_quality.is_none(),
+                    "Terminal intervention should set step_quality at most once"
+                );
+                step.step_quality = Some(StepQuality::FailedAndAborted);
             }
         }
         step.action_log.push(action);
@@ -569,12 +579,62 @@ impl Tree {
         }
         TrajectoryActionLog(actions)
     }
+
+    pub fn get_step_quality_ratio(&self) -> StepQualityRatio {
+        let mut tool_true_count = 0usize;
+        let mut complete_true_count = 0usize;
+        let mut focused_true_count = 0usize;
+        let mut total_count = 0usize;
+        for node in &self.nodes {
+            if let Some(step_quality) = &node.step.step_quality {
+                total_count += 1;
+                if let StepQuality::ProperlyEnded {
+                    tool,
+                    complete,
+                    focused,
+                } = step_quality
+                {
+                    if *tool {
+                        tool_true_count += 1;
+                    }
+                    if *complete {
+                        complete_true_count += 1;
+                    }
+                    if *focused {
+                        focused_true_count += 1;
+                    }
+                }
+            }
+        }
+        StepQualityRatio {
+            tool_numerator: tool_true_count,
+            tool_denominator: total_count,
+            complete_numerator: complete_true_count,
+            complete_denominator: total_count,
+            focused_numerator: focused_true_count,
+            focused_denominator: total_count,
+        }
+    }
+
+    pub fn get_failed_and_aborted_ratio(&self) -> CountRatio {
+        let mut failed_and_aborted_count = 0usize;
+        for node in &self.nodes {
+            if matches!(node.step.step_quality, Some(StepQuality::FailedAndAborted)) {
+                failed_and_aborted_count += 1;
+            }
+        }
+        CountRatio {
+            numerator: failed_and_aborted_count,
+            denominator: self.nodes.len(),
+        }
+    }
 }
 
 pub const MAX_PLAN_CHANGES: usize = 2;
 pub const MAX_STEP_OVERWRITE_STREAK: usize = 2;
 pub const MAX_TOTAL_STEP_OVERWRITES: usize = 6;
 pub const MAX_ACTIONS_PER_STEP: usize = 30;
+
 impl<'a> TrajectoryState<'a> {
     fn new(question: String, source_tree: &'a Tree) -> Self {
         Self {
@@ -582,7 +642,6 @@ impl<'a> TrajectoryState<'a> {
             question,
             prev_steps: Vec::new(),
             current_step_content_raw: String::new(),
-            current_step_quality: None,
             num_plan_changes: 0,
             current_step_num_actions: 0,
             current_step_last_python_error: None,
@@ -595,12 +654,6 @@ impl<'a> TrajectoryState<'a> {
             final_answer: None,
             failed_attempts: Vec::new(),
             total_actions: 0,
-            step_quality_tool_true_count: 0,
-            step_quality_tool_total_count: 0,
-            step_quality_complete_true_count: 0,
-            step_quality_complete_total_count: 0,
-            step_quality_focused_true_count: 0,
-            step_quality_focused_total_count: 0,
             total_actual_steps: 0,
             should_end_session: false,
         }
@@ -663,27 +716,6 @@ impl<'a> TrajectoryState<'a> {
     }
     pub fn can_change_plan(&self) -> bool {
         self.num_plan_changes < MAX_PLAN_CHANGES
-    }
-    pub fn step_quality_accuracy(&self) -> Option<StepQualityAccuracy> {
-        assert_eq!(
-            self.step_quality_tool_total_count,
-            self.step_quality_complete_total_count
-        );
-        assert_eq!(
-            self.step_quality_tool_total_count,
-            self.step_quality_focused_total_count
-        );
-        if self.step_quality_tool_total_count == 0 {
-            return None;
-        }
-        Some(StepQualityAccuracy {
-            tool_accuracy: self.step_quality_tool_true_count as f32
-                / self.step_quality_tool_total_count as f32,
-            complete_accuracy: self.step_quality_complete_true_count as f32
-                / self.step_quality_complete_total_count as f32,
-            focused_accuracy: self.step_quality_focused_true_count as f32
-                / self.step_quality_focused_total_count as f32,
-        })
     }
     pub fn can_overwrite_step(&self) -> bool {
         self.step_overwrite_streak < MAX_STEP_OVERWRITE_STREAK
@@ -864,7 +896,7 @@ impl<'a> TrajectoryState<'a> {
             }
             RolloutAction::PlannerCompactStep {
                 summary,
-                step_quality,
+                step_quality: _,
             } => {
                 assert_eq!(
                     self.status,
@@ -879,22 +911,7 @@ impl<'a> TrajectoryState<'a> {
                 if self.final_answer.is_some() {
                     self.current_step_last_python_error = None;
                 }
-                if let Some(step_quality) = &step_quality {
-                    self.step_quality_tool_total_count += 1;
-                    self.step_quality_complete_total_count += 1;
-                    self.step_quality_focused_total_count += 1;
-                    if step_quality.tool {
-                        self.step_quality_tool_true_count += 1;
-                    }
-                    if step_quality.complete {
-                        self.step_quality_complete_true_count += 1;
-                    }
-                    if step_quality.focused {
-                        self.step_quality_focused_true_count += 1;
-                    }
-                }
                 self.current_step_content_compacted = Some(summary);
-                self.current_step_quality = step_quality;
                 self.status = TrajectoryStatus::PlannerUpdatingPlan;
             }
             RolloutAction::PlannerUpdatePlan(updated_plan) => {
@@ -916,13 +933,12 @@ impl<'a> TrajectoryState<'a> {
                             self.current_step_content_compacted
                                 .take()
                                 .expect("The compacted content must be available"),
-                            self.current_step_quality.take(),
+                            None,
                             None,
                         );
                         self.prev_steps.push(new_step);
                         self.current_step_content_raw.clear();
                         self.current_step_content_compacted = None;
-                        self.current_step_quality = None;
                     }
                     NextStepDecision::OverwriteLastStep(_overwrite_reason) => {
                         let new_step = CompletedStep::new(
@@ -931,14 +947,13 @@ impl<'a> TrajectoryState<'a> {
                             self.current_step_content_compacted
                                 .take()
                                 .expect("The compacted content must be available"),
-                            self.current_step_quality.take(),
+                            None,
                             None,
                         );
                         self.prev_steps.pop();
                         self.prev_steps.push(new_step);
                         self.current_step_content_raw.clear();
                         self.current_step_content_compacted = None;
-                        self.current_step_quality = None;
                     }
                     NextStepDecision::ChangePlan(_) => {
                         let new_step = CompletedStep::new(
@@ -947,13 +962,12 @@ impl<'a> TrajectoryState<'a> {
                             self.current_step_content_compacted
                                 .take()
                                 .expect("The compacted content must be available"),
-                            self.current_step_quality.take(),
+                            None,
                             None,
                         );
                         self.prev_steps.push(new_step);
                         self.current_step_content_raw.clear();
                         self.current_step_content_compacted = None;
-                        self.current_step_quality = None;
                     }
                 }
                 self.status = TrajectoryStatus::VerifierCommenting;

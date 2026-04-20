@@ -20,7 +20,7 @@ use credit_assignment::{
             RolloutTrajectory, get_rollout_trajectory_path, get_session_log_path,
         },
         rollout::rollout,
-        session::TreeUpdateEvent,
+        session::{TrajectoryState, TreeUpdateEvent},
     },
     parallel_process_jsonl::{read_json_lines, read_json_lines_indexed, write_jsonl_file},
 };
@@ -62,9 +62,14 @@ async fn judge_rollout_answer_task(
     answer: RolloutTrajectory,
     client: Client,
 ) -> DeepMathCorrectness {
+    let final_state = TrajectoryState::from_tree(&answer.trajectory);
+    let model_answer = final_state
+        .final_answer
+        .clone()
+        .expect("Rollout trajectory should have final answer on current path for correctness judging");
     let correct = judge_answer_task(
         answer.id,
-        answer.model_answer.clone(),
+        model_answer.clone(),
         answer.correct_answer.clone(),
         answer.question.clone(),
         client,
@@ -73,7 +78,7 @@ async fn judge_rollout_answer_task(
     DeepMathCorrectness {
         id: answer.id,
         correct,
-        model_answer: answer.model_answer,
+        model_answer,
         correct_answer: answer.correct_answer,
         question: answer.question,
     }
