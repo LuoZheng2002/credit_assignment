@@ -260,6 +260,110 @@ fn parse_next_step_choice(choice: &str) -> Option<&'static str> {
     Some("overwrite_last_step")
 }
 
+enum ChosenModeDecision {
+    ContextLengthExceeded,
+    Chosen(NextStepDecision),
+}
+
+async fn determine_chosen_mode(
+    session_state: &TrajectoryState<'_>,
+    client: Client,
+    model: Model,
+    take_over_mode_decision: bool,
+    rng: &mut impl rand::Rng,
+) -> ChosenModeDecision {
+    if take_over_mode_decision {
+        let latest_verifier_comment = session_state
+            .prev_steps
+            .last()
+            .and_then(|step| step.current_step_verifier_comment.clone());
+        let chosen_mode = match latest_verifier_comment {
+            None => NextStepDecision::Continue,
+            Some(comment) => {
+                if comment.change_plan {
+                    if rng.random::<f32>() < 0.5 {
+                        NextStepDecision::Continue
+                    } else {
+                        NextStepDecision::ChangePlan(comment.comment)
+                    }
+                } else if comment.overwrite {
+                    if rng.random::<f32>() < 0.5 {
+                        NextStepDecision::Continue
+                    } else {
+                        NextStepDecision::OverwriteLastStep(comment.comment)
+                    }
+                } else {
+                    NextStepDecision::Continue
+                }
+            }
+        };
+        return ChosenModeDecision::Chosen(chosen_mode);
+    }
+
+    let (prompt_before_assistant, prompt_after_assistant) =
+        get_prompt_according_to_session_status(session_state);
+    assert_eq!(
+        prompt_after_assistant,
+        String::new(),
+        "Planner deciding next step should not have prompt after assistant"
+    );
+    let response = call_llm_with_prefix(
+        client,
+        prompt_before_assistant,
+        prompt_after_assistant,
+        model,
+    )
+    .await;
+    if is_context_length_exceeded_response(&response) {
+        return ChosenModeDecision::ContextLengthExceeded;
+    }
+
+    let trimmed_response = response.trim();
+    let raw_choice = get_protocol_value(trimmed_response, "choice").expect(&format!(
+        "Planner choosing mode response does not contain 'choice: ...' line. Response: {}",
+        trimmed_response
+    ));
+    let choice = parse_next_step_choice(raw_choice).expect(&format!(
+        "Invalid or ambiguous choice field in planner choosing mode response. Choice must contain exactly one distinct keyword among continue/change/overwrite/rewrite (case-insensitive). choice: {}. Response: {}",
+        raw_choice,
+        trimmed_response
+    ));
+    let chosen_mode = match choice {
+        "continue" => NextStepDecision::Continue,
+        "overwrite_last_step" => {
+            if session_state.can_overwrite_step() {
+                let reason = get_protocol_value(trimmed_response, "reason").expect(
+                    &format!(
+                        "Planner choosing mode response with 'overwrite_last_step' choice does not contain 'reason: ...' line. Response: {}",
+                        trimmed_response
+                    ),
+                );
+                NextStepDecision::OverwriteLastStep(reason.to_string())
+            } else {
+                println!("[Warning] Overwrite last step is capped.");
+                NextStepDecision::Continue
+            }
+        }
+        "change_plan" => {
+            if session_state.can_change_plan() {
+                let reason = get_protocol_value(trimmed_response, "reason").expect(&format!(
+                    "Planner choosing mode response with 'change_plan' choice does not contain 'reason: ...' line. Response: {}",
+                    trimmed_response
+                ));
+                NextStepDecision::ChangePlan(reason.to_string())
+            } else {
+                println!("[Warning] Change plan is capped.");
+                NextStepDecision::Continue
+            }
+        }
+        _ => panic!(
+            "Invalid choice field in planner choosing mode response JSON: {}",
+            choice
+        ),
+    };
+    ChosenModeDecision::Chosen(chosen_mode)
+}
+
 pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
     let mut trimmed_tool_call = tool_call.trim_start().to_string();
     // trim <tool_wait>
@@ -399,6 +503,7 @@ async fn build_new_operations(
     session_state: &TrajectoryState<'_>,
     client: Client,
     model: Model,
+    take_over_mode_decision: bool,
     rng: &mut impl rand::Rng,
 ) -> Vec<TreeUpdateEvent> {
     let question_id = session_state.source_tree.question_id;
@@ -440,72 +545,22 @@ async fn build_new_operations(
                 action: RolloutAction::PlannerMakeOrChangePlan(None),
             }],
         TrajectoryStatus::PlannerChoosingMode => {
-            let (prompt_before_assistant, prompt_after_assistant) =
-                get_prompt_according_to_session_status(session_state);
-            assert_eq!(
-                prompt_after_assistant,
-                String::new(),
-                "Planner deciding next step should not have prompt after assistant"
-            );
-            let response = call_llm_with_prefix(
+            match determine_chosen_mode(
+                session_state,
                 client.clone(),
-                prompt_before_assistant,
-                prompt_after_assistant,
                 model,
+                take_over_mode_decision,
+                rng,
             )
-            .await;
-            if is_context_length_exceeded_response(&response) {
-                context_length_exceeded_result(question_id, "PlannerChoosingMode")
-            } else {
-                let trimmed_response = response.trim();
-                let raw_choice = get_protocol_value(trimmed_response, "choice").expect(&format!(
-                    "Planner choosing mode response does not contain 'choice: ...' line. Response: {}",
-                    trimmed_response
-                ));
-                let choice = parse_next_step_choice(raw_choice).expect(&format!(
-                    "Invalid or ambiguous choice field in planner choosing mode response. Choice must contain exactly one distinct keyword among continue/change/overwrite/rewrite (case-insensitive). choice: {}. Response: {}",
-                    raw_choice,
-                    trimmed_response
-                ));
-                let chosen_mode = match choice {
-                    "continue" => NextStepDecision::Continue,
-                    "overwrite_last_step" => {
-                        if session_state.can_overwrite_step() {
-                            let reason = get_protocol_value(trimmed_response, "reason").expect(
-                                &format!(
-                                    "Planner choosing mode response with 'overwrite_last_step' choice does not contain 'reason: ...' line. Response: {}",
-                                    trimmed_response
-                                ),
-                            );
-                            NextStepDecision::OverwriteLastStep(reason.to_string())
-                        } else {
-                            println!("[Warning] Overwrite last step is capped.");
-                            NextStepDecision::Continue // if cannot overwrite step, we also continue to the next step to avoid getting stuck
-                        }
-                    }
-                    "change_plan" => {
-                        if session_state.can_change_plan() {
-                            let reason = get_protocol_value(trimmed_response, "reason").expect(
-                                &format!(
-                                    "Planner choosing mode response with 'change_plan' choice does not contain 'reason: ...' line. Response: {}",
-                                    trimmed_response
-                                ),
-                            );
-                            NextStepDecision::ChangePlan(reason.to_string())
-                        } else {
-                            println!("[Warning] Change plan is capped.");
-                            NextStepDecision::Continue // if cannot change plan, we also continue to the next step to avoid getting stuck
-                        }
-                    }
-                    _ => panic!(
-                        "Invalid choice field in planner choosing mode response JSON: {}",
-                        choice
-                    ),
-                };
-                vec![TreeUpdateEvent::AddAction {
+            .await
+            {
+                ChosenModeDecision::ContextLengthExceeded => {
+                    context_length_exceeded_result(question_id, "PlannerChoosingMode")
+                }
+                ChosenModeDecision::Chosen(chosen_mode) => vec![TreeUpdateEvent::AddAction {
                     question_id,
                     action: RolloutAction::PlannerDecideNextStep(chosen_mode),
-                }]
+                }],
             }
         }
         TrajectoryStatus::PlannerWorkingOnStep => {
@@ -765,6 +820,7 @@ pub async fn produce_working_trajectory(
     reference_answer: &str,
     client: &Client,
     model: Model,
+    take_over_mode_decision: bool,
     rng: &mut impl rand::Rng,
     action_tx: &tokio::sync::mpsc::UnboundedSender<TreeUpdateEvent>,
 ) {
@@ -797,6 +853,7 @@ pub async fn produce_working_trajectory(
             &session_state,
             client.clone(),
             model,
+            take_over_mode_decision,
             rng,
         )
         .await;
@@ -905,6 +962,7 @@ pub async fn rollout(
     loaded_events: Vec<TreeUpdateEvent>,
     client: Client,
     model: Model,
+    take_over_mode_decision: bool,
     rng: &mut impl rand::Rng,
     action_tx: tokio::sync::mpsc::UnboundedSender<TreeUpdateEvent>,
     trajectory_tx: tokio::sync::mpsc::UnboundedSender<RolloutTrajectory>,
@@ -922,6 +980,7 @@ pub async fn rollout(
                     &reference_answer,
                     &client,
                     model,
+                    take_over_mode_decision,
                     rng,
                     &action_tx,
                 )
