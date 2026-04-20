@@ -17,6 +17,8 @@ use crate::{
         session::{
             MakeOrChangePlan, NextStepDecision, RolloutAction, StepQuality, ToolResponse,
             TrajectoryState, TrajectoryStatus, Tree, TreeUpdateEvent, VerifierComment,
+            CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE, IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE,
+            REPETITION_ABORT_MESSAGE,
         },
         verifier_commenting::get_verifier_commenting_prompts,
     },
@@ -322,10 +324,6 @@ pub fn get_prompt_according_to_session_status(
 pub const SUBMIT_ANSWER_HINT: &str = "\
 <hint>It seems you are trying to end the step at the start of the step. \
 If you have got the answer, put it in \\boxed{} before ending with <end_step>.</hint>";
-pub const CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE: &str =
-    "<error>Model context length exceeded, aborting.</error>";
-pub const IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE: &str =
-    "<error>Identical python tool error detected. Aborting current incomplete step.</error>";
 
 // we increased the repetition times to 5, there might be code that hasn't reflected this change.
 pub fn detect_repetition_five_times(response: &str) -> bool {
@@ -384,7 +382,6 @@ fn is_context_length_exceeded_response(response: &str) -> bool {
 
 struct NewOperationsResult {
     operations: Vec<TreeUpdateEvent>,
-    should_end_session: bool,
 }
 
 fn context_length_exceeded_result(question_id: usize, session_status: &str) -> NewOperationsResult {
@@ -399,7 +396,6 @@ fn context_length_exceeded_result(question_id: usize, session_status: &str) -> N
                 CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
             )),
         }],
-        should_end_session: true,
     }
 }
 
@@ -443,7 +439,6 @@ async fn build_new_operations(
                     question_id,
                     action: RolloutAction::PlannerMakeOrChangePlan(plan_content),
                 }],
-                should_end_session: false,
             }
         }
         TrajectoryStatus::PlannerKeepingCurrentPlan => NewOperationsResult {
@@ -451,7 +446,6 @@ async fn build_new_operations(
                 question_id,
                 action: RolloutAction::PlannerMakeOrChangePlan(None),
             }],
-            should_end_session: false,
         },
         TrajectoryStatus::PlannerChoosingMode => {
             let (prompt_before_assistant, prompt_after_assistant) =
@@ -521,7 +515,6 @@ async fn build_new_operations(
                     question_id,
                     action: RolloutAction::PlannerDecideNextStep(chosen_mode),
                 }],
-                should_end_session: false,
             }
         }
         TrajectoryStatus::PlannerWorkingOnStep => {
@@ -627,7 +620,7 @@ async fn build_new_operations(
                 operations.push(TreeUpdateEvent::AddAction {
                     question_id,
                     action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
-                        "<error>Repeated contents detected. This step is forced to abort without completion.</error>".to_string(),
+                        REPETITION_ABORT_MESSAGE.to_string(),
                     )),
                 });
             }
@@ -645,7 +638,6 @@ async fn build_new_operations(
             }
             NewOperationsResult {
                 operations,
-                should_end_session: false,
             }
         }
         TrajectoryStatus::PlannerCompactingStep => {
@@ -670,7 +662,6 @@ async fn build_new_operations(
                         step_quality,
                     },
                 }],
-                should_end_session: false,
             }
         }
         TrajectoryStatus::PlannerUpdatingPlan => {
@@ -692,7 +683,6 @@ async fn build_new_operations(
                     question_id,
                     action: RolloutAction::PlannerUpdatePlan(updated_plan_content),
                 }],
-                should_end_session: false,
             }
         }
         TrajectoryStatus::VerifierCommenting => {
@@ -722,7 +712,6 @@ async fn build_new_operations(
                     question_id,
                     action: RolloutAction::VerifierComment(verifier_comment),
                 }],
-                should_end_session: false,
             }
         }
     }
@@ -744,8 +733,6 @@ pub async fn rollout(
 ) {
     // create a state machine
     let mut tree = Tree::new(question_id, question.clone());
-    let mut trajectory_should_end = false;
-    let mut forced_final_answer: Option<String> = None;
     if loaded_events.is_empty() {
         action_tx
             .send(TreeUpdateEvent::CreateNode {
@@ -758,8 +745,8 @@ pub async fn rollout(
     for event in loaded_events {
         tree.apply_event(event);
         let loaded_state = TrajectoryState::from_tree(&tree);
-        if loaded_state.final_answer.is_some() {
-            trajectory_should_end = true;
+        if loaded_state.should_end_session {
+            break;
         }
     }
     loop {
@@ -771,44 +758,13 @@ pub async fn rollout(
             session_state.prev_steps.len(),
             session_state.total_actual_steps
         );
-        if matches!(
-            session_state.source_tree.last_action(),
-            Some(RolloutAction::PlannerCompactStep { .. })
-        ) && session_state.final_answer.is_some()
-        {
-            trajectory_should_end = true;
-        }
-        if trajectory_should_end {
-            let displayed_final_answer = forced_final_answer
-                .as_deref()
-                .or(session_state.final_answer.as_deref())
-                .unwrap_or("None");
+        if session_state.should_end_session {
+            let displayed_final_answer = session_state.final_answer.as_deref().unwrap_or("None");
             println!(
                 "[rollout finished] question index: {}, total actual rounds: {}, final answer: {}, correct answer: {}",
                 question_id, session_state.total_actions, displayed_final_answer, reference_answer
             );
             break;
-        }
-        if session_state.prev_steps.len() > 20 {
-            forced_final_answer = Some(
-                "The model does not manage to provide a final answer within allowed number of turns."
-                    .to_string(),
-            );
-            trajectory_should_end = true;
-            println!(
-                "[Warning] Number of steps exceeds the limit {}, ending the session.",
-                20
-            );
-        } else if session_state.total_actions > 150 {
-            forced_final_answer = Some(
-                "The model does not manage to provide a final answer within allowed number of turns."
-                    .to_string(),
-            );
-            trajectory_should_end = true;
-            println!(
-                "[Warning] Total actual rounds exceeds the limit {}, ending the session.",
-                150
-            );
         }
         let new_operations_result = build_new_operations(
             question_id,
@@ -819,9 +775,6 @@ pub async fn rollout(
             rng,
         )
         .await;
-        if new_operations_result.should_end_session {
-            trajectory_should_end = true;
-        }
         let new_operations = new_operations_result.operations;
         drop(session_state);
 
@@ -836,8 +789,9 @@ pub async fn rollout(
     let rollout_trajectory = RolloutTrajectory {
         id: question_id,
         question,
-        model_answer: forced_final_answer
-            .or(final_state.final_answer.clone())
+        model_answer: final_state
+            .final_answer
+            .clone()
             .unwrap_or("No answer found".into()),
         correct_answer: reference_answer, // we will fill in the correct answer later when we evaluate the trajectory, to avoid data leakage
         step_quality_accuracy,

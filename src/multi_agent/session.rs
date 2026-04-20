@@ -215,7 +215,17 @@ pub struct TrajectoryState<'a> {
     pub step_quality_complete_total_count: usize,
     pub step_quality_focused_true_count: usize,
     pub step_quality_focused_total_count: usize,
+    pub should_end_session: bool,
 }
+
+pub const FORCED_END_MESSAGE: &str =
+    "The model does not manage to provide a final answer within allowed number of turns.";
+pub const CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE: &str =
+    "<error>Model context length exceeded, aborting.</error>";
+pub const IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE: &str =
+    "<error>Identical python tool error detected. Aborting current incomplete step.</error>";
+pub const REPETITION_ABORT_MESSAGE: &str =
+    "<error>Repeated contents detected. This step is forced to abort without completion.</error>";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum VerifierAndModeSummary {
@@ -464,6 +474,7 @@ impl<'a> TrajectoryState<'a> {
             step_quality_focused_true_count: 0,
             step_quality_focused_total_count: 0,
             total_actual_steps: 0,
+            should_end_session: false,
         }
     }
     fn from_session_log(
@@ -546,8 +557,20 @@ impl<'a> TrajectoryState<'a> {
     pub fn num_additional_actions_allowed_in_current_step(&self) -> usize {
         MAX_ACTIONS_PER_STEP - self.current_step_num_actions
     }
-    pub fn update(&mut self, operation: RolloutAction) -> bool {
-        let mut should_end_session = false;
+    fn refresh_should_end_session(&mut self) {
+        if self.final_answer.is_some() {
+            self.should_end_session = true;
+            return;
+        }
+        if self.prev_steps.len() > 20 || self.total_actions > 150 {
+            self.final_answer = Some(FORCED_END_MESSAGE.to_string());
+            self.should_end_session = true;
+            return;
+        }
+        self.should_end_session = false;
+    }
+
+    pub fn update(&mut self, operation: RolloutAction) {
         self.total_actions += 1;
         match operation {
             RolloutAction::PlannerMakeOrChangePlan(plan) => {
@@ -648,7 +671,6 @@ impl<'a> TrajectoryState<'a> {
                 self.current_step_content_raw.push_str(&reasoning);
                 if let Some(boxed_answer) = extract_boxed_content(&reasoning) {
                     self.final_answer = Some(boxed_answer);
-                    // should_end_session = true;
                 }
             }
             RolloutAction::PlannerToolCall(tool_call) => {
@@ -681,6 +703,14 @@ impl<'a> TrajectoryState<'a> {
                         self.current_step_last_python_error = None;
                     }
                 }
+                if let ToolResponse::Intervention(content) = &tool_response {
+                    if content == CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE
+                        || content == IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE
+                        || content == REPETITION_ABORT_MESSAGE
+                    {
+                        self.should_end_session = true;
+                    }
+                }
                 self.current_step_content_raw
                     .push_str(&tool_response.to_raw_content());
             }
@@ -710,7 +740,6 @@ impl<'a> TrajectoryState<'a> {
                 }
                 if self.final_answer.is_some() {
                     self.current_step_last_python_error = None;
-                    should_end_session = true;
                 }
                 if let Some(step_quality) = &step_quality {
                     self.step_quality_tool_total_count += 1;
@@ -810,7 +839,7 @@ impl<'a> TrajectoryState<'a> {
                 }
             }
         }
-        should_end_session
+        self.refresh_should_end_session();
     }
     pub fn to_history_prev_steps(&self) -> String {
         let (planner_turn, making_plan) = match self.status {
