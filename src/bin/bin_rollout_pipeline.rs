@@ -9,11 +9,11 @@ use std::{
 
 use clap::Parser;
 use credit_assignment::{
-    call_llm::{call_llm_chat_completions, set_vllm_port},
+    call_llm::set_vllm_port,
     datasets::{DeepMathQuestion, get_question_path},
     deepmath::{
         generate_raw_answers::Model,
-        judge_answers::{DeepMathCorrectness, get_accuracy_path, get_correctness_path},
+        judge_answers::{DeepMathCorrectness, get_accuracy_path, get_correctness_path, judge_answer_task},
     },
     multi_agent::{
         generate_rollout_answers::{
@@ -62,29 +62,14 @@ async fn judge_rollout_answer_task(
     answer: RolloutTrajectory,
     client: Client,
 ) -> DeepMathCorrectness {
-    let prompt = format!(
-        // "The question is: {}. The model's answer is: {}. The correct answer is: {}. Please evaluate whether the model's answer is correct and return only 'correct' or 'incorrect'.",
-        "You are an answer checker that checks a model's answer against the reference answer. Judge if the model's answer is equivalent to the reference answer. \
-If the model's answer contains units but the reference answer does not, treat them as equivalent if the numerical values are the same. \
-The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
-        answer.model_answer, answer.correct_answer
-    );
-    let evaluation = call_llm_chat_completions(client, prompt, Model::Gpt4o, false)
-        .await
-        .trim()
-        .to_lowercase();
-    println!("Evaluation for question {}: {}", answer.id, evaluation);
-    let correct = match evaluation.as_str() {
-        "correct" => true,
-        "incorrect" => false,
-        _ => {
-            println!(
-                "Unexpected evaluation result for question {}: {}. Treating it as incorrect.",
-                answer.id, evaluation
-            );
-            false
-        }
-    };
+    let correct = judge_answer_task(
+        answer.id,
+        answer.model_answer.clone(),
+        answer.correct_answer.clone(),
+        answer.question.clone(),
+        client,
+    )
+    .await;
     DeepMathCorrectness {
         id: answer.id,
         correct,

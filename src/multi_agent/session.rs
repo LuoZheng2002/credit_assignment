@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::deepmath::parse_answers::extract_boxed_content;
 use crate::multi_agent::generate_rollout_answers::StepQualityAccuracy;
@@ -261,6 +262,13 @@ pub struct Node {
     pub parent_id: Option<usize>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorrectnessJudgment {
+    pub model_answer: String,
+    pub correct_answer: String,
+    pub is_correct: bool,
+}
+
 // only working on one node at a time
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tree {
@@ -270,6 +278,8 @@ pub struct Tree {
     pub root_node_id: Option<usize>,
     pub current_node_id: Option<usize>,
     pub leaf_node_ids: Vec<usize>, // this is only for trajectories that have reached the final answer or is forced to end
+    pub leaf_node_judgments: BTreeMap<usize, CorrectnessJudgment>,
+    pub accuracy: f64,
     pub next_node_id: usize,
     pub tree_master_status: TreeMasterStatus,
 }
@@ -301,6 +311,11 @@ pub enum TreeUpdateEvent {
         question_id: usize,
         node_id: usize,
     },
+    JudgeLeafCorrectness {
+        question_id: usize,
+        node_id: usize,
+        correctness_judgment: CorrectnessJudgment,
+    },
 }
 
 // we need a status after a trajectory is finished to randomly sample a node position for branching
@@ -314,6 +329,7 @@ impl TreeUpdateEvent {
             TreeUpdateEvent::SetCurrentNode { question_id, .. } => *question_id,
             TreeUpdateEvent::AddAction { question_id, .. } => *question_id,
             TreeUpdateEvent::RegisterLeaf { question_id, .. } => *question_id,
+            TreeUpdateEvent::JudgeLeafCorrectness { question_id, .. } => *question_id,
         }
     }
 }
@@ -327,6 +343,8 @@ impl Tree {
             root_node_id: None,
             current_node_id: None,
             leaf_node_ids: Vec::new(),
+            leaf_node_judgments: BTreeMap::new(),
+            accuracy: 0.0,
             next_node_id: 0,
             tree_master_status: TreeMasterStatus::WorkingOnTrajectory,
         }
@@ -487,6 +505,39 @@ impl Tree {
                     "RegisterLeaf should not register duplicate leaf node"
                 );
                 self.leaf_node_ids.push(node_id);
+            }
+            TreeUpdateEvent::JudgeLeafCorrectness {
+                node_id,
+                correctness_judgment,
+                ..
+            } => {
+                let node = self
+                    .find_node_by_id(node_id)
+                    .expect("JudgeLeafCorrectness node_id must exist in tree");
+                assert_eq!(
+                    node.node_id, node_id,
+                    "JudgeLeafCorrectness node index must equal node_id"
+                );
+                assert!(
+                    self.leaf_node_ids.contains(&node_id),
+                    "JudgeLeafCorrectness requires node_id to be a registered leaf"
+                );
+                assert!(
+                    !self.leaf_node_judgments.contains_key(&node_id),
+                    "JudgeLeafCorrectness should not overwrite an existing leaf judgment"
+                );
+                self.leaf_node_judgments.insert(node_id, correctness_judgment);
+                let num_judged_leaves = self.leaf_node_judgments.len();
+                assert!(
+                    num_judged_leaves > 0,
+                    "Leaf judgment map must be non-empty after inserting a leaf judgment"
+                );
+                let num_correct = self
+                    .leaf_node_judgments
+                    .values()
+                    .filter(|judgment| judgment.is_correct)
+                    .count();
+                self.accuracy = num_correct as f64 / num_judged_leaves as f64;
             }
         }
     }

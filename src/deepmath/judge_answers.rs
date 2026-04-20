@@ -72,37 +72,33 @@ pub fn get_accuracy_path(
     }
 }
 
-pub async fn judge_answer_task(answer: AnswerParsed, client: Client) -> DeepMathCorrectness {
+pub async fn judge_answer_task(
+    question_id: usize,
+    model_answer: String,
+    correct_answer: String,
+    question: String,
+    client: Client,
+) -> bool {
     let prompt = format!(
         // "The question is: {}. The model's answer is: {}. The correct answer is: {}. Please evaluate whether the model's answer is correct and return only 'correct' or 'incorrect'.",
         "You are an answer checker that checks a model's answer against the reference answer. Judge if the model's answer is equivalent to the reference answer. \
 If the model's answer contains units but the reference answer does not, treat them as equivalent if the numerical values are the same. \n\
 The question is: \"{}\". \
 The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
-        answer.question, answer.model_answer, answer.correct_answer
+        question, model_answer, correct_answer
     );
     let evaluation = call_llm_chat_completions(client, prompt, Model::Gpt4o, false)
         .await
         .trim()
         .to_lowercase();
-    println!("Evaluation for question {}: {}", answer.id, evaluation);
-    let correct = match evaluation.as_str() {
+    println!("Evaluation for question {}: {}", question_id, evaluation);
+    match evaluation.as_str() {
         "correct" => true,
         "incorrect" => false,
-        _ => {
-            println!(
-                "Unexpected evaluation result for question {}: {}. Treating it as incorrect.",
-                answer.id, evaluation
-            );
-            false
-        }
-    };
-    DeepMathCorrectness {
-        id: answer.id,
-        correct,
-        model_answer: answer.model_answer,
-        correct_answer: answer.correct_answer,
-        question: answer.question,
+        _ => panic!(
+            "Unexpected evaluation result for question {}: {}",
+            question_id, evaluation
+        ),
     }
 }
 
@@ -131,7 +127,23 @@ pub async fn judge_answers(
         },
         move |answer: AnswerParsed| {
             let client = client.clone();
-            async move { judge_answer_task(answer, client).await }
+            async move {
+                let correct = judge_answer_task(
+                    answer.id,
+                    answer.model_answer.clone(),
+                    answer.correct_answer.clone(),
+                    answer.question.clone(),
+                    client,
+                )
+                .await;
+                DeepMathCorrectness {
+                    id: answer.id,
+                    correct,
+                    model_answer: answer.model_answer,
+                    correct_answer: answer.correct_answer,
+                    question: answer.question,
+                }
+            }
         },
         2000,
     )

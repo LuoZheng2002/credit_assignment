@@ -5,7 +5,7 @@ use reqwest::Client;
 
 use crate::{
     call_llm::{QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE, call_llm_with_prefix},
-    deepmath::generate_raw_answers::Model,
+    deepmath::{generate_raw_answers::Model, judge_answers::judge_answer_task},
     execute_python_code::execute_python_code,
     multi_agent::{
         generate_rollout_answers::RolloutTrajectory,
@@ -16,8 +16,9 @@ use crate::{
         planner_step_overwriting::get_planner_step_overwriting_prompts,
         planner_updating_plan::get_planner_updating_plan_prompts,
         session::{
-            MakeOrChangePlan, NextStepDecision, RolloutAction, StepQuality, ToolResponse,
-            TrajectoryState, TrajectoryStatus, Tree, TreeMasterStatus, TreeUpdateEvent,
+            CorrectnessJudgment, MakeOrChangePlan, NextStepDecision, RolloutAction, StepQuality,
+            ToolResponse, TrajectoryActionLog, TrajectoryState, TrajectoryStatus, Tree,
+            TreeMasterStatus, TreeUpdateEvent,
             VerifierComment,
             CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE, IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE,
             REPETITION_ABORT_MESSAGE,
@@ -30,6 +31,47 @@ use crate::{
 pub enum PlannerState {
     BeginStep,
     MidStep,
+}
+
+fn collect_root_to_leaf_action_log(tree: &Tree, leaf_node_id: usize) -> TrajectoryActionLog {
+    assert!(
+        leaf_node_id < tree.nodes.len(),
+        "Leaf node id must exist in tree"
+    );
+    let mut node_ids_from_leaf_to_root: Vec<usize> = Vec::new();
+    let mut cursor = Some(leaf_node_id);
+    while let Some(node_id) = cursor {
+        let node = tree
+            .nodes
+            .get(node_id)
+            .expect("Leaf-path traversal node_id must exist in tree");
+        assert_eq!(
+            node.node_id, node_id,
+            "Node index must equal node_id during leaf-path traversal"
+        );
+        node_ids_from_leaf_to_root.push(node_id);
+        cursor = node.parent_id;
+    }
+    node_ids_from_leaf_to_root.reverse();
+
+    let mut actions: Vec<RolloutAction> = Vec::new();
+    for node_id in node_ids_from_leaf_to_root {
+        let node = tree
+            .nodes
+            .get(node_id)
+            .expect("Leaf-path node_id must exist while collecting actions");
+        actions.extend(node.step.action_log.iter().cloned());
+    }
+    TrajectoryActionLog(actions)
+}
+
+fn extract_leaf_model_answer(tree: &Tree, leaf_node_id: usize) -> String {
+    let leaf_log = collect_root_to_leaf_action_log(tree, leaf_node_id);
+    let leaf_state = TrajectoryState::from_session_log(tree.question.clone(), leaf_log, tree);
+    leaf_state
+        .final_answer
+        .clone()
+        .expect("Each registered leaf trajectory must have a final answer")
 }
 
 pub trait ToolCallParser {
@@ -851,6 +893,39 @@ pub async fn produce_working_trajectory(
                 displayed_final_answer,
                 reference_answer
             );
+            let leaf_node_id = tree
+                .current_node_id
+                .expect("WorkingOnTrajectory should always have current_node_id when ending");
+            if !tree.leaf_node_ids.contains(&leaf_node_id) {
+                let register_leaf_event = TreeUpdateEvent::RegisterLeaf {
+                    question_id: tree.question_id,
+                    node_id: leaf_node_id,
+                };
+                tree.apply_event(register_leaf_event.clone());
+                action_tx.send(register_leaf_event).unwrap();
+            }
+            if !tree.leaf_node_judgments.contains_key(&leaf_node_id) {
+                let model_answer = extract_leaf_model_answer(tree, leaf_node_id);
+                let is_correct = judge_answer_task(
+                    tree.question_id,
+                    model_answer.clone(),
+                    reference_answer.to_string(),
+                    tree.question.clone(),
+                    client.clone(),
+                )
+                .await;
+                let judge_leaf_correctness_event = TreeUpdateEvent::JudgeLeafCorrectness {
+                    question_id: tree.question_id,
+                    node_id: leaf_node_id,
+                    correctness_judgment: CorrectnessJudgment {
+                        model_answer,
+                        correct_answer: reference_answer.to_string(),
+                        is_correct,
+                    },
+                };
+                tree.apply_event(judge_leaf_correctness_event.clone());
+                action_tx.send(judge_leaf_correctness_event).unwrap();
+            }
             break;
         }
         let new_operations = build_new_operations(
@@ -873,22 +948,12 @@ pub async fn produce_working_trajectory(
 pub fn determine_branching_node(
     tree: &mut Tree,
     rng: &mut impl rand::Rng,
-    action_tx: &tokio::sync::mpsc::UnboundedSender<TreeUpdateEvent>,
 ) -> bool {
     assert_eq!(
         tree.tree_master_status,
         TreeMasterStatus::DeterminingBranchingNode,
         "determine_branching_node requires DeterminingBranchingNode status"
     );
-    let leaf_node_id = tree
-        .current_node_id
-        .expect("DeterminingBranchingNode requires current_node_id");
-    let register_leaf_event = TreeUpdateEvent::RegisterLeaf {
-        question_id: tree.question_id,
-        node_id: leaf_node_id,
-    };
-    tree.apply_event(register_leaf_event.clone());
-    action_tx.send(register_leaf_event).unwrap();
     if tree.leaf_node_ids.len() >= MAX_NUM_TRAJECTORIES {
         return true;
     }
@@ -1000,7 +1065,7 @@ pub async fn rollout(
                 tree.tree_master_status = TreeMasterStatus::DeterminingBranchingNode;
             }
             TreeMasterStatus::DeterminingBranchingNode => {
-                let should_finalize_rollout = determine_branching_node(&mut tree, rng, &action_tx);
+                let should_finalize_rollout = determine_branching_node(&mut tree, rng);
                 if should_finalize_rollout {
                     break;
                 }
@@ -1017,7 +1082,7 @@ pub async fn rollout(
             .final_answer
             .clone()
             .unwrap_or("No answer found".into()),
-        correct_answer: reference_answer, // we will fill in the correct answer later when we evaluate the trajectory, to avoid data leakage
+        correct_answer: reference_answer,
         step_quality_accuracy,
         trajectory: trajectory_tree,
     };
