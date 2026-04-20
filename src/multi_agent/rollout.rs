@@ -380,23 +380,17 @@ fn is_context_length_exceeded_response(response: &str) -> bool {
     response == QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE
 }
 
-struct NewOperationsResult {
-    operations: Vec<TreeUpdateEvent>,
-}
-
-fn context_length_exceeded_result(question_id: usize, session_status: &str) -> NewOperationsResult {
+fn context_length_exceeded_result(question_id: usize, session_status: &str) -> Vec<TreeUpdateEvent> {
     println!(
         "[Warning] Model context length exceeded in {}, ending session.",
         session_status
     );
-    NewOperationsResult {
-        operations: vec![TreeUpdateEvent::AddAction {
-            question_id,
-            action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
-                CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
-            )),
-        }],
-    }
+    vec![TreeUpdateEvent::AddAction {
+        question_id,
+        action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
+            CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
+        )),
+    }]
 }
 
 async fn build_new_operations(
@@ -406,7 +400,7 @@ async fn build_new_operations(
     model: Model,
     verifier_probability: f32,
     rng: &mut impl rand::Rng,
-) -> NewOperationsResult {
+) -> Vec<TreeUpdateEvent> {
     match &session_state.status {
         TrajectoryStatus::PlannerMakingOrChangingPlan => {
             let chosen_mode = session_state
@@ -434,19 +428,15 @@ async fn build_new_operations(
                     Some(MakeOrChangePlan::MakePlan(response))
                 }
             }; // we change to not require the plan to be in a markdown code block
-            NewOperationsResult {
-                operations: vec![TreeUpdateEvent::AddAction {
-                    question_id,
-                    action: RolloutAction::PlannerMakeOrChangePlan(plan_content),
-                }],
-            }
+            vec![TreeUpdateEvent::AddAction {
+                question_id,
+                action: RolloutAction::PlannerMakeOrChangePlan(plan_content),
+            }]
         }
-        TrajectoryStatus::PlannerKeepingCurrentPlan => NewOperationsResult {
-            operations: vec![TreeUpdateEvent::AddAction {
+        TrajectoryStatus::PlannerKeepingCurrentPlan => vec![TreeUpdateEvent::AddAction {
                 question_id,
                 action: RolloutAction::PlannerMakeOrChangePlan(None),
             }],
-        },
         TrajectoryStatus::PlannerChoosingMode => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(session_state);
@@ -510,12 +500,10 @@ async fn build_new_operations(
                     choice
                 ),
             };
-            NewOperationsResult {
-                operations: vec![TreeUpdateEvent::AddAction {
-                    question_id,
-                    action: RolloutAction::PlannerDecideNextStep(chosen_mode),
-                }],
-            }
+            vec![TreeUpdateEvent::AddAction {
+                question_id,
+                action: RolloutAction::PlannerDecideNextStep(chosen_mode),
+            }]
         }
         TrajectoryStatus::PlannerWorkingOnStep => {
             let (prompt_before_assistant, prompt_after_assistant) =
@@ -636,9 +624,7 @@ async fn build_new_operations(
                     action: RolloutAction::PlannerEndStep,
                 });
             }
-            NewOperationsResult {
-                operations,
-            }
+            operations
         }
         TrajectoryStatus::PlannerCompactingStep => {
             let (prompt_before_assistant, prompt_after_assistant) =
@@ -654,15 +640,13 @@ async fn build_new_operations(
                 return context_length_exceeded_result(question_id, "PlannerCompactingStep");
             }
             let (summary, step_quality) = parse_compactor_response(response);
-            NewOperationsResult {
-                operations: vec![TreeUpdateEvent::AddAction {
-                    question_id,
-                    action: RolloutAction::PlannerCompactStep {
-                        summary,
-                        step_quality,
-                    },
-                }],
-            }
+            vec![TreeUpdateEvent::AddAction {
+                question_id,
+                action: RolloutAction::PlannerCompactStep {
+                    summary,
+                    step_quality,
+                },
+            }]
         }
         TrajectoryStatus::PlannerUpdatingPlan => {
             let (prompt_before_assistant, prompt_after_assistant) =
@@ -678,12 +662,10 @@ async fn build_new_operations(
                 return context_length_exceeded_result(question_id, "PlannerUpdatingPlan");
             }
             let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
-            NewOperationsResult {
-                operations: vec![TreeUpdateEvent::AddAction {
-                    question_id,
-                    action: RolloutAction::PlannerUpdatePlan(updated_plan_content),
-                }],
-            }
+            vec![TreeUpdateEvent::AddAction {
+                question_id,
+                action: RolloutAction::PlannerUpdatePlan(updated_plan_content),
+            }]
         }
         TrajectoryStatus::VerifierCommenting => {
             let mut verifier_comment = None;
@@ -707,12 +689,10 @@ async fn build_new_operations(
                 }
                 verifier_comment = Some(parse_verifier_comment_response(response));
             }
-            NewOperationsResult {
-                operations: vec![TreeUpdateEvent::AddAction {
-                    question_id,
-                    action: RolloutAction::VerifierComment(verifier_comment),
-                }],
-            }
+            vec![TreeUpdateEvent::AddAction {
+                question_id,
+                action: RolloutAction::VerifierComment(verifier_comment),
+            }]
         }
     }
 }
@@ -744,10 +724,6 @@ pub async fn rollout(
     }
     for event in loaded_events {
         tree.apply_event(event);
-        let loaded_state = TrajectoryState::from_tree(&tree);
-        if loaded_state.should_end_session {
-            break;
-        }
     }
     loop {
         let session_state = TrajectoryState::from_tree(&tree);
@@ -766,7 +742,7 @@ pub async fn rollout(
             );
             break;
         }
-        let new_operations_result = build_new_operations(
+        let new_operations = build_new_operations(
             question_id,
             &session_state,
             client.clone(),
@@ -775,7 +751,6 @@ pub async fn rollout(
             rng,
         )
         .await;
-        let new_operations = new_operations_result.operations;
         drop(session_state);
 
         for event in new_operations {
