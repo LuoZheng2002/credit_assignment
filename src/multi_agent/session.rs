@@ -238,7 +238,7 @@ pub enum VerifierAndModeSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Step {
     pub verifier_and_mode_summary: Option<VerifierAndModeSummary>, // Some after verifier comment and next step decision
-    pub step_finalized: bool, // initialized as false, true if the step has been finalized and becomes immutable
+    pub step_finalized: bool, // initialized as false, true once PlannerUpdatePlan or terminal intervention has been emitted
     pub action_log: Vec<RolloutAction>, // starting from verifier comment, and ending with planner end step or force end step
 }
 
@@ -365,7 +365,7 @@ impl Tree {
                 }
             });
         }
-        if let RolloutAction::PlannerEndStep = &action {
+        if let RolloutAction::PlannerUpdatePlan(_) = &action {
             step.step_finalized = true;
         }
         if let RolloutAction::ToolCallResponse(ToolResponse::Intervention(content)) = &action {

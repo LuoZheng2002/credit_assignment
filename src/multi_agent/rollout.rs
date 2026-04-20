@@ -589,7 +589,7 @@ async fn build_new_operations(
                 }
                 let (reasoning, tool_call) = split_reasoning_and_tool_call(response.clone(), model);
                 let mut push_end_step = false;
-                let mut found_identical_python_error_twice = false;
+                let mut has_terminal_intervention = false;
                 let mut operations: Vec<TreeUpdateEvent> = Vec::new();
                 if let Some(reasoning) = reasoning {
                     if reasoning.contains("<end_step>") {
@@ -611,7 +611,6 @@ async fn build_new_operations(
                         if previous_python_error.is_some()
                             && Some(current_python_error.clone()) == previous_python_error
                         {
-                            found_identical_python_error_twice = true;
                             println!(
                                 "[Warning]: Identical python tool error detected. Aborting current step."
                             );
@@ -625,6 +624,7 @@ async fn build_new_operations(
                                     IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
                                 )),
                             });
+                            has_terminal_intervention = true;
                         } else {
                             operations.push(TreeUpdateEvent::AddAction {
                                 question_id,
@@ -670,14 +670,17 @@ async fn build_new_operations(
                             REPETITION_ABORT_MESSAGE.to_string(),
                         )),
                     });
+                    has_terminal_intervention = true;
                 }
 
                 let current_step_full = operations.len() == num_additional_actions_allowed;
                 if (push_end_step && !hold_end_step)
                     || current_step_full
-                    || found_repetition_three_times
-                    || found_identical_python_error_twice
                 {
+                    assert!(
+                        !has_terminal_intervention,
+                        "PlannerEndStep should not be emitted after terminal intervention"
+                    );
                     operations.push(TreeUpdateEvent::AddAction {
                         question_id,
                         action: RolloutAction::PlannerEndStep,

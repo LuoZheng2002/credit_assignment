@@ -26,10 +26,7 @@ use std::hash::{Hash, Hasher};
 
 use credit_assignment::deepmath::judge_answers::DeepMathCorrectness;
 use credit_assignment::multi_agent::generate_rollout_answers::RolloutTrajectory;
-use credit_assignment::multi_agent::rollout::get_prompt_according_to_session_status;
-use credit_assignment::multi_agent::session::{
-    RolloutAction, TrajectoryActionLog, TrajectoryState,
-};
+use credit_assignment::multi_agent::session::{NextStepDecision, RolloutAction, Tree};
 
 /// Command line arguments for browsing rollout session logs.
 #[derive(Parser, Debug)]
@@ -175,6 +172,7 @@ struct App {
     selection_state: ListState,
     browsing_view: Option<SessionView>,
     focus: PaneFocus,
+    tree_horizontal_scroll: usize,
     prompt_scroll: usize,
     action_scroll: usize,
     log_area: Option<Rect>,
@@ -200,6 +198,7 @@ impl App {
             selection_state,
             browsing_view: None,
             focus: PaneFocus::Log,
+            tree_horizontal_scroll: 0,
             prompt_scroll: 0,
             action_scroll: 0,
             log_area: None,
@@ -225,6 +224,7 @@ impl App {
                 BrowsingAction::Continue => false,
                 BrowsingAction::GoBack => {
                     self.browsing_view = None;
+                    self.tree_horizontal_scroll = 0;
                     false
                 }
             }
@@ -245,6 +245,21 @@ impl App {
             match mouse_event.kind {
                 MouseEventKind::Moved => {
                     self.update_focus_from_mouse(mouse_event.column, mouse_event.row);
+                    false
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.update_focus_from_mouse(mouse_event.column, mouse_event.row);
+                    if self.focus == PaneFocus::Log {
+                        if let Some(local_index) =
+                            self.tree_line_index_from_mouse(mouse_event.column, mouse_event.row)
+                        {
+                            if let Some(view) = self.browsing_view.as_mut() {
+                                if local_index < view.tree_lines.len() {
+                                    view.select_tree_line_by_index(local_index);
+                                }
+                            }
+                        }
+                    }
                     false
                 }
                 MouseEventKind::ScrollUp => {
@@ -329,6 +344,7 @@ impl App {
                 let answer = self.answers[selected].clone();
                 self.browsing_view = Some(SessionView::new(answer));
                 self.focus = PaneFocus::Log;
+                self.tree_horizontal_scroll = 0;
                 self.prompt_scroll = 0;
                 self.action_scroll = 0;
                 self.selection_area = None;
@@ -351,22 +367,39 @@ impl App {
 
     fn handle_browsing_key(&mut self, key: KeyEvent) -> BrowsingAction {
         let mut new_focus = self.focus;
+        let mut new_tree_horizontal_scroll = self.tree_horizontal_scroll;
         let mut new_prompt_scroll = self.prompt_scroll;
         let mut new_action_scroll = self.action_scroll;
         let action = {
             let view = self.browsing_view.as_mut().unwrap();
             match key.code {
                 KeyCode::Left => {
-                    new_focus = new_focus.prev();
+                    if new_focus == PaneFocus::Log {
+                        new_tree_horizontal_scroll = new_tree_horizontal_scroll.saturating_sub(1);
+                    } else {
+                        new_focus = new_focus.prev();
+                    }
                     BrowsingAction::Continue
                 }
                 KeyCode::Right => {
+                    if new_focus == PaneFocus::Log {
+                        new_tree_horizontal_scroll = new_tree_horizontal_scroll.saturating_add(1);
+                    } else {
+                        new_focus = new_focus.next();
+                    }
+                    BrowsingAction::Continue
+                }
+                KeyCode::Tab => {
                     new_focus = new_focus.next();
+                    BrowsingAction::Continue
+                }
+                KeyCode::BackTab => {
+                    new_focus = new_focus.prev();
                     BrowsingAction::Continue
                 }
                 KeyCode::Up => {
                     match new_focus {
-                        PaneFocus::Log => view.move_by(-1),
+                        PaneFocus::Log => view.move_tree_selection_by(-1),
                         PaneFocus::Prompt => {
                             new_prompt_scroll = new_prompt_scroll.saturating_sub(1);
                         }
@@ -378,7 +411,7 @@ impl App {
                 }
                 KeyCode::Down => {
                     match new_focus {
-                        PaneFocus::Log => view.move_by(1),
+                        PaneFocus::Log => view.move_tree_selection_by(1),
                         PaneFocus::Prompt => {
                             new_prompt_scroll = new_prompt_scroll.saturating_add(1);
                         }
@@ -389,19 +422,27 @@ impl App {
                     BrowsingAction::Continue
                 }
                 KeyCode::Home => {
-                    view.move_to_start();
+                    if new_focus == PaneFocus::Log {
+                        view.move_tree_selection_to_start();
+                    }
                     BrowsingAction::Continue
                 }
                 KeyCode::End => {
-                    view.move_to_end();
+                    if new_focus == PaneFocus::Log {
+                        view.move_tree_selection_to_end();
+                    }
                     BrowsingAction::Continue
                 }
                 KeyCode::PageUp => {
-                    view.move_by(-10);
+                    if new_focus == PaneFocus::Log {
+                        view.move_tree_selection_by(-10);
+                    }
                     BrowsingAction::Continue
                 }
                 KeyCode::PageDown => {
-                    view.move_by(10);
+                    if new_focus == PaneFocus::Log {
+                        view.move_tree_selection_by(10);
+                    }
                     BrowsingAction::Continue
                 }
                 KeyCode::Esc | KeyCode::Char('q') => BrowsingAction::GoBack,
@@ -409,6 +450,7 @@ impl App {
             }
         };
         self.focus = new_focus;
+        self.tree_horizontal_scroll = new_tree_horizontal_scroll;
         self.prompt_scroll = new_prompt_scroll;
         self.action_scroll = new_action_scroll;
         action
@@ -443,10 +485,26 @@ impl App {
         }
         let view = self.browsing_view.as_mut().unwrap();
         match self.focus {
-            PaneFocus::Log => view.move_by(delta),
+            PaneFocus::Log => view.move_tree_selection_by(delta),
             PaneFocus::Prompt => adjust_scroll_offset(&mut self.prompt_scroll, delta),
             PaneFocus::Action => adjust_scroll_offset(&mut self.action_scroll, delta),
         }
+    }
+
+    fn tree_line_index_from_mouse(&self, column: u16, row: u16) -> Option<usize> {
+        let rect = self.log_area?;
+        if !contains_point(rect, column, row) {
+            return None;
+        }
+        let inner_height = rect.height.saturating_sub(2);
+        if inner_height == 0 {
+            return None;
+        }
+        if row <= rect.y || row >= rect.y + rect.height - 1 {
+            return None;
+        }
+        let local_row = row - rect.y - 1;
+        Some(local_row as usize)
     }
 
     fn draw_selection(&mut self, frame: &mut ratatui::Frame<'_>) {
@@ -554,9 +612,9 @@ impl App {
 
         self.log_area = Some(body_chunks[0]);
         let log_title = format!(
-            "Session log progress ({}/{}){}",
-            view.current_pos,
-            view.total_ops(),
+            "Tree view (selected leaf: {}, hscroll: {}){}",
+            view.selected_node_id(),
+            self.tree_horizontal_scroll,
             if self.focus == PaneFocus::Log {
                 " [focused]"
             } else {
@@ -573,20 +631,13 @@ impl App {
             } else {
                 Style::default()
             });
-        let visible_ops = view.operations.iter().enumerate().take(view.current_pos);
-        let log_items: Vec<ListItem> = visible_ops
-            .map(|(index, _)| {
-                ListItem::new(format!(
-                    "[{index}] {role}",
-                    index = index,
-                    role = "Unknown Role",
-                ))
-            })
+        let log_items: Vec<ListItem> = view
+            .tree_lines
+            .iter()
+            .map(|line| ListItem::new(slice_line_from_char_offset(line, self.tree_horizontal_scroll)))
             .collect();
         let mut log_state = ListState::default();
-        if view.current_pos > 0 {
-            log_state.select(Some(view.current_pos - 1));
-        }
+        log_state.select(Some(view.selected_tree_line_index));
         frame.render_stateful_widget(
             List::new(log_items)
                 .block(log_block)
@@ -678,7 +729,7 @@ impl App {
         frame.render_widget(action_paragraph, right_chunks[1]);
 
         let footer = Paragraph::new(
-            "Left/Right: switch focus between log, prompt, and action panes; Up/Down: scroll the focused pane (or move the log when it is focused); PgUp/PgDn: jump log positions; Esc: go back to selection; q: quit",
+            "Tab/Shift+Tab or Left/Right on non-tree pane: switch focus; Left/Right on tree pane: horizontal scroll; Up/Down on tree pane: move selected leaf; PgUp/PgDn/Home/End: jump leaf selection; Esc: go back; q: quit",
         )
         .block(Block::default().borders(Borders::ALL).title("Controls"));
         frame.render_widget(footer, chunks[2]);
@@ -779,102 +830,304 @@ fn compute_wrapped_line_count(
 
 struct SessionView {
     answer: RolloutTrajectory,
+    tree_lines: Vec<String>,
+    tree_line_node_ids: Vec<usize>,
+    selected_tree_line_index: usize,
     operations: Vec<RolloutAction>,
-    current_pos: usize,
     total_display_turns: usize,
     total_actual_turns: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NodeAbbreviation {
+    Voff,
+    Von,
+    Vow,
+    Voc,
+}
+
+impl NodeAbbreviation {
+    fn as_str(self) -> &'static str {
+        match self {
+            NodeAbbreviation::Voff => "VOFF",
+            NodeAbbreviation::Von => "VON",
+            NodeAbbreviation::Vow => "VOW",
+            NodeAbbreviation::Voc => "VOC",
+        }
+    }
+}
+
+fn validate_tree_for_browser(tree: &Tree) {
+    for i in 0..tree.nodes.len() {
+        let node = &tree.nodes[i];
+        assert_eq!(
+            node.node_id, i,
+            "Tree invariant violated: node index must equal node_id"
+        );
+        if i == 0 {
+            assert!(
+                node.parent_id.is_none(),
+                "Root node must not have parent_id"
+            );
+        } else {
+            let parent_id = node
+                .parent_id
+                .expect("Non-root node must have parent_id for browser traversal");
+            assert!(
+                parent_id < tree.nodes.len(),
+                "Non-root node parent_id must point to an existing node"
+            );
+        }
+    }
+    for parent in &tree.nodes {
+        if let Some(child_id) = parent.verifier_on_child_id {
+            assert!(
+                child_id < tree.nodes.len(),
+                "verifier_on_child_id must point to existing node"
+            );
+        }
+        if let Some(child_id) = parent.verifier_off_child_id {
+            assert!(
+                child_id < tree.nodes.len(),
+                "verifier_off_child_id must point to existing node"
+            );
+        }
+    }
+}
+
+fn collect_root_to_node_action_sequence(tree: &Tree, selected_node_id: usize) -> Vec<RolloutAction> {
+    assert!(
+        selected_node_id < tree.nodes.len(),
+        "Selected node id must exist in tree"
+    );
+    let mut node_ids_from_selected_to_root: Vec<usize> = Vec::new();
+    let mut cursor = Some(selected_node_id);
+    while let Some(node_id) = cursor {
+        let node = &tree.nodes[node_id];
+        assert_eq!(
+            node.node_id, node_id,
+            "Tree traversal requires node index to equal node_id"
+        );
+        node_ids_from_selected_to_root.push(node_id);
+        cursor = node.parent_id;
+    }
+    node_ids_from_selected_to_root.reverse();
+
+    let mut actions: Vec<RolloutAction> = Vec::new();
+    for node_id in node_ids_from_selected_to_root {
+        let node = &tree.nodes[node_id];
+        actions.extend(node.step.action_log.iter().cloned());
+    }
+    actions
+}
+
+fn derive_node_abbreviation_from_actions(action_log: &[RolloutAction]) -> NodeAbbreviation {
+    let mut verifier_comment: Option<Option<credit_assignment::multi_agent::session::VerifierComment>> =
+        None;
+    let mut planner_decision: Option<NextStepDecision> = None;
+
+    for action in action_log {
+        match action {
+            RolloutAction::VerifierComment(comment) => {
+                assert!(
+                    verifier_comment.is_none(),
+                    "Each node action log must contain exactly one VerifierComment"
+                );
+                verifier_comment = Some(comment.clone());
+            }
+            RolloutAction::PlannerDecideNextStep(mode) => {
+                assert!(
+                    planner_decision.is_none(),
+                    "Each node action log must contain at most one PlannerDecideNextStep"
+                );
+                planner_decision = Some(mode.clone());
+            }
+            _ => {}
+        }
+    }
+
+    let verifier_comment = verifier_comment
+        .expect("Each node action log must contain exactly one VerifierComment for abbreviation");
+    let planner_decision = planner_decision
+        .expect("Each node action log must contain one PlannerDecideNextStep for abbreviation");
+
+    match (verifier_comment, planner_decision) {
+        (None, NextStepDecision::Continue) => NodeAbbreviation::Voff,
+        (None, NextStepDecision::OverwriteLastStep(_)) => {
+            panic!("Verifier-off node cannot choose OverwriteLastStep")
+        }
+        (None, NextStepDecision::ChangePlan(_)) => {
+            panic!("Verifier-off node cannot choose ChangePlan")
+        }
+        (Some(_), NextStepDecision::Continue) => NodeAbbreviation::Von,
+        (Some(_), NextStepDecision::OverwriteLastStep(_)) => NodeAbbreviation::Vow,
+        (Some(_), NextStepDecision::ChangePlan(_)) => NodeAbbreviation::Voc,
+    }
+}
+
+fn collect_path_ids_from_leaf_to_root(tree: &Tree, leaf_node_id: usize) -> Vec<usize> {
+    assert!(
+        leaf_node_id < tree.nodes.len(),
+        "Leaf node id must exist in tree"
+    );
+    let mut path_ids: Vec<usize> = Vec::new();
+    let mut cursor = Some(leaf_node_id);
+    while let Some(node_id) = cursor {
+        let node = &tree.nodes[node_id];
+        path_ids.push(node_id);
+        cursor = node.parent_id;
+    }
+    path_ids.reverse();
+    path_ids
+}
+
+fn node_label(tree: &Tree, node_id: usize) -> String {
+    let node = &tree.nodes[node_id];
+    let abbreviation = derive_node_abbreviation_from_actions(&node.step.action_log);
+    format!("{} {}", node.node_id, abbreviation.as_str())
+}
+
+fn build_tree_lines(tree: &Tree) -> (Vec<usize>, Vec<String>) {
+    let root_id = tree
+        .root_node_id
+        .expect("Tree browser requires root_node_id to exist");
+    assert_eq!(root_id, 0, "Tree browser expects root node id to be 0");
+
+    let mut leaf_node_ids: Vec<usize> = Vec::new();
+    for node in &tree.nodes {
+        if node.verifier_on_child_id.is_none() && node.verifier_off_child_id.is_none() {
+            leaf_node_ids.push(node.node_id);
+        }
+    }
+    assert!(!leaf_node_ids.is_empty(), "Tree must contain at least one leaf");
+
+    let mut lines: Vec<String> = Vec::new();
+    for &leaf_node_id in &leaf_node_ids {
+        let path_ids = collect_path_ids_from_leaf_to_root(tree, leaf_node_id);
+        assert_eq!(
+            path_ids[0], root_id,
+            "Every leaf path must start from the root"
+        );
+        let mut tokens: Vec<String> = Vec::new();
+        for (i, path_node_id) in path_ids.iter().enumerate() {
+            if i == 0 {
+                tokens.push(node_label(tree, *path_node_id));
+            } else {
+                tokens.push(format!("└─ {}", node_label(tree, *path_node_id)));
+            }
+        }
+        lines.push(tokens.join(" "));
+    }
+    assert_eq!(
+        lines.len(),
+        leaf_node_ids.len(),
+        "Tree line count must match leaf node count"
+    );
+    (leaf_node_ids, lines)
+}
+
+fn slice_line_from_char_offset(line: &str, offset: usize) -> String {
+    line.chars().skip(offset).collect::<String>()
+}
+
+fn count_display_turns(operations: &[RolloutAction]) -> usize {
+    operations
+        .iter()
+        .filter(|action| matches!(action, RolloutAction::PlannerEndStep))
+        .count()
+}
+
 impl SessionView {
     fn new(answer: RolloutTrajectory) -> Self {
-        let operations = answer.trajectory.to_trajectory_log_on_current_path().0;
-        let _final_log = TrajectoryActionLog(operations.clone());
-        let final_state: TrajectoryState<'_> = todo!(
-            "Migrate browser to construct TrajectoryState from Tree reference instead of from_session_log"
+        validate_tree_for_browser(&answer.trajectory);
+        let (tree_line_node_ids, tree_lines) = build_tree_lines(&answer.trajectory);
+        let current_node_id = answer
+            .trajectory
+            .current_node_id
+            .expect("Browser requires current_node_id to reconstruct selected path");
+        assert!(
+            answer.trajectory.nodes[current_node_id]
+                .verifier_on_child_id
+                .is_none()
+                && answer.trajectory.nodes[current_node_id]
+                    .verifier_off_child_id
+                    .is_none(),
+            "Current node must be a leaf for leaf-aligned tree view"
         );
-        let total_display_turns = final_state.total_display_rounds();
-        let total_actual_turns = final_state.total_actual_steps;
+        let selected_tree_line_index = tree_line_node_ids
+            .iter()
+            .position(|node_id| *node_id == current_node_id)
+            .expect("Current node id must appear in rendered leaf lines");
+        let operations = collect_root_to_node_action_sequence(&answer.trajectory, current_node_id);
+        let total_display_turns = count_display_turns(&operations);
+        let total_actual_turns = total_display_turns;
         Self {
             answer,
+            tree_lines,
+            tree_line_node_ids,
+            selected_tree_line_index,
             operations,
-            current_pos: 0,
             total_display_turns,
             total_actual_turns,
         }
     }
 
-    fn total_ops(&self) -> usize {
-        self.operations.len()
+    fn selected_node_id(&self) -> usize {
+        self.tree_line_node_ids[self.selected_tree_line_index]
     }
 
-    fn move_by(&mut self, delta: isize) {
-        if self.operations.is_empty() {
-            self.current_pos = 0;
+    fn refresh_selected_path_actions(&mut self) {
+        let node_id = self.selected_node_id();
+        self.operations = collect_root_to_node_action_sequence(&self.answer.trajectory, node_id);
+        self.total_display_turns = count_display_turns(&self.operations);
+        self.total_actual_turns = self.total_display_turns;
+    }
+
+    fn move_tree_selection_by(&mut self, delta: isize) {
+        let total = self.tree_lines.len();
+        if total == 0 {
             return;
         }
-        let total = self.total_ops();
-        let next = self.current_pos as isize + delta;
-        self.current_pos = next.clamp(0, total as isize) as usize;
+        let next = self.selected_tree_line_index as isize + delta;
+        self.selected_tree_line_index = next.clamp(0, total as isize - 1) as usize;
+        self.refresh_selected_path_actions();
     }
 
-    fn move_to_start(&mut self) {
-        self.current_pos = 0;
+    fn move_tree_selection_to_start(&mut self) {
+        assert!(!self.tree_lines.is_empty(), "Tree lines must not be empty");
+        self.selected_tree_line_index = 0;
+        self.refresh_selected_path_actions();
     }
 
-    fn move_to_end(&mut self) {
-        self.current_pos = self.total_ops();
+    fn move_tree_selection_to_end(&mut self) {
+        assert!(!self.tree_lines.is_empty(), "Tree lines must not be empty");
+        self.selected_tree_line_index = self.tree_lines.len() - 1;
+        self.refresh_selected_path_actions();
+    }
+
+    fn select_tree_line_by_index(&mut self, index: usize) {
+        assert!(index < self.tree_lines.len(), "Tree line index must be in range");
+        self.selected_tree_line_index = index;
+        self.refresh_selected_path_actions();
     }
 
     fn current_operation_display(&self) -> Option<String> {
-        if self.current_pos == 0 {
+        if self.operations.is_empty() {
             None
         } else {
-            let operation = self.operations.get(self.current_pos - 1)?;
-            // match operation {
-            //     ModelOperation::PlannerChooseMode(_)
-            //     | ModelOperation::PlannerEndStep
-            //     | ModelOperation::VerifierComment(_) => Some(operation.to_concise_string()),
-            //     ModelOperation::PlannerReasoning(_)
-            //     | ModelOperation::PlannerToolCall(_)
-            //     | ModelOperation::ToolCallResponse(_) => {
-            //         let head = operation.to_concise_string();
-            //         let body = self
-            //             .get_current_session_state()
-            //             .current_step_content_raw
-            //             .clone();
-            //         Some(format!(
-            //             "{}\nAssistant Actively Generating:\n{}",
-            //             head, body
-            //         ))
-            //     }
-            // }
-            operation.to_pretty_string().into()
+            let mut lines: Vec<String> = Vec::new();
+            for index in 0..self.operations.len() {
+                lines.push(format!("[{index}] {}", self.operations[index].to_pretty_string()));
+            }
+            Some(lines.join("\n\n"))
         }
     }
 
     fn current_prompt_display(&self) -> Option<String> {
-        if self.operations.is_empty() {
-            return None;
-        }
-        let prefix_log = TrajectoryActionLog(
-            self.operations
-                .iter()
-                .take(self.current_pos.saturating_sub(1))
-                .cloned()
-                .collect(),
-        );
-        let _prefix_log = prefix_log;
-        let state: TrajectoryState<'_> = todo!(
-            "Migrate browser prefix-state reconstruction to use Tree reference"
-        );
-        let (prompt_before_assistant, prompt_after_assistant) =
-            get_prompt_according_to_session_status(&state);
-
-        let prompt_combined = format!(
-            "{}\n==========Assistant==========\n{}",
-            prompt_before_assistant, prompt_after_assistant
-        );
-
-        Some(prompt_combined)
+        Some(format!(
+            "Selected node: {}\nAction path length: {}\n\nPrompt reconstruction is not part of the current browser scope.",
+            self.selected_node_id(),
+            self.operations.len(),
+        ))
     }
 }

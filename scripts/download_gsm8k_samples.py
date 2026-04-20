@@ -37,8 +37,15 @@ def main() -> None:
         default=SAMPLES_TO_SAVE,
         help="Number of samples to download (must be positive)",
     )
+    parser.add_argument(
+        "--sample-seed",
+        type=int,
+        default=SAMPLE_SEED,
+        help="Random seed used for sample selection",
+    )
     args = parser.parse_args()
     num_samples = args.num_samples
+    sample_seed = args.sample_seed
     assert num_samples > 0, "--num-samples must be positive"
 
     output_dir = repo_root / "datasets"
@@ -47,7 +54,7 @@ def main() -> None:
     dataset = load_dataset("gsm8k", "main", split="train")
     assert dataset.num_rows >= num_samples, f"GSM8K train split must have at least {num_samples} samples"
 
-    rng = random.Random(SAMPLE_SEED)
+    rng = random.Random(sample_seed)
     sample_indices = rng.sample(range(dataset.num_rows), num_samples)
     subset = dataset.select(sample_indices)
 

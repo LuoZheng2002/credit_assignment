@@ -45,6 +45,8 @@ struct Args {
     vllm_port: u16,
     #[arg(long, default_value_t = 1000)]
     max_tasks: usize,
+    #[arg(long)]
+    take_over_mode_decision: bool,
 }
 
 // we want to log each action
@@ -111,6 +113,7 @@ async fn main() {
         num_samples,
         vllm_port,
         max_tasks,
+        take_over_mode_decision,
     } = Args::parse();
     assert!(vllm_port > 0, "--vllm-port must be greater than 0");
     set_vllm_port(vllm_port);
@@ -122,7 +125,6 @@ async fn main() {
 
     let client = Client::new();
     let mut rng = StdRng::seed_from_u64(42);
-    let take_over_mode_decision = false;
     // read log file
     let session_log_path = get_session_log_path(model, &dataset_name, num_samples);
     let mut session_log_items: Vec<TreeUpdateEvent> =
