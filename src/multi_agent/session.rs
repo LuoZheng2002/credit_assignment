@@ -266,10 +266,17 @@ pub struct Tree {
     pub question_id: usize,
     pub question: String,
     pub nodes: Vec<Node>,
-    pub root_node_id: usize,
-    pub current_node_id: usize,
+    pub root_node_id: Option<usize>,
+    pub current_node_id: Option<usize>,
     pub leaf_node_ids: Vec<usize>, // this is only for trajectories that have reached the final answer or is forced to end
     pub next_node_id: usize,
+    pub tree_master_status: TreeMasterStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TreeMasterStatus {
+    WorkingOnTrajectory,
+    DeterminingBranchingNode,
 }
 
 // the following is the signature of each entry in a jsonl log file for reconstructing current tree progress when the program exits abruptly.
@@ -306,25 +313,23 @@ impl TreeUpdateEvent {
 
 impl Tree {
     pub fn new(question_id: usize, question: String) -> Self {
-        let root = Node {
-            node_id: 0,
-            step: Step::new(),
-            child_id: None,
-            parent_id: None,
-        };
         Self {
             question_id,
             question,
-            nodes: vec![root],
-            root_node_id: 0,
-            current_node_id: 0,
+            nodes: Vec::new(),
+            root_node_id: None,
+            current_node_id: None,
             leaf_node_ids: Vec::new(),
-            next_node_id: 1,
+            next_node_id: 0,
+            tree_master_status: TreeMasterStatus::WorkingOnTrajectory,
         }
     }
 
     pub fn append_action_to_current_node(&mut self, action: RolloutAction) {
-        let node = &mut self.nodes[self.current_node_id];
+        let current_node_id = self
+            .current_node_id
+            .expect("AddAction requires current_node_id to be set");
+        let node = &mut self.nodes[current_node_id];
         let step = &mut node.step;
         assert!(
             !step.step_finalized,
@@ -337,7 +342,7 @@ impl Tree {
         let node = self
             .find_node_by_id(node_id)
             .expect("SetCurrentNode node_id must exist in tree");
-        self.current_node_id = node.node_id;
+        self.current_node_id = Some(node.node_id);
     }
 
     pub fn apply_event(&mut self, event: TreeUpdateEvent) {
@@ -348,14 +353,25 @@ impl Tree {
                 match parent_id {
                     None => {
                         assert_eq!(node_id, 0, "Root node id must be 0");
+                        assert!(self.nodes.is_empty(), "Root CreateNode must be first node event");
                         assert_eq!(
-                            self.root_node_id, 0,
-                            "Tree root id must remain 0 during replay"
+                            self.root_node_id,
+                            None,
+                            "Root CreateNode requires empty root_node_id"
                         );
-                        assert!(
-                            self.find_node_by_id(0).is_some(),
-                            "Tree must have root node before applying root CreateNode"
+                        assert_eq!(
+                            self.current_node_id,
+                            None,
+                            "Root CreateNode requires empty current_node_id before explicit SetCurrentNode"
                         );
+                        let root = Node {
+                            node_id,
+                            step: Step::new(),
+                            child_id: None,
+                            parent_id: None,
+                        };
+                        self.nodes.push(root);
+                        self.root_node_id = Some(node_id);
                     }
                     Some(parent_id) => {
                         assert!(
@@ -406,7 +422,7 @@ impl Tree {
 
     pub fn to_trajectory_log_on_current_path(&self) -> TrajectoryActionLog {
         let mut path_ids = Vec::new();
-        let mut cursor = Some(self.current_node_id);
+        let mut cursor = self.current_node_id;
         while let Some(node_id) = cursor {
             let node = self
                 .find_node_by_id(node_id)
@@ -473,16 +489,26 @@ impl<'a> TrajectoryState<'a> {
         session_state
     }
     pub fn collect_session_log_from_tree(tree: &Tree) -> TrajectoryActionLog {
+        if tree.current_node_id.is_none() {
+            assert!(
+                tree.root_node_id.is_none() && tree.nodes.is_empty(),
+                "Tree without current node must be empty before root creation"
+            );
+            return TrajectoryActionLog(Vec::new());
+        }
         let mut node_ids_from_current_to_root: Vec<usize> = Vec::new();
-        let mut cursor = Some(tree.current_node_id);
+        let mut cursor = tree.current_node_id;
         while let Some(node_id) = cursor {
             node_ids_from_current_to_root.push(node_id);
             let node = tree
                 .find_node_by_id(node_id)
                 .expect("Current path node_id must exist in tree");
             let parent = node.parent_id;
+            let root_node_id = tree
+                .root_node_id
+                .expect("root_node_id must be set when traversing current path");
             assert!(
-                parent.is_some() || node.node_id == tree.root_node_id,
+                parent.is_some() || node.node_id == root_node_id,
                 "Non-root node must have a live parent"
             );
             cursor = parent;
