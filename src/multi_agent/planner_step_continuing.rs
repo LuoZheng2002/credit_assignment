@@ -1,6 +1,6 @@
 use crate::multi_agent::{
     planner_deciding_next_step::get_planner_prompt_before_assistant,
-    session::{NextStepDecision, TrajectoryState, SessionStatus},
+    session::{NextStepDecision, TrajectoryState, TrajectoryStatus},
 };
 
 pub const TOOL_PROMPT: &str = "\
@@ -43,8 +43,8 @@ Begin your step:",
 
 fn get_planner_step_continuing_prompt_before_assistant(session_state: &TrajectoryState<'_>) -> String {
     assert!(matches!(
-        session_state.session_status,
-        SessionStatus::PlannerWorkingOnStep
+        session_state.status,
+        TrajectoryStatus::PlannerWorkingOnStep
     ));
     let question = &session_state.question;
     let chosen_mode = session_state
@@ -59,8 +59,8 @@ fn get_planner_step_continuing_prompt_before_assistant(session_state: &Trajector
 pub fn get_planner_prompt_after_assistant(session_state: &TrajectoryState<'_>) -> String {
     // only working on step needs the prompt after assistant
     assert!(matches!(
-        session_state.session_status,
-        SessionStatus::PlannerWorkingOnStep
+        session_state.status,
+        TrajectoryStatus::PlannerWorkingOnStep
     ));
     session_state.current_step_content_raw.clone()
 }

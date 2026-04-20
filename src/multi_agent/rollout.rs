@@ -15,8 +15,8 @@ use crate::{
         planner_step_overwriting::get_planner_step_overwriting_prompts,
         planner_updating_plan::get_planner_updating_plan_prompts,
         session::{
-            MakeOrChangePlan, NextStepDecision, RolloutAction, SessionStatus, StepQuality,
-            ToolResponse, TrajectoryState, Tree, TreeUpdateEvent, VerifierComment,
+            MakeOrChangePlan, NextStepDecision, RolloutAction, StepQuality, ToolResponse,
+            TrajectoryState, TrajectoryStatus, Tree, TreeUpdateEvent, VerifierComment,
         },
         verifier_commenting::get_verifier_commenting_prompts,
     },
@@ -287,14 +287,18 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
     execute_python_code(code.to_string()).await
 }
 
-pub fn get_prompt_according_to_session_status(session_state: &TrajectoryState<'_>) -> (String, String) {
-    match session_state.session_status {
-        SessionStatus::PlannerMakingOrChangingPlan => {
+pub fn get_prompt_according_to_session_status(
+    session_state: &TrajectoryState<'_>,
+) -> (String, String) {
+    match session_state.status {
+        TrajectoryStatus::PlannerMakingOrChangingPlan => {
             get_planner_making_plan_prompts(session_state)
         }
-        SessionStatus::PlannerKeepingCurrentPlan => (String::new(), String::new()),
-        SessionStatus::PlannerChoosingMode => get_planner_deciding_next_step_prompts(session_state),
-        SessionStatus::PlannerWorkingOnStep => {
+        TrajectoryStatus::PlannerKeepingCurrentPlan => (String::new(), String::new()),
+        TrajectoryStatus::PlannerChoosingMode => {
+            get_planner_deciding_next_step_prompts(session_state)
+        }
+        TrajectoryStatus::PlannerWorkingOnStep => {
             match session_state
                 .planner_chosen_mode
                 .as_ref()
@@ -309,9 +313,9 @@ pub fn get_prompt_according_to_session_status(session_state: &TrajectoryState<'_
                 }
             }
         }
-        SessionStatus::PlannerCompactingStep => get_planner_compacting_prompts(session_state),
-        SessionStatus::PlannerUpdatingPlan => get_planner_updating_plan_prompts(session_state),
-        SessionStatus::VerifierCommenting => get_verifier_commenting_prompts(session_state),
+        TrajectoryStatus::PlannerCompactingStep => get_planner_compacting_prompts(session_state),
+        TrajectoryStatus::PlannerUpdatingPlan => get_planner_updating_plan_prompts(session_state),
+        TrajectoryStatus::VerifierCommenting => get_verifier_commenting_prompts(session_state),
     }
 }
 
@@ -407,8 +411,8 @@ async fn build_new_operations(
     verifier_probability: f32,
     rng: &mut impl rand::Rng,
 ) -> NewOperationsResult {
-    match &session_state.session_status {
-        SessionStatus::PlannerMakingOrChangingPlan => {
+    match &session_state.status {
+        TrajectoryStatus::PlannerMakingOrChangingPlan => {
             let chosen_mode = session_state
                 .planner_chosen_mode
                 .as_ref()
@@ -442,14 +446,14 @@ async fn build_new_operations(
                 should_end_session: false,
             }
         }
-        SessionStatus::PlannerKeepingCurrentPlan => NewOperationsResult {
+        TrajectoryStatus::PlannerKeepingCurrentPlan => NewOperationsResult {
             operations: vec![TreeUpdateEvent::AddAction {
                 question_id,
                 action: RolloutAction::PlannerMakeOrChangePlan(None),
             }],
             should_end_session: false,
         },
-        SessionStatus::PlannerChoosingMode => {
+        TrajectoryStatus::PlannerChoosingMode => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(session_state);
             assert_eq!(
@@ -520,7 +524,7 @@ async fn build_new_operations(
                 should_end_session: false,
             }
         }
-        SessionStatus::PlannerWorkingOnStep => {
+        TrajectoryStatus::PlannerWorkingOnStep => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(session_state);
             let mut response = call_llm_with_prefix(
@@ -644,7 +648,7 @@ async fn build_new_operations(
                 should_end_session: false,
             }
         }
-        SessionStatus::PlannerCompactingStep => {
+        TrajectoryStatus::PlannerCompactingStep => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(session_state);
             let response = call_llm_with_prefix(
@@ -669,7 +673,7 @@ async fn build_new_operations(
                 should_end_session: false,
             }
         }
-        SessionStatus::PlannerUpdatingPlan => {
+        TrajectoryStatus::PlannerUpdatingPlan => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(session_state);
             let response = call_llm_with_prefix(
@@ -691,7 +695,7 @@ async fn build_new_operations(
                 should_end_session: false,
             }
         }
-        SessionStatus::VerifierCommenting => {
+        TrajectoryStatus::VerifierCommenting => {
             let mut verifier_comment = None;
             if !session_state.prev_steps.is_empty() && rng.random::<f32>() <= verifier_probability {
                 let (prompt_before_assistant, prompt_after_assistant) =
@@ -740,11 +744,11 @@ pub async fn rollout(
 ) {
     // create a state machine
     let mut tree = Tree::new(question_id, question.clone());
-    let mut session_should_end = false;
+    let mut trajectory_should_end = false;
     let mut forced_final_answer: Option<String> = None;
     if loaded_events.is_empty() {
         action_tx
-                .send(TreeUpdateEvent::CreateNode {
+            .send(TreeUpdateEvent::CreateNode {
                 question_id,
                 node_id: tree.root_node_id,
                 parent_id: None,
@@ -755,43 +759,52 @@ pub async fn rollout(
         tree.apply_event(event);
         let loaded_state = TrajectoryState::from_tree(&tree);
         if loaded_state.final_answer.is_some() {
-            session_should_end = true;
+            trajectory_should_end = true;
         }
     }
-    let mut sub_step_counter = 0; // to prevent infinite loop in case of bugs
     loop {
         let session_state = TrajectoryState::from_tree(&tree);
-        if session_should_end {
+        println!(
+            "[rollout] question index: {}, num actions: {}, num prev steps: {}, num actual steps: {}",
+            question_id,
+            session_state.total_actions,
+            session_state.prev_steps.len(),
+            session_state.total_actual_steps
+        );
+        if matches!(
+            session_state.source_tree.last_action(),
+            Some(RolloutAction::PlannerCompactStep { .. })
+        ) && session_state.final_answer.is_some()
+        {
+            trajectory_should_end = true;
+        }
+        if trajectory_should_end {
             let displayed_final_answer = forced_final_answer
                 .as_deref()
                 .or(session_state.final_answer.as_deref())
                 .unwrap_or("None");
             println!(
                 "[rollout finished] question index: {}, total actual rounds: {}, final answer: {}, correct answer: {}",
-                question_id,
-                session_state.total_actual_rounds(),
-                displayed_final_answer,
-                reference_answer
+                question_id, session_state.total_actions, displayed_final_answer, reference_answer
             );
             break;
         }
-        sub_step_counter += 1;
         if session_state.prev_steps.len() > 20 {
             forced_final_answer = Some(
                 "The model does not manage to provide a final answer within allowed number of turns."
                     .to_string(),
             );
-            session_should_end = true;
+            trajectory_should_end = true;
             println!(
                 "[Warning] Number of steps exceeds the limit {}, ending the session.",
                 20
             );
-        } else if session_state.total_actual_rounds() > 150 {
+        } else if session_state.total_actions > 150 {
             forced_final_answer = Some(
                 "The model does not manage to provide a final answer within allowed number of turns."
                     .to_string(),
             );
-            session_should_end = true;
+            trajectory_should_end = true;
             println!(
                 "[Warning] Total actual rounds exceeds the limit {}, ending the session.",
                 150
@@ -807,36 +820,15 @@ pub async fn rollout(
         )
         .await;
         if new_operations_result.should_end_session {
-            session_should_end = true;
+            trajectory_should_end = true;
         }
-        drop(session_state);
         let new_operations = new_operations_result.operations;
-        let mut saw_compact_step = false;
+        drop(session_state);
 
         for event in new_operations {
-            let should_end_from_operation = matches!(
-                &event,
-                TreeUpdateEvent::AddAction {
-                    action: RolloutAction::PlannerCompactStep { .. },
-                    ..
-                }
-            );
-            if should_end_from_operation {
-                saw_compact_step = true;
-            }
             tree.apply_event(event.clone());
             action_tx.send(event).unwrap();
         }
-        let post_update_state = TrajectoryState::from_tree(&tree);
-        if saw_compact_step && post_update_state.final_answer.is_some() {
-            session_should_end = true;
-        }
-        println!(
-            "[rollout] question index: {}, sub-step: {} finished, num prev steps: {}",
-            question_id,
-            sub_step_counter,
-            post_update_state.prev_steps.len()
-        );
     }
     let final_state = TrajectoryState::from_tree(&tree);
     let step_quality_accuracy = final_state.step_quality_accuracy();

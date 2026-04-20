@@ -172,59 +172,8 @@ impl RolloutAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryActionLog(pub Vec<RolloutAction>);
 
-impl TrajectoryActionLog {
-    pub fn total_actual_rounds(&self) -> usize {
-        self.0
-            .iter()
-            .filter(|op| matches!(op, RolloutAction::PlannerDecideNextStep(_)))
-            .count()
-    }
-
-    pub fn step_quality_accuracy(&self) -> Option<StepQualityAccuracy> {
-        let mut tool_true_count = 0usize;
-        let mut tool_total_count = 0usize;
-        let mut complete_true_count = 0usize;
-        let mut complete_total_count = 0usize;
-        let mut focused_true_count = 0usize;
-        let mut focused_total_count = 0usize;
-        for action in &self.0 {
-            if let RolloutAction::PlannerCompactStep {
-                step_quality: Some(step_quality),
-                ..
-            } = action
-            {
-                tool_total_count += 1;
-                if step_quality.tool {
-                    tool_true_count += 1;
-                }
-
-                complete_total_count += 1;
-                if step_quality.complete {
-                    complete_true_count += 1;
-                }
-
-                focused_total_count += 1;
-                if step_quality.focused {
-                    focused_true_count += 1;
-                }
-            }
-        }
-        assert_eq!(tool_total_count, complete_total_count);
-        assert_eq!(tool_total_count, focused_total_count);
-        if tool_total_count == 0 {
-            return None;
-        }
-
-        Some(StepQualityAccuracy {
-            tool_accuracy: tool_true_count as f32 / tool_total_count as f32,
-            complete_accuracy: complete_true_count as f32 / complete_total_count as f32,
-            focused_accuracy: focused_true_count as f32 / focused_total_count as f32,
-        })
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionStatus {
+pub enum TrajectoryStatus {
     PlannerMakingOrChangingPlan, // this status always pushes PlannerMakeOrChangePlan(Some(...))
     PlannerKeepingCurrentPlan,   // this status always pushes PlannerMakeOrChangePlan(None)
     PlannerChoosingMode,
@@ -249,7 +198,7 @@ pub struct TrajectoryState<'a> {
     pub current_step_content_compacted: Option<String>,
     pub current_step_quality: Option<StepQuality>,
     pub current_plan: Option<String>,
-    pub session_status: SessionStatus,
+    pub status: TrajectoryStatus,
     pub planner_chosen_mode: Option<NextStepDecision>,
     pub final_answer: Option<String>,
     pub failed_attempts: Vec<FailedAttempt>,
@@ -258,7 +207,8 @@ pub struct TrajectoryState<'a> {
     pub total_step_overwrites: usize,
     pub current_step_num_actions: usize,
     pub current_step_last_python_error: Option<String>,
-    pub total_actual_rounds_count: usize,
+    pub total_actions: usize,
+    pub total_actual_steps: usize,
     pub step_quality_tool_true_count: usize,
     pub step_quality_tool_total_count: usize,
     pub step_quality_complete_true_count: usize,
@@ -334,7 +284,6 @@ pub enum TreeUpdateEvent {
 // TrajectoryState is used for indicating the current status and what action should be generated in rollout.rs
 // Eventually we apply the action to the Tree, and then we construct a TrajectoryState from the Tree for the current status and determine the next action to generate.
 
-
 impl TreeUpdateEvent {
     pub fn question_id(&self) -> usize {
         match self {
@@ -384,9 +333,7 @@ impl Tree {
     pub fn apply_event(&mut self, event: TreeUpdateEvent) {
         match event {
             TreeUpdateEvent::CreateNode {
-                node_id,
-                parent_id,
-                ..
+                node_id, parent_id, ..
             } => {
                 match parent_id {
                     None => {
@@ -424,7 +371,10 @@ impl Tree {
                         self.nodes[parent_node_id].child_id = Some(node_id);
                     }
                 }
-                assert!(node_id <= self.next_node_id, "CreateNode node_id must not skip next_node_id");
+                assert!(
+                    node_id <= self.next_node_id,
+                    "CreateNode node_id must not skip next_node_id"
+                );
                 if node_id == self.next_node_id {
                     self.next_node_id += 1;
                 }
@@ -465,6 +415,22 @@ impl Tree {
         }
         TrajectoryActionLog(actions)
     }
+    pub fn last_action(&self) -> Option<RolloutAction> {
+        let current_node = self
+            .find_node_by_id(self.current_node_id)
+            .expect("Current node must exist in tree to get last action");
+        let mut action = current_node.step.action_log.last().cloned();
+        if action.is_none() {
+            // if current node has no action, look for the last action in the parent node
+            if let Some(parent_id) = current_node.parent_id {
+                let parent_node = self
+                    .find_node_by_id(parent_id)
+                    .expect("Parent node must exist in tree to get last action");
+                action = parent_node.step.action_log.last().cloned();
+            }
+        }
+        action
+    }
 }
 
 pub const MAX_PLAN_CHANGES: usize = 2;
@@ -486,17 +452,18 @@ impl<'a> TrajectoryState<'a> {
             total_step_overwrites: 0,
             current_step_content_compacted: None,
             current_plan: None,
-            session_status: SessionStatus::VerifierCommenting,
+            status: TrajectoryStatus::VerifierCommenting,
             planner_chosen_mode: None,
             final_answer: None,
             failed_attempts: Vec::new(),
-            total_actual_rounds_count: 0,
+            total_actions: 0,
             step_quality_tool_true_count: 0,
             step_quality_tool_total_count: 0,
             step_quality_complete_true_count: 0,
             step_quality_complete_total_count: 0,
             step_quality_focused_true_count: 0,
             step_quality_focused_total_count: 0,
+            total_actual_steps: 0,
         }
     }
     fn from_session_log(
@@ -548,9 +515,6 @@ impl<'a> TrajectoryState<'a> {
     pub fn can_change_plan(&self) -> bool {
         self.num_plan_changes < MAX_PLAN_CHANGES
     }
-    pub fn total_actual_rounds(&self) -> usize {
-        self.total_actual_rounds_count
-    }
     pub fn step_quality_accuracy(&self) -> Option<StepQualityAccuracy> {
         assert_eq!(
             self.step_quality_tool_total_count,
@@ -584,28 +548,29 @@ impl<'a> TrajectoryState<'a> {
     }
     pub fn update(&mut self, operation: RolloutAction) -> bool {
         let mut should_end_session = false;
+        self.total_actions += 1;
         match operation {
             RolloutAction::PlannerMakeOrChangePlan(plan) => {
                 assert!(
                     matches!(
-                        self.session_status,
-                        SessionStatus::PlannerMakingOrChangingPlan
-                            | SessionStatus::PlannerKeepingCurrentPlan
+                        self.status,
+                        TrajectoryStatus::PlannerMakingOrChangingPlan
+                            | TrajectoryStatus::PlannerKeepingCurrentPlan
                     ),
                     "PlannerMakeOrChangePlan can only be called during PlannerMakingOrChangingPlan or PlannerKeepingCurrentPlan"
                 );
                 match plan {
                     None => {
                         assert_eq!(
-                            self.session_status,
-                            SessionStatus::PlannerKeepingCurrentPlan,
+                            self.status,
+                            TrajectoryStatus::PlannerKeepingCurrentPlan,
                             "PlannerMakeOrChangePlan(None) must be emitted in PlannerKeepingCurrentPlan"
                         );
                     }
                     Some(MakeOrChangePlan::MakePlan(plan_content)) => {
                         assert_eq!(
-                            self.session_status,
-                            SessionStatus::PlannerMakingOrChangingPlan,
+                            self.status,
+                            TrajectoryStatus::PlannerMakingOrChangingPlan,
                             "PlannerMakeOrChangePlan(Some(MakePlan)) must be emitted in PlannerMakingOrChangingPlan"
                         );
                         self.current_plan = Some(plan_content);
@@ -615,8 +580,8 @@ impl<'a> TrajectoryState<'a> {
                         prev_failed_reason,
                     }) => {
                         assert_eq!(
-                            self.session_status,
-                            SessionStatus::PlannerMakingOrChangingPlan,
+                            self.status,
+                            TrajectoryStatus::PlannerMakingOrChangingPlan,
                             "PlannerMakeOrChangePlan(Some(ChangePlan)) must be emitted in PlannerMakingOrChangingPlan"
                         );
                         assert!(
@@ -642,15 +607,14 @@ impl<'a> TrajectoryState<'a> {
                     self.current_plan.is_some(),
                     "A plan must exist after PlannerMakeOrChangePlan"
                 );
-                self.session_status = SessionStatus::PlannerWorkingOnStep;
+                self.status = TrajectoryStatus::PlannerWorkingOnStep;
             }
             RolloutAction::PlannerDecideNextStep(mode) => {
-                self.total_actual_rounds_count += 1;
                 self.planner_chosen_mode = Some(mode.clone());
                 match mode {
                     NextStepDecision::ChangePlan(_reason) => {
                         self.step_overwrite_streak = 0;
-                        self.session_status = SessionStatus::PlannerMakingOrChangingPlan;
+                        self.status = TrajectoryStatus::PlannerMakingOrChangingPlan;
                     }
                     NextStepDecision::OverwriteLastStep(_overwrite_reason) => {
                         assert!(
@@ -660,17 +624,17 @@ impl<'a> TrajectoryState<'a> {
                         self.step_overwrite_streak += 1;
                         self.total_step_overwrites += 1;
                         if self.current_plan.is_none() {
-                            self.session_status = SessionStatus::PlannerMakingOrChangingPlan;
+                            self.status = TrajectoryStatus::PlannerMakingOrChangingPlan;
                         } else {
-                            self.session_status = SessionStatus::PlannerKeepingCurrentPlan;
+                            self.status = TrajectoryStatus::PlannerKeepingCurrentPlan;
                         }
                     }
                     NextStepDecision::Continue => {
                         self.step_overwrite_streak = 0;
                         if self.current_plan.is_none() {
-                            self.session_status = SessionStatus::PlannerMakingOrChangingPlan;
+                            self.status = TrajectoryStatus::PlannerMakingOrChangingPlan;
                         } else {
-                            self.session_status = SessionStatus::PlannerKeepingCurrentPlan;
+                            self.status = TrajectoryStatus::PlannerKeepingCurrentPlan;
                         }
                     }
                 }
@@ -702,8 +666,8 @@ impl<'a> TrajectoryState<'a> {
                 );
                 self.current_step_num_actions += 1;
                 assert_eq!(
-                    self.session_status,
-                    SessionStatus::PlannerWorkingOnStep,
+                    self.status,
+                    TrajectoryStatus::PlannerWorkingOnStep,
                     "ToolCallResponse can only be called during PlannerTurn"
                 );
                 match &tool_response {
@@ -722,23 +686,25 @@ impl<'a> TrajectoryState<'a> {
             }
             RolloutAction::PlannerEndStep => {
                 assert_eq!(
-                    self.session_status,
-                    SessionStatus::PlannerWorkingOnStep,
+                    self.status,
+                    TrajectoryStatus::PlannerWorkingOnStep,
                     "PlannerEndStep can only be called during PlannerTurn"
                 );
                 self.current_step_num_actions = 0;
                 self.current_step_last_python_error = None;
-                self.session_status = SessionStatus::PlannerCompactingStep;
+                self.status = TrajectoryStatus::PlannerCompactingStep;
             }
             RolloutAction::PlannerCompactStep {
                 summary,
                 step_quality,
             } => {
                 assert_eq!(
-                    self.session_status,
-                    SessionStatus::PlannerCompactingStep,
+                    self.status,
+                    TrajectoryStatus::PlannerCompactingStep,
                     "PlannerCompactStep can only be called after PlannerEndStep"
                 );
+                // this will conclude the current step
+                self.total_actual_steps += 1;
                 if let Some(boxed_answer) = extract_boxed_content(&summary) {
                     self.final_answer = Some(boxed_answer);
                 }
@@ -762,12 +728,12 @@ impl<'a> TrajectoryState<'a> {
                 }
                 self.current_step_content_compacted = Some(summary);
                 self.current_step_quality = step_quality;
-                self.session_status = SessionStatus::PlannerUpdatingPlan;
+                self.status = TrajectoryStatus::PlannerUpdatingPlan;
             }
             RolloutAction::PlannerUpdatePlan(updated_plan) => {
                 assert_eq!(
-                    self.session_status,
-                    SessionStatus::PlannerUpdatingPlan,
+                    self.status,
+                    TrajectoryStatus::PlannerUpdatingPlan,
                     "PlannerUpdatePlan can only be called after PlannerCompactStep"
                 );
                 self.current_plan = Some(updated_plan);
@@ -823,38 +789,38 @@ impl<'a> TrajectoryState<'a> {
                         self.current_step_quality = None;
                     }
                 }
-                self.session_status = SessionStatus::VerifierCommenting;
+                self.status = TrajectoryStatus::VerifierCommenting;
             }
             RolloutAction::VerifierComment(comment) => {
                 assert_eq!(
-                    self.session_status,
-                    SessionStatus::VerifierCommenting,
+                    self.status,
+                    TrajectoryStatus::VerifierCommenting,
                     "VerifierComment can only be called during VerifierCommenting"
                 );
                 if let Some(last_step) = self.prev_steps.last_mut() {
                     last_step.current_step_verifier_comment = comment;
-                    self.session_status = SessionStatus::PlannerChoosingMode;
+                    self.status = TrajectoryStatus::PlannerChoosingMode;
                 } else {
                     assert!(
                         comment.is_none(),
                         "Verifier comment must be None when there is no previous step"
                     );
                     self.planner_chosen_mode = Some(NextStepDecision::Continue);
-                    self.session_status = SessionStatus::PlannerMakingOrChangingPlan;
+                    self.status = TrajectoryStatus::PlannerMakingOrChangingPlan;
                 }
             }
         }
         should_end_session
     }
     pub fn to_history_prev_steps(&self) -> String {
-        let (planner_turn, making_plan) = match self.session_status {
-            SessionStatus::PlannerMakingOrChangingPlan => (true, true),
-            SessionStatus::PlannerKeepingCurrentPlan => (true, false),
-            SessionStatus::PlannerChoosingMode => (true, false), // should see last step verifier comment if there is any
-            SessionStatus::PlannerWorkingOnStep => (true, false), // should see last step verifier comment if there is any
-            SessionStatus::PlannerCompactingStep => (true, false), // same as working on step
-            SessionStatus::PlannerUpdatingPlan => (true, false), // for current step, should see the compacted content only
-            SessionStatus::VerifierCommenting => (false, false), // for current step, should see both the raw content and compacted content
+        let (planner_turn, making_plan) = match self.status {
+            TrajectoryStatus::PlannerMakingOrChangingPlan => (true, true),
+            TrajectoryStatus::PlannerKeepingCurrentPlan => (true, false),
+            TrajectoryStatus::PlannerChoosingMode => (true, false), // should see last step verifier comment if there is any
+            TrajectoryStatus::PlannerWorkingOnStep => (true, false), // should see last step verifier comment if there is any
+            TrajectoryStatus::PlannerCompactingStep => (true, false), // same as working on step
+            TrajectoryStatus::PlannerUpdatingPlan => (true, false), // for current step, should see the compacted content only
+            TrajectoryStatus::VerifierCommenting => (false, false), // for current step, should see both the raw content and compacted content
         };
         let mut history = String::new();
         for (i, failed_attempt) in self.failed_attempts.iter().enumerate() {

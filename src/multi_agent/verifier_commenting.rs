@@ -1,9 +1,9 @@
-use crate::multi_agent::session::{TrajectoryState, SessionStatus};
+use crate::multi_agent::session::{TrajectoryState, TrajectoryStatus};
 
 fn get_verifier_commenting_prompt_before_assistant(session_state: &TrajectoryState<'_>) -> String {
     assert!(matches!(
-        session_state.session_status,
-        SessionStatus::VerifierCommenting
+        session_state.status,
+        TrajectoryStatus::VerifierCommenting
     ));
     let question = &session_state.question;
     let history_prev_steps = session_state.to_history_prev_steps();

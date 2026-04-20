@@ -793,7 +793,7 @@ impl SessionView {
             "Migrate browser to construct TrajectoryState from Tree reference instead of from_session_log"
         );
         let total_display_turns = final_state.total_display_rounds();
-        let total_actual_turns = final_state.total_actual_rounds();
+        let total_actual_turns = final_state.total_actual_steps;
         Self {
             answer,
             operations,

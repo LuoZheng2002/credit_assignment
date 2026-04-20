@@ -1,4 +1,4 @@
-use crate::multi_agent::session::{TrajectoryState, SessionStatus};
+use crate::multi_agent::session::{TrajectoryState, TrajectoryStatus};
 
 fn get_planner_making_plan_status_prompt() -> String {
     "\
@@ -27,8 +27,8 @@ Please only output the steps.\n\
 
 pub fn get_planner_making_plan_before_assistant(session_state: &TrajectoryState<'_>) -> String {
     assert!(matches!(
-        session_state.session_status,
-        SessionStatus::PlannerMakingOrChangingPlan
+        session_state.status,
+        TrajectoryStatus::PlannerMakingOrChangingPlan
     ));
     let question = &session_state.question;
     let history_prev_steps = if !session_state.failed_attempts.is_empty() {
