@@ -871,76 +871,100 @@ fn ratio_color_style(value: f64) -> Style {
 
 fn build_home_stats_line(answer: &RolloutTrajectory, selected: bool) -> Line<'static> {
     let correctness = &answer.trajectory.correctness_ratio;
-    assert!(
-        correctness.denominator > 0,
-        "Home stats require correctness_ratio denominator > 0"
-    );
-
     let step_quality = &answer.step_quality_ratio;
-    assert!(
-        step_quality.tool_denominator > 0,
-        "Home stats require tool denominator > 0"
-    );
-    assert!(
-        step_quality.complete_denominator > 0,
-        "Home stats require complete denominator > 0"
-    );
-    assert!(
-        step_quality.focused_denominator > 0,
-        "Home stats require focused denominator > 0"
-    );
-
     let failed_and_aborted = &answer.failed_and_aborted_ratio;
-    assert!(
-        failed_and_aborted.denominator > 0,
-        "Home stats require failed_and_aborted denominator > 0"
-    );
 
-    let accuracy = correctness.numerator as f64 / correctness.denominator as f64;
-    let tool = step_quality.tool_numerator as f64 / step_quality.tool_denominator as f64;
-    let complete =
-        step_quality.complete_numerator as f64 / step_quality.complete_denominator as f64;
-    let focused = step_quality.focused_numerator as f64 / step_quality.focused_denominator as f64;
-    let failed = failed_and_aborted.numerator as f64 / failed_and_aborted.denominator as f64;
+    let accuracy = if correctness.denominator == 0 {
+        None
+    } else {
+        Some(correctness.numerator as f64 / correctness.denominator as f64)
+    };
+    let tool = if step_quality.tool_denominator == 0 {
+        None
+    } else {
+        Some(step_quality.tool_numerator as f64 / step_quality.tool_denominator as f64)
+    };
+    let complete = if step_quality.complete_denominator == 0 {
+        None
+    } else {
+        Some(step_quality.complete_numerator as f64 / step_quality.complete_denominator as f64)
+    };
+    let focused = if step_quality.focused_denominator == 0 {
+        None
+    } else {
+        Some(step_quality.focused_numerator as f64 / step_quality.focused_denominator as f64)
+    };
+    let failed = if failed_and_aborted.denominator == 0 {
+        None
+    } else {
+        Some(failed_and_aborted.numerator as f64 / failed_and_aborted.denominator as f64)
+    };
     let tool_wait_violation_denominator = answer.trajectory.nodes.len();
-    assert!(
-        tool_wait_violation_denominator > 0,
-        "Home stats require non-empty tree for tool wait violation ratio"
-    );
-    let tool_wait_violation_ratio = answer.trajectory.tool_wait_violations as f64
-        / tool_wait_violation_denominator as f64;
+    let tool_wait_violation_ratio = if tool_wait_violation_denominator == 0 {
+        None
+    } else {
+        Some(
+            answer.trajectory.tool_wait_violations as f64 / tool_wait_violation_denominator as f64,
+        )
+    };
 
-    let sq_avg = (tool + complete + focused) / 3.0;
-    let accuracy_style = ratio_color_style(accuracy);
-    let failed_style = ratio_color_style(1.0 - failed);
-    let tool_wait_violation_style = ratio_color_style(1.0 - tool_wait_violation_ratio.min(1.0));
-    let sq_avg_style = ratio_color_style(sq_avg);
-    let tool_style = ratio_color_style(tool);
-    let complete_style = ratio_color_style(complete);
-    let focused_style = ratio_color_style(focused);
+    let sq_avg = match (tool, complete, focused) {
+        (Some(tool_value), Some(complete_value), Some(focused_value)) => {
+            Some((tool_value + complete_value + focused_value) / 3.0)
+        }
+        _ => None,
+    };
+
+    let nan_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let ratio_style_or_nan = |value: Option<f64>| -> Style {
+        match value {
+            Some(valid_ratio) => ratio_color_style(valid_ratio),
+            None => nan_style,
+        }
+    };
+    let format_ratio_or_nan = |value: Option<f64>| -> String {
+        match value {
+            Some(valid_ratio) => format!("{valid_ratio:.2}"),
+            None => "NAN".to_string(),
+        }
+    };
+
+    let accuracy_style = ratio_style_or_nan(accuracy);
+    let failed_style = ratio_style_or_nan(failed.map(|failed_value| 1.0 - failed_value));
+    let tool_wait_violation_style =
+        ratio_style_or_nan(tool_wait_violation_ratio.map(|ratio| 1.0 - ratio.min(1.0)));
+    let sq_avg_style = ratio_style_or_nan(sq_avg);
+    let tool_style = ratio_style_or_nan(tool);
+    let complete_style = ratio_style_or_nan(complete);
+    let focused_style = ratio_style_or_nan(focused);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::styled(
         format!(
-            "A:{}/{}({:.2})",
-            correctness.numerator, correctness.denominator, accuracy
+            "A:{}/{}({})",
+            correctness.numerator,
+            correctness.denominator,
+            format_ratio_or_nan(accuracy)
         ),
         accuracy_style,
     ));
     spans.push(Span::raw(" "));
     spans.push(Span::styled("SQ:".to_string(), sq_avg_style));
     spans.push(Span::styled("(".to_string(), sq_avg_style));
-    spans.push(Span::styled(format!("{:.2}", tool), tool_style));
+    spans.push(Span::styled(format_ratio_or_nan(tool), tool_style));
     spans.push(Span::styled(",".to_string(), sq_avg_style));
-    spans.push(Span::styled(format!("{:.2}", complete), complete_style));
+    spans.push(Span::styled(format_ratio_or_nan(complete), complete_style));
     spans.push(Span::styled(",".to_string(), sq_avg_style));
-    spans.push(Span::styled(format!("{:.2}", focused), focused_style));
+    spans.push(Span::styled(format_ratio_or_nan(focused), focused_style));
     spans.push(Span::styled(")".to_string(), sq_avg_style));
     spans.push(Span::raw(" "));
-    spans.push(Span::styled(format!("F:{:.2}", failed), failed_style));
+    spans.push(Span::styled(
+        format!("F:{}", format_ratio_or_nan(failed)),
+        failed_style,
+    ));
     spans.push(Span::raw(" "));
     spans.push(Span::styled(
-        format!("T:{:.2}", tool_wait_violation_ratio),
+        format!("T:{}", format_ratio_or_nan(tool_wait_violation_ratio)),
         tool_wait_violation_style,
     ));
     spans.push(Span::raw(" "));
