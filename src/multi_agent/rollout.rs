@@ -103,7 +103,7 @@ impl ToolCallParser for MarkdownPythonParser {
 pub fn split_reasoning_and_tool_call(
     response: String,
     model: Model,
-) -> (Option<String>, Option<String>) {
+) -> (Option<String>, Option<String>, bool) {
     let parsers: Vec<Box<dyn ToolCallParser>> = vec![Box::new(MarkdownPythonParser {})];
     let mut min_start_position = None;
     let mut selected_parser = None;
@@ -116,7 +116,7 @@ pub fn split_reasoning_and_tool_call(
         }
     }
     let Some(mut start_position) = min_start_position else {
-        return (Some(response), None);
+        return (Some(response), None, false);
     };
     // if there is <tool_call> before the start position, also include it
     if let Some(tag_position) = response[..start_position].rfind("<tool_wait>") {
@@ -129,11 +129,23 @@ pub fn split_reasoning_and_tool_call(
         .end_position(&response, start_position)
         .unwrap_or(response.len());
     let mut tool_call = response[start_position..end_position].to_string();
+    let mut tool_wait_violation = false;
     // if after the end position there is immediately a </tool_wait> tag, we also include it in the tool call
-    if end_position < response.len() && response[end_position..].trim().starts_with("</tool_wait>")
-    {
+    if end_position < response.len() && response[end_position..].trim().starts_with("</tool_wait>") {
+        let suffix = response[end_position..].trim_start();
+        let suffix_after_tag = suffix
+            .strip_prefix("</tool_wait>")
+            .expect("suffix should start with </tool_wait>");
+        if !suffix_after_tag.trim().is_empty() {
+            println!(
+                "Warning: model outputs non-empty trailing content after </tool_wait>: {}",
+                suffix_after_tag.trim()
+            );
+            tool_wait_violation = true;
+        }
         tool_call.push_str("</tool_wait>");
     } else {
+        tool_wait_violation = true;
         if model.is_qwen() {
             println!("Warning: tool call does not end with </tool_wait> tag.");
         }
@@ -144,7 +156,7 @@ pub fn split_reasoning_and_tool_call(
     } else {
         None
     };
-    (reasoning, Some(tool_call))
+    (reasoning, Some(tool_call), tool_wait_violation)
 }
 
 pub fn extract_content_in_markdown_code_block(content: &str) -> Option<String> {
@@ -656,10 +668,14 @@ async fn build_new_operations(
                     );
                     hold_end_step = true;
                 }
-                let (reasoning, tool_call) = split_reasoning_and_tool_call(response.clone(), model);
+                let (reasoning, tool_call, tool_wait_violation) =
+                    split_reasoning_and_tool_call(response.clone(), model);
                 let mut push_end_step = false;
                 let mut has_terminal_intervention = false;
                 let mut operations: Vec<TreeUpdateEvent> = Vec::new();
+                if tool_wait_violation {
+                    operations.push(TreeUpdateEvent::ToolWaitViolation { question_id });
+                }
                 if let Some(reasoning) = reasoning {
                     if reasoning.contains("<end_step>") {
                         push_end_step = true;

@@ -934,10 +934,18 @@ fn build_home_stats_line(answer: &RolloutTrajectory, selected: bool) -> Line<'st
         step_quality.complete_numerator as f64 / step_quality.complete_denominator as f64;
     let focused = step_quality.focused_numerator as f64 / step_quality.focused_denominator as f64;
     let failed = failed_and_aborted.numerator as f64 / failed_and_aborted.denominator as f64;
+    let tool_wait_violation_denominator = answer.trajectory.nodes.len();
+    assert!(
+        tool_wait_violation_denominator > 0,
+        "Home stats require non-empty tree for tool wait violation ratio"
+    );
+    let tool_wait_violation_ratio = answer.trajectory.tool_wait_violations as f64
+        / tool_wait_violation_denominator as f64;
 
     let sq_avg = (tool + complete + focused) / 3.0;
     let accuracy_style = ratio_color_style(accuracy);
     let failed_style = ratio_color_style(1.0 - failed);
+    let tool_wait_violation_style = ratio_color_style(1.0 - tool_wait_violation_ratio.min(1.0));
     let sq_avg_style = ratio_color_style(sq_avg);
     let tool_style = ratio_color_style(tool);
     let complete_style = ratio_color_style(complete);
@@ -962,6 +970,11 @@ fn build_home_stats_line(answer: &RolloutTrajectory, selected: bool) -> Line<'st
     spans.push(Span::styled(")".to_string(), sq_avg_style));
     spans.push(Span::raw(" "));
     spans.push(Span::styled(format!("F:{:.2}", failed), failed_style));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(
+        format!("T:{:.2}", tool_wait_violation_ratio),
+        tool_wait_violation_style,
+    ));
     spans.push(Span::raw(" "));
     spans.push(Span::raw(format!("{}: ", answer.id)));
 

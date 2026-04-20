@@ -278,6 +278,7 @@ pub struct Tree {
     pub leaf_node_ids: Vec<usize>, // this is only for trajectories that have reached the final answer or is forced to end
     pub leaf_node_judgments: BTreeMap<usize, CorrectnessJudgment>,
     pub correctness_ratio: CountRatio,
+    pub tool_wait_violations: usize,
     pub next_node_id: usize,
     pub tree_master_status: TreeMasterStatus,
 }
@@ -314,6 +315,9 @@ pub enum TreeUpdateEvent {
         node_id: usize,
         correctness_judgment: CorrectnessJudgment,
     },
+    ToolWaitViolation {
+        question_id: usize,
+    },
 }
 
 // we need a status after a trajectory is finished to randomly sample a node position for branching
@@ -328,6 +332,7 @@ impl TreeUpdateEvent {
             TreeUpdateEvent::AddAction { question_id, .. } => *question_id,
             TreeUpdateEvent::RegisterLeaf { question_id, .. } => *question_id,
             TreeUpdateEvent::JudgeLeafCorrectness { question_id, .. } => *question_id,
+            TreeUpdateEvent::ToolWaitViolation { question_id } => *question_id,
         }
     }
 }
@@ -346,6 +351,7 @@ impl Tree {
                 numerator: 0,
                 denominator: 0,
             },
+            tool_wait_violations: 0,
             next_node_id: 0,
             tree_master_status: TreeMasterStatus::WorkingOnTrajectory,
         }
@@ -554,6 +560,9 @@ impl Tree {
                     numerator: num_correct,
                     denominator: num_judged_leaves,
                 };
+            }
+            TreeUpdateEvent::ToolWaitViolation { .. } => {
+                self.tool_wait_violations += 1;
             }
         }
     }
