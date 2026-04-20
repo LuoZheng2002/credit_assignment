@@ -1079,6 +1079,7 @@ pub async fn rollout(
 ) {
     // create a state machine
     let mut tree = Tree::new(question_id, question.clone());
+    println!("Loading {} existing events for question id {}...", loaded_events.len(), question_id);
     for event in loaded_events {
         tree.apply_event(event);
     }

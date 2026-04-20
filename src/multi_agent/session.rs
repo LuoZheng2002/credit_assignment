@@ -155,19 +155,19 @@ impl RolloutAction {
             RolloutAction::PlannerMakeOrChangePlan(_plan) => {
                 format!("[PlannerMakeOrChangePlan]")
             }
-            RolloutAction::PlannerDecideNextStep(mode) => {
-                format!("[PlannerChooseMode]: {:?}", mode)
+            RolloutAction::PlannerDecideNextStep(_mode) => {
+                format!("[PlannerChooseMode]")
             }
             RolloutAction::PlannerReasoning(_reasoning) => "[PlannerReasoning]".to_string(),
             RolloutAction::PlannerToolCall(_tool_call) => "[PlannerToolCall]".to_string(),
             RolloutAction::PlannerEndStep => "[PlannerEndStep]".to_string(),
-            RolloutAction::PlannerCompactStep { step_quality, .. } => {
-                format!("[PlannerCompactStep]\n[StepQuality]: {:?}", step_quality)
+            RolloutAction::PlannerCompactStep { .. } => {
+                format!("[PlannerCompactStep]")
             }
             RolloutAction::PlannerUpdatePlan(_updated_plan) => "[PlannerUpdatePlan]".to_string(),
             RolloutAction::ToolCallResponse(_tool_response) => "[ToolCallResponse]".to_string(),
-            RolloutAction::VerifierComment(comment) => {
-                format!("[VerifierComment]\n{:?}", comment)
+            RolloutAction::VerifierComment(_comment) => {
+                format!("[VerifierComment]")
             }
         }
     }

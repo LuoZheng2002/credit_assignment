@@ -26,7 +26,7 @@ If you have got the final answer to submit, put the answer in \\boxed{} in a con
 Do not put anything else other than the final answer in \\boxed{}.";
 
 fn get_planner_step_continuing_status_prompt(step_mode: NextStepDecision) -> String {
-    assert!(matches!(step_mode, NextStepDecision::Continue));
+    assert!(matches!(step_mode, NextStepDecision::Continue | NextStepDecision::ChangePlan(_)));
     format!(
         "\
 The verifier's comment is only for reference and may not be true. \

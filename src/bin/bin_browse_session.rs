@@ -18,6 +18,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::prelude::Widget;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui_core::buffer::Buffer;
 use serde_json;
@@ -677,41 +678,21 @@ impl App {
                 .block(list_block);
             frame.render_widget(empty, chunks[1]);
         } else {
+            let selected_index = self.selection_state.selected();
             let items: Vec<ListItem> = self
                 .answers
                 .iter()
-                .map(|answer| {
-                    let truncated_question: String = answer
-                        .question
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                        .chars()
-                        .take(120)
-                        .collect();
-                    let correctness_prefix = match &self.correctness_by_id {
-                        Some(map) => {
-                            let correct = map.get(&answer.id).copied().unwrap_or(false);
-                            if correct { "✓ " } else { "✗ " }
-                        }
-                        None => "",
-                    };
-                    let display = format!(
-                        "{}{}: {}",
-                        correctness_prefix, answer.id, truncated_question
-                    );
-                    ListItem::new(display)
+                .enumerate()
+                .map(|(index, answer)| {
+                    let selected = selected_index == Some(index);
+                    ListItem::new(build_home_stats_line(answer, selected))
                 })
                 .collect();
             frame.render_stateful_widget(
                 List::new(items)
                     .block(list_block)
-                    .highlight_style(
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    )
-                    .highlight_symbol("➤ "),
+                    .highlight_style(Style::default())
+                    .highlight_symbol(""),
                 chunks[1],
                 &mut self.selection_state,
             );
@@ -904,6 +885,104 @@ fn clamp_scroll(value: usize) -> u16 {
     } else {
         value as u16
     }
+}
+
+fn ratio_to_color(value: f64) -> Color {
+    assert!(value.is_finite(), "ratio value for color must be finite");
+    let clamped = value.clamp(0.0, 1.0);
+    let red = ((1.0 - clamped) * 255.0).round() as u8;
+    let green = (clamped * 255.0).round() as u8;
+    Color::Rgb(red, green, 0)
+}
+
+fn ratio_color_style(value: f64) -> Style {
+    Style::default()
+        .fg(ratio_to_color(value))
+        .add_modifier(Modifier::BOLD)
+}
+
+fn build_home_stats_line(answer: &RolloutTrajectory, selected: bool) -> Line<'static> {
+    let correctness = &answer.trajectory.correctness_ratio;
+    assert!(
+        correctness.denominator > 0,
+        "Home stats require correctness_ratio denominator > 0"
+    );
+
+    let step_quality = &answer.step_quality_ratio;
+    assert!(
+        step_quality.tool_denominator > 0,
+        "Home stats require tool denominator > 0"
+    );
+    assert!(
+        step_quality.complete_denominator > 0,
+        "Home stats require complete denominator > 0"
+    );
+    assert!(
+        step_quality.focused_denominator > 0,
+        "Home stats require focused denominator > 0"
+    );
+
+    let failed_and_aborted = &answer.failed_and_aborted_ratio;
+    assert!(
+        failed_and_aborted.denominator > 0,
+        "Home stats require failed_and_aborted denominator > 0"
+    );
+
+    let accuracy = correctness.numerator as f64 / correctness.denominator as f64;
+    let tool = step_quality.tool_numerator as f64 / step_quality.tool_denominator as f64;
+    let complete =
+        step_quality.complete_numerator as f64 / step_quality.complete_denominator as f64;
+    let focused = step_quality.focused_numerator as f64 / step_quality.focused_denominator as f64;
+    let failed = failed_and_aborted.numerator as f64 / failed_and_aborted.denominator as f64;
+
+    let sq_avg = (tool + complete + focused) / 3.0;
+    let accuracy_style = ratio_color_style(accuracy);
+    let failed_style = ratio_color_style(1.0 - failed);
+    let sq_avg_style = ratio_color_style(sq_avg);
+    let tool_style = ratio_color_style(tool);
+    let complete_style = ratio_color_style(complete);
+    let focused_style = ratio_color_style(focused);
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::styled(
+        format!(
+            "A:{}/{}({:.2})",
+            correctness.numerator, correctness.denominator, accuracy
+        ),
+        accuracy_style,
+    ));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled("SQ:".to_string(), sq_avg_style));
+    spans.push(Span::styled("(".to_string(), sq_avg_style));
+    spans.push(Span::styled(format!("{:.2}", tool), tool_style));
+    spans.push(Span::styled(",".to_string(), sq_avg_style));
+    spans.push(Span::styled(format!("{:.2}", complete), complete_style));
+    spans.push(Span::styled(",".to_string(), sq_avg_style));
+    spans.push(Span::styled(format!("{:.2}", focused), focused_style));
+    spans.push(Span::styled(")".to_string(), sq_avg_style));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(format!("F:{:.2}", failed), failed_style));
+    spans.push(Span::raw(" "));
+    spans.push(Span::raw(format!("{}: ", answer.id)));
+
+    let truncated_question: String = answer
+        .question
+        .lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(120)
+        .collect();
+    let question_style = if selected {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    spans.push(Span::styled(truncated_question, question_style));
+
+    Line::from(spans)
 }
 
 fn count_wrapped_lines(text: &str, area: Rect) -> usize {
