@@ -45,7 +45,7 @@ struct Args {
     vllm_port: u16,
     #[arg(long, default_value_t = 1000)]
     max_tasks: usize,
-    #[arg(long)]
+    #[arg(long, action = clap::ArgAction::Set)]
     take_over_mode_decision: bool,
 }
 

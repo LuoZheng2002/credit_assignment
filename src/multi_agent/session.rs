@@ -554,7 +554,7 @@ impl<'a> TrajectoryState<'a> {
             should_end_session: false,
         }
     }
-    fn from_session_log(
+    pub fn from_session_log(
         question: String,
         session_log: TrajectoryActionLog,
         source_tree: &'a Tree,
