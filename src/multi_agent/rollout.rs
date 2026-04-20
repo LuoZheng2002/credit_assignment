@@ -394,13 +394,13 @@ fn context_length_exceeded_result(question_id: usize, session_status: &str) -> V
 }
 
 async fn build_new_operations(
-    question_id: usize,
     session_state: &TrajectoryState<'_>,
     client: Client,
     model: Model,
     verifier_probability: f32,
     rng: &mut impl rand::Rng,
 ) -> Vec<TreeUpdateEvent> {
+    let question_id = session_state.source_tree.question_id;
     match &session_state.status {
         TrajectoryStatus::PlannerMakingOrChangingPlan => {
             let chosen_mode = session_state
@@ -733,6 +733,52 @@ async fn build_new_operations(
     }
 }
 
+pub async fn produce_trajectory(
+    tree: &mut Tree,
+    reference_answer: &str,
+    client: &Client,
+    model: Model,
+    verifier_probability: f32,
+    rng: &mut impl rand::Rng,
+    action_tx: &tokio::sync::mpsc::UnboundedSender<TreeUpdateEvent>,
+) {
+    loop {
+        let session_state = TrajectoryState::from_tree(tree);
+        println!(
+            "[rollout] question index: {}, num actions: {}, num prev steps: {}, num actual steps: {}",
+            tree.question_id,
+            session_state.total_actions,
+            session_state.prev_steps.len(),
+            session_state.total_actual_steps
+        );
+        if session_state.should_end_session {
+            let displayed_final_answer = session_state.final_answer.as_deref().unwrap_or("None");
+            println!(
+                "[rollout finished] question index: {}, total actual rounds: {}, final answer: {}, correct answer: {}",
+                tree.question_id,
+                session_state.total_actions,
+                displayed_final_answer,
+                reference_answer
+            );
+            break;
+        }
+        let new_operations = build_new_operations(
+            &session_state,
+            client.clone(),
+            model,
+            verifier_probability,
+            rng,
+        )
+        .await;
+        drop(session_state);
+
+        for event in new_operations {
+            tree.apply_event(event.clone());
+            action_tx.send(event).unwrap();
+        }
+    }
+}
+
 // it will output action logs and final trajectory
 // it will also load existing logs
 pub async fn rollout(
@@ -752,39 +798,16 @@ pub async fn rollout(
     for event in loaded_events {
         tree.apply_event(event);
     }
-    loop {
-        let session_state = TrajectoryState::from_tree(&tree);
-        println!(
-            "[rollout] question index: {}, num actions: {}, num prev steps: {}, num actual steps: {}",
-            question_id,
-            session_state.total_actions,
-            session_state.prev_steps.len(),
-            session_state.total_actual_steps
-        );
-        if session_state.should_end_session {
-            let displayed_final_answer = session_state.final_answer.as_deref().unwrap_or("None");
-            println!(
-                "[rollout finished] question index: {}, total actual rounds: {}, final answer: {}, correct answer: {}",
-                question_id, session_state.total_actions, displayed_final_answer, reference_answer
-            );
-            break;
-        }
-        let new_operations = build_new_operations(
-            question_id,
-            &session_state,
-            client.clone(),
-            model,
-            verifier_probability,
-            rng,
-        )
-        .await;
-        drop(session_state);
-
-        for event in new_operations {
-            tree.apply_event(event.clone());
-            action_tx.send(event).unwrap();
-        }
-    }
+    produce_trajectory(
+        &mut tree,
+        &reference_answer,
+        &client,
+        model,
+        verifier_probability,
+        rng,
+        &action_tx,
+    )
+    .await;
     let final_state = TrajectoryState::from_tree(&tree);
     let step_quality_accuracy = final_state.step_quality_accuracy();
     let trajectory_tree = tree.clone();
