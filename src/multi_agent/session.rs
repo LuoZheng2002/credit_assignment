@@ -297,6 +297,10 @@ pub enum TreeUpdateEvent {
         question_id: usize,
         action: RolloutAction,
     },
+    RegisterLeaf {
+        question_id: usize,
+        node_id: usize,
+    },
 }
 
 // we need a status after a trajectory is finished to randomly sample a node position for branching
@@ -309,6 +313,7 @@ impl TreeUpdateEvent {
             TreeUpdateEvent::CreateNode { question_id, .. } => *question_id,
             TreeUpdateEvent::SetCurrentNode { question_id, .. } => *question_id,
             TreeUpdateEvent::AddAction { question_id, .. } => *question_id,
+            TreeUpdateEvent::RegisterLeaf { question_id, .. } => *question_id,
         }
     }
 }
@@ -468,6 +473,20 @@ impl Tree {
             }
             TreeUpdateEvent::AddAction { action, .. } => {
                 self.append_action_to_current_node(action);
+            }
+            TreeUpdateEvent::RegisterLeaf { node_id, .. } => {
+                let node = self
+                    .find_node_by_id(node_id)
+                    .expect("RegisterLeaf node_id must exist in tree");
+                assert_eq!(
+                    node.node_id, node_id,
+                    "RegisterLeaf node index must equal node_id"
+                );
+                assert!(
+                    !self.leaf_node_ids.contains(&node_id),
+                    "RegisterLeaf should not register duplicate leaf node"
+                );
+                self.leaf_node_ids.push(node_id);
             }
         }
     }

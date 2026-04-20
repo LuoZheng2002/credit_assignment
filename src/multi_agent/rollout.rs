@@ -430,6 +430,7 @@ pub fn get_prompt_according_to_session_status(
 pub const SUBMIT_ANSWER_HINT: &str = "\
 <hint>It seems you are trying to end the step at the start of the step. \
 If you have got the answer, put it in \\boxed{} before ending with <end_step>.</hint>";
+pub const MAX_NUM_TRAJECTORIES: usize = 16;
 
 // we increased the repetition times to 5, there might be code that hasn't reflected this change.
 pub fn detect_repetition_five_times(response: &str) -> bool {
@@ -866,7 +867,11 @@ pub async fn produce_working_trajectory(
     }
 }
 
-pub fn determine_branching_node(tree: &mut Tree, rng: &mut impl rand::Rng) -> bool {
+pub fn determine_branching_node(
+    tree: &mut Tree,
+    rng: &mut impl rand::Rng,
+    action_tx: &tokio::sync::mpsc::UnboundedSender<TreeUpdateEvent>,
+) -> bool {
     assert_eq!(
         tree.tree_master_status,
         TreeMasterStatus::DeterminingBranchingNode,
@@ -875,11 +880,15 @@ pub fn determine_branching_node(tree: &mut Tree, rng: &mut impl rand::Rng) -> bo
     let leaf_node_id = tree
         .current_node_id
         .expect("DeterminingBranchingNode requires current_node_id");
-    assert!(
-        !tree.leaf_node_ids.contains(&leaf_node_id),
-        "leaf_node_ids should not contain duplicate finished node"
-    );
-    tree.leaf_node_ids.push(leaf_node_id);
+    let register_leaf_event = TreeUpdateEvent::RegisterLeaf {
+        question_id: tree.question_id,
+        node_id: leaf_node_id,
+    };
+    tree.apply_event(register_leaf_event.clone());
+    action_tx.send(register_leaf_event).unwrap();
+    if tree.leaf_node_ids.len() >= MAX_NUM_TRAJECTORIES {
+        return true;
+    }
 
     let mut node_weights = vec![0.0_f64; tree.nodes.len()];
     let mut trajectory_lengths: Vec<usize> = Vec::new();
@@ -988,7 +997,7 @@ pub async fn rollout(
                 tree.tree_master_status = TreeMasterStatus::DeterminingBranchingNode;
             }
             TreeMasterStatus::DeterminingBranchingNode => {
-                let should_finalize_rollout = determine_branching_node(&mut tree, rng);
+                let should_finalize_rollout = determine_branching_node(&mut tree, rng, &action_tx);
                 if should_finalize_rollout {
                     break;
                 }
