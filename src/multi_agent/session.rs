@@ -425,22 +425,6 @@ impl Tree {
         }
         TrajectoryActionLog(actions)
     }
-    pub fn last_action(&self) -> Option<RolloutAction> {
-        let current_node = self
-            .find_node_by_id(self.current_node_id)
-            .expect("Current node must exist in tree to get last action");
-        let mut action = current_node.step.action_log.last().cloned();
-        if action.is_none() {
-            // if current node has no action, look for the last action in the parent node
-            if let Some(parent_id) = current_node.parent_id {
-                let parent_node = self
-                    .find_node_by_id(parent_id)
-                    .expect("Parent node must exist in tree to get last action");
-                action = parent_node.step.action_log.last().cloned();
-            }
-        }
-        action
-    }
 }
 
 pub const MAX_PLAN_CHANGES: usize = 2;

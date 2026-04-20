@@ -662,10 +662,23 @@ async fn build_new_operations(
                 return context_length_exceeded_result(question_id, "PlannerUpdatingPlan");
             }
             let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
-            vec![TreeUpdateEvent::AddAction {
-                question_id,
-                action: RolloutAction::PlannerUpdatePlan(updated_plan_content),
-            }]
+            let parent_node_id = session_state.source_tree.current_node_id;
+            let next_node_id = session_state.source_tree.next_node_id;
+            vec![
+                TreeUpdateEvent::AddAction {
+                    question_id,
+                    action: RolloutAction::PlannerUpdatePlan(updated_plan_content),
+                },
+                TreeUpdateEvent::CreateNode {
+                    question_id,
+                    node_id: next_node_id,
+                    parent_id: Some(parent_node_id),
+                },
+                TreeUpdateEvent::SetCurrentNode {
+                    question_id,
+                    node_id: next_node_id,
+                },
+            ]
         }
         TrajectoryStatus::VerifierCommenting => {
             let mut verifier_comment = None;
