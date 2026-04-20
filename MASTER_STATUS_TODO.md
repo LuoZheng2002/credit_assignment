@@ -22,19 +22,26 @@ and make branching orchestration explicit and event-sourced.
    - `nodes: []`
    - `next_node_id: 0`
 5. Updated rollout bootstrap to emit and apply root `CreateNode` when no loaded events exist.
+6. Extracted trajectory production logic from `rollout` into separate functions:
+   - `produce_working_trajectory(...)`
+   - `determine_branching_node(...)`
+   - `produce_trajectory(...)` dispatcher by `TreeMasterStatus`
+7. `build_new_operations(...)` now derives `question_id` from `session_state.source_tree.question_id` to avoid argument duplication.
+8. Sender passing is now by reference in extracted trajectory functions.
 
 ## Next steps
 
 1. **Master-status transitions in rollout**
-   - When a trajectory ends, append the finished node to `leaf_node_ids`.
-   - If number of finished trajectories is `< 16`, switch to `DeterminingBranchingNode`.
-   - After selecting branching parent node, switch back to `WorkingOnTrajectory`.
+   - [x] When a trajectory ends, append the finished node to `leaf_node_ids`.
+   - [x] Switch to `DeterminingBranchingNode` after `WorkingOnTrajectory` loop ends.
+   - [x] Switch back to `WorkingOnTrajectory` in `determine_branching_node`.
+   - [ ] Add rollout policy control for whether to continue branching or stop after first finished trajectory.
 
 2. **Branching-node selection logic**
    - Implement selection over existing one-child nodes (selection policy TBD).
    - Emit structural events in order:
-     1) `CreateNode { parent_id: Some(selected_node_id) }`
-     2) `SetCurrentNode { node_id: new_child_id }`
+      1) `CreateNode { parent_id: Some(selected_node_id) }`
+      2) `SetCurrentNode { node_id: new_child_id }`
 
 3. **Event model extension (if needed)**
    - Consider adding explicit master-status events (e.g., `SetTreeMasterStatus`) for full replay fidelity.

@@ -122,7 +122,6 @@ async fn main() {
 
     let client = Client::new();
     let mut rng = StdRng::seed_from_u64(42);
-    let verifier_probability = 1.0;
     // read log file
     let session_log_path = get_session_log_path(model, &dataset_name, num_samples);
     let mut session_log_items: Vec<TreeUpdateEvent> =
@@ -229,7 +228,6 @@ async fn main() {
                         loaded_session_log,
                         client,
                         model,
-                        verifier_probability,
                         &mut task_rng,
                         action_tx,
                         trajectory_tx,

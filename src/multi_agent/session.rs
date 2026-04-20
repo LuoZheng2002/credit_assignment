@@ -256,7 +256,8 @@ impl Step {
 pub struct Node {
     pub node_id: usize,
     pub step: Step,
-    pub child_id: Option<usize>, // placeholder for future multi-child expansion
+    pub verifier_on_child_id: Option<usize>,
+    pub verifier_off_child_id: Option<usize>,
     pub parent_id: Option<usize>,
 }
 
@@ -286,6 +287,7 @@ pub enum TreeUpdateEvent {
         question_id: usize,
         node_id: usize,
         parent_id: Option<usize>, // None for root node
+        verifier_on: Option<bool>,
     },
     SetCurrentNode {
         question_id: usize,
@@ -335,6 +337,40 @@ impl Tree {
             !step.step_finalized,
             "Cannot append action to finalized step"
         );
+        if let RolloutAction::PlannerDecideNextStep(mode) = &action {
+            assert!(
+                step.verifier_and_mode_summary.is_none(),
+                "verifier_and_mode_summary should be set at most once per step"
+            );
+            let verifier_comment_in_current_step = step
+                .action_log
+                .iter()
+                .find_map(|existing_action| match existing_action {
+                    RolloutAction::VerifierComment(comment) => Some(comment.clone()),
+                    _ => None,
+                });
+            step.verifier_and_mode_summary = Some(match (verifier_comment_in_current_step, mode) {
+                (None, _) => VerifierAndModeSummary::VerifierOff,
+                (Some(_), NextStepDecision::Continue) => VerifierAndModeSummary::VerifierOn,
+                (Some(_), NextStepDecision::OverwriteLastStep(_)) => {
+                    VerifierAndModeSummary::VerifierOnAndOverwriteLastStep
+                }
+                (Some(_), NextStepDecision::ChangePlan(_)) => {
+                    VerifierAndModeSummary::VerifierOnAndChangePlan
+                }
+            });
+        }
+        if let RolloutAction::PlannerEndStep = &action {
+            step.step_finalized = true;
+        }
+        if let RolloutAction::ToolCallResponse(ToolResponse::Intervention(content)) = &action {
+            if content == CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE
+                || content == IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE
+                || content == REPETITION_ABORT_MESSAGE
+            {
+                step.step_finalized = true;
+            }
+        }
         step.action_log.push(action);
     }
 
@@ -348,10 +384,18 @@ impl Tree {
     pub fn apply_event(&mut self, event: TreeUpdateEvent) {
         match event {
             TreeUpdateEvent::CreateNode {
-                node_id, parent_id, ..
+                node_id,
+                parent_id,
+                verifier_on,
+                ..
             } => {
                 match parent_id {
                     None => {
+                        assert_eq!(
+                            verifier_on,
+                            None,
+                            "Root CreateNode requires verifier_on to be None"
+                        );
                         assert_eq!(node_id, 0, "Root node id must be 0");
                         assert!(self.nodes.is_empty(), "Root CreateNode must be first node event");
                         assert_eq!(
@@ -367,13 +411,16 @@ impl Tree {
                         let root = Node {
                             node_id,
                             step: Step::new(),
-                            child_id: None,
+                            verifier_on_child_id: None,
+                            verifier_off_child_id: None,
                             parent_id: None,
                         };
                         self.nodes.push(root);
                         self.root_node_id = Some(node_id);
                     }
                     Some(parent_id) => {
+                        let verifier_on = verifier_on
+                            .expect("Non-root CreateNode requires verifier_on to be set");
                         assert!(
                             self.find_node_by_id(node_id).is_none(),
                             "CreateNode node_id must be unique"
@@ -382,19 +429,30 @@ impl Tree {
                             .find_node_by_id(parent_id)
                             .expect("CreateNode parent_id must exist");
                         let parent_node_id = parent.node_id;
-                        let parent_children = self.nodes[parent_node_id].child_id;
-                        assert!(
-                            parent_children.is_none(),
-                            "CreateNode parent already has child in current single-child tree"
-                        );
+                        if verifier_on {
+                            assert!(
+                                self.nodes[parent_node_id].verifier_on_child_id.is_none(),
+                                "CreateNode parent already has verifier_on child"
+                            );
+                        } else {
+                            assert!(
+                                self.nodes[parent_node_id].verifier_off_child_id.is_none(),
+                                "CreateNode parent already has verifier_off child"
+                            );
+                        }
                         let child = Node {
                             node_id,
                             step: Step::new(),
-                            child_id: None,
+                            verifier_on_child_id: None,
+                            verifier_off_child_id: None,
                             parent_id: Some(parent_node_id),
                         };
                         self.nodes.push(child);
-                        self.nodes[parent_node_id].child_id = Some(node_id);
+                        if verifier_on {
+                            self.nodes[parent_node_id].verifier_on_child_id = Some(node_id);
+                        } else {
+                            self.nodes[parent_node_id].verifier_off_child_id = Some(node_id);
+                        }
                     }
                 }
                 assert!(
