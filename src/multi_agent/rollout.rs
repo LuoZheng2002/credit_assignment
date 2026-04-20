@@ -1,6 +1,6 @@
 use core::panic;
-use rand::distr::{Distribution, weighted::WeightedIndex};
 use rand::RngExt;
+use rand::distr::{Distribution, weighted::WeightedIndex};
 use reqwest::Client;
 
 use crate::{
@@ -16,12 +16,11 @@ use crate::{
         planner_step_overwriting::get_planner_step_overwriting_prompts,
         planner_updating_plan::get_planner_updating_plan_prompts,
         session::{
-            CorrectnessJudgment, MakeOrChangePlan, NextStepDecision, RolloutAction, StepQuality,
-            ToolResponse, TrajectoryActionLog, TrajectoryState, TrajectoryStatus, Tree,
-            TreeMasterStatus, TreeUpdateEvent,
-            VerifierComment,
-            CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE, IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE,
-            REPETITION_ABORT_MESSAGE,
+            CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE, CorrectnessJudgment,
+            IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE, MakeOrChangePlan, NextStepDecision,
+            REPETITION_ABORT_MESSAGE, RolloutAction, StepQuality, ToolResponse,
+            TrajectoryActionLog, TrajectoryState, TrajectoryStatus, Tree, TreeMasterStatus,
+            TreeUpdateEvent, VerifierComment,
         },
         verifier_commenting::get_verifier_commenting_prompts,
     },
@@ -197,7 +196,9 @@ fn parse_compactor_response(response: String) -> (String, Option<StepQuality>) {
 
     for (start_idx, _) in response.match_indices('{').rev() {
         let candidate = response[start_idx..].trim();
-        if let Ok(step_quality_fields) = serde_json::from_str::<ProperlyEndedStepQualityFields>(candidate) {
+        if let Ok(step_quality_fields) =
+            serde_json::from_str::<ProperlyEndedStepQualityFields>(candidate)
+        {
             let summary = response[..start_idx].trim_end().to_string();
             return (
                 summary,
@@ -552,7 +553,10 @@ fn is_context_length_exceeded_response(response: &str) -> bool {
     response == QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE
 }
 
-fn context_length_exceeded_result(question_id: usize, session_status: &str) -> Vec<TreeUpdateEvent> {
+fn context_length_exceeded_result(
+    question_id: usize,
+    session_status: &str,
+) -> Vec<TreeUpdateEvent> {
     println!(
         "[Warning] Model context length exceeded in {}, ending session.",
         session_status
@@ -607,9 +611,9 @@ async fn build_new_operations(
             }
         }
         TrajectoryStatus::PlannerKeepingCurrentPlan => vec![TreeUpdateEvent::AddAction {
-                question_id,
-                action: RolloutAction::PlannerMakeOrChangePlan(None),
-            }],
+            question_id,
+            action: RolloutAction::PlannerMakeOrChangePlan(None),
+        }],
         TrajectoryStatus::PlannerChoosingMode => {
             match determine_chosen_mode(
                 session_state,
@@ -667,7 +671,8 @@ async fn build_new_operations(
                 }
                 if let Some(tool_call) = tool_call {
                     let tool_response = execute_planner_tool_call(&tool_call).await;
-                    let previous_python_error = session_state.current_step_last_python_error.clone();
+                    let previous_python_error =
+                        session_state.current_step_last_python_error.clone();
                     operations.push(TreeUpdateEvent::AddAction {
                         question_id,
                         action: RolloutAction::PlannerToolCall(tool_call),
@@ -685,9 +690,11 @@ async fn build_new_operations(
                             });
                             operations.push(TreeUpdateEvent::AddAction {
                                 question_id,
-                                action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
-                                    IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
-                                )),
+                                action: RolloutAction::ToolCallResponse(
+                                    ToolResponse::Intervention(
+                                        IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
+                                    ),
+                                ),
                             });
                             has_terminal_intervention = true;
                         } else {
@@ -739,9 +746,7 @@ async fn build_new_operations(
                 }
 
                 let current_step_full = operations.len() == num_additional_actions_allowed;
-                if (push_end_step && !hold_end_step)
-                    || current_step_full
-                {
+                if (push_end_step && !hold_end_step) || current_step_full {
                     assert!(
                         !has_terminal_intervention,
                         "PlannerEndStep should not be emitted after terminal intervention"
@@ -937,6 +942,10 @@ pub async fn produce_working_trajectory(
                     client.clone(),
                 )
                 .await;
+                println!(
+                    "[judgment] question id: {}, trajectory: {}/{}, model answer: {}, reference answer: {}, is correct: {}",
+                    tree.question_id, tree.leaf_node_ids.len(), MAX_NUM_TRAJECTORIES, model_answer, reference_answer, is_correct
+                );
                 let judge_leaf_correctness_event = TreeUpdateEvent::JudgeLeafCorrectness {
                     question_id: tree.question_id,
                     node_id: leaf_node_id,
@@ -968,16 +977,17 @@ pub async fn produce_working_trajectory(
     }
 }
 
-pub fn determine_branching_node(
-    tree: &mut Tree,
-    rng: &mut impl rand::Rng,
-) -> bool {
+pub fn determine_branching_node(tree: &mut Tree, rng: &mut impl rand::Rng) -> bool {
     assert_eq!(
         tree.tree_master_status,
         TreeMasterStatus::DeterminingBranchingNode,
         "determine_branching_node requires DeterminingBranchingNode status"
     );
     if tree.leaf_node_ids.len() >= MAX_NUM_TRAJECTORIES {
+        println!(
+            "Max num trajectories {} reached, finalizing rollout.",
+            MAX_NUM_TRAJECTORIES
+        );
         return true;
     }
 
@@ -1004,8 +1014,8 @@ pub fn determine_branching_node(
             return true;
         }
         let per_node_weight = 1.0 / (trajectory_node_ids_from_leaf_to_root.len() - 1) as f64;
-        let non_leaf_node_ids =
-            &trajectory_node_ids_from_leaf_to_root[..trajectory_node_ids_from_leaf_to_root.len() - 1];
+        let non_leaf_node_ids = &trajectory_node_ids_from_leaf_to_root
+            [..trajectory_node_ids_from_leaf_to_root.len() - 1];
         for &node_id in non_leaf_node_ids {
             node_weights[node_id] += per_node_weight;
         }
@@ -1049,7 +1059,7 @@ pub fn determine_branching_node(
         tree.tree_master_status = TreeMasterStatus::WorkingOnTrajectory;
         return false;
     }
-
+    println!("No valid branching node found, finalizing rollout.");
     return true;
 }
 

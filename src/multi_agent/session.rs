@@ -277,7 +277,7 @@ pub struct Tree {
     pub current_node_id: Option<usize>,
     pub leaf_node_ids: Vec<usize>, // this is only for trajectories that have reached the final answer or is forced to end
     pub leaf_node_judgments: BTreeMap<usize, CorrectnessJudgment>,
-    pub accuracy: f64,
+    pub correctness_ratio: CountRatio,
     pub next_node_id: usize,
     pub tree_master_status: TreeMasterStatus,
 }
@@ -342,7 +342,10 @@ impl Tree {
             current_node_id: None,
             leaf_node_ids: Vec::new(),
             leaf_node_judgments: BTreeMap::new(),
-            accuracy: 0.0,
+            correctness_ratio: CountRatio {
+                numerator: 0,
+                denominator: 0,
+            },
             next_node_id: 0,
             tree_master_status: TreeMasterStatus::WorkingOnTrajectory,
         }
@@ -547,7 +550,10 @@ impl Tree {
                     .values()
                     .filter(|judgment| judgment.is_correct)
                     .count();
-                self.accuracy = num_correct as f64 / num_judged_leaves as f64;
+                self.correctness_ratio = CountRatio {
+                    numerator: num_correct,
+                    denominator: num_judged_leaves,
+                };
             }
         }
     }

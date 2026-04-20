@@ -91,7 +91,6 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
         .await
         .trim()
         .to_lowercase();
-    println!("Evaluation for question {}: {}", question_id, evaluation);
     match evaluation.as_str() {
         "correct" => true,
         "incorrect" => false,

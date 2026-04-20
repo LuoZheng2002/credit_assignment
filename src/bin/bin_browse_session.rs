@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Stdout};
@@ -1004,12 +1004,18 @@ enum NodeAbbreviation {
 impl NodeAbbreviation {
     fn as_str(self) -> &'static str {
         match self {
-            NodeAbbreviation::Voff => "VOFF",
+            NodeAbbreviation::Voff => "VOF",
             NodeAbbreviation::Von => "VON",
             NodeAbbreviation::Vow => "VOW",
             NodeAbbreviation::Voc => "VOC",
         }
     }
+}
+
+fn compact_node_label(tree: &Tree, node_id: usize) -> String {
+    let node = &tree.nodes[node_id];
+    let abbreviation = derive_node_abbreviation_from_actions(&node.step.action_log);
+    format!("{:02}{}", node.node_id % 100, abbreviation.as_str())
 }
 
 fn validate_tree_for_browser(tree: &Tree) {
@@ -1174,14 +1180,119 @@ fn collect_path_ids_from_leaf_to_root(tree: &Tree, leaf_node_id: usize) -> Vec<u
         path_ids.push(node_id);
         cursor = node.parent_id;
     }
+    path_ids
+}
+
+fn collect_path_ids_from_root_to_leaf(tree: &Tree, leaf_node_id: usize) -> Vec<usize> {
+    let mut path_ids = collect_path_ids_from_leaf_to_root(tree, leaf_node_id);
     path_ids.reverse();
     path_ids
 }
 
-fn node_label(tree: &Tree, node_id: usize) -> String {
-    let node = &tree.nodes[node_id];
-    let abbreviation = derive_node_abbreviation_from_actions(&node.step.action_log);
-    format!("{} {}", node.node_id, abbreviation.as_str())
+fn is_descendant_of(tree: &Tree, descendant_node_id: usize, ancestor_node_id: usize) -> bool {
+    assert!(descendant_node_id < tree.nodes.len(), "descendant node id must exist");
+    assert!(ancestor_node_id < tree.nodes.len(), "ancestor node id must exist");
+    let mut cursor = Some(descendant_node_id);
+    while let Some(node_id) = cursor {
+        if node_id == ancestor_node_id {
+            return true;
+        }
+        cursor = tree.nodes[node_id].parent_id;
+    }
+    false
+}
+
+fn pick_first_leaf_in_subtree(tree: &Tree, subtree_root_node_id: usize) -> usize {
+    for &leaf_node_id in &tree.leaf_node_ids {
+        if is_descendant_of(tree, leaf_node_id, subtree_root_node_id) {
+            return leaf_node_id;
+        }
+    }
+    panic!("No leaf found in subtree rooted at node {subtree_root_node_id}");
+}
+
+fn collect_leaf_order_by_focus(tree: &Tree) -> Vec<usize> {
+    assert!(!tree.leaf_node_ids.is_empty(), "Tree must contain at least one leaf");
+    let total_leaves = tree.leaf_node_ids.len();
+    let mut ordered_leaves: Vec<usize> = Vec::new();
+    let mut seen_leaf = vec![false; tree.nodes.len()];
+    let mut visited_sibling_child_nodes: HashSet<usize> = HashSet::new();
+    let mut stack: Vec<usize> = vec![tree.leaf_node_ids[0]];
+
+    while let Some(focus_leaf_node_id) = stack.pop() {
+        assert!(focus_leaf_node_id < tree.nodes.len(), "focus leaf must exist");
+        if seen_leaf[focus_leaf_node_id] {
+            continue;
+        }
+        seen_leaf[focus_leaf_node_id] = true;
+        ordered_leaves.push(focus_leaf_node_id);
+
+        let path_root_to_leaf = collect_path_ids_from_root_to_leaf(tree, focus_leaf_node_id);
+        assert!(!path_root_to_leaf.is_empty(), "root-to-leaf path must be non-empty");
+
+        let mut sibling_leaf_candidates: Vec<usize> = Vec::new();
+        for depth in (0..path_root_to_leaf.len().saturating_sub(1)).rev() {
+            let parent_node_id = path_root_to_leaf[depth];
+            let focus_child_node_id = path_root_to_leaf[depth + 1];
+            let parent = &tree.nodes[parent_node_id];
+            let on_child = parent.verifier_on_child_id;
+            let off_child = parent.verifier_off_child_id;
+            let has_two_children = on_child.is_some() && off_child.is_some();
+            if !has_two_children {
+                continue;
+            }
+            let sibling_child_node_id = if on_child == Some(focus_child_node_id) {
+                off_child.expect("off child must exist when parent has two children")
+            } else if off_child == Some(focus_child_node_id) {
+                on_child.expect("on child must exist when parent has two children")
+            } else {
+                panic!("focus path child must be one of the parent children");
+            };
+
+            if !visited_sibling_child_nodes.insert(sibling_child_node_id) {
+                continue;
+            }
+
+            let sibling_focus_leaf = pick_first_leaf_in_subtree(tree, sibling_child_node_id);
+            sibling_leaf_candidates.push(sibling_focus_leaf);
+        }
+
+        for sibling_leaf in sibling_leaf_candidates.into_iter().rev() {
+            if !seen_leaf[sibling_leaf] {
+                stack.push(sibling_leaf);
+            }
+        }
+    }
+
+    assert_eq!(
+        ordered_leaves.len(),
+        total_leaves,
+        "Focused iterative leaf ordering must cover all leaves"
+    );
+    ordered_leaves
+}
+
+fn node_depth_from_root(tree: &Tree, node_id: usize) -> usize {
+    assert!(node_id < tree.nodes.len(), "node id must exist");
+    let mut depth = 0usize;
+    let mut cursor = tree.nodes[node_id].parent_id;
+    while let Some(parent_id) = cursor {
+        depth += 1;
+        cursor = tree.nodes[parent_id].parent_id;
+    }
+    depth
+}
+
+fn write_pattern(canvas: &mut [Vec<char>], row: usize, col: usize, pattern: &str) {
+    assert!(row < canvas.len(), "row out of bounds while drawing tree");
+    let pattern_chars: Vec<char> = pattern.chars().collect();
+    let required_width = col + pattern_chars.len();
+    if canvas[row].len() < required_width {
+        canvas[row].resize(required_width, ' ');
+    }
+    for (i, ch) in pattern_chars.into_iter().enumerate() {
+        canvas[row][col + i] = ch;
+    }
 }
 
 fn build_tree_lines(tree: &Tree) -> (Vec<usize>, Vec<String>) {
@@ -1189,38 +1300,99 @@ fn build_tree_lines(tree: &Tree) -> (Vec<usize>, Vec<String>) {
         .root_node_id
         .expect("Tree browser requires root_node_id to exist");
     assert_eq!(root_id, 0, "Tree browser expects root node id to be 0");
+    let ordered_leaf_node_ids = collect_leaf_order_by_focus(tree);
+    let line_count = ordered_leaf_node_ids.len();
+    let mut canvas: Vec<Vec<char>> = vec![Vec::new(); line_count];
 
-    let mut leaf_node_ids: Vec<usize> = Vec::new();
-    for node in &tree.nodes {
-        if node.verifier_on_child_id.is_none() && node.verifier_off_child_id.is_none() {
-            leaf_node_ids.push(node.node_id);
-        }
-    }
-    assert!(!leaf_node_ids.is_empty(), "Tree must contain at least one leaf");
-
-    let mut lines: Vec<String> = Vec::new();
-    for &leaf_node_id in &leaf_node_ids {
-        let path_ids = collect_path_ids_from_leaf_to_root(tree, leaf_node_id);
-        assert_eq!(
-            path_ids[0], root_id,
-            "Every leaf path must start from the root"
-        );
-        let mut tokens: Vec<String> = Vec::new();
-        for (i, path_node_id) in path_ids.iter().enumerate() {
-            if i == 0 {
-                tokens.push(node_label(tree, *path_node_id));
-            } else {
-                tokens.push(format!("└─ {}", node_label(tree, *path_node_id)));
+    let mut node_row: Vec<Option<usize>> = vec![None; tree.nodes.len()];
+    for (row, &leaf_node_id) in ordered_leaf_node_ids.iter().enumerate() {
+        let path_root_to_leaf = collect_path_ids_from_root_to_leaf(tree, leaf_node_id);
+        assert_eq!(path_root_to_leaf[0], root_id, "Every path must start from root");
+        for &node_id in &path_root_to_leaf {
+            if node_row[node_id].is_none() {
+                node_row[node_id] = Some(row);
             }
         }
-        lines.push(tokens.join(" "));
+    }
+
+    let mut node_col: Vec<usize> = vec![0; tree.nodes.len()];
+    for node_id in 0..tree.nodes.len() {
+        let depth = node_depth_from_root(tree, node_id);
+        node_col[node_id] = depth * 8;
+    }
+
+    for node_id in 0..tree.nodes.len() {
+        let Some(row) = node_row[node_id] else {
+            continue;
+        };
+        let col = node_col[node_id];
+        let label = compact_node_label(tree, node_id);
+        assert_eq!(label.chars().count(), 5, "Node label must have exactly 5 chars");
+        write_pattern(&mut canvas, row, col, &label);
+    }
+
+    for parent_id in 0..tree.nodes.len() {
+        let Some(parent_row) = node_row[parent_id] else {
+            continue;
+        };
+        let parent_col = node_col[parent_id];
+        let edge_col = parent_col + 5;
+        let parent = &tree.nodes[parent_id];
+        let children: [Option<usize>; 2] = [parent.verifier_on_child_id, parent.verifier_off_child_id];
+        for child_node_id in children.into_iter().flatten() {
+            let child_row = node_row[child_node_id]
+                .expect("Child node in rendered tree must have a resolved row");
+            if child_row == parent_row {
+                let has_lower_sibling = children
+                    .into_iter()
+                    .flatten()
+                    .filter(|id| *id != child_node_id)
+                    .any(|other_id| {
+                        let other_row = node_row[other_id]
+                            .expect("Sibling node in rendered tree must have a resolved row");
+                        other_row > parent_row
+                    });
+                if has_lower_sibling {
+                    write_pattern(&mut canvas, parent_row, edge_col, "━┳━");
+                } else {
+                    write_pattern(&mut canvas, parent_row, edge_col, "━━━");
+                }
+            } else {
+                assert!(
+                    child_row > parent_row,
+                    "Child row must be same row or below parent row"
+                );
+                for row in (parent_row + 1)..child_row {
+                    write_pattern(&mut canvas, row, edge_col, " ┃ ");
+                }
+                write_pattern(&mut canvas, child_row, edge_col, " ┗━");
+            }
+        }
+    }
+
+    for &leaf_node_id in &ordered_leaf_node_ids {
+        let row = node_row[leaf_node_id].expect("Leaf node must have a rendered row");
+        let col = node_col[leaf_node_id] + 5;
+        let judgment = tree
+            .leaf_node_judgments
+            .get(&leaf_node_id)
+            .expect("Rendered leaf must have correctness judgment");
+        let suffix = if judgment.is_correct { "━━━✓" } else { "━━━✗" };
+        write_pattern(&mut canvas, row, col, suffix);
+    }
+
+    let mut lines: Vec<String> = Vec::with_capacity(canvas.len());
+    for row in canvas {
+        let mut line: String = row.into_iter().collect();
+        line = line.trim_end().to_string();
+        lines.push(line);
     }
     assert_eq!(
         lines.len(),
-        leaf_node_ids.len(),
+        ordered_leaf_node_ids.len(),
         "Tree line count must match leaf node count"
     );
-    (leaf_node_ids, lines)
+    (ordered_leaf_node_ids, lines)
 }
 
 fn slice_line_from_char_offset(line: &str, offset: usize) -> String {
