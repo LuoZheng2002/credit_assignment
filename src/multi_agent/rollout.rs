@@ -3,15 +3,16 @@ use rand::RngExt;
 use rand::distr::{Distribution, weighted::WeightedIndex};
 use reqwest::Client;
 
+use crate::multi_agent::session::types::FinalAnswer;
 use crate::{
     call_llm::{QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE, call_llm_with_prefix},
     deepmath::{generate_raw_answers::Model, judge_answers::judge_answer_task},
     execute_python_code::execute_python_code,
     multi_agent::{
-        generate_rollout_answers::RolloutTrajectory,
+        generate_rollout_answers::RolloutTree,
         planner_compacting::get_planner_compacting_prompts,
         planner_deciding_next_step::get_planner_deciding_next_step_prompts,
-        planner_making_plan::get_planner_making_plan_prompts,
+        planner_making_or_changing_plan::get_planner_making_or_changing_plan_prompts,
         planner_step_continuing::get_planner_step_continuing_prompts,
         planner_step_overwriting::get_planner_step_overwriting_prompts,
         planner_updating_plan::get_planner_updating_plan_prompts,
@@ -64,13 +65,20 @@ fn collect_root_to_leaf_action_log(tree: &Tree, leaf_node_id: usize) -> Trajecto
     TrajectoryActionLog(actions)
 }
 
-fn extract_leaf_model_answer(tree: &Tree, leaf_node_id: usize) -> String {
-    let leaf_log = collect_root_to_leaf_action_log(tree, leaf_node_id);
-    let leaf_state = TrajectoryState::from_session_log(tree.question.clone(), leaf_log, tree);
-    leaf_state
-        .final_answer
-        .clone()
-        .expect("Each registered leaf trajectory must have a final answer")
+fn extract_leaf_model_answer(tree: &Tree, leaf_node_id: usize) -> FinalAnswer {
+    let leaf_node = tree
+        .nodes
+        .get(leaf_node_id)
+        .expect("Leaf node id must exist in tree when extracting leaf model answer");
+    leaf_node
+        .step
+        .action_log
+        .iter()
+        .find_map(|action| match action {
+            RolloutAction::SubmitFinalAnswer(answer) => Some(answer.clone()),
+            _ => None,
+        })
+        .expect("Each registered leaf trajectory must have a final answer in the reasoning log")
 }
 
 pub trait ToolCallParser {
@@ -351,25 +359,28 @@ async fn determine_chosen_mode(
     take_over_mode_decision: bool,
     rng: &mut impl rand::Rng,
 ) -> ChosenModeDecision {
+    let TrajectoryStatus::PlannerChoosingMode { verifier_comment } = &session_state.status else {
+        panic!("determine_chosen_mode should only be called in PlannerChoosingMode status");
+    };
     if take_over_mode_decision {
-        let latest_verifier_comment = session_state
-            .prev_steps
-            .last()
-            .and_then(|step| step.current_step_verifier_comment.clone());
-        let chosen_mode = match latest_verifier_comment {
+        let chosen_mode = match verifier_comment {
             None => NextStepDecision::Continue,
             Some(comment) => {
                 if comment.change_plan {
                     if rng.random::<f32>() < 0.5 {
                         NextStepDecision::Continue
                     } else {
-                        NextStepDecision::ChangePlan(comment.comment)
+                        NextStepDecision::ChangePlan(
+                            "Please refer to the verifier's comment.".to_string(),
+                        )
                     }
                 } else if comment.overwrite {
                     if rng.random::<f32>() < 0.5 {
                         NextStepDecision::Continue
                     } else {
-                        NextStepDecision::OverwriteLastStep(comment.comment)
+                        NextStepDecision::OverwriteLastStep(
+                            "Please refer to the verifier's comment.".to_string(),
+                        )
                     }
                 } else {
                     NextStepDecision::Continue
@@ -477,32 +488,33 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
 pub fn get_prompt_according_to_session_status(
     session_state: &TrajectoryState<'_>,
 ) -> (String, String) {
-    match session_state.status {
-        TrajectoryStatus::PlannerMakingOrChangingPlan => {
-            get_planner_making_plan_prompts(session_state)
+    match &session_state.status {
+        TrajectoryStatus::PlannerMakingOrChangingPlan { .. } => {
+            get_planner_making_or_changing_plan_prompts(session_state)
         }
-        TrajectoryStatus::PlannerKeepingCurrentPlan => (String::new(), String::new()),
-        TrajectoryStatus::PlannerChoosingMode => {
+        TrajectoryStatus::PlannerChoosingMode { .. } => {
             get_planner_deciding_next_step_prompts(session_state)
         }
-        TrajectoryStatus::PlannerWorkingOnStep => {
-            match session_state
-                .planner_chosen_mode
-                .as_ref()
-                .expect("In PlannerWorkingOnStep status, planner_chosen_mode should be set")
-            {
-                NextStepDecision::Continue => get_planner_step_continuing_prompts(session_state),
-                NextStepDecision::OverwriteLastStep(_) => {
-                    get_planner_step_overwriting_prompts(session_state)
-                }
-                NextStepDecision::ChangePlan(_) => {
-                    get_planner_step_continuing_prompts(session_state)
-                }
+        TrajectoryStatus::PlannerWorkingOnStep {
+            planner_chosen_mode,
+            ..
+        } => match planner_chosen_mode {
+            NextStepDecision::Continue => get_planner_step_continuing_prompts(session_state),
+            NextStepDecision::OverwriteLastStep(_) => {
+                get_planner_step_overwriting_prompts(session_state)
             }
+            NextStepDecision::ChangePlan(_) => get_planner_step_continuing_prompts(session_state),
+        },
+        TrajectoryStatus::CompactorCompactingStep { .. } => {
+            get_planner_compacting_prompts(session_state)
         }
-        TrajectoryStatus::CompactorCompactingStep => get_planner_compacting_prompts(session_state),
-        TrajectoryStatus::PlannerUpdatingPlan => get_planner_updating_plan_prompts(session_state),
+        TrajectoryStatus::PlannerUpdatingPlan { .. } => {
+            get_planner_updating_plan_prompts(session_state)
+        }
         TrajectoryStatus::VerifierCommenting => get_verifier_commenting_prompts(session_state),
+        TrajectoryStatus::StepEnded | TrajectoryStatus::SessionEnded { .. } => {
+            (String::new(), String::new())
+        }
     }
 }
 
@@ -576,7 +588,7 @@ fn context_length_exceeded_result(
     );
     vec![TreeUpdateEvent::AddAction {
         question_id,
-        action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
+        action: RolloutAction::SubmitFinalAnswer(FinalAnswer::Failure(
             CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
         )),
     }]
@@ -591,11 +603,103 @@ async fn build_new_operations(
 ) -> Vec<TreeUpdateEvent> {
     let question_id = session_state.source_tree.question_id;
     match &session_state.status {
-        TrajectoryStatus::PlannerMakingOrChangingPlan => {
-            let chosen_mode = session_state
-                .planner_chosen_mode
-                .as_ref()
-                .expect("planner_chosen_mode must be set before PlannerMakingOrChangingPlan");
+        TrajectoryStatus::StepEnded => {
+            let mut operations: Vec<TreeUpdateEvent> = Vec::new();
+            let (node_id, parent_id) = if session_state.source_tree.current_node_id.is_none() {
+                assert!(
+                    session_state.source_tree.root_node_id.is_none()
+                        && session_state.source_tree.nodes.is_empty()
+                        && session_state.source_tree.next_node_id == 0,
+                    "Tree without current node must be an uninitialized empty tree"
+                );
+                (0, None)
+            } else {
+                let parent_node_id = session_state
+                    .source_tree
+                    .current_node_id
+                    .expect("VerifierCommenting requires current_node_id");
+                let next_node_id = session_state.source_tree.next_node_id;
+                (next_node_id, Some(parent_node_id))
+            };
+            let verifier_on = if let Some(parent_node_id) = parent_id {
+                let parent_node = session_state
+                    .source_tree
+                    .nodes
+                    .get(parent_node_id)
+                    .expect("VerifierCommenting parent node must exist");
+                assert_eq!(
+                    parent_node.node_id, parent_node_id,
+                    "Node index must equal node_id when choosing child branch"
+                );
+                match (
+                    parent_node.verifier_on_child_id.is_some(),
+                    parent_node.verifier_off_child_id.is_some(),
+                ) {
+                    (false, false) => Some(rng.random::<f32>() < 0.5),
+                    (false, true) => Some(true),
+                    (true, false) => Some(false),
+                    (true, true) => panic!(
+                        "VerifierCommenting parent already has both verifier_on and verifier_off children"
+                    ),
+                }
+            } else {
+                None
+            };            
+            operations.push(TreeUpdateEvent::CreateNode {
+                question_id,
+                node_id,
+                parent_id,
+                verifier_on,
+            });
+            operations.push(TreeUpdateEvent::SetCurrentNode {
+                question_id,
+                node_id,
+            });
+            operations.push(TreeUpdateEvent::AddAction {
+                question_id,
+                action: RolloutAction::StartNewStep, // set the trajectory status to verifier commenting, finalize the old step node
+            });
+            operations
+        }
+        TrajectoryStatus::VerifierCommenting => {
+            let mut operations: Vec<TreeUpdateEvent> = Vec::new();
+
+            let mut verifier_comment = None;
+            let should_run_verifier = verifier_on == Some(true);
+            if !session_state.prev_steps.is_empty() && should_run_verifier {
+                let (prompt_before_assistant, prompt_after_assistant) =
+                    get_prompt_according_to_session_status(session_state);
+                assert_eq!(
+                    prompt_after_assistant,
+                    String::new(),
+                    "Verifier commenting should not have prompt after assistant"
+                );
+                let response = call_llm_with_prefix(
+                    client.clone(),
+                    prompt_before_assistant,
+                    prompt_after_assistant,
+                    model,
+                )
+                .await;
+                if is_context_length_exceeded_response(&response) {
+                    operations.extend(context_length_exceeded_result(
+                        question_id,
+                        "VerifierCommenting",
+                    ));
+                    return operations;
+                }
+                verifier_comment = Some(parse_verifier_comment_response(response));
+            }
+            operations.push(TreeUpdateEvent::AddAction {
+                question_id,
+                action: RolloutAction::VerifierComment(verifier_comment),
+            });
+            operations
+        }
+        TrajectoryStatus::PlannerMakingOrChangingPlan {
+            planner_chosen_mode,
+            verifier_comment,
+        } => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(session_state);
             let response = call_llm_with_prefix(
@@ -608,7 +712,7 @@ async fn build_new_operations(
             if is_context_length_exceeded_response(&response) {
                 context_length_exceeded_result(question_id, "PlannerMakingOrChangingPlan")
             } else {
-                let plan_content = match chosen_mode {
+                let plan_content = match planner_chosen_mode {
                     NextStepDecision::ChangePlan(reason) => Some(MakeOrChangePlan::ChangePlan {
                         plan: response,
                         prev_failed_reason: reason.clone(),
@@ -819,90 +923,6 @@ async fn build_new_operations(
                 }]
             }
         }
-        TrajectoryStatus::VerifierCommenting => {
-            let mut operations: Vec<TreeUpdateEvent> = Vec::new();
-            let (node_id, parent_id) = if session_state.source_tree.current_node_id.is_none() {
-                assert!(
-                    session_state.source_tree.root_node_id.is_none()
-                        && session_state.source_tree.nodes.is_empty()
-                        && session_state.source_tree.next_node_id == 0,
-                    "Tree without current node must be an uninitialized empty tree"
-                );
-                (0, None)
-            } else {
-                let parent_node_id = session_state
-                    .source_tree
-                    .current_node_id
-                    .expect("VerifierCommenting requires current_node_id");
-                let next_node_id = session_state.source_tree.next_node_id;
-                (next_node_id, Some(parent_node_id))
-            };
-            let verifier_on = if let Some(parent_node_id) = parent_id {
-                let parent_node = session_state
-                    .source_tree
-                    .nodes
-                    .get(parent_node_id)
-                    .expect("VerifierCommenting parent node must exist");
-                assert_eq!(
-                    parent_node.node_id, parent_node_id,
-                    "Node index must equal node_id when choosing child branch"
-                );
-                match (
-                    parent_node.verifier_on_child_id.is_some(),
-                    parent_node.verifier_off_child_id.is_some(),
-                ) {
-                    (false, false) => Some(rng.random::<f32>() < 0.5),
-                    (false, true) => Some(true),
-                    (true, false) => Some(false),
-                    (true, true) => panic!(
-                        "VerifierCommenting parent already has both verifier_on and verifier_off children"
-                    ),
-                }
-            } else {
-                None
-            };
-            operations.push(TreeUpdateEvent::CreateNode {
-                question_id,
-                node_id,
-                parent_id,
-                verifier_on,
-            });
-            operations.push(TreeUpdateEvent::SetCurrentNode {
-                question_id,
-                node_id,
-            });
-            let mut verifier_comment = None;
-            let should_run_verifier = verifier_on == Some(true);
-            if !session_state.prev_steps.is_empty() && should_run_verifier {
-                let (prompt_before_assistant, prompt_after_assistant) =
-                    get_prompt_according_to_session_status(session_state);
-                assert_eq!(
-                    prompt_after_assistant,
-                    String::new(),
-                    "Verifier commenting should not have prompt after assistant"
-                );
-                let response = call_llm_with_prefix(
-                    client.clone(),
-                    prompt_before_assistant,
-                    prompt_after_assistant,
-                    model,
-                )
-                .await;
-                if is_context_length_exceeded_response(&response) {
-                    operations.extend(context_length_exceeded_result(
-                        question_id,
-                        "VerifierCommenting",
-                    ));
-                    return operations;
-                }
-                verifier_comment = Some(parse_verifier_comment_response(response));
-            }
-            operations.push(TreeUpdateEvent::AddAction {
-                question_id,
-                action: RolloutAction::VerifierComment(verifier_comment),
-            });
-            operations
-        }
     }
 }
 
@@ -1097,7 +1117,7 @@ pub async fn rollout(
     take_over_mode_decision: bool,
     rng: &mut impl rand::Rng,
     action_tx: tokio::sync::mpsc::UnboundedSender<TreeUpdateEvent>,
-    trajectory_tx: tokio::sync::mpsc::UnboundedSender<RolloutTrajectory>,
+    trajectory_tx: tokio::sync::mpsc::UnboundedSender<RolloutTree>,
 ) {
     // create a state machine
     let mut tree = Tree::new(question_id, question.clone());
@@ -1135,7 +1155,7 @@ pub async fn rollout(
     let step_quality_ratio = tree.get_step_quality_ratio();
     let failed_and_aborted_ratio = tree.get_failed_and_aborted_ratio();
     let trajectory_tree = tree.clone();
-    let rollout_trajectory = RolloutTrajectory {
+    let rollout_trajectory = RolloutTree {
         id: question_id,
         question,
         correct_answer: reference_answer,

@@ -19,6 +19,65 @@ pub struct Step {
 }
 
 impl Step {
+    pub fn get_step_quality(&self) -> Option<StepQuality> {
+        let step_quality = self
+            .action_log
+            .iter()
+            .find_map(|action| match action {
+                RolloutAction::CompactorCompactStep { step_quality, .. } => {
+                    Some(step_quality.clone())
+                }
+                _ => None,
+            })
+            .expect("When getting step quality, the action log must have a compact step action");
+        step_quality
+    }
+    pub fn verifier_and_mode_summary(&self) -> VerifierAndModeSummary {
+        let chosen_mode = self
+            .action_log
+            .iter()
+            .find_map(|action| match action {
+                RolloutAction::PlannerDecideNextStep(mode) => Some(mode.clone()),
+                _ => None,
+            })
+            .expect("When getting verifier and mode summary, the action log must have a PlannerDecideNextStep action");
+        let verifier_comment = self
+            .action_log
+            .iter()
+            .find_map(|action| match action {
+                RolloutAction::VerifierComment(comment) => Some(comment.clone()),
+                _ => None,
+            })
+            .expect("When getting verifier and mode summary, the action log must have a VerifierComment action");
+        match (verifier_comment, chosen_mode) {
+            (None, _) => VerifierAndModeSummary::VerifierOff,
+            (Some(_), NextStepDecision::Continue) => VerifierAndModeSummary::VerifierOn,
+            (Some(_), NextStepDecision::OverwriteLastStep(_)) => {
+                VerifierAndModeSummary::VerifierOnAndOverwriteLastStep
+            }
+            (Some(_), NextStepDecision::ChangePlan(_)) => {
+                VerifierAndModeSummary::VerifierOnAndChangePlan
+            }
+        }
+    }
+    pub fn step_finalized(&self) -> bool {
+        self.action_log
+            .iter()
+            .find(|action| matches!(action, RolloutAction::StartNewStep))
+            .is_some()
+    }
+}
+
+// #[derive(Debug, Clone, Serialize, Deserialize)]
+// pub enum Step {
+//     // pub verifier_and_mode_summary: Option<VerifierAndModeSummary>,
+//     // pub step_finalized: bool,
+//     // pub step_quality: Option<StepQuality>,
+//     // pub action_log: Vec<RolloutAction>,
+
+// }
+
+impl Step {
     pub fn new() -> Self {
         Self {
             verifier_and_mode_summary: None,
@@ -33,8 +92,9 @@ impl Step {
 pub struct Node {
     pub node_id: usize,
     pub step: Step,
-    pub verifier_on_child_id: Option<usize>,
-    pub verifier_off_child_id: Option<usize>,
+    // pub verifier_on_child_id: Option<usize>,
+    // pub verifier_off_child_id: Option<usize>,
+    pub child_ids: [Option<usize>; 2],
     pub parent_id: Option<usize>,
 }
 
@@ -74,7 +134,6 @@ pub enum TreeUpdateEvent {
         question_id: usize,
         node_id: usize,
         parent_id: Option<usize>,
-        verifier_on: Option<bool>,
     },
     SetCurrentNode {
         question_id: usize,
@@ -149,13 +208,13 @@ impl Tree {
                 step.verifier_and_mode_summary.is_none(),
                 "verifier_and_mode_summary should be set at most once per step"
             );
-            let verifier_comment_in_current_step = step
-                .action_log
-                .iter()
-                .find_map(|existing_action| match existing_action {
-                    RolloutAction::VerifierComment(comment) => Some(comment.clone()),
-                    _ => None,
-                });
+            let verifier_comment_in_current_step =
+                step.action_log
+                    .iter()
+                    .find_map(|existing_action| match existing_action {
+                        RolloutAction::VerifierComment(comment) => Some(comment.clone()),
+                        _ => None,
+                    });
             step.verifier_and_mode_summary = Some(match (verifier_comment_in_current_step, mode) {
                 (None, _) => VerifierAndModeSummary::VerifierOff,
                 (Some(_), NextStepDecision::Continue) => VerifierAndModeSummary::VerifierOn,
@@ -167,9 +226,9 @@ impl Tree {
                 }
             });
         }
-        if let RolloutAction::PlannerUpdatePlan(_) = &action {
-            step.step_finalized = true;
-        }
+        // if let RolloutAction::PlannerUpdatePlan(_) = &action {
+        //     step.step_finalized = true;
+        // }
         if let RolloutAction::CompactorCompactStep { step_quality, .. } = &action {
             assert!(
                 step.step_quality.is_none(),
@@ -177,19 +236,19 @@ impl Tree {
             );
             step.step_quality = step_quality.clone();
         }
-        if let RolloutAction::ToolCallResponse(ToolResponse::Intervention(content)) = &action {
-            if content == CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE
-                || content == IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE
-                || content == REPETITION_ABORT_MESSAGE
-            {
-                step.step_finalized = true;
-                assert!(
-                    step.step_quality.is_none(),
-                    "Terminal intervention should set step_quality at most once"
-                );
-                step.step_quality = Some(StepQuality::FailedAndAborted);
-            }
-        }
+        // if let RolloutAction::ToolCallResponse(ToolResponse::Intervention(content)) = &action {
+        //     if content == CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE
+        //         || content == IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE
+        //         || content == REPETITION_ABORT_MESSAGE
+        //     {
+        //         step.step_finalized = true;
+        //         assert!(
+        //             step.step_quality.is_none(),
+        //             "Terminal intervention should set step_quality at most once"
+        //         );
+        //         step.step_quality = Some(StepQuality::FailedAndAborted);
+        //     }
+        // }
         step.action_log.push(action);
     }
 
@@ -203,73 +262,50 @@ impl Tree {
     pub fn apply_event(&mut self, event: TreeUpdateEvent) {
         match event {
             TreeUpdateEvent::CreateNode {
-                node_id,
-                parent_id,
-                verifier_on,
-                ..
+                node_id, parent_id, ..
             } => {
-                match parent_id {
-                    None => {
-                        assert_eq!(
-                            verifier_on, None,
-                            "Root CreateNode requires verifier_on to be None"
-                        );
-                        assert_eq!(node_id, 0, "Root node id must be 0");
-                        assert!(self.nodes.is_empty(), "Root CreateNode must be first node event");
-                        assert_eq!(
-                            self.root_node_id, None,
-                            "Root CreateNode requires empty root_node_id"
-                        );
-                        assert_eq!(
-                            self.current_node_id, None,
-                            "Root CreateNode requires empty current_node_id before explicit SetCurrentNode"
-                        );
-                        let root = Node {
-                            node_id,
-                            step: Step::new(),
-                            verifier_on_child_id: None,
-                            verifier_off_child_id: None,
-                            parent_id: None,
-                        };
-                        self.nodes.push(root);
-                        self.root_node_id = Some(node_id);
-                    }
-                    Some(parent_id) => {
-                        let verifier_on = verifier_on
-                            .expect("Non-root CreateNode requires verifier_on to be set");
-                        assert!(
-                            self.find_node_by_id(node_id).is_none(),
-                            "CreateNode node_id must be unique"
-                        );
-                        let parent = self
-                            .find_node_by_id(parent_id)
-                            .expect("CreateNode parent_id must exist");
-                        let parent_node_id = parent.node_id;
-                        if verifier_on {
-                            assert!(
-                                self.nodes[parent_node_id].verifier_on_child_id.is_none(),
-                                "CreateNode parent already has verifier_on child"
-                            );
-                        } else {
-                            assert!(
-                                self.nodes[parent_node_id].verifier_off_child_id.is_none(),
-                                "CreateNode parent already has verifier_off child"
-                            );
-                        }
-                        let child = Node {
-                            node_id,
-                            step: Step::new(),
-                            verifier_on_child_id: None,
-                            verifier_off_child_id: None,
-                            parent_id: Some(parent_node_id),
-                        };
-                        self.nodes.push(child);
-                        if verifier_on {
-                            self.nodes[parent_node_id].verifier_on_child_id = Some(node_id);
-                        } else {
-                            self.nodes[parent_node_id].verifier_off_child_id = Some(node_id);
-                        }
-                    }
+                if let Some(parent_id) = parent_id {
+                    let child = Node {
+                        node_id,
+                        step: Step::new(),
+                        child_ids: [None, None],
+                        parent_id: Some(parent_id),
+                    };
+                    assert!(
+                        self.find_node_by_id(node_id).is_none(),
+                        "CreateNode node_id must be unique"
+                    );
+                    self.nodes.push(child);
+                    let child_node_slot = self
+                        .find_node_by_id_mut(parent_id)
+                        .expect("CreateNode parent_id must exist")
+                        .child_ids
+                        .iter_mut()
+                        .find(|child_id_option| child_id_option.is_none())
+                        .expect("CreateNode parent should have an empty child slot");
+                    *child_node_slot = Some(node_id);
+                } else {
+                    assert_eq!(node_id, 0, "Root node id must be 0");
+                    assert!(
+                        self.nodes.is_empty(),
+                        "Root CreateNode must be first node event"
+                    );
+                    assert_eq!(
+                        self.root_node_id, None,
+                        "Root CreateNode requires empty root_node_id"
+                    );
+                    assert_eq!(
+                        self.current_node_id, None,
+                        "Root CreateNode requires empty current_node_id before explicit SetCurrentNode"
+                    );
+                    let root = Node {
+                        node_id,
+                        step: Step::new(),
+                        child_ids: [None, None],
+                        parent_id: None,
+                    };
+                    self.nodes.push(root);
+                    self.root_node_id = Some(node_id);
                 }
                 assert!(
                     node_id <= self.next_node_id,
@@ -319,7 +355,8 @@ impl Tree {
                     !self.leaf_node_judgments.contains_key(&node_id),
                     "JudgeLeafCorrectness should not overwrite an existing leaf judgment"
                 );
-                self.leaf_node_judgments.insert(node_id, correctness_judgment);
+                self.leaf_node_judgments
+                    .insert(node_id, correctness_judgment);
                 let num_judged_leaves = self.leaf_node_judgments.len();
                 assert!(
                     num_judged_leaves > 0,
@@ -343,6 +380,11 @@ impl Tree {
 
     fn find_node_by_id(&self, node_id: usize) -> Option<&Node> {
         let node = self.nodes.get(node_id)?;
+        assert_eq!(node.node_id, node_id, "Node index must equal node_id");
+        Some(node)
+    }
+    fn find_node_by_id_mut(&mut self, node_id: usize) -> Option<&mut Node> {
+        let node = self.nodes.get_mut(node_id)?;
         assert_eq!(node.node_id, node_id, "Node index must equal node_id");
         Some(node)
     }

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::multi_agent::session::types::FinalAnswer;
+
 use super::types::{MakeOrChangePlan, NextStepDecision, StepQuality, VerifierComment};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,7 +29,9 @@ pub enum RolloutAction {
     VerifierComment(Option<VerifierComment>),
     PlannerMakeOrChangePlan(Option<MakeOrChangePlan>),
     PlannerDecideNextStep(NextStepDecision),
-    PlannerReasoning(String),
+    PlannerReasoning {
+        reasoning: String,
+    },
     PlannerToolCall(String),
     ToolCallResponse(ToolResponse),
     PlannerEndStep,
@@ -36,6 +40,10 @@ pub enum RolloutAction {
         step_quality: Option<StepQuality>,
     },
     PlannerUpdatePlan(Option<String>),
+    // supports both model-provided answer and failed answer
+    SubmitFinalAnswer(FinalAnswer),
+    // for setting the trajectory state to begin step state, and for marking the end of a step in action_log
+    StartNewStep,
     // Special action that force terminates the current step
     SystemInterruptStep(String),
 }
@@ -49,7 +57,9 @@ impl RolloutAction {
             RolloutAction::PlannerDecideNextStep(mode) => {
                 format!("[PlannerChooseMode]: {:?}", mode)
             }
-            RolloutAction::PlannerReasoning(reasoning) => {
+            RolloutAction::PlannerReasoning {
+                reasoning,
+            } => {
                 format!("[PlannerReasoning]:\n{}", reasoning)
             }
             RolloutAction::PlannerToolCall(tool_call) => {
@@ -66,17 +76,21 @@ impl RolloutAction {
                 )
             }
             RolloutAction::PlannerUpdatePlan(updated_plan) => {
-                format!("[PlannerUpdatePlan]:\n{}", updated_plan)
+                format!("[PlannerUpdatePlan]:\n{:?}", updated_plan)
             }
             RolloutAction::ToolCallResponse(tool_response) => {
                 format!("[ToolCallResponse]:\n{}", tool_response.to_raw_content())
             }
             RolloutAction::VerifierComment(comment) => {
                 format!("[VerifierComment]:\n{:?}", comment)
+            },
+            RolloutAction::SubmitFinalAnswer(final_answer) => {
+                format!("[SubmitFinalAnswer]:\n{:?}", final_answer)
             }
             RolloutAction::SystemInterruptStep(reason) => {
                 format!("[SystemInterruptStep]:\n{}", reason)
             }
+            RolloutAction::StartNewStep => "[StartNewStep]".to_string(),
         }
     }
 
@@ -86,14 +100,16 @@ impl RolloutAction {
                 "[PlannerMakeOrChangePlan]".to_string()
             }
             RolloutAction::PlannerDecideNextStep(_mode) => "[PlannerChooseMode]".to_string(),
-            RolloutAction::PlannerReasoning(_reasoning) => "[PlannerReasoning]".to_string(),
+            RolloutAction::PlannerReasoning{..} => "[PlannerReasoning]".to_string(),
             RolloutAction::PlannerToolCall(_tool_call) => "[PlannerToolCall]".to_string(),
             RolloutAction::PlannerEndStep => "[PlannerEndStep]".to_string(),
             RolloutAction::CompactorCompactStep { .. } => "[PlannerCompactStep]".to_string(),
             RolloutAction::PlannerUpdatePlan(_updated_plan) => "[PlannerUpdatePlan]".to_string(),
             RolloutAction::ToolCallResponse(_tool_response) => "[ToolCallResponse]".to_string(),
             RolloutAction::VerifierComment(_comment) => "[VerifierComment]".to_string(),
+            RolloutAction::SubmitFinalAnswer(_final_answer) => "[SubmitFinalAnswer]".to_string(),
             RolloutAction::SystemInterruptStep(_reason) => "[SystemInterruptStep]".to_string(),
+            RolloutAction::StartNewStep => "[StartNewStep]".to_string(),
         }
     }
 }

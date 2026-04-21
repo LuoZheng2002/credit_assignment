@@ -66,6 +66,12 @@ pub struct VerifierComment {
     pub change_plan: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FinalAnswer {
+    ModelProvided(String),
+    Failure(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrajectoryStatus {
     VerifierCommenting,
@@ -80,25 +86,21 @@ pub enum TrajectoryStatus {
     PlannerWorkingOnStep {
         planner_chosen_mode: NextStepDecision,
         verifier_comment: Option<VerifierComment>,
-        final_answer: Option<String>,
         step_content_raw: String,
     },
     CompactorCompactingStep {
         planner_chosen_mode: NextStepDecision,
-        final_answer: Option<String>,
         step_content_raw: String,
-        system_interrupted: bool,
     },
     PlannerUpdatingPlan {
         planner_chosen_mode: NextStepDecision,
-        final_answer: Option<String>,
         step_content_raw: String,
         step_content_compacted: String,
     },
     StepEnded,
     // The special status that breaks out of the state loop
     SessionEnded {
-        final_answer: String,
+        final_answer: FinalAnswer,
     },
 }
 

@@ -1,6 +1,7 @@
 use core::panic;
 
 use crate::deepmath::parse_answers::extract_boxed_content;
+use crate::multi_agent::session::types::FinalAnswer;
 
 use super::actions::{RolloutAction, ToolResponse, TrajectoryActionLog};
 use super::constants::{
@@ -23,7 +24,6 @@ pub struct TrajectoryState<'a> {
     pub current_plan: Option<String>,
     pub status: TrajectoryStatus,
     // pub planner_chosen_mode: Option<NextStepDecision>,
-    // pub final_answer: Option<String>,
     pub failed_attempts: Vec<FailedAttempt>,
     // limit stats
     pub num_plan_changes: usize,
@@ -33,8 +33,8 @@ pub struct TrajectoryState<'a> {
     pub current_step_last_python_error: Option<String>,
     pub total_actions: usize,
     pub total_actual_steps: usize,
-    // needs to be modified to use status to express end session
-    // pub should_end_session: bool,
+    // special state across many statuses
+    pub final_answer: Option<FinalAnswer>,
 }
 
 impl<'a> TrajectoryState<'a> {
@@ -53,7 +53,7 @@ impl<'a> TrajectoryState<'a> {
             current_plan: None,
             status: TrajectoryStatus::VerifierCommenting,
             // planner_chosen_mode: None,
-            // final_answer: None,
+            final_answer: None,
             failed_attempts: Vec::new(),
             total_actions: 0,
             total_actual_steps: 0,
@@ -141,29 +141,25 @@ impl<'a> TrajectoryState<'a> {
         MAX_ACTIONS_PER_STEP - self.current_step_num_actions
     }
 
-    // fn refresh_should_end_session(&mut self) {
-    //     if self.final_answer.is_some() {
-    //         self.should_end_session = true;
-    //         return;
-    //     }
-    //     if self.prev_steps.len() > 20 || self.total_actions > 150 {
-    //         self.final_answer = Some(FORCED_END_MESSAGE.to_string());
-    //         self.should_end_session = true;
-    //         return;
-    //     }
-    //     self.should_end_session = false;
-    // }
-
     pub fn update(&mut self, operation: RolloutAction) {
         self.total_actions += 1;
-        match &operation {
+        match &operation {            
+            RolloutAction::StartNewStep => {
+                assert!(
+                    matches!(self.status, TrajectoryStatus::StepEnded),
+                    "StartNewStep can only be called after StepEnded status"
+                );
+                self.status = TrajectoryStatus::VerifierCommenting;
+            }
             RolloutAction::VerifierComment(verifier_comment) => {
                 assert_eq!(
                     self.status,
                     TrajectoryStatus::VerifierCommenting,
                     "VerifierComment can only be called during VerifierCommenting"
                 );
-                self.status = TrajectoryStatus::PlannerChoosingMode { verifier_comment: verifier_comment.clone() };
+                self.status = TrajectoryStatus::PlannerChoosingMode {
+                    verifier_comment: verifier_comment.clone(),
+                };
             }
             RolloutAction::PlannerDecideNextStep(mode) => {
                 let TrajectoryStatus::PlannerChoosingMode { verifier_comment } =
@@ -267,12 +263,11 @@ impl<'a> TrajectoryState<'a> {
                 self.status = TrajectoryStatus::PlannerWorkingOnStep {
                     planner_chosen_mode,
                     verifier_comment,
-                    final_answer: None,
                     step_content_raw: String::new(),
                 };
             }
 
-            RolloutAction::PlannerReasoning(content) | RolloutAction::PlannerToolCall(content) => {
+            RolloutAction::PlannerReasoning { reasoning } => {
                 assert!(
                     self.can_take_action_in_current_step(),
                     "Exceed maximum number of actions in the current step"
@@ -280,7 +275,6 @@ impl<'a> TrajectoryState<'a> {
                 let TrajectoryStatus::PlannerWorkingOnStep {
                     planner_chosen_mode: _,
                     verifier_comment: _,
-                    final_answer,
                     step_content_raw,
                 } = &mut self.status
                 else {
@@ -289,11 +283,25 @@ impl<'a> TrajectoryState<'a> {
                     );
                 };
                 self.current_step_num_actions += 1;
-                step_content_raw.push_str(&content);
-                let is_reasoning = matches!(operation, RolloutAction::PlannerReasoning(_));
-                if is_reasoning && let Some(boxed_answer) = extract_boxed_content(&content) {
-                    *final_answer = Some(boxed_answer);
-                }
+                step_content_raw.push_str(&reasoning);
+            }
+            RolloutAction::PlannerToolCall(tool_call) => {
+                assert!(
+                    self.can_take_action_in_current_step(),
+                    "Exceed maximum number of actions in the current step"
+                );
+                let TrajectoryStatus::PlannerWorkingOnStep {
+                    planner_chosen_mode: _,
+                    verifier_comment: _,
+                    step_content_raw,
+                } = &mut self.status
+                else {
+                    panic!(
+                        "PlannerReasoning can only be called during PlannerWorkingOnStep status"
+                    );
+                };
+                self.current_step_num_actions += 1;
+                step_content_raw.push_str(&tool_call);
             }
             RolloutAction::ToolCallResponse(tool_response) => {
                 assert!(
@@ -303,7 +311,6 @@ impl<'a> TrajectoryState<'a> {
                 let TrajectoryStatus::PlannerWorkingOnStep {
                     planner_chosen_mode: _,
                     verifier_comment: _,
-                    final_answer,
                     step_content_raw,
                 } = &mut self.status
                 else {
@@ -326,7 +333,6 @@ impl<'a> TrajectoryState<'a> {
                 let TrajectoryStatus::PlannerWorkingOnStep {
                     planner_chosen_mode,
                     verifier_comment: _,
-                    final_answer,
                     mut step_content_raw,
                 } = self.status.clone()
                 else {
@@ -337,16 +343,13 @@ impl<'a> TrajectoryState<'a> {
                 step_content_raw.push_str(&content);
                 self.status = TrajectoryStatus::CompactorCompactingStep {
                     planner_chosen_mode,
-                    final_answer,
                     step_content_raw,
-                    system_interrupted: true,
                 };
             }
             RolloutAction::PlannerEndStep => {
                 let TrajectoryStatus::PlannerWorkingOnStep {
                     planner_chosen_mode,
                     verifier_comment: _,
-                    final_answer,
                     step_content_raw,
                 } = self.status.clone()
                 else {
@@ -356,9 +359,7 @@ impl<'a> TrajectoryState<'a> {
                 self.current_step_last_python_error = None;
                 self.status = TrajectoryStatus::CompactorCompactingStep {
                     planner_chosen_mode,
-                    final_answer,
                     step_content_raw,
-                    system_interrupted: false,
                 };
             }
             RolloutAction::CompactorCompactStep {
@@ -367,24 +368,15 @@ impl<'a> TrajectoryState<'a> {
             } => {
                 let TrajectoryStatus::CompactorCompactingStep {
                     planner_chosen_mode,
-                    mut final_answer,
                     step_content_raw,
-                    system_interrupted,
                 } = self.status.clone()
                 else {
                     panic!(
                         "PlannerCompactStep can only be called during PlannerCompactingStep status"
                     );
                 };
-                if final_answer.is_none()
-                    && let Some(boxed_answer) = extract_boxed_content(&step_content_compacted)
-                {
-                    final_answer = Some(boxed_answer);
-                }
-
                 self.status = TrajectoryStatus::PlannerUpdatingPlan {
                     planner_chosen_mode,
-                    final_answer,
                     step_content_raw,
                     step_content_compacted: step_content_compacted.clone(),
                 };
@@ -392,7 +384,6 @@ impl<'a> TrajectoryState<'a> {
             RolloutAction::PlannerUpdatePlan(updated_plan) => {
                 let TrajectoryStatus::PlannerUpdatingPlan {
                     planner_chosen_mode,
-                    final_answer,
                     step_content_raw,
                     step_content_compacted,
                 } = self.status.clone()
@@ -403,7 +394,10 @@ impl<'a> TrajectoryState<'a> {
                 };
                 self.total_actual_steps += 1;
                 if updated_plan.is_some() {
-                    assert!(final_answer.is_none(), "If final answer is found, there should be no updated plan");
+                    assert!(
+                        self.final_answer.is_none(),
+                        "If final answer is found, there should be no updated plan"
+                    );
                     self.current_plan = updated_plan.clone();
                 }
                 let overwrite =
@@ -417,28 +411,39 @@ impl<'a> TrajectoryState<'a> {
                     self.prev_steps.pop();
                 }
                 self.prev_steps.push(new_step);
-                if let Some(final_answer) = final_answer {
+                if let Some(final_answer) = self.final_answer.clone() {
                     self.status = TrajectoryStatus::SessionEnded { final_answer }
                 } else {
                     self.status = TrajectoryStatus::StepEnded;
                 }
             }
+            RolloutAction::SubmitFinalAnswer(answer) => {
+                assert!(
+                    self.final_answer.is_none(),
+                    "Final answer has already been submitted, cannot submit again"
+                );
+                self.final_answer = Some(answer.clone());
+            }
         }
     }
 
     pub fn to_history_prev_steps(&self) -> String {
-        let (planner_turn, making_plan) = match self.status {
-            TrajectoryStatus::VerifierCommenting => (false, false),
-            TrajectoryStatus::PlannerChoosingMode { .. } => (true, false),
-            TrajectoryStatus::PlannerMakingOrChangingPlan { .. } => {
-                (true, self.current_plan.is_none())
-            }            
-            TrajectoryStatus::PlannerWorkingOnStep { .. } => (true, false),
-            TrajectoryStatus::CompactorCompactingStep { .. } => (false, false),
-            TrajectoryStatus::PlannerUpdatingPlan { .. } => (false, false),            
-            TrajectoryStatus::StepEnded => (false, false),
-            TrajectoryStatus::SessionEnded { .. } => (false, false),
-        };
+        // let (planner_turn, making_plan) = match self.status {
+        //     TrajectoryStatus::VerifierCommenting => (false, false),
+        //     TrajectoryStatus::PlannerChoosingMode { .. } => (true, false),
+        //     TrajectoryStatus::PlannerMakingOrChangingPlan { .. } => {
+        //         (true, self.current_plan.is_none())
+        //     }
+        //     TrajectoryStatus::PlannerWorkingOnStep { .. } => (true, false),
+        //     TrajectoryStatus::CompactorCompactingStep { .. } => (false, false),
+        //     TrajectoryStatus::PlannerUpdatingPlan { .. } => (false, false),
+        //     TrajectoryStatus::StepEnded => (false, false),
+        //     TrajectoryStatus::SessionEnded { .. } => (false, false),
+        // };
+        let making_plan = matches!(
+            self.status,
+            TrajectoryStatus::PlannerMakingOrChangingPlan { .. }
+        );
         let mut history = String::new();
         for (i, failed_attempt) in self.failed_attempts.iter().enumerate() {
             history.push_str(&format!("Failed Attempt {}:\n", i + 1));
@@ -464,7 +469,11 @@ impl<'a> TrajectoryState<'a> {
             history.push_str(&format!("Step {} ends.\n", i + 1));
         }
         if let Some(comment) = self.status.try_get_verifier_comment() {
-            history.push_str(&format!("Verifier comment on step {}: {}\n", self.prev_steps.len(), comment.comment));
+            history.push_str(&format!(
+                "Verifier comment on step {}: {}\n",
+                self.prev_steps.len(),
+                comment.comment
+            ));
         }
         history
     }

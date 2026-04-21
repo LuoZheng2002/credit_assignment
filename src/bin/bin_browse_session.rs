@@ -25,7 +25,7 @@ use serde_json;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use credit_assignment::multi_agent::generate_rollout_answers::RolloutTrajectory;
+use credit_assignment::multi_agent::generate_rollout_answers::RolloutTree;
 use credit_assignment::multi_agent::rollout::get_prompt_according_to_session_status;
 use credit_assignment::multi_agent::session::{
     NextStepDecision, RolloutAction, TrajectoryActionLog, TrajectoryState, Tree,
@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     result
 }
 
-fn load_rollout_answers(path: &PathBuf) -> Result<Vec<RolloutTrajectory>, Box<dyn Error>> {
+fn load_rollout_answers(path: &PathBuf) -> Result<Vec<RolloutTree>, Box<dyn Error>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut answers = Vec::new();
@@ -72,7 +72,7 @@ fn load_rollout_answers(path: &PathBuf) -> Result<Vec<RolloutTrajectory>, Box<dy
         if trimmed.is_empty() {
             continue;
         }
-        let answer: RolloutTrajectory = serde_json::from_str(trimmed)?;
+        let answer: RolloutTree = serde_json::from_str(trimmed)?;
         answers.push(answer);
     }
     if answers.is_empty() {
@@ -85,7 +85,7 @@ fn load_rollout_answers(path: &PathBuf) -> Result<Vec<RolloutTrajectory>, Box<dy
 
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    answers: Vec<RolloutTrajectory>,
+    answers: Vec<RolloutTree>,
 ) -> Result<(), Box<dyn Error>> {
     let mut app = App::new(answers);
     loop {
@@ -150,7 +150,7 @@ impl PaneFocus {
 }
 
 struct App {
-    answers: Vec<RolloutTrajectory>,
+    answers: Vec<RolloutTree>,
     selection_state: ListState,
     tree_view: Option<TreeView>,
     browsing_view: Option<SessionView>,
@@ -168,7 +168,7 @@ struct App {
 }
 
 impl App {
-    fn new(answers: Vec<RolloutTrajectory>) -> Self {
+    fn new(answers: Vec<RolloutTree>) -> Self {
         let mut selection_state = ListState::default();
         if !answers.is_empty() {
             selection_state.select(Some(0));
@@ -869,7 +869,7 @@ fn ratio_color_style(value: f64) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-fn build_home_stats_line(answer: &RolloutTrajectory, selected: bool) -> Line<'static> {
+fn build_home_stats_line(answer: &RolloutTree, selected: bool) -> Line<'static> {
     let correctness = &answer.trajectory.correctness_ratio;
     let step_quality = &answer.step_quality_ratio;
     let failed_and_aborted = &answer.failed_and_aborted_ratio;
@@ -1062,7 +1062,7 @@ fn compute_wrapped_line_count(
 }
 
 struct SessionView {
-    answer: RolloutTrajectory,
+    answer: RolloutTree,
     model_answer: String,
     operations: Vec<RolloutAction>,
     current_pos: usize,
@@ -1071,7 +1071,7 @@ struct SessionView {
 }
 
 struct TreeView {
-    answer: RolloutTrajectory,
+    answer: RolloutTree,
     tree_lines: Vec<String>,
     tree_line_node_ids: Vec<usize>,
     selected_tree_line_index: usize,
@@ -1491,7 +1491,7 @@ fn count_display_turns(operations: &[RolloutAction]) -> usize {
 }
 
 impl TreeView {
-    fn new(answer: RolloutTrajectory) -> Self {
+    fn new(answer: RolloutTree) -> Self {
         validate_tree_for_browser(&answer.trajectory);
         let (tree_line_node_ids, tree_lines) = build_tree_lines(&answer.trajectory);
         let current_node_id = answer
@@ -1549,7 +1549,7 @@ impl TreeView {
 }
 
 impl SessionView {
-    fn new(answer: RolloutTrajectory, selected_node_id: usize) -> Self {
+    fn new(answer: RolloutTree, selected_node_id: usize) -> Self {
         validate_tree_for_browser(&answer.trajectory);
         let operations = collect_root_to_node_action_sequence(&answer.trajectory, selected_node_id);
         validate_session_log_for_prompt_replay(&answer.question, &answer.trajectory, &operations);

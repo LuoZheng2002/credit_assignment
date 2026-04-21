@@ -21,7 +21,7 @@ pub struct CountRatio {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct RolloutTrajectory {
+pub struct RolloutTree {
     pub id: usize,
     pub correct_answer: String,
     pub step_quality_ratio: StepQualityRatio,
@@ -30,7 +30,7 @@ pub struct RolloutTrajectory {
     pub question: String,
 }
 
-impl HasId for RolloutTrajectory {
+impl HasId for RolloutTree {
     fn id(&self) -> usize {
         self.id
     }

@@ -1,8 +1,6 @@
 use crate::deepmath::generate_raw_answers::Model;
 use crate::deepmath::parse_answers::{AnswerParsed, get_parsed_path};
-use crate::multi_agent::generate_rollout_answers::{
-    RolloutTrajectory, get_rollout_trajectory_path,
-};
+use crate::multi_agent::generate_rollout_answers::{RolloutTree, get_rollout_trajectory_path};
 use crate::multi_agent::session::TrajectoryState;
 use crate::parallel_process_jsonl::parallel_process_jsonl;
 
@@ -30,48 +28,48 @@ pub fn extract_boxed_content(text: &str) -> Option<String> {
     None
 }
 
-async fn parse_rollout_answer_task(answer: RolloutTrajectory) -> AnswerParsed {
-    let final_state = TrajectoryState::from_tree(&answer.trajectory);
-    let model_answer = final_state
-        .final_answer
-        .clone()
-        .expect("Rollout trajectory should have final answer on current path for parsing");
-    AnswerParsed {
-        id: answer.id,
-        model_answer,
-        correct_answer: answer.correct_answer,
-        question: answer.question,
-    }
-}
+// async fn parse_rollout_answer_task(answer: RolloutTree) -> AnswerParsed {
+//     let final_state = TrajectoryState::from_tree(&answer.trajectory);
+//     let model_answer = final_state
+//         .final_answer
+//         .clone()
+//         .expect("Rollout trajectory should have final answer on current path for parsing");
+//     AnswerParsed {
+//         id: answer.id,
+//         model_answer,
+//         correct_answer: answer.correct_answer,
+//         question: answer.question,
+//     }
+// }
 
-pub async fn parse_rollout_answers(model: Model, dataset_name: &str, num_samples: usize) {
-    println!(
-        "Parsing rollout answers for model {} on {} dataset with {} samples",
-        model.cli_name(),
-        dataset_name,
-        num_samples
-    );
-    let raw_path = get_rollout_trajectory_path(model, dataset_name, num_samples);
-    let parsed_path = get_parsed_path(model, dataset_name, num_samples, true);
-    parallel_process_jsonl(
-        &[&raw_path],
-        &parsed_path,
-        |values| {
-            assert_eq!(values.len(), 1);
-            let answer: RolloutTrajectory =
-                serde_json::from_value(values[0].clone()).expect("Failed to parse answer");
-            answer
-        },
-        move |answer: RolloutTrajectory| async move { parse_rollout_answer_task(answer).await },
-        2000,
-    )
-    .await
-    .unwrap();
-    println!(
-        "Parsed rollout answers for model {} on {} dataset with {} samples and saved to {}",
-        model.cli_name(),
-        dataset_name,
-        num_samples,
-        parsed_path
-    );
-}
+// pub async fn parse_rollout_answers(model: Model, dataset_name: &str, num_samples: usize) {
+//     println!(
+//         "Parsing rollout answers for model {} on {} dataset with {} samples",
+//         model.cli_name(),
+//         dataset_name,
+//         num_samples
+//     );
+//     let raw_path = get_rollout_trajectory_path(model, dataset_name, num_samples);
+//     let parsed_path = get_parsed_path(model, dataset_name, num_samples, true);
+//     parallel_process_jsonl(
+//         &[&raw_path],
+//         &parsed_path,
+//         |values| {
+//             assert_eq!(values.len(), 1);
+//             let answer: RolloutTree =
+//                 serde_json::from_value(values[0].clone()).expect("Failed to parse answer");
+//             answer
+//         },
+//         move |answer: RolloutTree| async move { parse_rollout_answer_task(answer).await },
+//         2000,
+//     )
+//     .await
+//     .unwrap();
+//     println!(
+//         "Parsed rollout answers for model {} on {} dataset with {} samples and saved to {}",
+//         model.cli_name(),
+//         dataset_name,
+//         num_samples,
+//         parsed_path
+//     );
+// }

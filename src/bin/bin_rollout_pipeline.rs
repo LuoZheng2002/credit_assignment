@@ -14,7 +14,7 @@ use credit_assignment::{
     deepmath::generate_raw_answers::Model,
     multi_agent::{
         generate_rollout_answers::{
-            RolloutTrajectory, get_rollout_trajectory_path, get_session_log_path,
+            RolloutTree, get_rollout_trajectory_path, get_session_log_path,
         },
         rollout::rollout,
         session::TreeUpdateEvent,
@@ -95,7 +95,7 @@ async fn main() {
         read_json_lines(&session_log_path).unwrap_or_default();
     // read trajectory file
     let trajectory_path = get_rollout_trajectory_path(model, &dataset_name, num_samples);
-    let trajectory_items: IndexMap<usize, RolloutTrajectory> =
+    let trajectory_items: IndexMap<usize, RolloutTree> =
         read_json_lines_indexed(&trajectory_path).unwrap_or_default();
     let trajectory_completed_ids: HashSet<usize> = trajectory_items.keys().cloned().collect();
     // delete parts in log file that is already finished and write back
@@ -128,7 +128,7 @@ async fn main() {
     });
     let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<TreeUpdateEvent>();
     let (trajectory_tx, mut trajectory_rx) =
-        tokio::sync::mpsc::unbounded_channel::<RolloutTrajectory>();
+        tokio::sync::mpsc::unbounded_channel::<RolloutTree>();
     let mut sumit_task_rng = StdRng::seed_from_u64(rng.next_u64());
     let mut session_log_file = OpenOptions::new()
         .create(true)
@@ -239,7 +239,7 @@ async fn main() {
     ])
     .await;
     // read trajectory file and sort by id
-    let mut trajectories: Vec<RolloutTrajectory> =
+    let mut trajectories: Vec<RolloutTree> =
         read_json_lines(&trajectory_path).unwrap_or_default();
     trajectories.sort_by_key(|t| t.id);
     // write back sorted trajectories
