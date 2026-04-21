@@ -131,7 +131,8 @@ pub fn split_reasoning_and_tool_call(
     let mut tool_call = response[start_position..end_position].to_string();
     let mut tool_wait_violation = false;
     // if after the end position there is immediately a </tool_wait> tag, we also include it in the tool call
-    if end_position < response.len() && response[end_position..].trim().starts_with("</tool_wait>") {
+    if end_position < response.len() && response[end_position..].trim().starts_with("</tool_wait>")
+    {
         let suffix = response[end_position..].trim_start();
         let suffix_after_tag = suffix
             .strip_prefix("</tool_wait>")
@@ -499,7 +500,7 @@ pub fn get_prompt_according_to_session_status(
                 }
             }
         }
-        TrajectoryStatus::PlannerCompactingStep => get_planner_compacting_prompts(session_state),
+        TrajectoryStatus::CompactorCompactingStep => get_planner_compacting_prompts(session_state),
         TrajectoryStatus::PlannerUpdatingPlan => get_planner_updating_plan_prompts(session_state),
         TrajectoryStatus::VerifierCommenting => get_verifier_commenting_prompts(session_state),
     }
@@ -775,7 +776,7 @@ async fn build_new_operations(
                 operations
             }
         }
-        TrajectoryStatus::PlannerCompactingStep => {
+        TrajectoryStatus::CompactorCompactingStep => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(session_state);
             let response = call_llm_with_prefix(
@@ -791,8 +792,8 @@ async fn build_new_operations(
                 let (summary, step_quality) = parse_compactor_response(response);
                 vec![TreeUpdateEvent::AddAction {
                     question_id,
-                    action: RolloutAction::PlannerCompactStep {
-                        summary,
+                    action: RolloutAction::CompactorCompactStep {
+                        step_content_compacted,
                         step_quality,
                     },
                 }]
@@ -960,7 +961,12 @@ pub async fn produce_working_trajectory(
                 .await;
                 println!(
                     "[judgment] question id: {}, trajectory: {}/{}, model answer: {}, reference answer: {}, is correct: {}",
-                    tree.question_id, tree.leaf_node_ids.len(), MAX_NUM_TRAJECTORIES, model_answer, reference_answer, is_correct
+                    tree.question_id,
+                    tree.leaf_node_ids.len(),
+                    MAX_NUM_TRAJECTORIES,
+                    model_answer,
+                    reference_answer,
+                    is_correct
                 );
                 let judge_leaf_correctness_event = TreeUpdateEvent::JudgeLeafCorrectness {
                     question_id: tree.question_id,
@@ -1095,7 +1101,11 @@ pub async fn rollout(
 ) {
     // create a state machine
     let mut tree = Tree::new(question_id, question.clone());
-    println!("Loading {} existing events for question id {}...", loaded_events.len(), question_id);
+    println!(
+        "Loading {} existing events for question id {}...",
+        loaded_events.len(),
+        question_id
+    );
     for event in loaded_events {
         tree.apply_event(event);
     }

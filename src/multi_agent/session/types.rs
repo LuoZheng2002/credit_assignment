@@ -33,8 +33,6 @@ pub struct CompletedStep {
     pub current_step_mode: NextStepDecision,
     pub content_raw: String,
     pub content_compacted: String,
-    pub step_quality: Option<StepQuality>,
-    pub current_step_verifier_comment: Option<VerifierComment>,
 }
 
 impl CompletedStep {
@@ -42,15 +40,11 @@ impl CompletedStep {
         current_step_mode: NextStepDecision,
         content_raw: String,
         content_compacted: String,
-        step_quality: Option<StepQuality>,
-        current_step_verifier_comment: Option<VerifierComment>,
     ) -> Self {
         Self {
             current_step_mode,
             content_raw,
             content_compacted,
-            step_quality,
-            current_step_verifier_comment,
         }
     }
 }
@@ -72,15 +66,55 @@ pub struct VerifierComment {
     pub change_plan: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrajectoryStatus {
-    PlannerMakingOrChangingPlan,
-    PlannerKeepingCurrentPlan,
-    PlannerChoosingMode,
-    PlannerWorkingOnStep,
-    PlannerCompactingStep,
-    PlannerUpdatingPlan,
     VerifierCommenting,
+    PlannerChoosingMode {
+        verifier_comment: Option<VerifierComment>,
+    },
+    PlannerMakingOrChangingPlan {
+        planner_chosen_mode: NextStepDecision,
+        verifier_comment: Option<VerifierComment>,
+    },
+
+    PlannerWorkingOnStep {
+        planner_chosen_mode: NextStepDecision,
+        verifier_comment: Option<VerifierComment>,
+        final_answer: Option<String>,
+        step_content_raw: String,
+    },
+    CompactorCompactingStep {
+        planner_chosen_mode: NextStepDecision,
+        final_answer: Option<String>,
+        step_content_raw: String,
+        system_interrupted: bool,
+    },
+    PlannerUpdatingPlan {
+        planner_chosen_mode: NextStepDecision,
+        final_answer: Option<String>,
+        step_content_raw: String,
+        step_content_compacted: String,
+    },
+    StepEnded,
+    // The special status that breaks out of the state loop
+    SessionEnded {
+        final_answer: String,
+    },
+}
+
+impl TrajectoryStatus {
+    pub fn try_get_verifier_comment(&self) -> Option<VerifierComment> {
+        match self {
+            TrajectoryStatus::PlannerChoosingMode { verifier_comment } => verifier_comment.clone(),
+            TrajectoryStatus::PlannerMakingOrChangingPlan {
+                verifier_comment, ..
+            } => verifier_comment.clone(),
+            TrajectoryStatus::PlannerWorkingOnStep {
+                verifier_comment, ..
+            } => verifier_comment.clone(),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

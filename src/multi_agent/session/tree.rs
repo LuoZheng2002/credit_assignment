@@ -170,7 +170,7 @@ impl Tree {
         if let RolloutAction::PlannerUpdatePlan(_) = &action {
             step.step_finalized = true;
         }
-        if let RolloutAction::PlannerCompactStep { step_quality, .. } = &action {
+        if let RolloutAction::CompactorCompactStep { step_quality, .. } = &action {
             assert!(
                 step.step_quality.is_none(),
                 "PlannerCompactStep should set step_quality at most once per step"

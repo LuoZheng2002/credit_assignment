@@ -6,7 +6,7 @@ use super::types::{MakeOrChangePlan, NextStepDecision, StepQuality, VerifierComm
 pub enum ToolResponse {
     PythonSuccess(String),
     PythonError(String),
-    Intervention(String),
+    // Intervention(String),
 }
 
 impl ToolResponse {
@@ -17,26 +17,27 @@ impl ToolResponse {
             }
             ToolResponse::PythonError(error) => {
                 format!("<tool_response>Python error: {}</tool_response>", error)
-            }
-            ToolResponse::Intervention(content) => content.clone(),
+            } // ToolResponse::Intervention(content) => content.clone(),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RolloutAction {
+    VerifierComment(Option<VerifierComment>),
     PlannerMakeOrChangePlan(Option<MakeOrChangePlan>),
     PlannerDecideNextStep(NextStepDecision),
     PlannerReasoning(String),
     PlannerToolCall(String),
     ToolCallResponse(ToolResponse),
     PlannerEndStep,
-    PlannerCompactStep {
-        summary: String,
+    CompactorCompactStep {
+        step_content_compacted: String,
         step_quality: Option<StepQuality>,
     },
-    PlannerUpdatePlan(String),
-    VerifierComment(Option<VerifierComment>),
+    PlannerUpdatePlan(Option<String>),
+    // Special action that force terminates the current step
+    SystemInterruptStep(String),
 }
 
 impl RolloutAction {
@@ -55,8 +56,8 @@ impl RolloutAction {
                 format!("[PlannerToolCall]:\n{}", tool_call)
             }
             RolloutAction::PlannerEndStep => "[PlannerEndStep]".to_string(),
-            RolloutAction::PlannerCompactStep {
-                summary,
+            RolloutAction::CompactorCompactStep {
+                step_content_compacted: summary,
                 step_quality,
             } => {
                 format!(
@@ -73,6 +74,9 @@ impl RolloutAction {
             RolloutAction::VerifierComment(comment) => {
                 format!("[VerifierComment]:\n{:?}", comment)
             }
+            RolloutAction::SystemInterruptStep(reason) => {
+                format!("[SystemInterruptStep]:\n{}", reason)
+            }
         }
     }
 
@@ -81,16 +85,15 @@ impl RolloutAction {
             RolloutAction::PlannerMakeOrChangePlan(_plan) => {
                 "[PlannerMakeOrChangePlan]".to_string()
             }
-            RolloutAction::PlannerDecideNextStep(_mode) => {
-                "[PlannerChooseMode]".to_string()
-            }
+            RolloutAction::PlannerDecideNextStep(_mode) => "[PlannerChooseMode]".to_string(),
             RolloutAction::PlannerReasoning(_reasoning) => "[PlannerReasoning]".to_string(),
             RolloutAction::PlannerToolCall(_tool_call) => "[PlannerToolCall]".to_string(),
             RolloutAction::PlannerEndStep => "[PlannerEndStep]".to_string(),
-            RolloutAction::PlannerCompactStep { .. } => "[PlannerCompactStep]".to_string(),
+            RolloutAction::CompactorCompactStep { .. } => "[PlannerCompactStep]".to_string(),
             RolloutAction::PlannerUpdatePlan(_updated_plan) => "[PlannerUpdatePlan]".to_string(),
             RolloutAction::ToolCallResponse(_tool_response) => "[ToolCallResponse]".to_string(),
             RolloutAction::VerifierComment(_comment) => "[VerifierComment]".to_string(),
+            RolloutAction::SystemInterruptStep(_reason) => "[SystemInterruptStep]".to_string(),
         }
     }
 }

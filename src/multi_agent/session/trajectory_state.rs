@@ -1,3 +1,5 @@
+use core::panic;
+
 use crate::deepmath::parse_answers::extract_boxed_content;
 
 use super::actions::{RolloutAction, ToolResponse, TrajectoryActionLog};
@@ -16,13 +18,14 @@ pub struct TrajectoryState<'a> {
     pub source_tree: &'a Tree,
     pub question: String,
     pub prev_steps: Vec<CompletedStep>,
-    pub current_step_content_raw: String,
-    pub current_step_content_compacted: Option<String>,
+    // pub current_step_content_raw: String,
+    // pub current_step_content_compacted: Option<String>,
     pub current_plan: Option<String>,
     pub status: TrajectoryStatus,
-    pub planner_chosen_mode: Option<NextStepDecision>,
-    pub final_answer: Option<String>,
+    // pub planner_chosen_mode: Option<NextStepDecision>,
+    // pub final_answer: Option<String>,
     pub failed_attempts: Vec<FailedAttempt>,
+    // limit stats
     pub num_plan_changes: usize,
     pub step_overwrite_streak: usize,
     pub total_step_overwrites: usize,
@@ -30,7 +33,8 @@ pub struct TrajectoryState<'a> {
     pub current_step_last_python_error: Option<String>,
     pub total_actions: usize,
     pub total_actual_steps: usize,
-    pub should_end_session: bool,
+    // needs to be modified to use status to express end session
+    // pub should_end_session: bool,
 }
 
 impl<'a> TrajectoryState<'a> {
@@ -39,21 +43,21 @@ impl<'a> TrajectoryState<'a> {
             source_tree,
             question,
             prev_steps: Vec::new(),
-            current_step_content_raw: String::new(),
+            // current_step_content_raw: String::new(),
             num_plan_changes: 0,
             current_step_num_actions: 0,
             current_step_last_python_error: None,
             step_overwrite_streak: 0,
             total_step_overwrites: 0,
-            current_step_content_compacted: None,
+            // current_step_content_compacted: None,
             current_plan: None,
             status: TrajectoryStatus::VerifierCommenting,
-            planner_chosen_mode: None,
-            final_answer: None,
+            // planner_chosen_mode: None,
+            // final_answer: None,
             failed_attempts: Vec::new(),
             total_actions: 0,
             total_actual_steps: 0,
-            should_end_session: false,
+            // should_end_session: false,
         }
     }
 
@@ -137,56 +141,105 @@ impl<'a> TrajectoryState<'a> {
         MAX_ACTIONS_PER_STEP - self.current_step_num_actions
     }
 
-    fn refresh_should_end_session(&mut self) {
-        if self.final_answer.is_some() {
-            self.should_end_session = true;
-            return;
-        }
-        if self.prev_steps.len() > 20 || self.total_actions > 150 {
-            self.final_answer = Some(FORCED_END_MESSAGE.to_string());
-            self.should_end_session = true;
-            return;
-        }
-        self.should_end_session = false;
-    }
+    // fn refresh_should_end_session(&mut self) {
+    //     if self.final_answer.is_some() {
+    //         self.should_end_session = true;
+    //         return;
+    //     }
+    //     if self.prev_steps.len() > 20 || self.total_actions > 150 {
+    //         self.final_answer = Some(FORCED_END_MESSAGE.to_string());
+    //         self.should_end_session = true;
+    //         return;
+    //     }
+    //     self.should_end_session = false;
+    // }
 
     pub fn update(&mut self, operation: RolloutAction) {
         self.total_actions += 1;
-        match operation {
-            RolloutAction::PlannerMakeOrChangePlan(plan) => {
-                assert!(
-                    matches!(
-                        self.status,
-                        TrajectoryStatus::PlannerMakingOrChangingPlan
-                            | TrajectoryStatus::PlannerKeepingCurrentPlan
-                    ),
-                    "PlannerMakeOrChangePlan can only be called during PlannerMakingOrChangingPlan or PlannerKeepingCurrentPlan"
+        match &operation {
+            RolloutAction::VerifierComment(verifier_comment) => {
+                assert_eq!(
+                    self.status,
+                    TrajectoryStatus::VerifierCommenting,
+                    "VerifierComment can only be called during VerifierCommenting"
                 );
-                match plan {
-                    None => {
-                        assert_eq!(
-                            self.status,
-                            TrajectoryStatus::PlannerKeepingCurrentPlan,
-                            "PlannerMakeOrChangePlan(None) must be emitted in PlannerKeepingCurrentPlan"
+                self.status = TrajectoryStatus::PlannerChoosingMode { verifier_comment: verifier_comment.clone() };
+            }
+            RolloutAction::PlannerDecideNextStep(mode) => {
+                let TrajectoryStatus::PlannerChoosingMode { verifier_comment } =
+                    self.status.clone()
+                else {
+                    panic!(
+                        "PlannerDecideNextStep can only be called during PlannerChoosingMode status"
+                    );
+                };
+                // self.planner_chosen_mode = Some(mode.clone());
+                match &mode {
+                    NextStepDecision::ChangePlan(_reason) => {
+                        self.step_overwrite_streak = 0;
+                    }
+                    NextStepDecision::OverwriteLastStep(_overwrite_reason) => {
+                        assert!(
+                            self.can_overwrite_step(),
+                            "Exceed maximum step overwrite limit"
+                        );
+                        self.step_overwrite_streak += 1;
+                        self.total_step_overwrites += 1;
+                        assert!(
+                            self.current_plan.is_some(),
+                            "There must be an existing plan when overwriting step"
                         );
                     }
-                    Some(MakeOrChangePlan::MakePlan(plan_content)) => {
-                        assert_eq!(
-                            self.status,
-                            TrajectoryStatus::PlannerMakingOrChangingPlan,
-                            "PlannerMakeOrChangePlan(Some(MakePlan)) must be emitted in PlannerMakingOrChangingPlan"
+                    NextStepDecision::Continue => {
+                        self.step_overwrite_streak = 0;
+                    }
+                };
+                self.status = TrajectoryStatus::PlannerMakingOrChangingPlan {
+                    planner_chosen_mode: mode.clone(),
+                    verifier_comment,
+                };
+            }
+            RolloutAction::PlannerMakeOrChangePlan(plan) => {
+                let TrajectoryStatus::PlannerMakingOrChangingPlan {
+                    planner_chosen_mode,
+                    verifier_comment,
+                } = self.status.clone()
+                else {
+                    panic!(
+                        "PlannerMakeOrChangePlan can only be called during PlannerMakingOrChangingPlan status"
+                    );
+                };
+                match plan {
+                    None => {
+                        assert!(
+                            self.current_plan.is_some(),
+                            "There must be an existing plan when making or changing plan with None"
                         );
-                        self.current_plan = Some(plan_content);
+                        assert!(matches!(
+                            planner_chosen_mode,
+                            NextStepDecision::Continue | NextStepDecision::OverwriteLastStep(_)
+                        ));
+                    }
+                    Some(MakeOrChangePlan::MakePlan(plan_content)) => {
+                        assert!(
+                            self.current_plan.is_none(),
+                            "There should be no existing plan when making the initial plan"
+                        );
+                        assert!(matches!(planner_chosen_mode, NextStepDecision::Continue));
+                        self.current_plan = Some(plan_content.clone());
                     }
                     Some(MakeOrChangePlan::ChangePlan {
                         plan: new_plan,
                         prev_failed_reason,
                     }) => {
-                        assert_eq!(
-                            self.status,
-                            TrajectoryStatus::PlannerMakingOrChangingPlan,
-                            "PlannerMakeOrChangePlan(Some(ChangePlan)) must be emitted in PlannerMakingOrChangingPlan"
+                        assert!(
+                            self.current_plan.is_some(),
+                            "There must be an existing plan when making or changing plan with Some(ChangePlan)"
                         );
+                        assert!(matches!(
+                            planner_chosen_mode,
+                            NextStepDecision::ChangePlan(_)
+                        ));
                         assert!(
                             self.can_change_plan(),
                             "Exceed maximum number of plan changes"
@@ -198,80 +251,67 @@ impl<'a> TrajectoryState<'a> {
                             .expect("There must be an existing plan before changing plan");
                         let failed_attempt = FailedAttempt {
                             plan: old_plan,
-                            reason: prev_failed_reason,
+                            reason: prev_failed_reason.clone(),
                         };
                         self.failed_attempts.push(failed_attempt);
                         self.prev_steps.clear();
                         self.num_plan_changes += 1;
-                        self.current_plan = Some(new_plan);
+                        self.current_plan = Some(new_plan.clone());
                     }
                 }
                 assert!(
                     self.current_plan.is_some(),
                     "A plan must exist after PlannerMakeOrChangePlan"
                 );
-                self.status = TrajectoryStatus::PlannerWorkingOnStep;
+                // state transition
+                self.status = TrajectoryStatus::PlannerWorkingOnStep {
+                    planner_chosen_mode,
+                    verifier_comment,
+                    final_answer: None,
+                    step_content_raw: String::new(),
+                };
             }
-            RolloutAction::PlannerDecideNextStep(mode) => {
-                self.planner_chosen_mode = Some(mode.clone());
-                match mode {
-                    NextStepDecision::ChangePlan(_reason) => {
-                        self.step_overwrite_streak = 0;
-                        self.status = TrajectoryStatus::PlannerMakingOrChangingPlan;
-                    }
-                    NextStepDecision::OverwriteLastStep(_overwrite_reason) => {
-                        assert!(
-                            self.can_overwrite_step(),
-                            "Exceed maximum step overwrite limit"
-                        );
-                        self.step_overwrite_streak += 1;
-                        self.total_step_overwrites += 1;
-                        if self.current_plan.is_none() {
-                            self.status = TrajectoryStatus::PlannerMakingOrChangingPlan;
-                        } else {
-                            self.status = TrajectoryStatus::PlannerKeepingCurrentPlan;
-                        }
-                    }
-                    NextStepDecision::Continue => {
-                        self.step_overwrite_streak = 0;
-                        if self.current_plan.is_none() {
-                            self.status = TrajectoryStatus::PlannerMakingOrChangingPlan;
-                        } else {
-                            self.status = TrajectoryStatus::PlannerKeepingCurrentPlan;
-                        }
-                    }
-                }
-            }
-            RolloutAction::PlannerReasoning(reasoning) => {
+
+            RolloutAction::PlannerReasoning(content) | RolloutAction::PlannerToolCall(content) => {
                 assert!(
                     self.can_take_action_in_current_step(),
                     "Exceed maximum number of actions in the current step"
                 );
+                let TrajectoryStatus::PlannerWorkingOnStep {
+                    planner_chosen_mode: _,
+                    verifier_comment: _,
+                    final_answer,
+                    step_content_raw,
+                } = &mut self.status
+                else {
+                    panic!(
+                        "PlannerReasoning can only be called during PlannerWorkingOnStep status"
+                    );
+                };
                 self.current_step_num_actions += 1;
-                self.current_step_content_raw.push_str(&reasoning);
-                if let Some(boxed_answer) = extract_boxed_content(&reasoning) {
-                    self.final_answer = Some(boxed_answer);
+                step_content_raw.push_str(&content);
+                let is_reasoning = matches!(operation, RolloutAction::PlannerReasoning(_));
+                if is_reasoning && let Some(boxed_answer) = extract_boxed_content(&content) {
+                    *final_answer = Some(boxed_answer);
                 }
-            }
-            RolloutAction::PlannerToolCall(tool_call) => {
-                assert!(
-                    self.can_take_action_in_current_step(),
-                    "Exceed maximum number of actions in the current step"
-                );
-                self.current_step_num_actions += 1;
-                self.current_step_content_raw.push_str(&tool_call);
             }
             RolloutAction::ToolCallResponse(tool_response) => {
                 assert!(
                     self.can_take_action_in_current_step(),
                     "Exceed maximum number of actions in the current step"
                 );
+                let TrajectoryStatus::PlannerWorkingOnStep {
+                    planner_chosen_mode: _,
+                    verifier_comment: _,
+                    final_answer,
+                    step_content_raw,
+                } = &mut self.status
+                else {
+                    panic!(
+                        "PlannerReasoning can only be called during PlannerWorkingOnStep status"
+                    );
+                };
                 self.current_step_num_actions += 1;
-                assert_eq!(
-                    self.status,
-                    TrajectoryStatus::PlannerWorkingOnStep,
-                    "ToolCallResponse can only be called during PlannerTurn"
-                );
                 match &tool_response {
                     ToolResponse::PythonSuccess(_output) => {
                         self.current_step_last_python_error = None;
@@ -279,139 +319,125 @@ impl<'a> TrajectoryState<'a> {
                     ToolResponse::PythonError(error) => {
                         self.current_step_last_python_error = Some(error.clone());
                     }
-                    ToolResponse::Intervention(_content) => {
-                        self.current_step_last_python_error = None;
-                    }
                 }
-                if let ToolResponse::Intervention(content) = &tool_response {
-                    if content == CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE
-                        || content == IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE
-                        || content == REPETITION_ABORT_MESSAGE
-                    {
-                        self.should_end_session = true;
-                    }
-                }
-                self.current_step_content_raw
-                    .push_str(&tool_response.to_raw_content());
+                step_content_raw.push_str(&tool_response.to_raw_content());
+            }
+            RolloutAction::SystemInterruptStep(content) => {
+                let TrajectoryStatus::PlannerWorkingOnStep {
+                    planner_chosen_mode,
+                    verifier_comment: _,
+                    final_answer,
+                    mut step_content_raw,
+                } = self.status.clone()
+                else {
+                    panic!(
+                        "PlannerReasoning can only be called during PlannerWorkingOnStep status"
+                    );
+                };
+                step_content_raw.push_str(&content);
+                self.status = TrajectoryStatus::CompactorCompactingStep {
+                    planner_chosen_mode,
+                    final_answer,
+                    step_content_raw,
+                    system_interrupted: true,
+                };
             }
             RolloutAction::PlannerEndStep => {
-                assert_eq!(
-                    self.status,
-                    TrajectoryStatus::PlannerWorkingOnStep,
-                    "PlannerEndStep can only be called during PlannerTurn"
-                );
+                let TrajectoryStatus::PlannerWorkingOnStep {
+                    planner_chosen_mode,
+                    verifier_comment: _,
+                    final_answer,
+                    step_content_raw,
+                } = self.status.clone()
+                else {
+                    panic!("PlannerEndStep can only be called during PlannerWorkingOnStep status");
+                };
                 self.current_step_num_actions = 0;
                 self.current_step_last_python_error = None;
-                self.status = TrajectoryStatus::PlannerCompactingStep;
+                self.status = TrajectoryStatus::CompactorCompactingStep {
+                    planner_chosen_mode,
+                    final_answer,
+                    step_content_raw,
+                    system_interrupted: false,
+                };
             }
-            RolloutAction::PlannerCompactStep {
-                summary,
+            RolloutAction::CompactorCompactStep {
+                step_content_compacted,
                 step_quality: _,
             } => {
-                assert_eq!(
-                    self.status,
-                    TrajectoryStatus::PlannerCompactingStep,
-                    "PlannerCompactStep can only be called after PlannerEndStep"
-                );
-                self.total_actual_steps += 1;
-                if let Some(boxed_answer) = extract_boxed_content(&summary) {
-                    self.final_answer = Some(boxed_answer);
+                let TrajectoryStatus::CompactorCompactingStep {
+                    planner_chosen_mode,
+                    mut final_answer,
+                    step_content_raw,
+                    system_interrupted,
+                } = self.status.clone()
+                else {
+                    panic!(
+                        "PlannerCompactStep can only be called during PlannerCompactingStep status"
+                    );
+                };
+                if final_answer.is_none()
+                    && let Some(boxed_answer) = extract_boxed_content(&step_content_compacted)
+                {
+                    final_answer = Some(boxed_answer);
                 }
-                if self.final_answer.is_some() {
-                    self.current_step_last_python_error = None;
-                }
-                self.current_step_content_compacted = Some(summary);
-                self.status = TrajectoryStatus::PlannerUpdatingPlan;
+
+                self.status = TrajectoryStatus::PlannerUpdatingPlan {
+                    planner_chosen_mode,
+                    final_answer,
+                    step_content_raw,
+                    step_content_compacted: step_content_compacted.clone(),
+                };
             }
             RolloutAction::PlannerUpdatePlan(updated_plan) => {
-                assert_eq!(
-                    self.status,
-                    TrajectoryStatus::PlannerUpdatingPlan,
-                    "PlannerUpdatePlan can only be called after PlannerCompactStep"
-                );
-                self.current_plan = Some(updated_plan);
-                let step_mode = self
-                    .planner_chosen_mode
-                    .take()
-                    .expect("Planner must have chosen a mode before planner updates plan");
-                match &step_mode {
-                    NextStepDecision::Continue => {
-                        let new_step = CompletedStep::new(
-                            step_mode.clone(),
-                            self.current_step_content_raw.clone(),
-                            self.current_step_content_compacted
-                                .take()
-                                .expect("The compacted content must be available"),
-                            None,
-                            None,
-                        );
-                        self.prev_steps.push(new_step);
-                        self.current_step_content_raw.clear();
-                        self.current_step_content_compacted = None;
-                    }
-                    NextStepDecision::OverwriteLastStep(_overwrite_reason) => {
-                        let new_step = CompletedStep::new(
-                            step_mode.clone(),
-                            self.current_step_content_raw.clone(),
-                            self.current_step_content_compacted
-                                .take()
-                                .expect("The compacted content must be available"),
-                            None,
-                            None,
-                        );
-                        self.prev_steps.pop();
-                        self.prev_steps.push(new_step);
-                        self.current_step_content_raw.clear();
-                        self.current_step_content_compacted = None;
-                    }
-                    NextStepDecision::ChangePlan(_) => {
-                        let new_step = CompletedStep::new(
-                            NextStepDecision::Continue,
-                            self.current_step_content_raw.clone(),
-                            self.current_step_content_compacted
-                                .take()
-                                .expect("The compacted content must be available"),
-                            None,
-                            None,
-                        );
-                        self.prev_steps.push(new_step);
-                        self.current_step_content_raw.clear();
-                        self.current_step_content_compacted = None;
-                    }
-                }
-                self.status = TrajectoryStatus::VerifierCommenting;
-            }
-            RolloutAction::VerifierComment(comment) => {
-                assert_eq!(
-                    self.status,
-                    TrajectoryStatus::VerifierCommenting,
-                    "VerifierComment can only be called during VerifierCommenting"
-                );
-                if let Some(last_step) = self.prev_steps.last_mut() {
-                    last_step.current_step_verifier_comment = comment;
-                    self.status = TrajectoryStatus::PlannerChoosingMode;
-                } else {
-                    assert!(
-                        comment.is_none(),
-                        "Verifier comment must be None when there is no previous step"
+                let TrajectoryStatus::PlannerUpdatingPlan {
+                    planner_chosen_mode,
+                    final_answer,
+                    step_content_raw,
+                    step_content_compacted,
+                } = self.status.clone()
+                else {
+                    panic!(
+                        "PlannerUpdatePlan can only be called during PlannerUpdatingPlan status"
                     );
-                    self.planner_chosen_mode = Some(NextStepDecision::Continue);
-                    self.status = TrajectoryStatus::PlannerMakingOrChangingPlan;
+                };
+                self.total_actual_steps += 1;
+                if updated_plan.is_some() {
+                    assert!(final_answer.is_none(), "If final answer is found, there should be no updated plan");
+                    self.current_plan = updated_plan.clone();
+                }
+                let overwrite =
+                    matches!(planner_chosen_mode, NextStepDecision::OverwriteLastStep(_));
+                let new_step = CompletedStep::new(
+                    planner_chosen_mode,
+                    step_content_raw,
+                    step_content_compacted,
+                );
+                if overwrite {
+                    self.prev_steps.pop();
+                }
+                self.prev_steps.push(new_step);
+                if let Some(final_answer) = final_answer {
+                    self.status = TrajectoryStatus::SessionEnded { final_answer }
+                } else {
+                    self.status = TrajectoryStatus::StepEnded;
                 }
             }
         }
-        self.refresh_should_end_session();
     }
 
     pub fn to_history_prev_steps(&self) -> String {
         let (planner_turn, making_plan) = match self.status {
-            TrajectoryStatus::PlannerMakingOrChangingPlan => (true, true),
-            TrajectoryStatus::PlannerKeepingCurrentPlan => (true, false),
-            TrajectoryStatus::PlannerChoosingMode => (true, false),
-            TrajectoryStatus::PlannerWorkingOnStep => (true, false),
-            TrajectoryStatus::PlannerCompactingStep => (true, false),
-            TrajectoryStatus::PlannerUpdatingPlan => (true, false),
             TrajectoryStatus::VerifierCommenting => (false, false),
+            TrajectoryStatus::PlannerChoosingMode { .. } => (true, false),
+            TrajectoryStatus::PlannerMakingOrChangingPlan { .. } => {
+                (true, self.current_plan.is_none())
+            }            
+            TrajectoryStatus::PlannerWorkingOnStep { .. } => (true, false),
+            TrajectoryStatus::CompactorCompactingStep { .. } => (false, false),
+            TrajectoryStatus::PlannerUpdatingPlan { .. } => (false, false),            
+            TrajectoryStatus::StepEnded => (false, false),
+            TrajectoryStatus::SessionEnded { .. } => (false, false),
         };
         let mut history = String::new();
         for (i, failed_attempt) in self.failed_attempts.iter().enumerate() {
@@ -436,15 +462,9 @@ impl<'a> TrajectoryState<'a> {
             history.push_str(&format!("{}\n", step.content_compacted));
 
             history.push_str(&format!("Step {} ends.\n", i + 1));
-            if planner_turn && i == self.prev_steps.len() - 1 {
-                if let Some(comment) = &step.current_step_verifier_comment {
-                    history.push_str(&format!(
-                        "Verifier comment on step {}: {}\n",
-                        i + 1,
-                        comment.comment
-                    ));
-                }
-            }
+        }
+        if let Some(comment) = self.status.try_get_verifier_comment() {
+            history.push_str(&format!("Verifier comment on step {}: {}\n", self.prev_steps.len(), comment.comment));
         }
         history
     }
