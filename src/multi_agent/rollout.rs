@@ -3,6 +3,7 @@ use rand::RngExt;
 use rand::distr::{Distribution, weighted::WeightedIndex};
 use reqwest::Client;
 
+use crate::multi_agent::session::VerifierAndModeSummary;
 use crate::multi_agent::session::types::FinalAnswer;
 use crate::{
     call_llm::{QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE, call_llm_with_prefix},
@@ -601,55 +602,29 @@ async fn build_new_operations(
     take_over_mode_decision: bool,
     rng: &mut impl rand::Rng,
 ) -> Vec<TreeUpdateEvent> {
-    let question_id = session_state.source_tree.question_id;
+    let tree = &session_state.source_tree;
+    let question_id = tree.question_id;
     match &session_state.status {
         TrajectoryStatus::StepEnded => {
             let mut operations: Vec<TreeUpdateEvent> = Vec::new();
-            let (node_id, parent_id) = if session_state.source_tree.current_node_id.is_none() {
+
+            let (node_id, parent_id) = if tree.current_node_id.is_none() {
                 assert!(
-                    session_state.source_tree.root_node_id.is_none()
-                        && session_state.source_tree.nodes.is_empty()
-                        && session_state.source_tree.next_node_id == 0,
+                    tree.root_node_id.is_none() && tree.nodes.is_empty() && tree.next_node_id == 0,
                     "Tree without current node must be an uninitialized empty tree"
                 );
                 (0, None)
             } else {
-                let parent_node_id = session_state
-                    .source_tree
+                let parent_node_id = tree
                     .current_node_id
                     .expect("VerifierCommenting requires current_node_id");
-                let next_node_id = session_state.source_tree.next_node_id;
+                let next_node_id = tree.next_node_id;
                 (next_node_id, Some(parent_node_id))
             };
-            let verifier_on = if let Some(parent_node_id) = parent_id {
-                let parent_node = session_state
-                    .source_tree
-                    .nodes
-                    .get(parent_node_id)
-                    .expect("VerifierCommenting parent node must exist");
-                assert_eq!(
-                    parent_node.node_id, parent_node_id,
-                    "Node index must equal node_id when choosing child branch"
-                );
-                match (
-                    parent_node.verifier_on_child_id.is_some(),
-                    parent_node.verifier_off_child_id.is_some(),
-                ) {
-                    (false, false) => Some(rng.random::<f32>() < 0.5),
-                    (false, true) => Some(true),
-                    (true, false) => Some(false),
-                    (true, true) => panic!(
-                        "VerifierCommenting parent already has both verifier_on and verifier_off children"
-                    ),
-                }
-            } else {
-                None
-            };            
             operations.push(TreeUpdateEvent::CreateNode {
                 question_id,
                 node_id,
                 parent_id,
-                verifier_on,
             });
             operations.push(TreeUpdateEvent::SetCurrentNode {
                 question_id,
@@ -663,10 +638,43 @@ async fn build_new_operations(
         }
         TrajectoryStatus::VerifierCommenting => {
             let mut operations: Vec<TreeUpdateEvent> = Vec::new();
+            // let current_node_id = session_state
+            //     .source_tree
+            //     .current_node_id
+            //     .expect("VerifierCommenting requires current_node_id");
+            let parent_id = session_state
+                .source_tree
+                .get_current_node()
+                .expect("VerifierCommenting current node must exist")
+                .parent_id;
 
+            let verifier_on = if let Some(parent_node_id) = parent_id {
+                let parent_node = tree.get_node_by_id(parent_node_id);
+                assert!(
+                    parent_node.child_ids[0].is_none() || parent_node.child_ids[1].is_none(),
+                    "VerifierCommenting parent already has both children assigned"
+                );
+                let existing_verifier_on = parent_node.child_ids.iter().find_map(|id| {
+                    let Some(id) = id else {
+                        return None;
+                    };
+                    let other_child = tree.get_node_by_id(*id);
+                    let verifier_and_mode = other_child.step.verifier_and_mode_summary();
+                    match &verifier_and_mode {
+                        VerifierAndModeSummary::VerifierOff => Some(false),
+                        _ => Some(true),
+                    }
+                });
+                existing_verifier_on
+                    .and_then(|v| Some(!v))
+                    .unwrap_or_else(|| rng.random() < 0.5)
+            } else {
+                // if there is no parent node, then verifier should be off because there is not last step
+                false
+            };
             let mut verifier_comment = None;
-            let should_run_verifier = verifier_on == Some(true);
-            if !session_state.prev_steps.is_empty() && should_run_verifier {
+            if verifier_on {
+                assert!(!session_state.prev_steps.is_empty());
                 let (prompt_before_assistant, prompt_after_assistant) =
                     get_prompt_according_to_session_status(session_state);
                 assert_eq!(

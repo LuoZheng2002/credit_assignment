@@ -12,9 +12,9 @@ use super::types::{NextStepDecision, StepQuality, VerifierAndModeSummary};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Step {
-    pub verifier_and_mode_summary: Option<VerifierAndModeSummary>,
-    pub step_finalized: bool,
-    pub step_quality: Option<StepQuality>,
+    // pub verifier_and_mode_summary: Option<VerifierAndModeSummary>,
+    // pub step_finalized: bool,
+    // pub step_quality: Option<StepQuality>,
     pub action_log: Vec<RolloutAction>,
 }
 
@@ -80,9 +80,9 @@ impl Step {
 impl Step {
     pub fn new() -> Self {
         Self {
-            verifier_and_mode_summary: None,
-            step_finalized: false,
-            step_quality: None,
+            // verifier_and_mode_summary: None,
+            // step_finalized: false,
+            // step_quality: None,
             action_log: Vec::new(),
         }
     }
@@ -194,69 +194,23 @@ impl Tree {
     }
 
     pub fn append_action_to_current_node(&mut self, action: RolloutAction) {
-        let current_node_id = self
-            .current_node_id
-            .expect("AddAction requires current_node_id to be set");
-        let node = &mut self.nodes[current_node_id];
-        let step = &mut node.step;
+        let current_node = self
+            .get_current_node_mut()
+            .expect("AddAction requires current_node_id to be set and exist in nodes");
+        let step = &mut current_node.step;
         assert!(
-            !step.step_finalized,
+            !step.step_finalized(),
             "Cannot append action to finalized step"
         );
-        if let RolloutAction::PlannerDecideNextStep(mode) = &action {
-            assert!(
-                step.verifier_and_mode_summary.is_none(),
-                "verifier_and_mode_summary should be set at most once per step"
-            );
-            let verifier_comment_in_current_step =
-                step.action_log
-                    .iter()
-                    .find_map(|existing_action| match existing_action {
-                        RolloutAction::VerifierComment(comment) => Some(comment.clone()),
-                        _ => None,
-                    });
-            step.verifier_and_mode_summary = Some(match (verifier_comment_in_current_step, mode) {
-                (None, _) => VerifierAndModeSummary::VerifierOff,
-                (Some(_), NextStepDecision::Continue) => VerifierAndModeSummary::VerifierOn,
-                (Some(_), NextStepDecision::OverwriteLastStep(_)) => {
-                    VerifierAndModeSummary::VerifierOnAndOverwriteLastStep
-                }
-                (Some(_), NextStepDecision::ChangePlan(_)) => {
-                    VerifierAndModeSummary::VerifierOnAndChangePlan
-                }
-            });
-        }
-        // if let RolloutAction::PlannerUpdatePlan(_) = &action {
-        //     step.step_finalized = true;
-        // }
-        if let RolloutAction::CompactorCompactStep { step_quality, .. } = &action {
-            assert!(
-                step.step_quality.is_none(),
-                "PlannerCompactStep should set step_quality at most once per step"
-            );
-            step.step_quality = step_quality.clone();
-        }
-        // if let RolloutAction::ToolCallResponse(ToolResponse::Intervention(content)) = &action {
-        //     if content == CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE
-        //         || content == IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE
-        //         || content == REPETITION_ABORT_MESSAGE
-        //     {
-        //         step.step_finalized = true;
-        //         assert!(
-        //             step.step_quality.is_none(),
-        //             "Terminal intervention should set step_quality at most once"
-        //         );
-        //         step.step_quality = Some(StepQuality::FailedAndAborted);
-        //     }
-        // }
         step.action_log.push(action);
     }
 
     pub fn set_current_node_by_id(&mut self, node_id: usize) {
-        let node = self
-            .find_node_by_id(node_id)
-            .expect("SetCurrentNode node_id must exist in tree");
-        self.current_node_id = Some(node.node_id);
+        assert!(
+            node_id < self.nodes.len(),
+            "SetCurrentNode node_id must exist in nodes"
+        );
+        self.current_node_id = Some(node_id);
     }
 
     pub fn apply_event(&mut self, event: TreeUpdateEvent) {
@@ -272,13 +226,12 @@ impl Tree {
                         parent_id: Some(parent_id),
                     };
                     assert!(
-                        self.find_node_by_id(node_id).is_none(),
+                        !self.has_id(node_id),
                         "CreateNode node_id must be unique"
                     );
                     self.nodes.push(child);
                     let child_node_slot = self
-                        .find_node_by_id_mut(parent_id)
-                        .expect("CreateNode parent_id must exist")
+                        .get_node_by_id_mut(parent_id)
                         .child_ids
                         .iter_mut()
                         .find(|child_id_option| child_id_option.is_none())
@@ -322,9 +275,7 @@ impl Tree {
                 self.append_action_to_current_node(action);
             }
             TreeUpdateEvent::RegisterLeaf { node_id, .. } => {
-                let node = self
-                    .find_node_by_id(node_id)
-                    .expect("RegisterLeaf node_id must exist in tree");
+                let node = self.get_node_by_id(node_id);
                 assert_eq!(
                     node.node_id, node_id,
                     "RegisterLeaf node index must equal node_id"
@@ -340,9 +291,7 @@ impl Tree {
                 correctness_judgment,
                 ..
             } => {
-                let node = self
-                    .find_node_by_id(node_id)
-                    .expect("JudgeLeafCorrectness node_id must exist in tree");
+                let node = self.get_node_by_id(node_id);
                 assert_eq!(
                     node.node_id, node_id,
                     "JudgeLeafCorrectness node index must equal node_id"
@@ -377,25 +326,37 @@ impl Tree {
             }
         }
     }
-
-    fn find_node_by_id(&self, node_id: usize) -> Option<&Node> {
-        let node = self.nodes.get(node_id)?;
-        assert_eq!(node.node_id, node_id, "Node index must equal node_id");
-        Some(node)
+    pub fn has_id(&self, node_id: usize) -> bool {
+        self.nodes.iter().any(|node| node.node_id == node_id)
     }
-    fn find_node_by_id_mut(&mut self, node_id: usize) -> Option<&mut Node> {
-        let node = self.nodes.get_mut(node_id)?;
+
+    pub fn get_node_by_id(&self, node_id: usize) -> &Node {
+        let node = self.nodes.get(node_id).expect("Node id must exist in tree");
         assert_eq!(node.node_id, node_id, "Node index must equal node_id");
-        Some(node)
+        node
+    }
+    pub fn get_current_node(&self) -> Option<&Node> {
+        let current_node_id = self.current_node_id?;
+        Some(self.get_node_by_id(current_node_id))
+    }
+    pub fn get_current_node_mut(&mut self) -> Option<&mut Node> {
+        let current_node_id = self.current_node_id?;
+        Some(self.get_node_by_id_mut(current_node_id))
+    }
+    pub fn get_node_by_id_mut(&mut self, node_id: usize) -> &mut Node {
+        let node = self
+            .nodes
+            .get_mut(node_id)
+            .expect("Node id must exist in tree");
+        assert_eq!(node.node_id, node_id, "Node index must equal node_id");
+        node
     }
 
     pub fn to_trajectory_log_on_current_path(&self) -> TrajectoryActionLog {
         let mut path_ids = Vec::new();
         let mut cursor = self.current_node_id;
         while let Some(node_id) = cursor {
-            let node = self
-                .find_node_by_id(node_id)
-                .expect("Current-path node_id must exist in tree");
+            let node = self.get_node_by_id(node_id);
             path_ids.push(node_id);
             cursor = node.parent_id;
         }
@@ -403,9 +364,7 @@ impl Tree {
 
         let mut actions = Vec::new();
         for node_id in path_ids {
-            let node = self
-                .find_node_by_id(node_id)
-                .expect("Current-path node_id must exist while collecting actions");
+            let node = self.get_node_by_id(node_id);
             actions.extend(node.step.action_log.iter().cloned());
         }
         TrajectoryActionLog(actions)
@@ -417,7 +376,7 @@ impl Tree {
         let mut focused_true_count = 0usize;
         let mut total_count = 0usize;
         for node in &self.nodes {
-            if let Some(step_quality) = &node.step.step_quality {
+            if let Some(step_quality) = &node.step.get_step_quality() {
                 total_count += 1;
                 if let StepQuality::ProperlyEnded {
                     tool,
@@ -450,7 +409,7 @@ impl Tree {
     pub fn get_failed_and_aborted_ratio(&self) -> CountRatio {
         let mut failed_and_aborted_count = 0usize;
         for node in &self.nodes {
-            if matches!(node.step.step_quality, Some(StepQuality::FailedAndAborted)) {
+            if matches!(node.step.get_step_quality(), Some(StepQuality::FailedAndAborted)) {
                 failed_and_aborted_count += 1;
             }
         }
