@@ -24,15 +24,15 @@ Begin your step:",
 }
 
 fn get_planner_step_overwriting_prompt_before_assistant(session_state: &TrajectoryState<'_>) -> String {
-    assert!(matches!(
-        session_state.status,
-        TrajectoryStatus::PlannerWorkingOnStep
-    ));
+    // assert!(matches!(
+    //     session_state.status,
+    //     TrajectoryStatus::PlannerWorkingOnStep
+    // ));
+    let TrajectoryStatus::PlannerWorkingOnStep { planner_chosen_mode, .. } = &session_state.status else {
+        panic!("TrajectoryStatus must be PlannerWorkingOnStep when calling get_planner_step_overwriting_prompt_before_assistant");
+    };
     let question = &session_state.question;
-    let chosen_mode = session_state
-        .planner_chosen_mode
-        .clone()
-        .expect("Planner chosen mode should be set when session status is not PlannerChoosingMode");
+    let chosen_mode = planner_chosen_mode.clone();
     let planner_status_prompt = get_planner_step_overwriting_status_prompt(chosen_mode);
     let history_prev_steps = session_state.to_history_prev_steps();
     get_planner_prompt_before_assistant(question, &history_prev_steps, planner_status_prompt)

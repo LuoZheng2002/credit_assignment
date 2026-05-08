@@ -519,9 +519,6 @@ pub fn get_prompt_according_to_session_status(
     }
 }
 
-pub const SUBMIT_ANSWER_HINT: &str = "\
-<hint>It seems you are trying to end the step at the start of the step. \
-If you have got the answer, put it in \\boxed{} before ending with <end_step>.</hint>";
 pub const MAX_NUM_TRAJECTORIES: usize = 16;
 
 // we increased the repetition times to 5, there might be code that hasn't reflected this change.
@@ -667,7 +664,7 @@ async fn build_new_operations(
                 });
                 existing_verifier_on
                     .and_then(|v| Some(!v))
-                    .unwrap_or_else(|| rng.random() < 0.5)
+                    .unwrap_or_else(|| rng.random::<f32>() < 0.5)
             } else {
                 // if there is no parent node, then verifier should be off because there is not last step
                 false
@@ -706,7 +703,7 @@ async fn build_new_operations(
         }
         TrajectoryStatus::PlannerMakingOrChangingPlan {
             planner_chosen_mode,
-            verifier_comment,
+            verifier_comment: _,
         } => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(session_state);
@@ -735,11 +732,7 @@ async fn build_new_operations(
                 }]
             }
         }
-        TrajectoryStatus::PlannerKeepingCurrentPlan => vec![TreeUpdateEvent::AddAction {
-            question_id,
-            action: RolloutAction::PlannerMakeOrChangePlan(None),
-        }],
-        TrajectoryStatus::PlannerChoosingMode => {
+        TrajectoryStatus::PlannerChoosingMode{verifier_comment: _} => {
             match determine_chosen_mode(
                 session_state,
                 client.clone(),
@@ -758,7 +751,7 @@ async fn build_new_operations(
                 }],
             }
         }
-        TrajectoryStatus::PlannerWorkingOnStep => {
+        TrajectoryStatus::PlannerWorkingOnStep{planner_chosen_mode: _, verifier_comment: _, step_content_raw} => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(session_state);
             let mut response = call_llm_with_prefix(
@@ -774,12 +767,11 @@ async fn build_new_operations(
                 if response.trim().is_empty() {
                     response = "<end_step>".to_string(); // if the model does not output anything, we treat it as if it outputs <end_step> to prevent getting stuck
                 }
-                let mut hold_end_step = false;
-                if &response == "<end_step>" && &session_state.current_step_content_raw == "" {
+                let response_is_empty = response.trim() == "<end_step>" && step_content_raw.trim().is_empty();
+                if response_is_empty {
                     println!(
                         "[Warning]: model tries to end the step without providing any content for the step."
                     );
-                    hold_end_step = true;
                 }
                 let (reasoning, tool_call, tool_wait_violation) =
                     split_reasoning_and_tool_call(response.clone(), model);
@@ -795,7 +787,7 @@ async fn build_new_operations(
                     }
                     operations.push(TreeUpdateEvent::AddAction {
                         question_id,
-                        action: RolloutAction::PlannerReasoning(reasoning),
+                        action: RolloutAction::PlannerReasoning{reasoning},
                     });
                 }
                 if let Some(tool_call) = tool_call {
@@ -819,11 +811,12 @@ async fn build_new_operations(
                             });
                             operations.push(TreeUpdateEvent::AddAction {
                                 question_id,
-                                action: RolloutAction::ToolCallResponse(
-                                    ToolResponse::Intervention(
-                                        IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
-                                    ),
-                                ),
+                                // action: RolloutAction::ToolCallResponse(
+                                //     ToolResponse::Intervention(
+                                //         IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
+                                //     ),
+                                // ),
+                                action: RolloutAction::SystemInterrupt(IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string())
                             });
                             has_terminal_intervention = true;
                         } else {
@@ -839,12 +832,14 @@ async fn build_new_operations(
                         });
                     }
                 }
-                if hold_end_step {
+
+                if response_is_empty {
                     operations.push(TreeUpdateEvent::AddAction {
                         question_id,
-                        action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
-                            SUBMIT_ANSWER_HINT.to_string(),
-                        )),
+                        // action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
+                        //     SUBMIT_ANSWER_HINT.to_string(),
+                        // )),
+                        action: RolloutAction::ToolCallResponse(ToolResponse::EmptyMessageHint),
                     });
                 }
                 let num_additional_actions_allowed =
@@ -867,15 +862,13 @@ async fn build_new_operations(
                     );
                     operations.push(TreeUpdateEvent::AddAction {
                         question_id,
-                        action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
-                            REPETITION_ABORT_MESSAGE.to_string(),
-                        )),
+                        action: RolloutAction::SystemInterrupt(REPETITION_ABORT_MESSAGE.to_string()),
                     });
                     has_terminal_intervention = true;
                 }
 
                 let current_step_full = operations.len() == num_additional_actions_allowed;
-                if (push_end_step && !hold_end_step) || current_step_full {
+                if (push_end_step && !response_is_empty) || current_step_full {
                     assert!(
                         !has_terminal_intervention,
                         "PlannerEndStep should not be emitted after terminal intervention"
@@ -888,7 +881,7 @@ async fn build_new_operations(
                 operations
             }
         }
-        TrajectoryStatus::CompactorCompactingStep => {
+        TrajectoryStatus::CompactorCompactingStep{planner_chosen_mode: _, step_content_raw: _} => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(session_state);
             let response = call_llm_with_prefix(
@@ -901,7 +894,7 @@ async fn build_new_operations(
             if is_context_length_exceeded_response(&response) {
                 context_length_exceeded_result(question_id, "PlannerCompactingStep")
             } else {
-                let (summary, step_quality) = parse_compactor_response(response);
+                let (step_content_compacted, step_quality) = parse_compactor_response(response);
                 vec![TreeUpdateEvent::AddAction {
                     question_id,
                     action: RolloutAction::CompactorCompactStep {
@@ -911,7 +904,7 @@ async fn build_new_operations(
                 }]
             }
         }
-        TrajectoryStatus::PlannerUpdatingPlan => {
+        TrajectoryStatus::PlannerUpdatingPlan{planner_chosen_mode: _, step_content_raw: _, step_content_compacted: _} => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(session_state);
             let response = call_llm_with_prefix(
@@ -927,9 +920,14 @@ async fn build_new_operations(
                 let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
                 vec![TreeUpdateEvent::AddAction {
                     question_id,
-                    action: RolloutAction::PlannerUpdatePlan(updated_plan_content),
+                    action: RolloutAction::PlannerUpdatePlan(Some(updated_plan_content)),
                 }]
             }
+        },
+        TrajectoryStatus::SessionEnded { final_answer } => {
+            // we pretend that we always need to start a new trajectory if the current one ends
+            // however, we cannot build tree update event in the current function.
+            todo!()
         }
     }
 }

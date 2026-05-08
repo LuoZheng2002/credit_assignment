@@ -1,13 +1,12 @@
 use core::panic;
 
-use crate::deepmath::parse_answers::extract_boxed_content;
 use crate::multi_agent::session::types::FinalAnswer;
 
 use super::actions::{RolloutAction, ToolResponse, TrajectoryActionLog};
 use super::constants::{
-    CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE, FORCED_END_MESSAGE,
-    IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE, MAX_ACTIONS_PER_STEP, MAX_PLAN_CHANGES,
-    MAX_STEP_OVERWRITE_STREAK, MAX_TOTAL_STEP_OVERWRITES, REPETITION_ABORT_MESSAGE,
+     
+     MAX_ACTIONS_PER_STEP, MAX_PLAN_CHANGES,
+    MAX_STEP_OVERWRITE_STREAK, MAX_TOTAL_STEP_OVERWRITES,
 };
 use super::tree::Tree;
 use super::types::{
@@ -325,11 +324,12 @@ impl<'a> TrajectoryState<'a> {
                     }
                     ToolResponse::PythonError(error) => {
                         self.current_step_last_python_error = Some(error.clone());
-                    }
+                    },
+                    ToolResponse::EmptyMessageHint => {}
                 }
                 step_content_raw.push_str(&tool_response.to_raw_content());
             }
-            RolloutAction::SystemInterruptStep(content) => {
+            RolloutAction::SystemInterrupt(content) => {
                 let TrajectoryStatus::PlannerWorkingOnStep {
                     planner_chosen_mode,
                     verifier_comment: _,

@@ -1,9 +1,13 @@
-use crate::multi_agent::session::TrajectoryState;
+use crate::multi_agent::session::{TrajectoryState, TrajectoryStatus};
 
-fn get_planner_compacting_prompt_before_assistant(session_state: &TrajectoryState<'_>) -> String {
-    let question = &session_state.question;
-    let history_prev_steps = session_state.to_history_prev_steps();
-    let current_step_raw_content = session_state.current_step_content_raw.clone();
+fn get_planner_compacting_prompt_before_assistant(trajectory_state: &TrajectoryState<'_>) -> String {
+    let question = &trajectory_state.question;
+    let history_prev_steps = trajectory_state.to_history_prev_steps();
+    let TrajectoryStatus::CompactorCompactingStep { planner_chosen_mode: _, step_content_raw } = &trajectory_state.status else {
+        panic!("TrajectoryStatus must be CompactorCompactingStep when calling get_planner_compacting_prompt_before_assistant");
+    };
+    // let current_step_raw_content = trajectory_state.current_step_content_raw.clone();
+    let current_step_raw_content = step_content_raw.clone();
     format!(
         "\
 You are a compactor agent that compacts the content of the current step into a concise summary.\n\

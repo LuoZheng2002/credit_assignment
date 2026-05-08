@@ -1,13 +1,12 @@
-use crate::multi_agent::session::TrajectoryState;
+use crate::multi_agent::session::{TrajectoryState, TrajectoryStatus};
 
 fn get_planner_updating_plan_prompt_before_assistant(session_state: &TrajectoryState<'_>) -> String {
     let question = &session_state.question;
     let history_prev_steps = session_state.to_history_prev_steps();
-    let current_step_raw_content = session_state.current_step_content_raw.clone();
-    let current_step_summary = session_state
-        .current_step_content_compacted
-        .clone()
-        .expect("When updating the plan, the compacted current step must be available.");
+    let TrajectoryStatus::PlannerUpdatingPlan { planner_chosen_mode: _, step_content_raw, step_content_compacted }
+        = &session_state.status else {
+        panic!("TrajectoryStatus must be PlannerUpdatingPlan when calling get_planner_updating_plan_prompt_before_assistant");
+    };
     format!(
         "\
 You are a planner agent that updates the current plan based on the progress of the current step.\n\
@@ -40,7 +39,7 @@ Please provide the entire updated plan, not just the modified parts, like the fo
 ```\n\
 Please only output the steps without the backticks.\n\
 ",
-        question, history_prev_steps, current_step_raw_content, current_step_summary
+        question, history_prev_steps, step_content_raw, step_content_compacted
     )
 }
 

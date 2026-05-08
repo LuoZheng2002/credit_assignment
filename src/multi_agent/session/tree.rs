@@ -157,6 +157,14 @@ pub enum TreeUpdateEvent {
     },
 }
 
+// the whole tree can be:
+// 
+// the trajectory state is based on the rollout actions but not tree events
+// but we can reconstruct the rollout actions based on the current tree status
+// so the rollout action is appended
+
+
+
 impl TreeUpdateEvent {
     pub fn question_id(&self) -> usize {
         match self {

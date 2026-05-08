@@ -42,27 +42,26 @@ Begin your step:",
 }
 
 fn get_planner_step_continuing_prompt_before_assistant(session_state: &TrajectoryState<'_>) -> String {
-    assert!(matches!(
-        session_state.status,
-        TrajectoryStatus::PlannerWorkingOnStep
-    ));
+    // assert!(matches!(
+    //     session_state.status,
+    //     TrajectoryStatus::PlannerWorkingOnStep{planner_chosen_mode, ..}
+    // ));
+    let TrajectoryStatus::PlannerWorkingOnStep { planner_chosen_mode, .. } = &session_state.status else {
+        panic!("TrajectoryStatus must be PlannerWorkingOnStep when calling get_planner_step_continuing_prompt_before_assistant");
+    };
     let question = &session_state.question;
-    let chosen_mode = session_state
-        .planner_chosen_mode
-        .clone()
-        .expect("Planner chosen mode should be set when session status is not PlannerChoosingMode");
+    let chosen_mode =    planner_chosen_mode
+        .clone();
     let planner_status_prompt = get_planner_step_continuing_status_prompt(chosen_mode);
     let history_prev_steps = session_state.to_history_prev_steps();
     get_planner_prompt_before_assistant(question, &history_prev_steps, planner_status_prompt)
 }
 
 pub fn get_planner_prompt_after_assistant(session_state: &TrajectoryState<'_>) -> String {
-    // only working on step needs the prompt after assistant
-    assert!(matches!(
-        session_state.status,
-        TrajectoryStatus::PlannerWorkingOnStep
-    ));
-    session_state.current_step_content_raw.clone()
+    let TrajectoryStatus::PlannerWorkingOnStep { step_content_raw, .. } = &session_state.status else {
+        panic!("TrajectoryStatus must be PlannerWorkingOnStep when calling get_planner_prompt_after_assistant");
+    };
+    step_content_raw.clone()
 }
 
 pub fn get_planner_step_continuing_prompts(session_state: &TrajectoryState<'_>) -> (String, String) {

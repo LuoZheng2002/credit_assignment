@@ -44,7 +44,7 @@ reason: [Describe both why the current plan is not promising and what possible f
 fn get_planner_deciding_next_step_prompt_before_assistant(session_state: &TrajectoryState<'_>) -> String {
     assert!(matches!(
         session_state.status,
-        TrajectoryStatus::PlannerChoosingMode
+        TrajectoryStatus::PlannerChoosingMode{..}
     ));
     let question = &session_state.question;
     let planner_status_prompt = get_planner_deciding_next_step_status_prompt();

@@ -8,6 +8,7 @@ use super::types::{MakeOrChangePlan, NextStepDecision, StepQuality, VerifierComm
 pub enum ToolResponse {
     PythonSuccess(String),
     PythonError(String),
+    EmptyMessageHint,
     // Intervention(String),
 }
 
@@ -20,9 +21,16 @@ impl ToolResponse {
             ToolResponse::PythonError(error) => {
                 format!("<tool_response>Python error: {}</tool_response>", error)
             } // ToolResponse::Intervention(content) => content.clone(),
+            ToolResponse::EmptyMessageHint => {
+                EMPTY_MESSAGE_HINT.to_string()
+            }
         }
     }
 }
+
+pub const EMPTY_MESSAGE_HINT: &str = "\
+<hint>You are trying to end the step at the start of a step. \
+If you have got the answer, put it in \\boxed{} before ending with <end_step>. Otherwise, continue your reasoning in the current step.</hint>";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RolloutAction {
@@ -45,7 +53,7 @@ pub enum RolloutAction {
     // for setting the trajectory state to begin step state, and for marking the end of a step in action_log
     StartNewStep,
     // Special action that force terminates the current step
-    SystemInterruptStep(String),
+    SystemInterrupt(String),
 }
 
 impl RolloutAction {
@@ -87,7 +95,7 @@ impl RolloutAction {
             RolloutAction::SubmitFinalAnswer(final_answer) => {
                 format!("[SubmitFinalAnswer]:\n{:?}", final_answer)
             }
-            RolloutAction::SystemInterruptStep(reason) => {
+            RolloutAction::SystemInterrupt(reason) => {
                 format!("[SystemInterruptStep]:\n{}", reason)
             }
             RolloutAction::StartNewStep => "[StartNewStep]".to_string(),
@@ -108,7 +116,7 @@ impl RolloutAction {
             RolloutAction::ToolCallResponse(_tool_response) => "[ToolCallResponse]".to_string(),
             RolloutAction::VerifierComment(_comment) => "[VerifierComment]".to_string(),
             RolloutAction::SubmitFinalAnswer(_final_answer) => "[SubmitFinalAnswer]".to_string(),
-            RolloutAction::SystemInterruptStep(_reason) => "[SystemInterruptStep]".to_string(),
+            RolloutAction::SystemInterrupt(_reason) => "[SystemInterruptStep]".to_string(),
             RolloutAction::StartNewStep => "[StartNewStep]".to_string(),
         }
     }
