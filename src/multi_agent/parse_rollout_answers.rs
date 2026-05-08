@@ -1,4 +1,3 @@
-
 pub fn extract_boxed_content(text: &str) -> Option<String> {
     const MARKER: &str = "\\boxed{";
     let start = text.find(MARKER)?;

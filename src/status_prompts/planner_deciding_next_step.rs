@@ -41,10 +41,12 @@ choice: Change Plan\n\
 reason: [Describe both why the current plan is not promising and what possible future direction you suggest, in one single-line sentence.]".to_string()
 }
 
-fn get_planner_deciding_next_step_prompt_before_assistant(session_state: &TrajectoryState<'_>) -> String {
+fn get_planner_deciding_next_step_prompt_before_assistant(
+    session_state: &TrajectoryState<'_>,
+) -> String {
     assert!(matches!(
         session_state.status,
-        TrajectoryStatus::PlannerChoosingMode{..}
+        TrajectoryStatus::PlannerChoosingMode { .. }
     ));
     let question = &session_state.question;
     let planner_status_prompt = get_planner_deciding_next_step_status_prompt();
@@ -52,7 +54,9 @@ fn get_planner_deciding_next_step_prompt_before_assistant(session_state: &Trajec
     get_planner_prompt_before_assistant(question, &history_prev_steps, planner_status_prompt)
 }
 
-pub fn get_planner_deciding_next_step_prompts(session_state: &TrajectoryState<'_>) -> (String, String) {
+pub fn get_planner_deciding_next_step_prompts(
+    session_state: &TrajectoryState<'_>,
+) -> (String, String) {
     let prompt_before_assistant =
         get_planner_deciding_next_step_prompt_before_assistant(session_state);
     (prompt_before_assistant, String::new())

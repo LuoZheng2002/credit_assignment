@@ -11,20 +11,21 @@ use crate::{
     execute_python_code::execute_python_code,
     multi_agent::{
         generate_rollout_answers::RolloutTree,
+        session::{
+            CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE, CorrectnessJudgment,
+            IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE, MakeOrChangePlan, NextStepDecision,
+            REPETITION_ABORT_MESSAGE, RolloutAction, StepQuality, ToolResponse, TrajectoryState,
+            TrajectoryStatus, Tree, TreeAction, TreeMasterStatus, VerifierComment,
+        },
+        verifier_commenting::get_verifier_commenting_prompts,
+    },
+    status_prompts::{
         planner_compacting::get_planner_compacting_prompts,
         planner_deciding_next_step::get_planner_deciding_next_step_prompts,
         planner_making_or_changing_plan::get_planner_making_or_changing_plan_prompts,
         planner_step_continuing::get_planner_step_continuing_prompts,
         planner_step_overwriting::get_planner_step_overwriting_prompts,
         planner_updating_plan::get_planner_updating_plan_prompts,
-        session::{
-            CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE, CorrectnessJudgment,
-            IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE, MakeOrChangePlan, NextStepDecision,
-            REPETITION_ABORT_MESSAGE, RolloutAction, StepQuality, ToolResponse,
-            TrajectoryActionLog, TrajectoryState, TrajectoryStatus, Tree, TreeMasterStatus,
-            TreeUpdateEvent, VerifierComment,
-        },
-        verifier_commenting::get_verifier_commenting_prompts,
     },
 };
 
@@ -34,53 +35,53 @@ pub enum PlannerState {
     MidStep,
 }
 
-fn collect_root_to_leaf_action_log(tree: &Tree, leaf_node_id: usize) -> TrajectoryActionLog {
-    assert!(
-        leaf_node_id < tree.nodes.len(),
-        "Leaf node id must exist in tree"
-    );
-    let mut node_ids_from_leaf_to_root: Vec<usize> = Vec::new();
-    let mut cursor = Some(leaf_node_id);
-    while let Some(node_id) = cursor {
-        let node = tree
-            .nodes
-            .get(node_id)
-            .expect("Leaf-path traversal node_id must exist in tree");
-        assert_eq!(
-            node.node_id, node_id,
-            "Node index must equal node_id during leaf-path traversal"
-        );
-        node_ids_from_leaf_to_root.push(node_id);
-        cursor = node.parent_id;
-    }
-    node_ids_from_leaf_to_root.reverse();
+// fn collect_root_to_leaf_action_log(tree: &Tree, leaf_node_id: usize) -> TrajectoryActionLog {
+//     assert!(
+//         leaf_node_id < tree.nodes.len(),
+//         "Leaf node id must exist in tree"
+//     );
+//     let mut node_ids_from_leaf_to_root: Vec<usize> = Vec::new();
+//     let mut cursor = Some(leaf_node_id);
+//     while let Some(node_id) = cursor {
+//         let node = tree
+//             .nodes
+//             .get(node_id)
+//             .expect("Leaf-path traversal node_id must exist in tree");
+//         assert_eq!(
+//             node.node_id, node_id,
+//             "Node index must equal node_id during leaf-path traversal"
+//         );
+//         node_ids_from_leaf_to_root.push(node_id);
+//         cursor = node.parent_id;
+//     }
+//     node_ids_from_leaf_to_root.reverse();
 
-    let mut actions: Vec<RolloutAction> = Vec::new();
-    for node_id in node_ids_from_leaf_to_root {
-        let node = tree
-            .nodes
-            .get(node_id)
-            .expect("Leaf-path node_id must exist while collecting actions");
-        actions.extend(node.step.action_log.iter().cloned());
-    }
-    TrajectoryActionLog(actions)
-}
+//     let mut actions: Vec<RolloutAction> = Vec::new();
+//     for node_id in node_ids_from_leaf_to_root {
+//         let node = tree
+//             .nodes
+//             .get(node_id)
+//             .expect("Leaf-path node_id must exist while collecting actions");
+//         actions.extend(node.step.action_log.iter().cloned());
+//     }
+//     TrajectoryActionLog(actions)
+// }
 
-fn extract_leaf_model_answer(tree: &Tree, leaf_node_id: usize) -> FinalAnswer {
-    let leaf_node = tree
-        .nodes
-        .get(leaf_node_id)
-        .expect("Leaf node id must exist in tree when extracting leaf model answer");
-    leaf_node
-        .step
-        .action_log
-        .iter()
-        .find_map(|action| match action {
-            RolloutAction::SubmitFinalAnswer(answer) => Some(answer.clone()),
-            _ => None,
-        })
-        .expect("Each registered leaf trajectory must have a final answer in the reasoning log")
-}
+// fn extract_leaf_model_answer(tree: &Tree, leaf_node_id: usize) -> FinalAnswer {
+//     let leaf_node = tree
+//         .nodes
+//         .get(leaf_node_id)
+//         .expect("Leaf node id must exist in tree when extracting leaf model answer");
+//     leaf_node
+//         .step
+//         .action_log
+//         .iter()
+//         .find_map(|action| match action {
+//             RolloutAction::SubmitFinalAnswer(answer) => Some(answer.clone()),
+//             _ => None,
+//         })
+//         .expect("Each registered leaf trajectory must have a final answer in the reasoning log")
+// }
 
 pub trait ToolCallParser {
     fn start_position(&self, content: &str) -> Option<usize>;
@@ -576,15 +577,12 @@ fn is_context_length_exceeded_response(response: &str) -> bool {
     response == QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE
 }
 
-fn context_length_exceeded_result(
-    question_id: usize,
-    session_status: &str,
-) -> Vec<TreeUpdateEvent> {
+fn context_length_exceeded_result(question_id: usize, session_status: &str) -> Vec<TreeAction> {
     println!(
         "[Warning] Model context length exceeded in {}, ending session.",
         session_status
     );
-    vec![TreeUpdateEvent::AddAction {
+    vec![TreeAction::AddAction {
         question_id,
         action: RolloutAction::SubmitFinalAnswer(FinalAnswer::Failure(
             CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
@@ -592,18 +590,20 @@ fn context_length_exceeded_result(
     }]
 }
 
-async fn build_new_operations(
-    session_state: &TrajectoryState<'_>,
+async fn produce_actions_from_state(
+    // session_state: &TrajectoryState<'_>,
+    tree: &Tree,
     client: Client,
     model: Model,
     take_over_mode_decision: bool,
     rng: &mut impl rand::Rng,
-) -> Vec<TreeUpdateEvent> {
-    let tree = &session_state.source_tree;
+) -> Vec<TreeAction> {
+    let session_state = TrajectoryState::from_tree(tree);
+    // let tree = &session_state.source_tree;
     let question_id = tree.question_id;
     match &session_state.status {
         TrajectoryStatus::StepEnded => {
-            let mut operations: Vec<TreeUpdateEvent> = Vec::new();
+            let mut operations: Vec<TreeAction> = Vec::new();
 
             let (node_id, parent_id) = if tree.current_node_id.is_none() {
                 assert!(
@@ -618,23 +618,23 @@ async fn build_new_operations(
                 let next_node_id = tree.next_node_id;
                 (next_node_id, Some(parent_node_id))
             };
-            operations.push(TreeUpdateEvent::CreateNode {
+            operations.push(TreeAction::CreateNode {
                 question_id,
                 node_id,
                 parent_id,
             });
-            operations.push(TreeUpdateEvent::SetCurrentNode {
+            operations.push(TreeAction::SetCurrentNode {
                 question_id,
                 node_id,
             });
-            operations.push(TreeUpdateEvent::AddAction {
+            operations.push(TreeAction::AddAction {
                 question_id,
                 action: RolloutAction::StartNewStep, // set the trajectory status to verifier commenting, finalize the old step node
             });
             operations
         }
         TrajectoryStatus::VerifierCommenting => {
-            let mut operations: Vec<TreeUpdateEvent> = Vec::new();
+            let mut operations: Vec<TreeAction> = Vec::new();
             // let current_node_id = session_state
             //     .source_tree
             //     .current_node_id
@@ -673,7 +673,7 @@ async fn build_new_operations(
             if verifier_on {
                 assert!(!session_state.prev_steps.is_empty());
                 let (prompt_before_assistant, prompt_after_assistant) =
-                    get_prompt_according_to_session_status(session_state);
+                    get_prompt_according_to_session_status(&session_state);
                 assert_eq!(
                     prompt_after_assistant,
                     String::new(),
@@ -695,7 +695,7 @@ async fn build_new_operations(
                 }
                 verifier_comment = Some(parse_verifier_comment_response(response));
             }
-            operations.push(TreeUpdateEvent::AddAction {
+            operations.push(TreeAction::AddAction {
                 question_id,
                 action: RolloutAction::VerifierComment(verifier_comment),
             });
@@ -706,7 +706,7 @@ async fn build_new_operations(
             verifier_comment: _,
         } => {
             let (prompt_before_assistant, prompt_after_assistant) =
-                get_prompt_according_to_session_status(session_state);
+                get_prompt_according_to_session_status(&session_state);
             let response = call_llm_with_prefix(
                 client.clone(),
                 prompt_before_assistant,
@@ -726,15 +726,17 @@ async fn build_new_operations(
                         Some(MakeOrChangePlan::MakePlan(response))
                     }
                 }; // we change to not require the plan to be in a markdown code block
-                vec![TreeUpdateEvent::AddAction {
+                vec![TreeAction::AddAction {
                     question_id,
                     action: RolloutAction::PlannerMakeOrChangePlan(plan_content),
                 }]
             }
         }
-        TrajectoryStatus::PlannerChoosingMode{verifier_comment: _} => {
+        TrajectoryStatus::PlannerChoosingMode {
+            verifier_comment: _,
+        } => {
             match determine_chosen_mode(
-                session_state,
+                &session_state,
                 client.clone(),
                 model,
                 take_over_mode_decision,
@@ -745,15 +747,19 @@ async fn build_new_operations(
                 ChosenModeDecision::ContextLengthExceeded => {
                     context_length_exceeded_result(question_id, "PlannerChoosingMode")
                 }
-                ChosenModeDecision::Chosen(chosen_mode) => vec![TreeUpdateEvent::AddAction {
+                ChosenModeDecision::Chosen(chosen_mode) => vec![TreeAction::AddAction {
                     question_id,
                     action: RolloutAction::PlannerDecideNextStep(chosen_mode),
                 }],
             }
         }
-        TrajectoryStatus::PlannerWorkingOnStep{planner_chosen_mode: _, verifier_comment: _, step_content_raw} => {
+        TrajectoryStatus::PlannerWorkingOnStep {
+            planner_chosen_mode: _,
+            verifier_comment: _,
+            step_content_raw,
+        } => {
             let (prompt_before_assistant, prompt_after_assistant) =
-                get_prompt_according_to_session_status(session_state);
+                get_prompt_according_to_session_status(&session_state);
             let mut response = call_llm_with_prefix(
                 client.clone(),
                 prompt_before_assistant,
@@ -767,7 +773,8 @@ async fn build_new_operations(
                 if response.trim().is_empty() {
                     response = "<end_step>".to_string(); // if the model does not output anything, we treat it as if it outputs <end_step> to prevent getting stuck
                 }
-                let response_is_empty = response.trim() == "<end_step>" && step_content_raw.trim().is_empty();
+                let response_is_empty =
+                    response.trim() == "<end_step>" && step_content_raw.trim().is_empty();
                 if response_is_empty {
                     println!(
                         "[Warning]: model tries to end the step without providing any content for the step."
@@ -777,24 +784,24 @@ async fn build_new_operations(
                     split_reasoning_and_tool_call(response.clone(), model);
                 let mut push_end_step = false;
                 let mut has_terminal_intervention = false;
-                let mut operations: Vec<TreeUpdateEvent> = Vec::new();
+                let mut operations: Vec<TreeAction> = Vec::new();
                 if tool_wait_violation {
-                    operations.push(TreeUpdateEvent::ToolWaitViolation { question_id });
+                    operations.push(TreeAction::ToolWaitViolation { question_id });
                 }
                 if let Some(reasoning) = reasoning {
                     if reasoning.contains("<end_step>") {
                         push_end_step = true;
                     }
-                    operations.push(TreeUpdateEvent::AddAction {
+                    operations.push(TreeAction::AddAction {
                         question_id,
-                        action: RolloutAction::PlannerReasoning{reasoning},
+                        action: RolloutAction::PlannerReasoning { reasoning },
                     });
                 }
                 if let Some(tool_call) = tool_call {
                     let tool_response = execute_planner_tool_call(&tool_call).await;
                     let previous_python_error =
                         session_state.current_step_last_python_error.clone();
-                    operations.push(TreeUpdateEvent::AddAction {
+                    operations.push(TreeAction::AddAction {
                         question_id,
                         action: RolloutAction::PlannerToolCall(tool_call),
                     });
@@ -805,28 +812,30 @@ async fn build_new_operations(
                             println!(
                                 "[Warning]: Identical python tool error detected. Aborting current step."
                             );
-                            operations.push(TreeUpdateEvent::AddAction {
+                            operations.push(TreeAction::AddAction {
                                 question_id,
                                 action: RolloutAction::ToolCallResponse(tool_response),
                             });
-                            operations.push(TreeUpdateEvent::AddAction {
+                            operations.push(TreeAction::AddAction {
                                 question_id,
                                 // action: RolloutAction::ToolCallResponse(
                                 //     ToolResponse::Intervention(
                                 //         IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
                                 //     ),
                                 // ),
-                                action: RolloutAction::SystemInterrupt(IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string())
+                                action: RolloutAction::SystemInterrupt(
+                                    IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
+                                ),
                             });
                             has_terminal_intervention = true;
                         } else {
-                            operations.push(TreeUpdateEvent::AddAction {
+                            operations.push(TreeAction::AddAction {
                                 question_id,
                                 action: RolloutAction::ToolCallResponse(tool_response),
                             });
                         }
                     } else {
-                        operations.push(TreeUpdateEvent::AddAction {
+                        operations.push(TreeAction::AddAction {
                             question_id,
                             action: RolloutAction::ToolCallResponse(tool_response),
                         });
@@ -834,7 +843,7 @@ async fn build_new_operations(
                 }
 
                 if response_is_empty {
-                    operations.push(TreeUpdateEvent::AddAction {
+                    operations.push(TreeAction::AddAction {
                         question_id,
                         // action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
                         //     SUBMIT_ANSWER_HINT.to_string(),
@@ -860,9 +869,11 @@ async fn build_new_operations(
                         "[Warning] Detected repetition of the same response at least three times. This may indicate that the model is stuck in a loop. Response: {}",
                         response
                     );
-                    operations.push(TreeUpdateEvent::AddAction {
+                    operations.push(TreeAction::AddAction {
                         question_id,
-                        action: RolloutAction::SystemInterrupt(REPETITION_ABORT_MESSAGE.to_string()),
+                        action: RolloutAction::SystemInterrupt(
+                            REPETITION_ABORT_MESSAGE.to_string(),
+                        ),
                     });
                     has_terminal_intervention = true;
                 }
@@ -873,7 +884,7 @@ async fn build_new_operations(
                         !has_terminal_intervention,
                         "PlannerEndStep should not be emitted after terminal intervention"
                     );
-                    operations.push(TreeUpdateEvent::AddAction {
+                    operations.push(TreeAction::AddAction {
                         question_id,
                         action: RolloutAction::PlannerEndStep,
                     });
@@ -881,9 +892,12 @@ async fn build_new_operations(
                 operations
             }
         }
-        TrajectoryStatus::CompactorCompactingStep{planner_chosen_mode: _, step_content_raw: _} => {
+        TrajectoryStatus::CompactorCompactingStep {
+            planner_chosen_mode: _,
+            step_content_raw: _,
+        } => {
             let (prompt_before_assistant, prompt_after_assistant) =
-                get_prompt_according_to_session_status(session_state);
+                get_prompt_according_to_session_status(&session_state);
             let response = call_llm_with_prefix(
                 client.clone(),
                 prompt_before_assistant,
@@ -895,7 +909,7 @@ async fn build_new_operations(
                 context_length_exceeded_result(question_id, "PlannerCompactingStep")
             } else {
                 let (step_content_compacted, step_quality) = parse_compactor_response(response);
-                vec![TreeUpdateEvent::AddAction {
+                vec![TreeAction::AddAction {
                     question_id,
                     action: RolloutAction::CompactorCompactStep {
                         step_content_compacted,
@@ -904,9 +918,13 @@ async fn build_new_operations(
                 }]
             }
         }
-        TrajectoryStatus::PlannerUpdatingPlan{planner_chosen_mode: _, step_content_raw: _, step_content_compacted: _} => {
+        TrajectoryStatus::PlannerUpdatingPlan {
+            planner_chosen_mode: _,
+            step_content_raw: _,
+            step_content_compacted: _,
+        } => {
             let (prompt_before_assistant, prompt_after_assistant) =
-                get_prompt_according_to_session_status(session_state);
+                get_prompt_according_to_session_status(&session_state);
             let response = call_llm_with_prefix(
                 client.clone(),
                 prompt_before_assistant,
@@ -918,28 +936,86 @@ async fn build_new_operations(
                 context_length_exceeded_result(question_id, "PlannerUpdatingPlan")
             } else {
                 let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
-                vec![TreeUpdateEvent::AddAction {
+                vec![TreeAction::AddAction {
                     question_id,
                     action: RolloutAction::PlannerUpdatePlan(Some(updated_plan_content)),
                 }]
             }
-        },
+        }
         TrajectoryStatus::SessionEnded { final_answer } => {
-            // we pretend that we always need to start a new trajectory if the current one ends
-            // however, we cannot build tree update event in the current function.
-            todo!()
+            let mut actions = Vec::new();
+            let display_final_answer = match final_answer {
+                FinalAnswer::ModelProvided(ans) => ans.clone(),
+                FinalAnswer::Failure(reason) => format!("Failure: {}", reason),
+            };
+            println!(
+                "[rollout finished] question index: {}, total actual rounds: {}, final answer: {}, correct answer: {}",
+                tree.question_id,
+                session_state.total_actions,
+                display_final_answer,
+                tree.reference_answer,
+            );
+            let leaf_node_id = tree
+                .current_node_id
+                .expect("WorkingOnTrajectory should always have current_node_id when ending");
+            assert!(
+                !tree.leaf_node_ids.contains(&leaf_node_id),
+                "The leaf node for the trajectory should not have been registered yet"
+            );
+            assert!(
+                !tree.leaf_node_judgments.contains_key(&leaf_node_id),
+                "The leaf node for the trajectory should not have been judged yet"
+            );
+            let register_leaf_action = TreeAction::RegisterLeaf {
+                question_id: tree.question_id,
+                node_id: leaf_node_id,
+            };
+            actions.push(register_leaf_action);
+            // let model_answer = extract_leaf_model_answer(tree, leaf_node_id);
+            let is_correct = match final_answer {
+                FinalAnswer::ModelProvided(final_answer) => {
+                    judge_answer_task(
+                        tree.question_id,
+                        final_answer.clone(),
+                        tree.reference_answer.clone(),
+                        tree.question.clone(),
+                        client.clone(),
+                    )
+                    .await
+                }
+                FinalAnswer::Failure(_) => false, // if the model fails to provide a final answer, we treat it as an incorrect answer
+            };
+            println!(
+                "[judgment] question id: {}, trajectory: {}/{}, model answer: {}, reference answer: {}, is correct: {}",
+                tree.question_id,
+                tree.leaf_node_ids.len(),
+                MAX_NUM_TRAJECTORIES,
+                display_final_answer,
+                tree.reference_answer,
+                is_correct
+            );
+            let judge_leaf_correctness_event = TreeAction::JudgeLeafCorrectness {
+                question_id: tree.question_id,
+                node_id: leaf_node_id,
+                correctness_judgment: CorrectnessJudgment {
+                    model_answer: final_answer.clone(),
+                    correct_answer: tree.reference_answer.clone(),
+                    is_correct,
+                },
+            };
+            actions.push(judge_leaf_correctness_event);
+            actions
         }
     }
 }
 
 pub async fn produce_working_trajectory(
     tree: &mut Tree,
-    reference_answer: &str,
     client: &Client,
     model: Model,
     take_over_mode_decision: bool,
     rng: &mut impl rand::Rng,
-    action_tx: &tokio::sync::mpsc::UnboundedSender<TreeUpdateEvent>,
+    action_tx: &tokio::sync::mpsc::UnboundedSender<TreeAction>,
 ) {
     assert_eq!(
         tree.tree_master_status,
@@ -955,67 +1031,10 @@ pub async fn produce_working_trajectory(
             session_state.prev_steps.len(),
             session_state.total_actual_steps
         );
-        if session_state.should_end_session {
-            let displayed_final_answer = session_state.final_answer.as_deref().unwrap_or("None");
-            println!(
-                "[rollout finished] question index: {}, total actual rounds: {}, final answer: {}, correct answer: {}",
-                tree.question_id,
-                session_state.total_actions,
-                displayed_final_answer,
-                reference_answer
-            );
-            let leaf_node_id = tree
-                .current_node_id
-                .expect("WorkingOnTrajectory should always have current_node_id when ending");
-            if !tree.leaf_node_ids.contains(&leaf_node_id) {
-                let register_leaf_event = TreeUpdateEvent::RegisterLeaf {
-                    question_id: tree.question_id,
-                    node_id: leaf_node_id,
-                };
-                tree.apply_event(register_leaf_event.clone());
-                action_tx.send(register_leaf_event).unwrap();
-            }
-            if !tree.leaf_node_judgments.contains_key(&leaf_node_id) {
-                let model_answer = extract_leaf_model_answer(tree, leaf_node_id);
-                let is_correct = judge_answer_task(
-                    tree.question_id,
-                    model_answer.clone(),
-                    reference_answer.to_string(),
-                    tree.question.clone(),
-                    client.clone(),
-                )
+
+        let new_operations =
+            produce_actions_from_state(tree, client.clone(), model, take_over_mode_decision, rng)
                 .await;
-                println!(
-                    "[judgment] question id: {}, trajectory: {}/{}, model answer: {}, reference answer: {}, is correct: {}",
-                    tree.question_id,
-                    tree.leaf_node_ids.len(),
-                    MAX_NUM_TRAJECTORIES,
-                    model_answer,
-                    reference_answer,
-                    is_correct
-                );
-                let judge_leaf_correctness_event = TreeUpdateEvent::JudgeLeafCorrectness {
-                    question_id: tree.question_id,
-                    node_id: leaf_node_id,
-                    correctness_judgment: CorrectnessJudgment {
-                        model_answer,
-                        correct_answer: reference_answer.to_string(),
-                        is_correct,
-                    },
-                };
-                tree.apply_event(judge_leaf_correctness_event.clone());
-                action_tx.send(judge_leaf_correctness_event).unwrap();
-            }
-            break;
-        }
-        let new_operations = build_new_operations(
-            &session_state,
-            client.clone(),
-            model,
-            take_over_mode_decision,
-            rng,
-        )
-        .await;
         drop(session_state);
 
         for event in new_operations {
@@ -1096,8 +1115,27 @@ pub fn determine_branching_node(tree: &mut Tree, rng: &mut impl rand::Rng) -> bo
             selected_node.node_id, selected_node_id,
             "Node index must equal node_id for selected branching node"
         );
-        let has_verifier_on_child = selected_node.verifier_on_child_id.is_some();
-        let has_verifier_off_child = selected_node.verifier_off_child_id.is_some();
+        // let has_verifier_on_child = selected_node.verifier_on_child_id.is_some();
+        // let has_verifier_off_child = selected_node.verifier_off_child_id.is_some();
+        let mut has_verifier_on_child = false;
+        let mut has_verifier_off_child = false;
+        for &child_id in &selected_node.child_ids {
+            let Some(child_id) = child_id else {
+                continue;
+            };
+            let child_node = tree
+                .nodes
+                .get(child_id)
+                .expect("Child node of selected branching node must exist");
+            match child_node.step.verifier_and_mode_summary() {
+                VerifierAndModeSummary::VerifierOn { .. }
+                | VerifierAndModeSummary::VerifierOnAndChangePlan { .. }
+                | VerifierAndModeSummary::VerifierOnAndOverwriteLastStep { .. } => {
+                    has_verifier_on_child = true
+                }
+                VerifierAndModeSummary::VerifierOff => has_verifier_off_child = true,
+            }
+        }
         if has_verifier_on_child && has_verifier_off_child {
             candidate_node_ids.swap_remove(sampled_candidate_index);
             candidate_weights.swap_remove(sampled_candidate_index);
@@ -1117,16 +1155,16 @@ pub async fn rollout(
     question_id: usize,
     question: String,
     reference_answer: String,
-    loaded_events: Vec<TreeUpdateEvent>,
+    loaded_events: Vec<TreeAction>,
     client: Client,
     model: Model,
     take_over_mode_decision: bool,
     rng: &mut impl rand::Rng,
-    action_tx: tokio::sync::mpsc::UnboundedSender<TreeUpdateEvent>,
+    action_tx: tokio::sync::mpsc::UnboundedSender<TreeAction>,
     trajectory_tx: tokio::sync::mpsc::UnboundedSender<RolloutTree>,
 ) {
     // create a state machine
-    let mut tree = Tree::new(question_id, question.clone());
+    let mut tree = Tree::new(question_id, question.clone(), reference_answer.clone());
     println!(
         "Loading {} existing events for question id {}...",
         loaded_events.len(),
@@ -1140,7 +1178,6 @@ pub async fn rollout(
             TreeMasterStatus::WorkingOnTrajectory => {
                 produce_working_trajectory(
                     &mut tree,
-                    &reference_answer,
                     &client,
                     model,
                     take_over_mode_decision,

@@ -2,12 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::multi_agent::generate_rollout_answers::{CountRatio, StepQualityRatio};
+use crate::multi_agent::session::types::FinalAnswer;
 
-use super::actions::{RolloutAction, ToolResponse, TrajectoryActionLog};
-use super::constants::{
-    CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE, IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE,
-    REPETITION_ABORT_MESSAGE,
-};
+use super::actions::{RolloutAction, TrajectoryActionLog};
+
 use super::types::{NextStepDecision, StepQuality, VerifierAndModeSummary};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,7 +98,7 @@ pub struct Node {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorrectnessJudgment {
-    pub model_answer: String,
+    pub model_answer: FinalAnswer,
     pub correct_answer: String,
     pub is_correct: bool,
 }
@@ -116,6 +114,7 @@ pub enum TreeMasterStatus {
 pub struct Tree {
     pub question_id: usize,
     pub question: String,
+    pub reference_answer: String,
     pub nodes: Vec<Node>,
     pub root_node_id: Option<usize>,
     pub current_node_id: Option<usize>,
@@ -129,7 +128,7 @@ pub struct Tree {
 
 // the following is the signature of each entry in a jsonl log file for reconstructing current tree progress when the program exits abruptly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TreeUpdateEvent {
+pub enum TreeAction {
     CreateNode {
         question_id: usize,
         node_id: usize,
@@ -158,22 +157,20 @@ pub enum TreeUpdateEvent {
 }
 
 // the whole tree can be:
-// 
+//
 // the trajectory state is based on the rollout actions but not tree events
 // but we can reconstruct the rollout actions based on the current tree status
 // so the rollout action is appended
 
-
-
-impl TreeUpdateEvent {
+impl TreeAction {
     pub fn question_id(&self) -> usize {
         match self {
-            TreeUpdateEvent::CreateNode { question_id, .. } => *question_id,
-            TreeUpdateEvent::SetCurrentNode { question_id, .. } => *question_id,
-            TreeUpdateEvent::AddAction { question_id, .. } => *question_id,
-            TreeUpdateEvent::RegisterLeaf { question_id, .. } => *question_id,
-            TreeUpdateEvent::JudgeLeafCorrectness { question_id, .. } => *question_id,
-            TreeUpdateEvent::ToolWaitViolation { question_id } => *question_id,
+            TreeAction::CreateNode { question_id, .. } => *question_id,
+            TreeAction::SetCurrentNode { question_id, .. } => *question_id,
+            TreeAction::AddAction { question_id, .. } => *question_id,
+            TreeAction::RegisterLeaf { question_id, .. } => *question_id,
+            TreeAction::JudgeLeafCorrectness { question_id, .. } => *question_id,
+            TreeAction::ToolWaitViolation { question_id } => *question_id,
         }
     }
 }
@@ -182,7 +179,7 @@ impl TreeUpdateEvent {
 // TrajectoryState is used for indicating the current status and what action should be generated in rollout.rs
 // Eventually we apply the action to the Tree, and then we construct a TrajectoryState from the Tree for the current status and determine the next action to generate.
 impl Tree {
-    pub fn new(question_id: usize, question: String) -> Self {
+    pub fn new(question_id: usize, question: String, reference_answer: String) -> Self {
         Self {
             question_id,
             question,
@@ -198,6 +195,7 @@ impl Tree {
             tool_wait_violations: 0,
             next_node_id: 0,
             tree_master_status: TreeMasterStatus::WorkingOnTrajectory,
+            reference_answer,
         }
     }
 
@@ -221,9 +219,9 @@ impl Tree {
         self.current_node_id = Some(node_id);
     }
 
-    pub fn apply_event(&mut self, event: TreeUpdateEvent) {
+    pub fn apply_event(&mut self, event: TreeAction) {
         match event {
-            TreeUpdateEvent::CreateNode {
+            TreeAction::CreateNode {
                 node_id, parent_id, ..
             } => {
                 if let Some(parent_id) = parent_id {
@@ -233,10 +231,7 @@ impl Tree {
                         child_ids: [None, None],
                         parent_id: Some(parent_id),
                     };
-                    assert!(
-                        !self.has_id(node_id),
-                        "CreateNode node_id must be unique"
-                    );
+                    assert!(!self.has_id(node_id), "CreateNode node_id must be unique");
                     self.nodes.push(child);
                     let child_node_slot = self
                         .get_node_by_id_mut(parent_id)
@@ -276,13 +271,13 @@ impl Tree {
                     self.next_node_id += 1;
                 }
             }
-            TreeUpdateEvent::SetCurrentNode { node_id, .. } => {
+            TreeAction::SetCurrentNode { node_id, .. } => {
                 self.set_current_node_by_id(node_id);
             }
-            TreeUpdateEvent::AddAction { action, .. } => {
+            TreeAction::AddAction { action, .. } => {
                 self.append_action_to_current_node(action);
             }
-            TreeUpdateEvent::RegisterLeaf { node_id, .. } => {
+            TreeAction::RegisterLeaf { node_id, .. } => {
                 let node = self.get_node_by_id(node_id);
                 assert_eq!(
                     node.node_id, node_id,
@@ -294,7 +289,7 @@ impl Tree {
                 );
                 self.leaf_node_ids.push(node_id);
             }
-            TreeUpdateEvent::JudgeLeafCorrectness {
+            TreeAction::JudgeLeafCorrectness {
                 node_id,
                 correctness_judgment,
                 ..
@@ -329,7 +324,7 @@ impl Tree {
                     denominator: num_judged_leaves,
                 };
             }
-            TreeUpdateEvent::ToolWaitViolation { .. } => {
+            TreeAction::ToolWaitViolation { .. } => {
                 self.tool_wait_violations += 1;
             }
         }
@@ -417,7 +412,10 @@ impl Tree {
     pub fn get_failed_and_aborted_ratio(&self) -> CountRatio {
         let mut failed_and_aborted_count = 0usize;
         for node in &self.nodes {
-            if matches!(node.step.get_step_quality(), Some(StepQuality::FailedAndAborted)) {
+            if matches!(
+                node.step.get_step_quality(),
+                Some(StepQuality::FailedAndAborted)
+            ) {
                 failed_and_aborted_count += 1;
             }
         }

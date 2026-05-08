@@ -208,7 +208,10 @@ impl App {
                 BrowsingAction::Continue => false,
                 BrowsingAction::GoBack => {
                     self.browsing_view = None;
-                    assert!(self.tree_view.is_some(), "Session go-back requires active tree view");
+                    assert!(
+                        self.tree_view.is_some(),
+                        "Session go-back requires active tree view"
+                    );
                     self.tree_horizontal_scroll = 0;
                     self.tree_hovered_line_index = None;
                     false
@@ -277,8 +280,8 @@ impl App {
                     false
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
-                    if let Some(local_index) = self
-                        .tree_line_index_from_mouse(mouse_event.column, mouse_event.row)
+                    if let Some(local_index) =
+                        self.tree_line_index_from_mouse(mouse_event.column, mouse_event.row)
                     {
                         {
                             let view = self.tree_view.as_mut().unwrap();
@@ -505,19 +508,27 @@ impl App {
                     BrowsingAction::Continue
                 }
                 KeyCode::Home => {
-                    if new_focus == PaneFocus::Log { view.move_to_start(); }
+                    if new_focus == PaneFocus::Log {
+                        view.move_to_start();
+                    }
                     BrowsingAction::Continue
                 }
                 KeyCode::End => {
-                    if new_focus == PaneFocus::Log { view.move_to_end(); }
+                    if new_focus == PaneFocus::Log {
+                        view.move_to_end();
+                    }
                     BrowsingAction::Continue
                 }
                 KeyCode::PageUp => {
-                    if new_focus == PaneFocus::Log { view.move_by(-10); }
+                    if new_focus == PaneFocus::Log {
+                        view.move_by(-10);
+                    }
                     BrowsingAction::Continue
                 }
                 KeyCode::PageDown => {
-                    if new_focus == PaneFocus::Log { view.move_by(10); }
+                    if new_focus == PaneFocus::Log {
+                        view.move_by(10);
+                    }
                     BrowsingAction::Continue
                 }
                 KeyCode::Esc | KeyCode::Char('q') => BrowsingAction::GoBack,
@@ -599,7 +610,11 @@ impl App {
         frame.render_stateful_widget(
             List::new(items)
                 .block(block)
-                .highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .highlight_symbol("▶ "),
             frame.area(),
             &mut state,
@@ -686,10 +701,7 @@ impl App {
 
         let header_text = format!(
             "Question {}: {}\nModel answer: {}\nCorrect answer: {}",
-            view.answer.id,
-            view.answer.question,
-            view.model_answer,
-            view.answer.correct_answer,
+            view.answer.id, view.answer.question, view.model_answer, view.answer.correct_answer,
         );
         let header = Paragraph::new(header_text)
             .wrap(Wrap { trim: false })
@@ -903,9 +915,7 @@ fn build_home_stats_line(answer: &RolloutTree, selected: bool) -> Line<'static> 
     let tool_wait_violation_ratio = if tool_wait_violation_denominator == 0 {
         None
     } else {
-        Some(
-            answer.trajectory.tool_wait_violations as f64 / tool_wait_violation_denominator as f64,
-        )
+        Some(answer.trajectory.tool_wait_violations as f64 / tool_wait_violation_denominator as f64)
     };
 
     let sq_avg = match (tool, complete, focused) {
@@ -1079,7 +1089,7 @@ struct TreeView {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NodeAbbreviation {
-    Voff,
+    Vof,
     Von,
     Vow,
     Voc,
@@ -1088,7 +1098,7 @@ enum NodeAbbreviation {
 impl NodeAbbreviation {
     fn as_str(self) -> &'static str {
         match self {
-            NodeAbbreviation::Voff => "VOF",
+            NodeAbbreviation::Vof => "VOF",
             NodeAbbreviation::Von => "VON",
             NodeAbbreviation::Vow => "VOW",
             NodeAbbreviation::Voc => "VOC",
@@ -1125,22 +1135,25 @@ fn validate_tree_for_browser(tree: &Tree) {
         }
     }
     for parent in &tree.nodes {
-        if let Some(child_id) = parent.verifier_on_child_id {
+        if let Some(child_id) = parent.child_ids[0] {
             assert!(
                 child_id < tree.nodes.len(),
-                "verifier_on_child_id must point to existing node"
+                "first child slot must point to existing node"
             );
         }
-        if let Some(child_id) = parent.verifier_off_child_id {
+        if let Some(child_id) = parent.child_ids[1] {
             assert!(
                 child_id < tree.nodes.len(),
-                "verifier_off_child_id must point to existing node"
+                "second child slot must point to existing node"
             );
         }
     }
 }
 
-fn collect_root_to_node_action_sequence(tree: &Tree, selected_node_id: usize) -> Vec<RolloutAction> {
+fn collect_root_to_node_action_sequence(
+    tree: &Tree,
+    selected_node_id: usize,
+) -> Vec<RolloutAction> {
     assert!(
         selected_node_id < tree.nodes.len(),
         "Selected node id must exist in tree"
@@ -1181,14 +1194,16 @@ fn validate_session_log_for_prompt_replay(
     );
     for prefix_len in 1..=operations.len() {
         let prefix_log = TrajectoryActionLog(operations[..prefix_len].to_vec());
-        let state = TrajectoryState::from_session_log(question.to_string(), prefix_log, source_tree);
+        let state =
+            TrajectoryState::from_session_log(question.to_string(), prefix_log, source_tree);
         let _ = get_prompt_according_to_session_status(&state);
     }
 }
 
 fn derive_node_abbreviation_from_actions(action_log: &[RolloutAction]) -> NodeAbbreviation {
-    let mut verifier_comment: Option<Option<credit_assignment::multi_agent::session::VerifierComment>> =
-        None;
+    let mut verifier_comment: Option<
+        Option<credit_assignment::multi_agent::session::VerifierComment>,
+    > = None;
     let mut planner_decision: Option<NextStepDecision> = None;
     let mut has_intervention = false;
 
@@ -1208,7 +1223,12 @@ fn derive_node_abbreviation_from_actions(action_log: &[RolloutAction]) -> NodeAb
                 );
                 planner_decision = Some(mode.clone());
             }
-            RolloutAction::ToolCallResponse(credit_assignment::multi_agent::session::ToolResponse::Intervention(_)) => {
+            RolloutAction::ToolCallResponse(
+                credit_assignment::multi_agent::session::ToolResponse::EmptyMessageHint,
+            ) => {
+                has_intervention = true;
+            }
+            RolloutAction::SystemInterrupt(_) => {
                 has_intervention = true;
             }
             _ => {}
@@ -1231,7 +1251,7 @@ fn derive_node_abbreviation_from_actions(action_log: &[RolloutAction]) -> NodeAb
             "Missing PlannerDecideNextStep requires intervention or downstream planner actions"
         );
         return match verifier_comment {
-            None => NodeAbbreviation::Voff,
+            None => NodeAbbreviation::Vof,
             Some(_) => NodeAbbreviation::Von,
         };
     }
@@ -1239,7 +1259,7 @@ fn derive_node_abbreviation_from_actions(action_log: &[RolloutAction]) -> NodeAb
         .expect("Planner decision must exist after non-intervention path validation");
 
     match (verifier_comment, planner_decision) {
-        (None, NextStepDecision::Continue) => NodeAbbreviation::Voff,
+        (None, NextStepDecision::Continue) => NodeAbbreviation::Vof,
         (None, NextStepDecision::OverwriteLastStep(_)) => {
             panic!("Verifier-off node cannot choose OverwriteLastStep")
         }
@@ -1274,8 +1294,14 @@ fn collect_path_ids_from_root_to_leaf(tree: &Tree, leaf_node_id: usize) -> Vec<u
 }
 
 fn is_descendant_of(tree: &Tree, descendant_node_id: usize, ancestor_node_id: usize) -> bool {
-    assert!(descendant_node_id < tree.nodes.len(), "descendant node id must exist");
-    assert!(ancestor_node_id < tree.nodes.len(), "ancestor node id must exist");
+    assert!(
+        descendant_node_id < tree.nodes.len(),
+        "descendant node id must exist"
+    );
+    assert!(
+        ancestor_node_id < tree.nodes.len(),
+        "ancestor node id must exist"
+    );
     let mut cursor = Some(descendant_node_id);
     while let Some(node_id) = cursor {
         if node_id == ancestor_node_id {
@@ -1296,7 +1322,10 @@ fn pick_first_leaf_in_subtree(tree: &Tree, subtree_root_node_id: usize) -> usize
 }
 
 fn collect_leaf_order_by_focus(tree: &Tree) -> Vec<usize> {
-    assert!(!tree.leaf_node_ids.is_empty(), "Tree must contain at least one leaf");
+    assert!(
+        !tree.leaf_node_ids.is_empty(),
+        "Tree must contain at least one leaf"
+    );
     let total_leaves = tree.leaf_node_ids.len();
     let mut ordered_leaves: Vec<usize> = Vec::new();
     let mut seen_leaf = vec![false; tree.nodes.len()];
@@ -1304,7 +1333,10 @@ fn collect_leaf_order_by_focus(tree: &Tree) -> Vec<usize> {
     let mut stack: Vec<usize> = vec![tree.leaf_node_ids[0]];
 
     while let Some(focus_leaf_node_id) = stack.pop() {
-        assert!(focus_leaf_node_id < tree.nodes.len(), "focus leaf must exist");
+        assert!(
+            focus_leaf_node_id < tree.nodes.len(),
+            "focus leaf must exist"
+        );
         if seen_leaf[focus_leaf_node_id] {
             continue;
         }
@@ -1312,15 +1344,18 @@ fn collect_leaf_order_by_focus(tree: &Tree) -> Vec<usize> {
         ordered_leaves.push(focus_leaf_node_id);
 
         let path_root_to_leaf = collect_path_ids_from_root_to_leaf(tree, focus_leaf_node_id);
-        assert!(!path_root_to_leaf.is_empty(), "root-to-leaf path must be non-empty");
+        assert!(
+            !path_root_to_leaf.is_empty(),
+            "root-to-leaf path must be non-empty"
+        );
 
         let mut sibling_leaf_candidates: Vec<usize> = Vec::new();
         for depth in (0..path_root_to_leaf.len().saturating_sub(1)).rev() {
             let parent_node_id = path_root_to_leaf[depth];
             let focus_child_node_id = path_root_to_leaf[depth + 1];
             let parent = &tree.nodes[parent_node_id];
-            let on_child = parent.verifier_on_child_id;
-            let off_child = parent.verifier_off_child_id;
+            let on_child = parent.child_ids[0];
+            let off_child = parent.child_ids[1];
             let has_two_children = on_child.is_some() && off_child.is_some();
             if !has_two_children {
                 continue;
@@ -1391,7 +1426,10 @@ fn build_tree_lines(tree: &Tree) -> (Vec<usize>, Vec<String>) {
     let mut node_row: Vec<Option<usize>> = vec![None; tree.nodes.len()];
     for (row, &leaf_node_id) in ordered_leaf_node_ids.iter().enumerate() {
         let path_root_to_leaf = collect_path_ids_from_root_to_leaf(tree, leaf_node_id);
-        assert_eq!(path_root_to_leaf[0], root_id, "Every path must start from root");
+        assert_eq!(
+            path_root_to_leaf[0], root_id,
+            "Every path must start from root"
+        );
         for &node_id in &path_root_to_leaf {
             if node_row[node_id].is_none() {
                 node_row[node_id] = Some(row);
@@ -1411,7 +1449,11 @@ fn build_tree_lines(tree: &Tree) -> (Vec<usize>, Vec<String>) {
         };
         let col = node_col[node_id];
         let label = compact_node_label(tree, node_id);
-        assert_eq!(label.chars().count(), 5, "Node label must have exactly 5 chars");
+        assert_eq!(
+            label.chars().count(),
+            5,
+            "Node label must have exactly 5 chars"
+        );
         write_pattern(&mut canvas, row, col, &label);
     }
 
@@ -1422,7 +1464,7 @@ fn build_tree_lines(tree: &Tree) -> (Vec<usize>, Vec<String>) {
         let parent_col = node_col[parent_id];
         let edge_col = parent_col + 5;
         let parent = &tree.nodes[parent_id];
-        let children: [Option<usize>; 2] = [parent.verifier_on_child_id, parent.verifier_off_child_id];
+        let children: [Option<usize>; 2] = parent.child_ids;
         for child_node_id in children.into_iter().flatten() {
             let child_row = node_row[child_node_id]
                 .expect("Child node in rendered tree must have a resolved row");
@@ -1461,7 +1503,11 @@ fn build_tree_lines(tree: &Tree) -> (Vec<usize>, Vec<String>) {
             .leaf_node_judgments
             .get(&leaf_node_id)
             .expect("Rendered leaf must have correctness judgment");
-        let suffix = if judgment.is_correct { "━━━✓" } else { "━━━✗" };
+        let suffix = if judgment.is_correct {
+            "━━━✓"
+        } else {
+            "━━━✗"
+        };
         write_pattern(&mut canvas, row, col, suffix);
     }
 
@@ -1499,12 +1545,8 @@ impl TreeView {
             .current_node_id
             .expect("Browser requires current_node_id to reconstruct selected path");
         assert!(
-            answer.trajectory.nodes[current_node_id]
-                .verifier_on_child_id
-                .is_none()
-                && answer.trajectory.nodes[current_node_id]
-                    .verifier_off_child_id
-                    .is_none(),
+            answer.trajectory.nodes[current_node_id].child_ids[0].is_none()
+                && answer.trajectory.nodes[current_node_id].child_ids[1].is_none(),
             "Current node must be a leaf for leaf-aligned tree view"
         );
         let selected_tree_line_index = tree_line_node_ids
@@ -1543,7 +1585,10 @@ impl TreeView {
     }
 
     fn select_tree_line_by_index(&mut self, index: usize) {
-        assert!(index < self.tree_lines.len(), "Tree line index must be in range");
+        assert!(
+            index < self.tree_lines.len(),
+            "Tree line index must be in range"
+        );
         self.selected_tree_line_index = index;
     }
 }
@@ -1560,6 +1605,12 @@ impl SessionView {
             .expect("SessionView requires selected leaf to have correctness judgment")
             .model_answer
             .clone();
+        let model_answer = match model_answer {
+            credit_assignment::multi_agent::session::types::FinalAnswer::ModelProvided(answer) => {
+                answer
+            }
+            credit_assignment::multi_agent::session::types::FinalAnswer::Failure(answer) => answer,
+        };
         let total_display_turns = count_display_turns(&operations);
         let total_actual_turns = total_display_turns;
         Self {
@@ -1613,13 +1664,8 @@ impl SessionView {
                 "Prompt is undefined when the aligned replay prefix is empty (before the first valid prompt-bearing state). Scroll further to view aligned prompt reconstruction.".to_string(),
             );
         }
-        let prefix_log = TrajectoryActionLog(
-            self.operations
-                .iter()
-                .take(prefix_len)
-                .cloned()
-                .collect(),
-        );
+        let prefix_log =
+            TrajectoryActionLog(self.operations.iter().take(prefix_len).cloned().collect());
         let state: TrajectoryState<'_> = TrajectoryState::from_session_log(
             self.answer.question.clone(),
             prefix_log,

@@ -1,11 +1,19 @@
 use crate::multi_agent::session::{TrajectoryState, TrajectoryStatus};
 
-fn get_planner_updating_plan_prompt_before_assistant(session_state: &TrajectoryState<'_>) -> String {
+fn get_planner_updating_plan_prompt_before_assistant(
+    session_state: &TrajectoryState<'_>,
+) -> String {
     let question = &session_state.question;
     let history_prev_steps = session_state.to_history_prev_steps();
-    let TrajectoryStatus::PlannerUpdatingPlan { planner_chosen_mode: _, step_content_raw, step_content_compacted }
-        = &session_state.status else {
-        panic!("TrajectoryStatus must be PlannerUpdatingPlan when calling get_planner_updating_plan_prompt_before_assistant");
+    let TrajectoryStatus::PlannerUpdatingPlan {
+        planner_chosen_mode: _,
+        step_content_raw,
+        step_content_compacted,
+    } = &session_state.status
+    else {
+        panic!(
+            "TrajectoryStatus must be PlannerUpdatingPlan when calling get_planner_updating_plan_prompt_before_assistant"
+        );
     };
     format!(
         "\

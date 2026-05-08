@@ -17,7 +17,7 @@ use credit_assignment::{
             RolloutTree, get_rollout_trajectory_path, get_session_log_path,
         },
         rollout::rollout,
-        session::TreeUpdateEvent,
+        session::TreeAction,
     },
     parallel_process_jsonl::{read_json_lines, read_json_lines_indexed, write_jsonl_file},
 };
@@ -91,7 +91,7 @@ async fn main() {
     let mut rng = StdRng::seed_from_u64(42);
     // read log file
     let session_log_path = get_session_log_path(model, &dataset_name, num_samples);
-    let mut session_log_items: Vec<TreeUpdateEvent> =
+    let mut session_log_items: Vec<TreeAction> =
         read_json_lines(&session_log_path).unwrap_or_default();
     // read trajectory file
     let trajectory_path = get_rollout_trajectory_path(model, &dataset_name, num_samples);
@@ -102,7 +102,7 @@ async fn main() {
     session_log_items.retain(|item| !trajectory_completed_ids.contains(&item.question_id()));
     write_jsonl_file(&session_log_path, &session_log_items).unwrap();
     // construct a hashmap of loaded session logs
-    let mut loaded_session_logs: IndexMap<usize, Vec<TreeUpdateEvent>> = IndexMap::new();
+    let mut loaded_session_logs: IndexMap<usize, Vec<TreeAction>> = IndexMap::new();
     for log_item in session_log_items {
         loaded_session_logs
             .entry(log_item.question_id())
@@ -126,9 +126,8 @@ async fn main() {
         println!("Ctrl+C received, shutting down...");
         SHUTDOWN.store(true, Ordering::SeqCst);
     });
-    let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<TreeUpdateEvent>();
-    let (trajectory_tx, mut trajectory_rx) =
-        tokio::sync::mpsc::unbounded_channel::<RolloutTree>();
+    let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<TreeAction>();
+    let (trajectory_tx, mut trajectory_rx) = tokio::sync::mpsc::unbounded_channel::<RolloutTree>();
     let mut sumit_task_rng = StdRng::seed_from_u64(rng.next_u64());
     let mut session_log_file = OpenOptions::new()
         .create(true)
@@ -239,8 +238,7 @@ async fn main() {
     ])
     .await;
     // read trajectory file and sort by id
-    let mut trajectories: Vec<RolloutTree> =
-        read_json_lines(&trajectory_path).unwrap_or_default();
+    let mut trajectories: Vec<RolloutTree> = read_json_lines(&trajectory_path).unwrap_or_default();
     trajectories.sort_by_key(|t| t.id);
     // write back sorted trajectories
     write_jsonl_file(&trajectory_path, &trajectories).unwrap();

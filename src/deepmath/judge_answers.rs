@@ -79,6 +79,10 @@ pub async fn judge_answer_task(
     question: String,
     client: Client,
 ) -> bool {
+    // let model_answer = match model_answer {
+    //     FinalAnswer::ModelProvided(answer) => answer.clone(),
+    //     FinalAnswer::Failure(_) => {return false;}
+    // };
     let prompt = format!(
         // "The question is: {}. The model's answer is: {}. The correct answer is: {}. Please evaluate whether the model's answer is correct and return only 'correct' or 'incorrect'.",
         "You are an answer checker that checks a model's answer against the reference answer. Judge if the model's answer is equivalent to the reference answer. \

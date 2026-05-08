@@ -4,9 +4,7 @@ use crate::multi_agent::session::types::FinalAnswer;
 
 use super::actions::{RolloutAction, ToolResponse, TrajectoryActionLog};
 use super::constants::{
-     
-     MAX_ACTIONS_PER_STEP, MAX_PLAN_CHANGES,
-    MAX_STEP_OVERWRITE_STREAK, MAX_TOTAL_STEP_OVERWRITES,
+    MAX_ACTIONS_PER_STEP, MAX_PLAN_CHANGES, MAX_STEP_OVERWRITE_STREAK, MAX_TOTAL_STEP_OVERWRITES,
 };
 use super::tree::Tree;
 use super::types::{
@@ -142,7 +140,7 @@ impl<'a> TrajectoryState<'a> {
 
     pub fn update(&mut self, operation: RolloutAction) {
         self.total_actions += 1;
-        match &operation {            
+        match &operation {
             RolloutAction::StartNewStep => {
                 assert!(
                     matches!(self.status, TrajectoryStatus::StepEnded),
@@ -324,7 +322,7 @@ impl<'a> TrajectoryState<'a> {
                     }
                     ToolResponse::PythonError(error) => {
                         self.current_step_last_python_error = Some(error.clone());
-                    },
+                    }
                     ToolResponse::EmptyMessageHint => {}
                 }
                 step_content_raw.push_str(&tool_response.to_raw_content());

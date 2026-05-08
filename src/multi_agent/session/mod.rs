@@ -17,9 +17,7 @@ pub use em_fitter::{
     EmModePosterior, EmNodeBinding, EmNodePosterior, LeafLabel, LogStdClamp, SparsePathTerm,
 };
 pub use trajectory_state::TrajectoryState;
-pub use tree::{
-    CorrectnessJudgment, Node, Step, Tree, TreeMasterStatus, TreeUpdateEvent,
-};
+pub use tree::{CorrectnessJudgment, Node, Step, Tree, TreeAction, TreeMasterStatus};
 pub use types::{
     CompletedStep, FailedAttempt, MakeOrChangePlan, NextStepDecision, StepQuality,
     TrajectoryStatus, VerifierAndModeSummary, VerifierComment,

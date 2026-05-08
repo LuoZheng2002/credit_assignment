@@ -21,9 +21,7 @@ impl ToolResponse {
             ToolResponse::PythonError(error) => {
                 format!("<tool_response>Python error: {}</tool_response>", error)
             } // ToolResponse::Intervention(content) => content.clone(),
-            ToolResponse::EmptyMessageHint => {
-                EMPTY_MESSAGE_HINT.to_string()
-            }
+            ToolResponse::EmptyMessageHint => EMPTY_MESSAGE_HINT.to_string(),
         }
     }
 }
@@ -65,9 +63,7 @@ impl RolloutAction {
             RolloutAction::PlannerDecideNextStep(mode) => {
                 format!("[PlannerChooseMode]: {:?}", mode)
             }
-            RolloutAction::PlannerReasoning {
-                reasoning,
-            } => {
+            RolloutAction::PlannerReasoning { reasoning } => {
                 format!("[PlannerReasoning]:\n{}", reasoning)
             }
             RolloutAction::PlannerToolCall(tool_call) => {
@@ -91,7 +87,7 @@ impl RolloutAction {
             }
             RolloutAction::VerifierComment(comment) => {
                 format!("[VerifierComment]:\n{:?}", comment)
-            },
+            }
             RolloutAction::SubmitFinalAnswer(final_answer) => {
                 format!("[SubmitFinalAnswer]:\n{:?}", final_answer)
             }
@@ -108,7 +104,7 @@ impl RolloutAction {
                 "[PlannerMakeOrChangePlan]".to_string()
             }
             RolloutAction::PlannerDecideNextStep(_mode) => "[PlannerChooseMode]".to_string(),
-            RolloutAction::PlannerReasoning{..} => "[PlannerReasoning]".to_string(),
+            RolloutAction::PlannerReasoning { .. } => "[PlannerReasoning]".to_string(),
             RolloutAction::PlannerToolCall(_tool_call) => "[PlannerToolCall]".to_string(),
             RolloutAction::PlannerEndStep => "[PlannerEndStep]".to_string(),
             RolloutAction::CompactorCompactStep { .. } => "[PlannerCompactStep]".to_string(),
