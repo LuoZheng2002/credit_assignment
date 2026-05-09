@@ -9,15 +9,12 @@ use std::{
 
 use clap::Parser;
 use credit_assignment::{
+    agent::{rollout_loop::rollout, tree_action::TreeAction},
     call_llm::set_vllm_port,
     datasets::{DeepMathQuestion, get_question_path},
     direct_answer::generate_raw_answers::LlmModel,
-    agent::{
-        state_to_actions::rollout,
-        tree::TreeAction,
-    },
-    schemas::tree::{get_rollout_trajectory_path, get_session_log_path, RolloutTree},
     parallel_process_jsonl::{read_json_lines, read_json_lines_indexed, write_jsonl_file},
+    schemas::tree::{CompletedTree, get_rollout_trajectory_path, get_session_log_path},
 };
 use futures::future::join_all;
 use indexmap::IndexMap;
@@ -93,7 +90,7 @@ async fn main() {
         read_json_lines(&session_log_path).unwrap_or_default();
     // read trajectory file
     let trajectory_path = get_rollout_trajectory_path(model, &dataset_name, num_samples);
-    let trajectory_items: IndexMap<usize, RolloutTree> =
+    let trajectory_items: IndexMap<usize, CompletedTree> =
         read_json_lines_indexed(&trajectory_path).unwrap_or_default();
     let trajectory_completed_ids: HashSet<usize> = trajectory_items.keys().cloned().collect();
     // delete parts in log file that is already finished and write back
@@ -125,7 +122,8 @@ async fn main() {
         SHUTDOWN.store(true, Ordering::SeqCst);
     });
     let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<TreeAction>();
-    let (trajectory_tx, mut trajectory_rx) = tokio::sync::mpsc::unbounded_channel::<RolloutTree>();
+    let (trajectory_tx, mut trajectory_rx) =
+        tokio::sync::mpsc::unbounded_channel::<CompletedTree>();
     let mut sumit_task_rng = StdRng::seed_from_u64(rng.next_u64());
     let mut session_log_file = OpenOptions::new()
         .create(true)
@@ -236,7 +234,8 @@ async fn main() {
     ])
     .await;
     // read trajectory file and sort by id
-    let mut trajectories: Vec<RolloutTree> = read_json_lines(&trajectory_path).unwrap_or_default();
+    let mut trajectories: Vec<CompletedTree> =
+        read_json_lines(&trajectory_path).unwrap_or_default();
     trajectories.sort_by_key(|t| t.id);
     // write back sorted trajectories
     write_jsonl_file(&trajectory_path, &trajectories).unwrap();

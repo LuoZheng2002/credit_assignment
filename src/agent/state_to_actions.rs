@@ -1,5 +1,4 @@
 use rand::RngExt;
-use rand::distr::{Distribution, weighted::WeightedIndex};
 use reqwest::Client;
 
 use crate::agent::context_length_exceeded::{
@@ -15,16 +14,15 @@ use crate::agent::trajectory_action_types::{
 };
 use crate::agent::trajectory_state::TrajectoryState;
 use crate::agent::trajectory_status::TrajectoryStatus;
-use crate::agent::tree::{CorrectnessJudgment, Tree, TreeAction, TreeMasterStatus};
+use crate::agent::tree::{CorrectnessJudgment, Tree};
+use crate::agent::tree_action::TreeAction;
 use crate::status_prompts::universal_prompt::get_prompt_according_to_session_status;
 use crate::{
     agent::trajectory_action::TrajectoryAction,
     call_llm::call_llm_with_prefix,
     constants::{IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE, REPETITION_ABORT_MESSAGE},
     direct_answer::{generate_raw_answers::LlmModel, judge_answers::judge_answer_task},
-    schemas::tree::RolloutTree,
 };
-
 
 // we increased the repetition times to 5, there might be code that hasn't reflected this change.
 pub fn detect_repetition_five_times(response: &str) -> bool {
@@ -77,7 +75,7 @@ pub fn detect_repetition_five_times(response: &str) -> bool {
     false
 }
 
-async fn produce_actions_from_state(
+pub async fn produce_actions_from_state(
     // session_state: &TrajectoryState<'_>,
     tree: &Tree,
     client: Client,
@@ -494,204 +492,4 @@ async fn produce_actions_from_state(
             actions
         }
     }
-}
-
-pub async fn produce_working_trajectory(
-    tree: &mut Tree,
-    client: &Client,
-    model: LlmModel,
-    take_over_mode_decision: bool,
-    rng: &mut impl rand::Rng,
-    action_tx: &tokio::sync::mpsc::UnboundedSender<TreeAction>,
-) {
-    assert_eq!(
-        tree.tree_master_status,
-        TreeMasterStatus::WorkingOnTrajectory,
-        "produce_working_trajectory requires WorkingOnTrajectory status"
-    );
-    loop {
-        let session_state = TrajectoryState::from_tree(tree);
-        println!(
-            "[rollout] question index: {}, num actions: {}, num prev steps: {}, num actual steps: {}",
-            tree.question_id,
-            session_state.total_actions,
-            session_state.prev_steps.len(),
-            session_state.total_actual_steps
-        );
-
-        let new_operations =
-            produce_actions_from_state(tree, client.clone(), model, take_over_mode_decision, rng)
-                .await;
-        drop(session_state);
-
-        for event in new_operations {
-            tree.apply_event(event.clone());
-            action_tx.send(event).unwrap();
-        }
-    }
-}
-
-pub fn determine_branching_node(tree: &mut Tree, rng: &mut impl rand::Rng) -> bool {
-    assert_eq!(
-        tree.tree_master_status,
-        TreeMasterStatus::DeterminingBranchingNode,
-        "determine_branching_node requires DeterminingBranchingNode status"
-    );
-    if tree.leaf_node_ids.len() >= MAX_NUM_TRAJECTORIES {
-        println!(
-            "Max num trajectories {} reached, finalizing rollout.",
-            MAX_NUM_TRAJECTORIES
-        );
-        return true;
-    }
-
-    let mut node_weights = vec![0.0_f64; tree.nodes.len()];
-    let mut trajectory_lengths: Vec<usize> = Vec::new();
-    for &trajectory_leaf_node_id in &tree.leaf_node_ids {
-        let mut trajectory_node_ids_from_leaf_to_root: Vec<usize> = Vec::new();
-        let mut cursor = Some(trajectory_leaf_node_id);
-        while let Some(node_id) = cursor {
-            trajectory_node_ids_from_leaf_to_root.push(node_id);
-            let node = tree
-                .nodes
-                .get(node_id)
-                .expect("Trajectory traversal node_id must exist");
-            assert_eq!(
-                node.node_id, node_id,
-                "Node index must equal node_id during trajectory traversal"
-            );
-            cursor = node.parent_id;
-        }
-        trajectory_node_ids_from_leaf_to_root.reverse();
-        trajectory_lengths.push(trajectory_node_ids_from_leaf_to_root.len());
-        if trajectory_node_ids_from_leaf_to_root.len() < 2 {
-            return true;
-        }
-        let per_node_weight = 1.0 / (trajectory_node_ids_from_leaf_to_root.len() - 1) as f64;
-        let non_leaf_node_ids = &trajectory_node_ids_from_leaf_to_root
-            [..trajectory_node_ids_from_leaf_to_root.len() - 1];
-        for &node_id in non_leaf_node_ids {
-            node_weights[node_id] += per_node_weight;
-        }
-    }
-    assert_eq!(
-        trajectory_lengths.len(),
-        tree.leaf_node_ids.len(),
-        "Each leaf trajectory should contribute one trajectory length"
-    );
-
-    let mut candidate_node_ids: Vec<usize> = Vec::new();
-    let mut candidate_weights: Vec<f64> = Vec::new();
-    for node in &tree.nodes {
-        let weight = node_weights[node.node_id];
-        if weight > 0.0 {
-            candidate_node_ids.push(node.node_id);
-            candidate_weights.push(weight);
-        }
-    }
-    while !candidate_node_ids.is_empty() {
-        let weighted_index = WeightedIndex::new(&candidate_weights)
-            .expect("WeightedIndex construction should succeed with positive candidate weights");
-        let sampled_candidate_index = weighted_index.sample(rng);
-        let selected_node_id = candidate_node_ids[sampled_candidate_index];
-        let selected_node = tree
-            .nodes
-            .get(selected_node_id)
-            .expect("Selected branching node must exist");
-        assert_eq!(
-            selected_node.node_id, selected_node_id,
-            "Node index must equal node_id for selected branching node"
-        );
-        // let has_verifier_on_child = selected_node.verifier_on_child_id.is_some();
-        // let has_verifier_off_child = selected_node.verifier_off_child_id.is_some();
-        let mut has_verifier_on_child = false;
-        let mut has_verifier_off_child = false;
-        for &child_id in &selected_node.child_ids {
-            let Some(child_id) = child_id else {
-                continue;
-            };
-            let child_node = tree
-                .nodes
-                .get(child_id)
-                .expect("Child node of selected branching node must exist");
-            match child_node.step.verifier_and_mode_summary() {
-                VerifierAndModeSummary::VerifierOn { .. }
-                | VerifierAndModeSummary::VerifierOnAndChangePlan { .. }
-                | VerifierAndModeSummary::VerifierOnAndOverwriteLastStep { .. } => {
-                    has_verifier_on_child = true
-                }
-                VerifierAndModeSummary::VerifierOff => has_verifier_off_child = true,
-            }
-        }
-        if has_verifier_on_child && has_verifier_off_child {
-            candidate_node_ids.swap_remove(sampled_candidate_index);
-            candidate_weights.swap_remove(sampled_candidate_index);
-            continue;
-        }
-        tree.set_current_node_by_id(selected_node_id);
-        tree.tree_master_status = TreeMasterStatus::WorkingOnTrajectory;
-        return false;
-    }
-    println!("No valid branching node found, finalizing rollout.");
-    return true;
-}
-
-// it will output action logs and final trajectory
-// it will also load existing logs
-pub async fn rollout(
-    question_id: usize,
-    question: String,
-    reference_answer: String,
-    loaded_events: Vec<TreeAction>,
-    client: Client,
-    model: LlmModel,
-    take_over_mode_decision: bool,
-    rng: &mut impl rand::Rng,
-    action_tx: tokio::sync::mpsc::UnboundedSender<TreeAction>,
-    trajectory_tx: tokio::sync::mpsc::UnboundedSender<RolloutTree>,
-) {
-    // create a state machine
-    let mut tree = Tree::new(question_id, question.clone(), reference_answer.clone());
-    println!(
-        "Loading {} existing events for question id {}...",
-        loaded_events.len(),
-        question_id
-    );
-    for event in loaded_events {
-        tree.apply_event(event);
-    }
-    loop {
-        match tree.tree_master_status {
-            TreeMasterStatus::WorkingOnTrajectory => {
-                produce_working_trajectory(
-                    &mut tree,
-                    &client,
-                    model,
-                    take_over_mode_decision,
-                    rng,
-                    &action_tx,
-                )
-                .await;
-                tree.tree_master_status = TreeMasterStatus::DeterminingBranchingNode;
-            }
-            TreeMasterStatus::DeterminingBranchingNode => {
-                let should_finalize_rollout = determine_branching_node(&mut tree, rng);
-                if should_finalize_rollout {
-                    break;
-                }
-            }
-        }
-    }
-    let step_quality_ratio = tree.get_step_quality_ratio();
-    let failed_and_aborted_ratio = tree.get_failed_and_aborted_ratio();
-    let trajectory_tree = tree.clone();
-    let rollout_trajectory = RolloutTree {
-        id: question_id,
-        question,
-        correct_answer: reference_answer,
-        step_quality_ratio,
-        failed_and_aborted_ratio,
-        trajectory: trajectory_tree,
-    };
-    trajectory_tx.send(rollout_trajectory).unwrap();
 }

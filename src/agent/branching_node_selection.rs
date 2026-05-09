@@ -1,0 +1,112 @@
+use rand::distr::{Distribution, weighted::WeightedIndex};
+
+use crate::agent::{
+    tool_call_execution::MAX_NUM_TRAJECTORIES,
+    trajectory_action_types::VerifierAndModeSummary,
+    tree::{Tree, TreeMasterStatus},
+};
+
+pub fn determine_branching_node(tree: &mut Tree, rng: &mut impl rand::Rng) -> bool {
+    assert_eq!(
+        tree.tree_master_status,
+        TreeMasterStatus::DeterminingBranchingNode,
+        "determine_branching_node requires DeterminingBranchingNode status"
+    );
+    if tree.leaf_node_ids.len() >= MAX_NUM_TRAJECTORIES {
+        println!(
+            "Max num trajectories {} reached, finalizing rollout.",
+            MAX_NUM_TRAJECTORIES
+        );
+        return true;
+    }
+
+    let mut node_weights = vec![0.0_f64; tree.nodes.len()];
+    let mut trajectory_lengths: Vec<usize> = Vec::new();
+    for &trajectory_leaf_node_id in &tree.leaf_node_ids {
+        let mut trajectory_node_ids_from_leaf_to_root: Vec<usize> = Vec::new();
+        let mut cursor = Some(trajectory_leaf_node_id);
+        while let Some(node_id) = cursor {
+            trajectory_node_ids_from_leaf_to_root.push(node_id);
+            let node = tree
+                .nodes
+                .get(node_id)
+                .expect("Trajectory traversal node_id must exist");
+            assert_eq!(
+                node.node_id, node_id,
+                "Node index must equal node_id during trajectory traversal"
+            );
+            cursor = node.parent_id;
+        }
+        trajectory_node_ids_from_leaf_to_root.reverse();
+        trajectory_lengths.push(trajectory_node_ids_from_leaf_to_root.len());
+        if trajectory_node_ids_from_leaf_to_root.len() < 2 {
+            return true;
+        }
+        let per_node_weight = 1.0 / (trajectory_node_ids_from_leaf_to_root.len() - 1) as f64;
+        let non_leaf_node_ids = &trajectory_node_ids_from_leaf_to_root
+            [..trajectory_node_ids_from_leaf_to_root.len() - 1];
+        for &node_id in non_leaf_node_ids {
+            node_weights[node_id] += per_node_weight;
+        }
+    }
+    assert_eq!(
+        trajectory_lengths.len(),
+        tree.leaf_node_ids.len(),
+        "Each leaf trajectory should contribute one trajectory length"
+    );
+
+    let mut candidate_node_ids: Vec<usize> = Vec::new();
+    let mut candidate_weights: Vec<f64> = Vec::new();
+    for node in &tree.nodes {
+        let weight = node_weights[node.node_id];
+        if weight > 0.0 {
+            candidate_node_ids.push(node.node_id);
+            candidate_weights.push(weight);
+        }
+    }
+    while !candidate_node_ids.is_empty() {
+        let weighted_index = WeightedIndex::new(&candidate_weights)
+            .expect("WeightedIndex construction should succeed with positive candidate weights");
+        let sampled_candidate_index = weighted_index.sample(rng);
+        let selected_node_id = candidate_node_ids[sampled_candidate_index];
+        let selected_node = tree
+            .nodes
+            .get(selected_node_id)
+            .expect("Selected branching node must exist");
+        assert_eq!(
+            selected_node.node_id, selected_node_id,
+            "Node index must equal node_id for selected branching node"
+        );
+        // let has_verifier_on_child = selected_node.verifier_on_child_id.is_some();
+        // let has_verifier_off_child = selected_node.verifier_off_child_id.is_some();
+        let mut has_verifier_on_child = false;
+        let mut has_verifier_off_child = false;
+        for &child_id in &selected_node.child_ids {
+            let Some(child_id) = child_id else {
+                continue;
+            };
+            let child_node = tree
+                .nodes
+                .get(child_id)
+                .expect("Child node of selected branching node must exist");
+            match child_node.step.verifier_and_mode_summary() {
+                VerifierAndModeSummary::VerifierOn { .. }
+                | VerifierAndModeSummary::VerifierOnAndChangePlan { .. }
+                | VerifierAndModeSummary::VerifierOnAndOverwriteLastStep { .. } => {
+                    has_verifier_on_child = true
+                }
+                VerifierAndModeSummary::VerifierOff => has_verifier_off_child = true,
+            }
+        }
+        if has_verifier_on_child && has_verifier_off_child {
+            candidate_node_ids.swap_remove(sampled_candidate_index);
+            candidate_weights.swap_remove(sampled_candidate_index);
+            continue;
+        }
+        tree.set_current_node_by_id(selected_node_id);
+        tree.tree_master_status = TreeMasterStatus::WorkingOnTrajectory;
+        return false;
+    }
+    println!("No valid branching node found, finalizing rollout.");
+    return true;
+}

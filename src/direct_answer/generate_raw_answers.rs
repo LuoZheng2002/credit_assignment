@@ -47,7 +47,9 @@ impl LlmModel {
 
     pub fn is_qwen(&self) -> bool {
         match self {
-            LlmModel::Qwen25_7b | LlmModel::Qwen3_4b | LlmModel::Qwen3_8b | LlmModel::Qwen35_4b => true,
+            LlmModel::Qwen25_7b | LlmModel::Qwen3_4b | LlmModel::Qwen3_8b | LlmModel::Qwen35_4b => {
+                true
+            }
             LlmModel::Gpt4o | LlmModel::Gpt5Mini => false,
         }
     }
@@ -55,7 +57,9 @@ impl LlmModel {
     pub fn is_gpt(&self) -> bool {
         match self {
             LlmModel::Gpt4o | LlmModel::Gpt5Mini => true,
-            LlmModel::Qwen25_7b | LlmModel::Qwen3_4b | LlmModel::Qwen3_8b | LlmModel::Qwen35_4b => false,
+            LlmModel::Qwen25_7b | LlmModel::Qwen3_4b | LlmModel::Qwen3_8b | LlmModel::Qwen35_4b => {
+                false
+            }
         }
     }
 }

@@ -20,7 +20,7 @@ pub struct CountRatio {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct RolloutTree {
+pub struct CompletedTree {
     pub id: usize,
     pub correct_answer: String,
     pub step_quality_ratio: StepQualityRatio,
@@ -29,13 +29,17 @@ pub struct RolloutTree {
     pub question: String,
 }
 
-impl HasId for RolloutTree {
+impl HasId for CompletedTree {
     fn id(&self) -> usize {
         self.id
     }
 }
 
-pub fn get_rollout_trajectory_path(model: LlmModel, dataset_name: &str, num_samples: usize) -> String {
+pub fn get_rollout_trajectory_path(
+    model: LlmModel,
+    dataset_name: &str,
+    num_samples: usize,
+) -> String {
     format!(
         "results/{}/rollout/{}_trajectory_{}.jsonl",
         model.cli_name(),

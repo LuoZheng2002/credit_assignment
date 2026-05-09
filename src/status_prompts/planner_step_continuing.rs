@@ -1,6 +1,5 @@
 use crate::{
-    agent::trajectory_action_types::NextStepDecision,
-    agent::trajectory_state::TrajectoryState,
+    agent::trajectory_action_types::NextStepDecision, agent::trajectory_state::TrajectoryState,
     agent::trajectory_status::TrajectoryStatus,
     status_prompts::planner_deciding_next_step::get_planner_prompt_before_assistant,
 };

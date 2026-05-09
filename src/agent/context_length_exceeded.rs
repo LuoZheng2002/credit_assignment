@@ -1,6 +1,7 @@
 use crate::{
     agent::{
-        trajectory_action::TrajectoryAction, trajectory_action_types::FinalAnswer, tree::TreeAction,
+        trajectory_action::TrajectoryAction, trajectory_action_types::FinalAnswer,
+        tree_action::TreeAction,
     },
     call_llm::CONTEXT_LENGTH_EXCEEDED_RESPONSE,
     constants::CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE,

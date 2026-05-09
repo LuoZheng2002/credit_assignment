@@ -1,6 +1,5 @@
 use crate::agent::trajectory_action_types::{FinalAnswer, NextStepDecision, VerifierComment};
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrajectoryStatus {
     VerifierCommenting,

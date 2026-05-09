@@ -32,7 +32,8 @@ Given the following question, final answer and a reference reasoning paragraph, 
 Question: {}\nFinal Answer: {}\nReasoning: {}\nConcise Reasoning:",
         question.question, question.final_answer, question.reasoning
     );
-    let concise_reasoning = call_llm_chat_completions(client, prompt, LlmModel::Gpt5Mini, false).await;
+    let concise_reasoning =
+        call_llm_chat_completions(client, prompt, LlmModel::Gpt5Mini, false).await;
     DeepMathConciseReasoning {
         id: question.id,
         question: question.question,

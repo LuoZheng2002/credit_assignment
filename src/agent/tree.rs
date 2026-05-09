@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 
 // use crate::direct_answer::generate_rollout_answers::{CountRatio, StepQualityRatio};
 use crate::agent::trajectory_action_types::FinalAnswer;
+use crate::agent::tree_action::TreeAction;
 use crate::schemas::tree::{CountRatio, StepQualityRatio};
 
 use crate::agent::trajectory_action::{TrajectoryAction, TrajectoryActionLog};
@@ -111,7 +112,6 @@ pub enum TreeMasterStatus {
     WorkingOnTrajectory,
     DeterminingBranchingNode,
 }
-
 // only working on one node at a time
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tree {
@@ -127,55 +127,6 @@ pub struct Tree {
     pub tool_wait_violations: usize,
     pub next_node_id: usize,
     pub tree_master_status: TreeMasterStatus,
-}
-
-// the following is the signature of each entry in a jsonl log file for reconstructing current tree progress when the program exits abruptly.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TreeAction {
-    CreateNode {
-        question_id: usize,
-        node_id: usize,
-        parent_id: Option<usize>,
-    },
-    SetCurrentNode {
-        question_id: usize,
-        node_id: usize,
-    },
-    AddTrajectoryAction {
-        question_id: usize,
-        action: TrajectoryAction,
-    },
-    RegisterLeaf {
-        question_id: usize,
-        node_id: usize,
-    },
-    JudgeLeafCorrectness {
-        question_id: usize,
-        node_id: usize,
-        correctness_judgment: CorrectnessJudgment,
-    },
-    ToolWaitViolation {
-        question_id: usize,
-    },
-}
-
-// the whole tree can be:
-//
-// the trajectory state is based on the rollout actions but not tree events
-// but we can reconstruct the rollout actions based on the current tree status
-// so the rollout action is appended
-
-impl TreeAction {
-    pub fn question_id(&self) -> usize {
-        match self {
-            TreeAction::CreateNode { question_id, .. } => *question_id,
-            TreeAction::SetCurrentNode { question_id, .. } => *question_id,
-            TreeAction::AddTrajectoryAction { question_id, .. } => *question_id,
-            TreeAction::RegisterLeaf { question_id, .. } => *question_id,
-            TreeAction::JudgeLeafCorrectness { question_id, .. } => *question_id,
-            TreeAction::ToolWaitViolation { question_id } => *question_id,
-        }
-    }
 }
 
 // we need a status after a trajectory is finished to randomly sample a node position for branching

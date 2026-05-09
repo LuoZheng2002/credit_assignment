@@ -97,7 +97,6 @@ pub enum FinalAnswer {
     Failure(String),
 }
 
-
 #[derive(Debug, Clone)]
 pub struct FailedAttempt {
     pub plan: String,
