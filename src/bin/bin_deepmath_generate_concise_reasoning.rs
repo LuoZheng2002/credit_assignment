@@ -1,5 +1,5 @@
 use clap::Parser;
-use credit_assignment::deepmath::generate_concise_reasoning::generate_concise_reasoning;
+use credit_assignment::direct_answer::generate_concise_reasoning::generate_concise_reasoning;
 use reqwest::Client;
 #[derive(Parser, Debug)]
 #[command(name = "Generate Concise Reasoning")]

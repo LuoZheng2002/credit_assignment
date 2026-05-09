@@ -1,4 +1,4 @@
-use credit_assignment::multi_agent::rollout::detect_repetition_five_times;
+use credit_assignment::agent::state_to_actions::detect_repetition_five_times;
 
 #[test]
 fn detects_exact_three_consecutive_repetitions() {

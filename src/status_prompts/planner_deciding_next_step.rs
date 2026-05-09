@@ -1,4 +1,5 @@
-use crate::multi_agent::session::{TrajectoryState, TrajectoryStatus};
+use crate::agent::trajectory_state::TrajectoryState;
+use crate::agent::trajectory_status::TrajectoryStatus;
 
 pub fn get_planner_prompt_before_assistant(
     question: &str,

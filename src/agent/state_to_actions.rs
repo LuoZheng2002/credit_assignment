@@ -1,526 +1,30 @@
-use core::panic;
 use rand::RngExt;
 use rand::distr::{Distribution, weighted::WeightedIndex};
 use reqwest::Client;
 
-use crate::multi_agent::session::VerifierAndModeSummary;
-use crate::multi_agent::session::types::FinalAnswer;
+use crate::agent::context_length_exceeded::{
+    context_length_exceeded_result, is_context_length_exceeded_response,
+};
+use crate::agent::response_processing::{
+    ChosenModeDecision, determine_chosen_mode, parse_compactor_response,
+    parse_verifier_comment_response, split_reasoning_and_tool_call,
+};
+use crate::agent::tool_call_execution::{MAX_NUM_TRAJECTORIES, execute_planner_tool_call};
+use crate::agent::trajectory_action_types::{
+    FinalAnswer, MakeOrChangePlan, NextStepDecision, ToolResponse, VerifierAndModeSummary,
+};
+use crate::agent::trajectory_state::TrajectoryState;
+use crate::agent::trajectory_status::TrajectoryStatus;
+use crate::agent::tree::{CorrectnessJudgment, Tree, TreeAction, TreeMasterStatus};
+use crate::status_prompts::universal_prompt::get_prompt_according_to_session_status;
 use crate::{
-    call_llm::{QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE, call_llm_with_prefix},
-    deepmath::{generate_raw_answers::Model, judge_answers::judge_answer_task},
-    execute_python_code::execute_python_code,
-    multi_agent::{
-        generate_rollout_answers::RolloutTree,
-        session::{
-            CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE, CorrectnessJudgment,
-            IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE, MakeOrChangePlan, NextStepDecision,
-            REPETITION_ABORT_MESSAGE, RolloutAction, StepQuality, ToolResponse, TrajectoryState,
-            TrajectoryStatus, Tree, TreeAction, TreeMasterStatus, VerifierComment,
-        },
-        verifier_commenting::get_verifier_commenting_prompts,
-    },
-    status_prompts::{
-        planner_compacting::get_planner_compacting_prompts,
-        planner_deciding_next_step::get_planner_deciding_next_step_prompts,
-        planner_making_or_changing_plan::get_planner_making_or_changing_plan_prompts,
-        planner_step_continuing::get_planner_step_continuing_prompts,
-        planner_step_overwriting::get_planner_step_overwriting_prompts,
-        planner_updating_plan::get_planner_updating_plan_prompts,
-    },
+    agent::trajectory_action::TrajectoryAction,
+    call_llm::call_llm_with_prefix,
+    constants::{IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE, REPETITION_ABORT_MESSAGE},
+    direct_answer::{generate_raw_answers::LlmModel, judge_answers::judge_answer_task},
+    schemas::tree::RolloutTree,
 };
 
-#[derive(Debug, Clone, Copy)]
-pub enum PlannerState {
-    BeginStep,
-    MidStep,
-}
-
-// fn collect_root_to_leaf_action_log(tree: &Tree, leaf_node_id: usize) -> TrajectoryActionLog {
-//     assert!(
-//         leaf_node_id < tree.nodes.len(),
-//         "Leaf node id must exist in tree"
-//     );
-//     let mut node_ids_from_leaf_to_root: Vec<usize> = Vec::new();
-//     let mut cursor = Some(leaf_node_id);
-//     while let Some(node_id) = cursor {
-//         let node = tree
-//             .nodes
-//             .get(node_id)
-//             .expect("Leaf-path traversal node_id must exist in tree");
-//         assert_eq!(
-//             node.node_id, node_id,
-//             "Node index must equal node_id during leaf-path traversal"
-//         );
-//         node_ids_from_leaf_to_root.push(node_id);
-//         cursor = node.parent_id;
-//     }
-//     node_ids_from_leaf_to_root.reverse();
-
-//     let mut actions: Vec<RolloutAction> = Vec::new();
-//     for node_id in node_ids_from_leaf_to_root {
-//         let node = tree
-//             .nodes
-//             .get(node_id)
-//             .expect("Leaf-path node_id must exist while collecting actions");
-//         actions.extend(node.step.action_log.iter().cloned());
-//     }
-//     TrajectoryActionLog(actions)
-// }
-
-// fn extract_leaf_model_answer(tree: &Tree, leaf_node_id: usize) -> FinalAnswer {
-//     let leaf_node = tree
-//         .nodes
-//         .get(leaf_node_id)
-//         .expect("Leaf node id must exist in tree when extracting leaf model answer");
-//     leaf_node
-//         .step
-//         .action_log
-//         .iter()
-//         .find_map(|action| match action {
-//             RolloutAction::SubmitFinalAnswer(answer) => Some(answer.clone()),
-//             _ => None,
-//         })
-//         .expect("Each registered leaf trajectory must have a final answer in the reasoning log")
-// }
-
-pub trait ToolCallParser {
-    fn start_position(&self, content: &str) -> Option<usize>;
-    fn end_position(&self, content: &str, start_position: usize) -> Option<usize>;
-}
-
-pub struct MarkdownPythonParser;
-impl ToolCallParser for MarkdownPythonParser {
-    fn start_position(&self, content: &str) -> Option<usize> {
-        content.find("```python")
-    }
-
-    fn end_position(&self, content: &str, start_position: usize) -> Option<usize> {
-        let after_start = &content[start_position + "```python".len()..];
-        if let Some(end_relative) = after_start.find("```") {
-            let mut end_position = start_position + "```python".len() + end_relative + "```".len();
-            // if there is a '\n' after the closing fence, we also include it in the tool call, as it may be needed for correct formatting when the tool response is inserted back to the planner's reasoning
-            if after_start[end_relative + "```".len()..].starts_with('\n') {
-                end_position += 1;
-            }
-            Some(end_position)
-        } else {
-            None
-        }
-    }
-}
-
-// (Option<String>, Option<String>) means (reasoning, tool_call)
-pub fn split_reasoning_and_tool_call(
-    response: String,
-    model: Model,
-) -> (Option<String>, Option<String>, bool) {
-    let parsers: Vec<Box<dyn ToolCallParser>> = vec![Box::new(MarkdownPythonParser {})];
-    let mut min_start_position = None;
-    let mut selected_parser = None;
-    for parser in parsers {
-        if let Some(start_position) = parser.start_position(&response) {
-            if min_start_position.is_none() || start_position < min_start_position.unwrap() {
-                min_start_position = Some(start_position);
-                selected_parser = Some(parser);
-            }
-        }
-    }
-    let Some(mut start_position) = min_start_position else {
-        return (Some(response), None, false);
-    };
-    // if there is <tool_call> before the start position, also include it
-    if let Some(tag_position) = response[..start_position].rfind("<tool_wait>") {
-        if response[tag_position..start_position].trim().is_empty() {
-            start_position = tag_position;
-        }
-    }
-    let selected_parser = selected_parser.unwrap();
-    let end_position = selected_parser
-        .end_position(&response, start_position)
-        .unwrap_or(response.len());
-    let mut tool_call = response[start_position..end_position].to_string();
-    let mut tool_wait_violation = false;
-    // if after the end position there is immediately a </tool_wait> tag, we also include it in the tool call
-    if end_position < response.len() && response[end_position..].trim().starts_with("</tool_wait>")
-    {
-        let suffix = response[end_position..].trim_start();
-        let suffix_after_tag = suffix
-            .strip_prefix("</tool_wait>")
-            .expect("suffix should start with </tool_wait>");
-        if !suffix_after_tag.trim().is_empty() {
-            println!(
-                "Warning: model outputs non-empty trailing content after </tool_wait>: {}",
-                suffix_after_tag.trim()
-            );
-            tool_wait_violation = true;
-        }
-        tool_call.push_str("</tool_wait>");
-    } else {
-        tool_wait_violation = true;
-        if model.is_qwen() {
-            println!("Warning: tool call does not end with </tool_wait> tag.");
-        }
-        tool_call.push_str("</tool_wait>"); // if there is no </tool_wait> tag, we also add it and trim all the content after the tool call
-    }
-    let reasoning = if !response[..start_position].trim().is_empty() {
-        Some(response[..start_position].to_string()) // do not trim the reasoning part, as leading/trailing spaces may be useful for formatting
-    } else {
-        None
-    };
-    (reasoning, Some(tool_call), tool_wait_violation)
-}
-
-pub fn extract_content_in_markdown_code_block(content: &str) -> Option<String> {
-    let start_fence = "```";
-    let end_fence = "```";
-    let start_index = content.find(start_fence)?;
-    let end_index = content[start_index + start_fence.len()..].find(end_fence)?
-        + start_index
-        + start_fence.len();
-    Some(content[start_index + start_fence.len()..end_index].to_string())
-}
-
-pub fn extract_content_in_json_markdown_code_block(content: &str) -> Option<String> {
-    let start_fence = "```json";
-    let end_fence = "```";
-    let start_index = content.find(start_fence)?;
-    let end_index = content[start_index + start_fence.len()..].find(end_fence)?
-        + start_index
-        + start_fence.len();
-    Some(content[start_index + start_fence.len()..end_index].to_string())
-}
-
-fn parse_compactor_response(response: String) -> (String, Option<StepQuality>) {
-    #[derive(serde::Deserialize)]
-    struct ProperlyEndedStepQualityFields {
-        tool: bool,
-        complete: bool,
-        focused: bool,
-    }
-
-    if let Some(json_block) = extract_content_in_json_markdown_code_block(&response) {
-        if let Ok(step_quality_fields) =
-            serde_json::from_str::<ProperlyEndedStepQualityFields>(json_block.trim())
-        {
-            let json_fence_start = response
-                .find("```json")
-                .expect("The json code fence start must exist if extraction succeeded");
-            let summary = response[..json_fence_start].trim_end().to_string();
-            return (
-                summary,
-                Some(StepQuality::ProperlyEnded {
-                    tool: step_quality_fields.tool,
-                    complete: step_quality_fields.complete,
-                    focused: step_quality_fields.focused,
-                }),
-            );
-        }
-    }
-
-    for (start_idx, _) in response.match_indices('{').rev() {
-        let candidate = response[start_idx..].trim();
-        if let Ok(step_quality_fields) =
-            serde_json::from_str::<ProperlyEndedStepQualityFields>(candidate)
-        {
-            let summary = response[..start_idx].trim_end().to_string();
-            return (
-                summary,
-                Some(StepQuality::ProperlyEnded {
-                    tool: step_quality_fields.tool,
-                    complete: step_quality_fields.complete,
-                    focused: step_quality_fields.focused,
-                }),
-            );
-        }
-    }
-    println!("[Warning] Failed to parse step quality from compactor response.",);
-    (response, None)
-}
-
-fn parse_verifier_decision_json_manual(json_str: &str) -> Option<(bool, bool)> {
-    let value: serde_json::Value = serde_json::from_str(json_str).ok()?;
-    let object = value.as_object()?;
-    let mut overwrite = None;
-    let mut change_plan = None;
-
-    for (key, value) in object {
-        let key_lower = key.to_lowercase();
-        let Some(value_bool) = value.as_bool() else {
-            continue;
-        };
-
-        if key_lower.contains("change")
-            || key_lower.contains("restart")
-            || key_lower.contains("plan")
-        {
-            change_plan = Some(value_bool);
-            continue;
-        }
-        if key_lower.contains("overwrite")
-            || key_lower.contains("rewrite")
-            || key_lower.contains("last")
-            || key_lower.contains("current")
-            || key_lower.contains("step")
-        {
-            overwrite = Some(value_bool);
-        }
-    }
-
-    Some((overwrite?, change_plan?))
-}
-
-fn parse_verifier_comment_response(response: String) -> VerifierComment {
-    if let Some(json_block) = extract_content_in_json_markdown_code_block(&response) {
-        if let Some((overwrite, change_plan)) =
-            parse_verifier_decision_json_manual(json_block.trim())
-        {
-            let json_fence_start = response
-                .find("```json")
-                .expect("The json code fence start must exist if extraction succeeded");
-            let comment = response[..json_fence_start].trim_end().to_string();
-            return VerifierComment {
-                comment,
-                overwrite,
-                change_plan,
-            };
-        }
-    }
-
-    for (start_idx, _) in response.match_indices('{').rev() {
-        let candidate = response[start_idx..].trim();
-        if let Some((overwrite, change_plan)) = parse_verifier_decision_json_manual(candidate) {
-            let comment = response[..start_idx].trim_end().to_string();
-            return VerifierComment {
-                comment,
-                overwrite,
-                change_plan,
-            };
-        }
-    }
-
-    println!("[Warning] Failed to parse verifier decision JSON from verifier response.");
-    VerifierComment {
-        comment: response.trim().to_string(),
-        overwrite: false,
-        change_plan: false,
-    }
-}
-
-fn get_protocol_value<'a>(response: &'a str, key: &str) -> Option<&'a str> {
-    let prefix = format!("{}:", key);
-    for line in response.lines() {
-        let trimmed = line.trim();
-        if trimmed.to_lowercase().starts_with(&prefix) {
-            return Some(trimmed[prefix.len()..].trim());
-        }
-    }
-    None
-}
-
-fn parse_next_step_choice(choice: &str) -> Option<&'static str> {
-    let mut has_continue = false;
-    let mut has_change = false;
-    let mut has_overwrite = false;
-
-    for token in choice
-        .split(|c: char| !c.is_ascii_alphabetic())
-        .filter(|token| !token.is_empty())
-    {
-        let token_lower = token.to_ascii_lowercase();
-        match token_lower.as_str() {
-            "continue" | "proceed" => has_continue = true,
-            "change" | "plan" => has_change = true,
-            "overwrite" | "rewrite" | "fix" | "last" | "step" => has_overwrite = true,
-            _ => {}
-        }
-    }
-
-    let matched_count = (has_continue as u8) + (has_change as u8) + (has_overwrite as u8);
-    if matched_count != 1 {
-        return None;
-    }
-
-    if has_continue {
-        return Some("continue");
-    }
-    if has_change {
-        return Some("change_plan");
-    }
-    Some("overwrite_last_step")
-}
-
-enum ChosenModeDecision {
-    ContextLengthExceeded,
-    Chosen(NextStepDecision),
-}
-
-async fn determine_chosen_mode(
-    session_state: &TrajectoryState<'_>,
-    client: Client,
-    model: Model,
-    take_over_mode_decision: bool,
-    rng: &mut impl rand::Rng,
-) -> ChosenModeDecision {
-    let TrajectoryStatus::PlannerChoosingMode { verifier_comment } = &session_state.status else {
-        panic!("determine_chosen_mode should only be called in PlannerChoosingMode status");
-    };
-    if take_over_mode_decision {
-        let chosen_mode = match verifier_comment {
-            None => NextStepDecision::Continue,
-            Some(comment) => {
-                if comment.change_plan {
-                    if rng.random::<f32>() < 0.5 {
-                        NextStepDecision::Continue
-                    } else {
-                        NextStepDecision::ChangePlan(
-                            "Please refer to the verifier's comment.".to_string(),
-                        )
-                    }
-                } else if comment.overwrite {
-                    if rng.random::<f32>() < 0.5 {
-                        NextStepDecision::Continue
-                    } else {
-                        NextStepDecision::OverwriteLastStep(
-                            "Please refer to the verifier's comment.".to_string(),
-                        )
-                    }
-                } else {
-                    NextStepDecision::Continue
-                }
-            }
-        };
-        return ChosenModeDecision::Chosen(chosen_mode);
-    }
-
-    let (prompt_before_assistant, prompt_after_assistant) =
-        get_prompt_according_to_session_status(session_state);
-    assert_eq!(
-        prompt_after_assistant,
-        String::new(),
-        "Planner deciding next step should not have prompt after assistant"
-    );
-    let response = call_llm_with_prefix(
-        client,
-        prompt_before_assistant,
-        prompt_after_assistant,
-        model,
-    )
-    .await;
-    if is_context_length_exceeded_response(&response) {
-        return ChosenModeDecision::ContextLengthExceeded;
-    }
-
-    let trimmed_response = response.trim();
-    let raw_choice = get_protocol_value(trimmed_response, "choice").expect(&format!(
-        "Planner choosing mode response does not contain 'choice: ...' line. Response: {}",
-        trimmed_response
-    ));
-    let choice = parse_next_step_choice(raw_choice).expect(&format!(
-        "Invalid or ambiguous choice field in planner choosing mode response. Choice must contain exactly one distinct keyword among continue/change/overwrite/rewrite (case-insensitive). choice: {}. Response: {}",
-        raw_choice,
-        trimmed_response
-    ));
-    let chosen_mode = match choice {
-        "continue" => NextStepDecision::Continue,
-        "overwrite_last_step" => {
-            if session_state.can_overwrite_step() {
-                let reason = get_protocol_value(trimmed_response, "reason").expect(
-                    &format!(
-                        "Planner choosing mode response with 'overwrite_last_step' choice does not contain 'reason: ...' line. Response: {}",
-                        trimmed_response
-                    ),
-                );
-                NextStepDecision::OverwriteLastStep(reason.to_string())
-            } else {
-                println!("[Warning] Overwrite last step is capped.");
-                NextStepDecision::Continue
-            }
-        }
-        "change_plan" => {
-            if session_state.can_change_plan() {
-                let reason = get_protocol_value(trimmed_response, "reason").expect(&format!(
-                    "Planner choosing mode response with 'change_plan' choice does not contain 'reason: ...' line. Response: {}",
-                    trimmed_response
-                ));
-                NextStepDecision::ChangePlan(reason.to_string())
-            } else {
-                println!("[Warning] Change plan is capped.");
-                NextStepDecision::Continue
-            }
-        }
-        _ => panic!(
-            "Invalid choice field in planner choosing mode response JSON: {}",
-            choice
-        ),
-    };
-    ChosenModeDecision::Chosen(chosen_mode)
-}
-
-pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
-    let mut trimmed_tool_call = tool_call.trim_start().to_string();
-    // trim <tool_wait>
-    if trimmed_tool_call.starts_with("<tool_wait>") {
-        trimmed_tool_call = trimmed_tool_call["<tool_wait>".len()..]
-            .trim_start()
-            .to_string();
-    }
-    assert!(
-        trimmed_tool_call.starts_with("```python"),
-        "Tool call not properly formatted: {}",
-        tool_call
-    );
-    let Some(fence_end_index) = trimmed_tool_call.rfind("```") else {
-        return ToolResponse::PythonError(
-            "Tool call markdown code block not properly closed.".to_string(),
-        );
-    };
-    let code_start = trimmed_tool_call
-        .find('\n')
-        .map(|idx| idx + 1)
-        .unwrap_or("```python".len());
-    if fence_end_index < code_start {
-        return ToolResponse::PythonError(
-            "Tool call markdown code block not properly formatted.".to_string(),
-        );
-    }
-    let code = &trimmed_tool_call[code_start..fence_end_index];
-    execute_python_code(code.to_string()).await
-}
-
-pub fn get_prompt_according_to_session_status(
-    session_state: &TrajectoryState<'_>,
-) -> (String, String) {
-    match &session_state.status {
-        TrajectoryStatus::PlannerMakingOrChangingPlan { .. } => {
-            get_planner_making_or_changing_plan_prompts(session_state)
-        }
-        TrajectoryStatus::PlannerChoosingMode { .. } => {
-            get_planner_deciding_next_step_prompts(session_state)
-        }
-        TrajectoryStatus::PlannerWorkingOnStep {
-            planner_chosen_mode,
-            ..
-        } => match planner_chosen_mode {
-            NextStepDecision::Continue => get_planner_step_continuing_prompts(session_state),
-            NextStepDecision::OverwriteLastStep(_) => {
-                get_planner_step_overwriting_prompts(session_state)
-            }
-            NextStepDecision::ChangePlan(_) => get_planner_step_continuing_prompts(session_state),
-        },
-        TrajectoryStatus::CompactorCompactingStep { .. } => {
-            get_planner_compacting_prompts(session_state)
-        }
-        TrajectoryStatus::PlannerUpdatingPlan { .. } => {
-            get_planner_updating_plan_prompts(session_state)
-        }
-        TrajectoryStatus::VerifierCommenting => get_verifier_commenting_prompts(session_state),
-        TrajectoryStatus::StepEnded | TrajectoryStatus::SessionEnded { .. } => {
-            (String::new(), String::new())
-        }
-    }
-}
-
-pub const MAX_NUM_TRAJECTORIES: usize = 16;
 
 // we increased the repetition times to 5, there might be code that hasn't reflected this change.
 pub fn detect_repetition_five_times(response: &str) -> bool {
@@ -573,28 +77,11 @@ pub fn detect_repetition_five_times(response: &str) -> bool {
     false
 }
 
-fn is_context_length_exceeded_response(response: &str) -> bool {
-    response == QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE
-}
-
-fn context_length_exceeded_result(question_id: usize, session_status: &str) -> Vec<TreeAction> {
-    println!(
-        "[Warning] Model context length exceeded in {}, ending session.",
-        session_status
-    );
-    vec![TreeAction::AddAction {
-        question_id,
-        action: RolloutAction::SubmitFinalAnswer(FinalAnswer::Failure(
-            CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
-        )),
-    }]
-}
-
 async fn produce_actions_from_state(
     // session_state: &TrajectoryState<'_>,
     tree: &Tree,
     client: Client,
-    model: Model,
+    model: LlmModel,
     take_over_mode_decision: bool,
     rng: &mut impl rand::Rng,
 ) -> Vec<TreeAction> {
@@ -627,18 +114,13 @@ async fn produce_actions_from_state(
                 question_id,
                 node_id,
             });
-            operations.push(TreeAction::AddAction {
+            operations.push(TreeAction::AddTrajectoryAction {
                 question_id,
-                action: RolloutAction::StartNewStep, // set the trajectory status to verifier commenting, finalize the old step node
+                action: TrajectoryAction::StartNewStep, // set the trajectory status to verifier commenting, finalize the old step node
             });
             operations
         }
         TrajectoryStatus::VerifierCommenting => {
-            let mut operations: Vec<TreeAction> = Vec::new();
-            // let current_node_id = session_state
-            //     .source_tree
-            //     .current_node_id
-            //     .expect("VerifierCommenting requires current_node_id");
             let parent_id = session_state
                 .source_tree
                 .get_current_node()
@@ -669,8 +151,7 @@ async fn produce_actions_from_state(
                 // if there is no parent node, then verifier should be off because there is not last step
                 false
             };
-            let mut verifier_comment = None;
-            if verifier_on {
+            let actions = if verifier_on {
                 assert!(!session_state.prev_steps.is_empty());
                 let (prompt_before_assistant, prompt_after_assistant) =
                     get_prompt_according_to_session_status(&session_state);
@@ -687,19 +168,25 @@ async fn produce_actions_from_state(
                 )
                 .await;
                 if is_context_length_exceeded_response(&response) {
-                    operations.extend(context_length_exceeded_result(
+                    context_length_exceeded_result(question_id)
+                } else {
+                    let action = TreeAction::AddTrajectoryAction {
                         question_id,
-                        "VerifierCommenting",
-                    ));
-                    return operations;
+                        action: TrajectoryAction::VerifierComment(Some(
+                            parse_verifier_comment_response(response.clone()),
+                        )),
+                    };
+                    vec![action]
                 }
-                verifier_comment = Some(parse_verifier_comment_response(response));
-            }
-            operations.push(TreeAction::AddAction {
-                question_id,
-                action: RolloutAction::VerifierComment(verifier_comment),
-            });
-            operations
+            } else {
+                // if verifier is off, we still want to add a TrajectoryAction to record the verifier comment is off for the current step, which will be used for determining the mode in the next step
+                let action = TreeAction::AddTrajectoryAction {
+                    question_id,
+                    action: TrajectoryAction::VerifierComment(None),
+                };
+                vec![action]
+            };
+            actions
         }
         TrajectoryStatus::PlannerMakingOrChangingPlan {
             planner_chosen_mode,
@@ -715,7 +202,7 @@ async fn produce_actions_from_state(
             )
             .await;
             if is_context_length_exceeded_response(&response) {
-                context_length_exceeded_result(question_id, "PlannerMakingOrChangingPlan")
+                context_length_exceeded_result(question_id)
             } else {
                 let plan_content = match planner_chosen_mode {
                     NextStepDecision::ChangePlan(reason) => Some(MakeOrChangePlan::ChangePlan {
@@ -726,9 +213,9 @@ async fn produce_actions_from_state(
                         Some(MakeOrChangePlan::MakePlan(response))
                     }
                 }; // we change to not require the plan to be in a markdown code block
-                vec![TreeAction::AddAction {
+                vec![TreeAction::AddTrajectoryAction {
                     question_id,
-                    action: RolloutAction::PlannerMakeOrChangePlan(plan_content),
+                    action: TrajectoryAction::PlannerMakeOrChangePlan(plan_content),
                 }]
             }
         }
@@ -745,11 +232,11 @@ async fn produce_actions_from_state(
             .await
             {
                 ChosenModeDecision::ContextLengthExceeded => {
-                    context_length_exceeded_result(question_id, "PlannerChoosingMode")
+                    context_length_exceeded_result(question_id)
                 }
-                ChosenModeDecision::Chosen(chosen_mode) => vec![TreeAction::AddAction {
+                ChosenModeDecision::Chosen(chosen_mode) => vec![TreeAction::AddTrajectoryAction {
                     question_id,
-                    action: RolloutAction::PlannerDecideNextStep(chosen_mode),
+                    action: TrajectoryAction::PlannerDecideNextStep(chosen_mode),
                 }],
             }
         }
@@ -768,7 +255,7 @@ async fn produce_actions_from_state(
             )
             .await;
             if is_context_length_exceeded_response(&response) {
-                context_length_exceeded_result(question_id, "PlannerWorkingOnStep")
+                context_length_exceeded_result(question_id)
             } else {
                 if response.trim().is_empty() {
                     response = "<end_step>".to_string(); // if the model does not output anything, we treat it as if it outputs <end_step> to prevent getting stuck
@@ -792,18 +279,18 @@ async fn produce_actions_from_state(
                     if reasoning.contains("<end_step>") {
                         push_end_step = true;
                     }
-                    operations.push(TreeAction::AddAction {
+                    operations.push(TreeAction::AddTrajectoryAction {
                         question_id,
-                        action: RolloutAction::PlannerReasoning { reasoning },
+                        action: TrajectoryAction::PlannerReasoning { reasoning },
                     });
                 }
                 if let Some(tool_call) = tool_call {
                     let tool_response = execute_planner_tool_call(&tool_call).await;
                     let previous_python_error =
                         session_state.current_step_last_python_error.clone();
-                    operations.push(TreeAction::AddAction {
+                    operations.push(TreeAction::AddTrajectoryAction {
                         question_id,
-                        action: RolloutAction::PlannerToolCall(tool_call),
+                        action: TrajectoryAction::PlannerToolCall(tool_call),
                     });
                     if let ToolResponse::PythonError(current_python_error) = &tool_response {
                         if previous_python_error.is_some()
@@ -812,43 +299,43 @@ async fn produce_actions_from_state(
                             println!(
                                 "[Warning]: Identical python tool error detected. Aborting current step."
                             );
-                            operations.push(TreeAction::AddAction {
+                            operations.push(TreeAction::AddTrajectoryAction {
                                 question_id,
-                                action: RolloutAction::ToolCallResponse(tool_response),
+                                action: TrajectoryAction::ToolCallResponse(tool_response),
                             });
-                            operations.push(TreeAction::AddAction {
+                            operations.push(TreeAction::AddTrajectoryAction {
                                 question_id,
                                 // action: RolloutAction::ToolCallResponse(
                                 //     ToolResponse::Intervention(
                                 //         IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
                                 //     ),
                                 // ),
-                                action: RolloutAction::SystemInterrupt(
+                                action: TrajectoryAction::SystemInterrupt(
                                     IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
                                 ),
                             });
                             has_terminal_intervention = true;
                         } else {
-                            operations.push(TreeAction::AddAction {
+                            operations.push(TreeAction::AddTrajectoryAction {
                                 question_id,
-                                action: RolloutAction::ToolCallResponse(tool_response),
+                                action: TrajectoryAction::ToolCallResponse(tool_response),
                             });
                         }
                     } else {
-                        operations.push(TreeAction::AddAction {
+                        operations.push(TreeAction::AddTrajectoryAction {
                             question_id,
-                            action: RolloutAction::ToolCallResponse(tool_response),
+                            action: TrajectoryAction::ToolCallResponse(tool_response),
                         });
                     }
                 }
 
                 if response_is_empty {
-                    operations.push(TreeAction::AddAction {
+                    operations.push(TreeAction::AddTrajectoryAction {
                         question_id,
                         // action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
                         //     SUBMIT_ANSWER_HINT.to_string(),
                         // )),
-                        action: RolloutAction::ToolCallResponse(ToolResponse::EmptyMessageHint),
+                        action: TrajectoryAction::ToolCallResponse(ToolResponse::EmptyMessageHint),
                     });
                 }
                 let num_additional_actions_allowed =
@@ -869,9 +356,9 @@ async fn produce_actions_from_state(
                         "[Warning] Detected repetition of the same response at least three times. This may indicate that the model is stuck in a loop. Response: {}",
                         response
                     );
-                    operations.push(TreeAction::AddAction {
+                    operations.push(TreeAction::AddTrajectoryAction {
                         question_id,
-                        action: RolloutAction::SystemInterrupt(
+                        action: TrajectoryAction::SystemInterrupt(
                             REPETITION_ABORT_MESSAGE.to_string(),
                         ),
                     });
@@ -884,9 +371,9 @@ async fn produce_actions_from_state(
                         !has_terminal_intervention,
                         "PlannerEndStep should not be emitted after terminal intervention"
                     );
-                    operations.push(TreeAction::AddAction {
+                    operations.push(TreeAction::AddTrajectoryAction {
                         question_id,
-                        action: RolloutAction::PlannerEndStep,
+                        action: TrajectoryAction::PlannerEndStep,
                     });
                 }
                 operations
@@ -906,12 +393,12 @@ async fn produce_actions_from_state(
             )
             .await;
             if is_context_length_exceeded_response(&response) {
-                context_length_exceeded_result(question_id, "PlannerCompactingStep")
+                context_length_exceeded_result(question_id)
             } else {
                 let (step_content_compacted, step_quality) = parse_compactor_response(response);
-                vec![TreeAction::AddAction {
+                vec![TreeAction::AddTrajectoryAction {
                     question_id,
-                    action: RolloutAction::CompactorCompactStep {
+                    action: TrajectoryAction::CompactorCompactStep {
                         step_content_compacted,
                         step_quality,
                     },
@@ -933,12 +420,12 @@ async fn produce_actions_from_state(
             )
             .await;
             if is_context_length_exceeded_response(&response) {
-                context_length_exceeded_result(question_id, "PlannerUpdatingPlan")
+                context_length_exceeded_result(question_id)
             } else {
                 let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
-                vec![TreeAction::AddAction {
+                vec![TreeAction::AddTrajectoryAction {
                     question_id,
-                    action: RolloutAction::PlannerUpdatePlan(Some(updated_plan_content)),
+                    action: TrajectoryAction::PlannerUpdatePlan(Some(updated_plan_content)),
                 }]
             }
         }
@@ -1012,7 +499,7 @@ async fn produce_actions_from_state(
 pub async fn produce_working_trajectory(
     tree: &mut Tree,
     client: &Client,
-    model: Model,
+    model: LlmModel,
     take_over_mode_decision: bool,
     rng: &mut impl rand::Rng,
     action_tx: &tokio::sync::mpsc::UnboundedSender<TreeAction>,
@@ -1157,7 +644,7 @@ pub async fn rollout(
     reference_answer: String,
     loaded_events: Vec<TreeAction>,
     client: Client,
-    model: Model,
+    model: LlmModel,
     take_over_mode_decision: bool,
     rng: &mut impl rand::Rng,
     action_tx: tokio::sync::mpsc::UnboundedSender<TreeAction>,

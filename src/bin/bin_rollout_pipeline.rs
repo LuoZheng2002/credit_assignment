@@ -11,14 +11,12 @@ use clap::Parser;
 use credit_assignment::{
     call_llm::set_vllm_port,
     datasets::{DeepMathQuestion, get_question_path},
-    deepmath::generate_raw_answers::Model,
-    multi_agent::{
-        generate_rollout_answers::{
-            RolloutTree, get_rollout_trajectory_path, get_session_log_path,
-        },
-        rollout::rollout,
-        session::TreeAction,
+    direct_answer::generate_raw_answers::LlmModel,
+    agent::{
+        state_to_actions::rollout,
+        tree::TreeAction,
     },
+    schemas::tree::{get_rollout_trajectory_path, get_session_log_path, RolloutTree},
     parallel_process_jsonl::{read_json_lines, read_json_lines_indexed, write_jsonl_file},
 };
 use futures::future::join_all;
@@ -37,7 +35,7 @@ struct Args {
     #[arg(short, long)]
     num_samples: usize,
     #[arg(value_enum, short, long)]
-    model: Model,
+    model: LlmModel,
     #[arg(long)]
     vllm_port: u16,
     #[arg(long, default_value_t = 1000)]

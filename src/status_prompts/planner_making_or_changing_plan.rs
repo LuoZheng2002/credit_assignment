@@ -1,4 +1,6 @@
-use crate::multi_agent::session::{NextStepDecision, TrajectoryState, TrajectoryStatus};
+use crate::agent::trajectory_action_types::NextStepDecision;
+use crate::agent::trajectory_state::TrajectoryState;
+use crate::agent::trajectory_status::TrajectoryStatus;
 
 fn get_planner_making_or_changing_plan_status_prompt(change_plan_reason: Option<String>) -> String {
     let header = if let Some(reason) = change_plan_reason {

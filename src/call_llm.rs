@@ -2,11 +2,11 @@ use reqwest::Client;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use crate::apply_vllm_model_chat_template::apply_vllm_model_chat_template;
-use crate::deepmath::generate_raw_answers::Model;
+use crate::direct_answer::generate_raw_answers::LlmModel;
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
 static VLLM_PORT_OVERRIDE: AtomicU16 = AtomicU16::new(0);
-pub const QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE: &str =
+pub const CONTEXT_LENGTH_EXCEEDED_RESPONSE: &str =
     "<error>QWEN_CONTEXT_LENGTH_EXCEEDED</error>";
 
 pub fn set_vllm_port(port: u16) {
@@ -31,7 +31,7 @@ fn get_vllm_raw_completions_url() -> String {
     format!("http://localhost:{}/v1/completions", get_vllm_port())
 }
 
-fn get_chat_completions_url(model: Model) -> String {
+fn get_chat_completions_url(model: LlmModel) -> String {
     if model.is_gpt() {
         OPENAI_CHAT_COMPLETIONS_URL.to_string()
     } else if model.is_qwen() {
@@ -43,7 +43,7 @@ fn get_chat_completions_url(model: Model) -> String {
 
 fn build_chat_completions_body(
     prompt: String,
-    model: Model,
+    model: LlmModel,
     passes_in_stop: bool,
 ) -> serde_json::Value {
     if model.is_qwen() {
@@ -92,7 +92,7 @@ async fn post_json(
     client: Client,
     url: &str,
     body: serde_json::Value,
-    model: Model,
+    model: LlmModel,
 ) -> reqwest::Response {
     if model.is_gpt() {
         let api_key =
@@ -112,7 +112,7 @@ async fn post_json(
 pub async fn call_llm_chat_completions(
     client: Client,
     prompt: String,
-    model: Model,
+    model: LlmModel,
     passes_in_stop: bool,
 ) -> String {
     let url = get_chat_completions_url(model);
@@ -134,7 +134,7 @@ pub async fn call_llm_chat_completions(
 pub async fn call_qwen_raw_completions(
     client: Client,
     chat_template_prompt: String,
-    model: Model,
+    model: LlmModel,
 ) -> String {
     assert!(
         model.is_qwen(),
@@ -155,7 +155,7 @@ pub async fn call_qwen_raw_completions(
             || error_message.contains("Please reduce the length of the input prompt")
             || error_message.contains("parameter=input_tokens")
         {
-            return QWEN_CONTEXT_LENGTH_EXCEEDED_RESPONSE.to_string();
+            return CONTEXT_LENGTH_EXCEEDED_RESPONSE.to_string();
         }
     }
     json["choices"][0]["text"]
@@ -168,7 +168,7 @@ pub async fn call_llm_with_prefix(
     client: Client,
     prompt_before_assistant: String,
     prompt_after_assistant: String,
-    model: Model,
+    model: LlmModel,
 ) -> String {
     if model.is_qwen() {
         let mut planner_chat_template_prompt =

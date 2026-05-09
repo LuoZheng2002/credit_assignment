@@ -5,6 +5,7 @@ use std::io::{self, BufRead, BufReader, Stdout};
 use std::path::PathBuf;
 
 use clap::Parser;
+use credit_assignment::status_prompts::universal_prompt::get_prompt_according_to_session_status;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseButton,
     MouseEvent, MouseEventKind,
@@ -25,11 +26,11 @@ use serde_json;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use credit_assignment::multi_agent::generate_rollout_answers::RolloutTree;
-use credit_assignment::multi_agent::rollout::get_prompt_according_to_session_status;
-use credit_assignment::multi_agent::session::{
-    NextStepDecision, RolloutAction, TrajectoryActionLog, TrajectoryState, Tree,
-};
+use credit_assignment::agent::trajectory_action::{TrajectoryAction, TrajectoryActionLog};
+use credit_assignment::agent::trajectory_action_types::{FinalAnswer, NextStepDecision, ToolResponse, VerifierComment};
+use credit_assignment::agent::trajectory_state::TrajectoryState;
+use credit_assignment::agent::tree::Tree;
+use credit_assignment::schemas::tree::RolloutTree;
 
 /// Command line arguments for browsing rollout session logs.
 #[derive(Parser, Debug)]
@@ -1074,7 +1075,7 @@ fn compute_wrapped_line_count(
 struct SessionView {
     answer: RolloutTree,
     model_answer: String,
-    operations: Vec<RolloutAction>,
+    operations: Vec<TrajectoryAction>,
     current_pos: usize,
     total_display_turns: usize,
     total_actual_turns: usize,
@@ -1153,7 +1154,7 @@ fn validate_tree_for_browser(tree: &Tree) {
 fn collect_root_to_node_action_sequence(
     tree: &Tree,
     selected_node_id: usize,
-) -> Vec<RolloutAction> {
+) -> Vec<TrajectoryAction> {
     assert!(
         selected_node_id < tree.nodes.len(),
         "Selected node id must exist in tree"
@@ -1171,7 +1172,7 @@ fn collect_root_to_node_action_sequence(
     }
     node_ids_from_selected_to_root.reverse();
 
-    let mut actions: Vec<RolloutAction> = Vec::new();
+    let mut actions: Vec<TrajectoryAction> = Vec::new();
     for node_id in node_ids_from_selected_to_root {
         let node = &tree.nodes[node_id];
         actions.extend(node.step.action_log.iter().cloned());
@@ -1182,14 +1183,14 @@ fn collect_root_to_node_action_sequence(
 fn validate_session_log_for_prompt_replay(
     question: &str,
     source_tree: &Tree,
-    operations: &[RolloutAction],
+    operations: &[TrajectoryAction],
 ) {
     assert!(
         !operations.is_empty(),
         "Selected root-to-node trajectory must contain at least one action"
     );
     assert!(
-        matches!(operations[0], RolloutAction::VerifierComment(_)),
+        matches!(operations[0], TrajectoryAction::VerifierComment(_)),
         "Selected trajectory must start with VerifierComment"
     );
     for prefix_len in 1..=operations.len() {
@@ -1200,35 +1201,33 @@ fn validate_session_log_for_prompt_replay(
     }
 }
 
-fn derive_node_abbreviation_from_actions(action_log: &[RolloutAction]) -> NodeAbbreviation {
-    let mut verifier_comment: Option<
-        Option<credit_assignment::multi_agent::session::VerifierComment>,
-    > = None;
+fn derive_node_abbreviation_from_actions(action_log: &[TrajectoryAction]) -> NodeAbbreviation {
+    let mut verifier_comment: Option<Option<VerifierComment>> = None;
     let mut planner_decision: Option<NextStepDecision> = None;
     let mut has_intervention = false;
 
     for action in action_log {
         match action {
-            RolloutAction::VerifierComment(comment) => {
+            TrajectoryAction::VerifierComment(comment) => {
                 assert!(
                     verifier_comment.is_none(),
                     "Each node action log must contain exactly one VerifierComment"
                 );
                 verifier_comment = Some(comment.clone());
             }
-            RolloutAction::PlannerDecideNextStep(mode) => {
+            TrajectoryAction::PlannerDecideNextStep(mode) => {
                 assert!(
                     planner_decision.is_none(),
                     "Each node action log must contain at most one PlannerDecideNextStep"
                 );
                 planner_decision = Some(mode.clone());
             }
-            RolloutAction::ToolCallResponse(
-                credit_assignment::multi_agent::session::ToolResponse::EmptyMessageHint,
+            TrajectoryAction::ToolCallResponse(
+                ToolResponse::EmptyMessageHint,
             ) => {
                 has_intervention = true;
             }
-            RolloutAction::SystemInterrupt(_) => {
+            TrajectoryAction::SystemInterrupt(_) => {
                 has_intervention = true;
             }
             _ => {}
@@ -1247,7 +1246,7 @@ fn derive_node_abbreviation_from_actions(action_log: &[RolloutAction]) -> NodeAb
             has_intervention
                 || action_log
                     .iter()
-                    .any(|action| matches!(action, RolloutAction::PlannerMakeOrChangePlan(_))),
+                    .any(|action| matches!(action, TrajectoryAction::PlannerMakeOrChangePlan(_))),
             "Missing PlannerDecideNextStep requires intervention or downstream planner actions"
         );
         return match verifier_comment {
@@ -1529,10 +1528,10 @@ fn slice_line_from_char_offset(line: &str, offset: usize) -> String {
     line.chars().skip(offset).collect::<String>()
 }
 
-fn count_display_turns(operations: &[RolloutAction]) -> usize {
+fn count_display_turns(operations: &[TrajectoryAction]) -> usize {
     operations
         .iter()
-        .filter(|action| matches!(action, RolloutAction::PlannerEndStep))
+        .filter(|action| matches!(action, TrajectoryAction::PlannerEndStep))
         .count()
 }
 
@@ -1606,10 +1605,8 @@ impl SessionView {
             .model_answer
             .clone();
         let model_answer = match model_answer {
-            credit_assignment::multi_agent::session::types::FinalAnswer::ModelProvided(answer) => {
-                answer
-            }
-            credit_assignment::multi_agent::session::types::FinalAnswer::Failure(answer) => answer,
+            FinalAnswer::ModelProvided(answer) => answer,
+            FinalAnswer::Failure(answer) => answer,
         };
         let total_display_turns = count_display_turns(&operations);
         let total_actual_turns = total_display_turns;

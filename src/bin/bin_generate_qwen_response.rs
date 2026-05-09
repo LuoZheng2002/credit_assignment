@@ -1,6 +1,6 @@
 use clap::Parser;
 use credit_assignment::apply_vllm_model_chat_template::apply_vllm_model_chat_template;
-use credit_assignment::deepmath::generate_raw_answers::Model;
+use credit_assignment::direct_answer::generate_raw_answers::LlmModel;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -29,12 +29,12 @@ async fn main() {
         serde_json::from_str(&file_content).expect("Failed to parse JSON");
     let client = reqwest::Client::new();
     let mut chat_template_prompt =
-        apply_vllm_model_chat_template(Model::Qwen25_7b, &qwen_request.prompt, false);
+        apply_vllm_model_chat_template(LlmModel::Qwen25_7b, &qwen_request.prompt, false);
     chat_template_prompt += &qwen_request.synthesized_response_prefix;
     let result = credit_assignment::call_llm::call_qwen_raw_completions(
         client,
         chat_template_prompt,
-        Model::Qwen25_7b,
+        LlmModel::Qwen25_7b,
     )
     .await;
     println!("Qwen response:\n{}", result);

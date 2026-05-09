@@ -1,4 +1,4 @@
-use crate::deepmath::generate_raw_answers::{AnswerRaw, Model, get_raw_answer_path};
+use crate::direct_answer::generate_raw_answers::{AnswerRaw, LlmModel, get_raw_answer_path};
 use crate::parallel_process_jsonl::{HasId, parallel_process_jsonl};
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +17,7 @@ impl HasId for AnswerParsed {
 }
 
 pub fn get_parsed_path(
-    model: Model,
+    model: LlmModel,
     dataset_name: &str,
     num_samples: usize,
     is_rollout: bool,
@@ -78,7 +78,7 @@ async fn parse_model_answer_task(answer: AnswerRaw) -> AnswerParsed {
     }
 }
 
-pub async fn parse_answers(model: Model, dataset_name: &str, num_samples: usize) {
+pub async fn parse_answers(model: LlmModel, dataset_name: &str, num_samples: usize) {
     println!(
         "Parsing model answers for model {} on {} dataset with {} samples",
         model.cli_name(),

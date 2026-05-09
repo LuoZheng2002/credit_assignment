@@ -2,7 +2,7 @@ use std::{ffi::CString, time::Duration};
 
 use pyo3::{prelude::*, types::PyDict};
 
-use crate::multi_agent::session::ToolResponse;
+use crate::agent::trajectory_action_types::ToolResponse;
 
 fn blocking_python_code_task(code: String) -> PyResult<String> {
     Python::attach(|py| -> PyResult<String> {

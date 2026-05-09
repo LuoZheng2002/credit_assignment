@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     call_llm::call_llm_chat_completions,
-    deepmath::{
-        generate_raw_answers::Model,
+    direct_answer::{
+        generate_raw_answers::LlmModel,
         parse_answers::{AnswerParsed, get_parsed_path},
     },
     parallel_process_jsonl::{HasId, parallel_process_jsonl, read_json_lines_indexed},
@@ -27,7 +27,7 @@ impl HasId for DeepMathCorrectness {
 }
 
 pub fn get_correctness_path(
-    model: Model,
+    model: LlmModel,
     dataset_name: &str,
     num_samples: usize,
     is_rollout: bool,
@@ -50,7 +50,7 @@ pub fn get_correctness_path(
 }
 
 pub fn get_accuracy_path(
-    model: Model,
+    model: LlmModel,
     dataset_name: &str,
     num_samples: usize,
     is_rollout: bool,
@@ -91,7 +91,7 @@ The question is: \"{}\". \
 The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
         question, model_answer, correct_answer
     );
-    let evaluation = call_llm_chat_completions(client, prompt, Model::Gpt4o, false)
+    let evaluation = call_llm_chat_completions(client, prompt, LlmModel::Gpt4o, false)
         .await
         .trim()
         .to_lowercase();
@@ -106,7 +106,7 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
 }
 
 pub async fn judge_answers(
-    model: Model,
+    model: LlmModel,
     dataset_name: &str,
     num_samples: usize,
     client: Client,

@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     call_llm::call_llm_chat_completions,
-    deepmath::{
+    direct_answer::{
         generate_concise_reasoning::{DeepMathConciseReasoning, get_concise_reasoning_path},
-        generate_raw_answers::{AnswerRaw, Model, get_raw_answer_path},
+        generate_raw_answers::{AnswerRaw, LlmModel, get_raw_answer_path},
         judge_answers::{DeepMathCorrectness, get_correctness_path},
     },
     parallel_process_jsonl::{HasId, parallel_process_jsonl},
@@ -44,7 +44,7 @@ impl HasId for DeepMathErrorCause {
 }
 
 pub fn get_error_causes_path(
-    model: Model,
+    model: LlmModel,
     dataset_name: &str,
     num_samples: usize,
     is_rollout: bool,
@@ -88,7 +88,7 @@ Question: {}\nModel's Reasoning: {}\nReference Reasoning: {}\nError Cause Analys
         correctness_reasoning.model_reasoning,
         correctness_reasoning.reference_reasoning
     );
-    let error_reason = call_llm_chat_completions(client, prompt, Model::Gpt5Mini, false).await;
+    let error_reason = call_llm_chat_completions(client, prompt, LlmModel::Gpt5Mini, false).await;
     DeepMathErrorCause {
         id: correctness_reasoning.id,
         correct: correctness_reasoning.correct,
@@ -99,7 +99,7 @@ Question: {}\nModel's Reasoning: {}\nReference Reasoning: {}\nError Cause Analys
 }
 
 pub async fn generate_error_causes(
-    model: Model,
+    model: LlmModel,
     dataset_name: &str,
     num_samples: usize,
     client: Client,

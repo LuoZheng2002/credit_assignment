@@ -7,7 +7,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 #[derive(clap::ValueEnum, Clone, Debug, Copy)]
-pub enum Model {
+pub enum LlmModel {
     #[value(name = "gpt-4o")]
     Gpt4o,
     #[value(name = "gpt-5-mini")]
@@ -22,40 +22,40 @@ pub enum Model {
     Qwen35_4b,
 }
 
-impl Model {
+impl LlmModel {
     pub fn cli_name(&self) -> &'static str {
         match self {
-            Model::Gpt4o => "gpt-4o",
-            Model::Gpt5Mini => "gpt-5-mini",
-            Model::Qwen25_7b => "qwen2.5-7b",
-            Model::Qwen3_4b => "qwen3-4b",
-            Model::Qwen3_8b => "qwen3-8b",
-            Model::Qwen35_4b => "qwen3.5-4b",
+            LlmModel::Gpt4o => "gpt-4o",
+            LlmModel::Gpt5Mini => "gpt-5-mini",
+            LlmModel::Qwen25_7b => "qwen2.5-7b",
+            LlmModel::Qwen3_4b => "qwen3-4b",
+            LlmModel::Qwen3_8b => "qwen3-8b",
+            LlmModel::Qwen35_4b => "qwen3.5-4b",
         }
     }
 
     pub fn api_name(&self) -> &'static str {
         match self {
-            Model::Gpt4o => "gpt-4o",
-            Model::Gpt5Mini => "gpt-5-mini",
-            Model::Qwen25_7b => "Qwen/Qwen2.5-7B-Instruct",
-            Model::Qwen3_4b => "Qwen/Qwen3-4B",
-            Model::Qwen3_8b => "Qwen/Qwen3-8B",
-            Model::Qwen35_4b => "Qwen/Qwen3.5-4B",
+            LlmModel::Gpt4o => "gpt-4o",
+            LlmModel::Gpt5Mini => "gpt-5-mini",
+            LlmModel::Qwen25_7b => "Qwen/Qwen2.5-7B-Instruct",
+            LlmModel::Qwen3_4b => "Qwen/Qwen3-4B",
+            LlmModel::Qwen3_8b => "Qwen/Qwen3-8B",
+            LlmModel::Qwen35_4b => "Qwen/Qwen3.5-4B",
         }
     }
 
     pub fn is_qwen(&self) -> bool {
         match self {
-            Model::Qwen25_7b | Model::Qwen3_4b | Model::Qwen3_8b | Model::Qwen35_4b => true,
-            Model::Gpt4o | Model::Gpt5Mini => false,
+            LlmModel::Qwen25_7b | LlmModel::Qwen3_4b | LlmModel::Qwen3_8b | LlmModel::Qwen35_4b => true,
+            LlmModel::Gpt4o | LlmModel::Gpt5Mini => false,
         }
     }
 
     pub fn is_gpt(&self) -> bool {
         match self {
-            Model::Gpt4o | Model::Gpt5Mini => true,
-            Model::Qwen25_7b | Model::Qwen3_4b | Model::Qwen3_8b | Model::Qwen35_4b => false,
+            LlmModel::Gpt4o | LlmModel::Gpt5Mini => true,
+            LlmModel::Qwen25_7b | LlmModel::Qwen3_4b | LlmModel::Qwen3_8b | LlmModel::Qwen35_4b => false,
         }
     }
 }
@@ -74,7 +74,7 @@ impl HasId for AnswerRaw {
     }
 }
 
-pub fn get_raw_answer_path(model: Model, dataset_name: &str, num_samples: usize) -> String {
+pub fn get_raw_answer_path(model: LlmModel, dataset_name: &str, num_samples: usize) -> String {
     format!(
         "results/{}/{}_raw_{}.jsonl",
         model.cli_name(),
@@ -86,7 +86,7 @@ pub fn get_raw_answer_path(model: Model, dataset_name: &str, num_samples: usize)
 async fn generate_raw_answer_task(
     question: DeepMathQuestion,
     client: Client,
-    model: Model,
+    model: LlmModel,
 ) -> AnswerRaw {
     let prompt = format!(
         "Please answer the following question by first reasoning and then putting the final short answer in \\boxed{{}}. Question: {}",
@@ -105,7 +105,7 @@ pub async fn generate_raw_answers(
     dataset_name: &str,
     num_samples: usize,
     client: Client,
-    model: Model,
+    model: LlmModel,
 ) {
     let questions_path = get_question_path(dataset_name, num_samples);
     let raw_output_path = get_raw_answer_path(model, dataset_name, num_samples);

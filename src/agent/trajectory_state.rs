@@ -1,14 +1,15 @@
 use core::panic;
 
-use crate::multi_agent::session::types::FinalAnswer;
+use crate::agent::tree::Tree;
 
-use super::actions::{RolloutAction, ToolResponse, TrajectoryActionLog};
-use super::constants::{
-    MAX_ACTIONS_PER_STEP, MAX_PLAN_CHANGES, MAX_STEP_OVERWRITE_STREAK, MAX_TOTAL_STEP_OVERWRITES,
+use super::trajectory_action::{TrajectoryAction, TrajectoryActionLog};
+use super::trajectory_action_types::{
+    CompletedStep, FailedAttempt, MakeOrChangePlan, NextStepDecision, ToolResponse,
 };
-use super::tree::Tree;
-use super::types::{
-    CompletedStep, FailedAttempt, MakeOrChangePlan, NextStepDecision, TrajectoryStatus,
+use super::trajectory_status::TrajectoryStatus;
+use crate::agent::trajectory_action_types::FinalAnswer;
+use crate::constants::{
+    MAX_ACTIONS_PER_STEP, MAX_PLAN_CHANGES, MAX_STEP_OVERWRITE_STREAK, MAX_TOTAL_STEP_OVERWRITES,
 };
 
 #[derive(Debug, Clone)]
@@ -16,11 +17,8 @@ pub struct TrajectoryState<'a> {
     pub source_tree: &'a Tree,
     pub question: String,
     pub prev_steps: Vec<CompletedStep>,
-    // pub current_step_content_raw: String,
-    // pub current_step_content_compacted: Option<String>,
     pub current_plan: Option<String>,
     pub status: TrajectoryStatus,
-    // pub planner_chosen_mode: Option<NextStepDecision>,
     pub failed_attempts: Vec<FailedAttempt>,
     // limit stats
     pub num_plan_changes: usize,
@@ -103,7 +101,7 @@ impl<'a> TrajectoryState<'a> {
         );
         node_ids_from_current_to_root.reverse();
 
-        let mut actions: Vec<RolloutAction> = Vec::new();
+        let mut actions: Vec<TrajectoryAction> = Vec::new();
         for node_id in node_ids_from_current_to_root {
             let node = tree
                 .nodes
@@ -138,17 +136,17 @@ impl<'a> TrajectoryState<'a> {
         MAX_ACTIONS_PER_STEP - self.current_step_num_actions
     }
 
-    pub fn update(&mut self, operation: RolloutAction) {
+    pub fn update(&mut self, operation: TrajectoryAction) {
         self.total_actions += 1;
         match &operation {
-            RolloutAction::StartNewStep => {
+            TrajectoryAction::StartNewStep => {
                 assert!(
                     matches!(self.status, TrajectoryStatus::StepEnded),
                     "StartNewStep can only be called after StepEnded status"
                 );
                 self.status = TrajectoryStatus::VerifierCommenting;
             }
-            RolloutAction::VerifierComment(verifier_comment) => {
+            TrajectoryAction::VerifierComment(verifier_comment) => {
                 assert_eq!(
                     self.status,
                     TrajectoryStatus::VerifierCommenting,
@@ -158,7 +156,7 @@ impl<'a> TrajectoryState<'a> {
                     verifier_comment: verifier_comment.clone(),
                 };
             }
-            RolloutAction::PlannerDecideNextStep(mode) => {
+            TrajectoryAction::PlannerDecideNextStep(mode) => {
                 let TrajectoryStatus::PlannerChoosingMode { verifier_comment } =
                     self.status.clone()
                 else {
@@ -192,7 +190,7 @@ impl<'a> TrajectoryState<'a> {
                     verifier_comment,
                 };
             }
-            RolloutAction::PlannerMakeOrChangePlan(plan) => {
+            TrajectoryAction::PlannerMakeOrChangePlan(plan) => {
                 let TrajectoryStatus::PlannerMakingOrChangingPlan {
                     planner_chosen_mode,
                     verifier_comment,
@@ -264,7 +262,7 @@ impl<'a> TrajectoryState<'a> {
                 };
             }
 
-            RolloutAction::PlannerReasoning { reasoning } => {
+            TrajectoryAction::PlannerReasoning { reasoning } => {
                 assert!(
                     self.can_take_action_in_current_step(),
                     "Exceed maximum number of actions in the current step"
@@ -282,7 +280,7 @@ impl<'a> TrajectoryState<'a> {
                 self.current_step_num_actions += 1;
                 step_content_raw.push_str(&reasoning);
             }
-            RolloutAction::PlannerToolCall(tool_call) => {
+            TrajectoryAction::PlannerToolCall(tool_call) => {
                 assert!(
                     self.can_take_action_in_current_step(),
                     "Exceed maximum number of actions in the current step"
@@ -300,7 +298,7 @@ impl<'a> TrajectoryState<'a> {
                 self.current_step_num_actions += 1;
                 step_content_raw.push_str(&tool_call);
             }
-            RolloutAction::ToolCallResponse(tool_response) => {
+            TrajectoryAction::ToolCallResponse(tool_response) => {
                 assert!(
                     self.can_take_action_in_current_step(),
                     "Exceed maximum number of actions in the current step"
@@ -327,7 +325,7 @@ impl<'a> TrajectoryState<'a> {
                 }
                 step_content_raw.push_str(&tool_response.to_raw_content());
             }
-            RolloutAction::SystemInterrupt(content) => {
+            TrajectoryAction::SystemInterrupt(content) => {
                 let TrajectoryStatus::PlannerWorkingOnStep {
                     planner_chosen_mode,
                     verifier_comment: _,
@@ -344,7 +342,7 @@ impl<'a> TrajectoryState<'a> {
                     step_content_raw,
                 };
             }
-            RolloutAction::PlannerEndStep => {
+            TrajectoryAction::PlannerEndStep => {
                 let TrajectoryStatus::PlannerWorkingOnStep {
                     planner_chosen_mode,
                     verifier_comment: _,
@@ -360,7 +358,7 @@ impl<'a> TrajectoryState<'a> {
                     step_content_raw,
                 };
             }
-            RolloutAction::CompactorCompactStep {
+            TrajectoryAction::CompactorCompactStep {
                 step_content_compacted,
                 step_quality: _,
             } => {
@@ -379,7 +377,7 @@ impl<'a> TrajectoryState<'a> {
                     step_content_compacted: step_content_compacted.clone(),
                 };
             }
-            RolloutAction::PlannerUpdatePlan(updated_plan) => {
+            TrajectoryAction::PlannerUpdatePlan(updated_plan) => {
                 let TrajectoryStatus::PlannerUpdatingPlan {
                     planner_chosen_mode,
                     step_content_raw,
@@ -415,7 +413,7 @@ impl<'a> TrajectoryState<'a> {
                     self.status = TrajectoryStatus::StepEnded;
                 }
             }
-            RolloutAction::SubmitFinalAnswer(answer) => {
+            TrajectoryAction::SubmitFinalAnswer(answer) => {
                 assert!(
                     self.final_answer.is_none(),
                     "Final answer has already been submitted, cannot submit again"
@@ -426,18 +424,6 @@ impl<'a> TrajectoryState<'a> {
     }
 
     pub fn to_history_prev_steps(&self) -> String {
-        // let (planner_turn, making_plan) = match self.status {
-        //     TrajectoryStatus::VerifierCommenting => (false, false),
-        //     TrajectoryStatus::PlannerChoosingMode { .. } => (true, false),
-        //     TrajectoryStatus::PlannerMakingOrChangingPlan { .. } => {
-        //         (true, self.current_plan.is_none())
-        //     }
-        //     TrajectoryStatus::PlannerWorkingOnStep { .. } => (true, false),
-        //     TrajectoryStatus::CompactorCompactingStep { .. } => (false, false),
-        //     TrajectoryStatus::PlannerUpdatingPlan { .. } => (false, false),
-        //     TrajectoryStatus::StepEnded => (false, false),
-        //     TrajectoryStatus::SessionEnded { .. } => (false, false),
-        // };
         let making_plan = matches!(
             self.status,
             TrajectoryStatus::PlannerMakingOrChangingPlan { .. }

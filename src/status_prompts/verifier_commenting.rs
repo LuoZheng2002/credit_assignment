@@ -1,4 +1,5 @@
-use crate::multi_agent::session::{TrajectoryState, TrajectoryStatus};
+use crate::agent::trajectory_state::TrajectoryState;
+use crate::agent::trajectory_status::TrajectoryStatus;
 
 fn get_verifier_commenting_prompt_before_assistant(session_state: &TrajectoryState<'_>) -> String {
     assert!(matches!(

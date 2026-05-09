@@ -1,6 +1,5 @@
 use crate::{
-    deepmath::generate_raw_answers::Model, multi_agent::session::Tree,
-    parallel_process_jsonl::HasId,
+    agent::tree::Tree, direct_answer::generate_raw_answers::LlmModel, parallel_process_jsonl::HasId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +35,7 @@ impl HasId for RolloutTree {
     }
 }
 
-pub fn get_rollout_trajectory_path(model: Model, dataset_name: &str, num_samples: usize) -> String {
+pub fn get_rollout_trajectory_path(model: LlmModel, dataset_name: &str, num_samples: usize) -> String {
     format!(
         "results/{}/rollout/{}_trajectory_{}.jsonl",
         model.cli_name(),
@@ -45,7 +44,7 @@ pub fn get_rollout_trajectory_path(model: Model, dataset_name: &str, num_samples
     )
 }
 
-pub fn get_session_log_path(model: Model, dataset_name: &str, num_samples: usize) -> String {
+pub fn get_session_log_path(model: LlmModel, dataset_name: &str, num_samples: usize) -> String {
     format!(
         "results/{}/rollout/{}_session_log_{}.jsonl",
         model.cli_name(),

@@ -1,7 +1,7 @@
 use clap::Parser;
-use credit_assignment::deepmath::{
+use credit_assignment::direct_answer::{
     generate_error_causes::generate_error_causes,
-    generate_raw_answers::{Model, generate_raw_answers},
+    generate_raw_answers::{LlmModel, generate_raw_answers},
     judge_answers::judge_answers,
     parse_answers::parse_answers,
 };
@@ -15,7 +15,7 @@ struct Args {
     #[arg(short, long)]
     num_samples: usize,
     #[arg(value_enum, short, long)]
-    model: Model,
+    model: LlmModel,
 }
 
 #[tokio::main]

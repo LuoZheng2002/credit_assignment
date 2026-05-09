@@ -1,19 +1,22 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::multi_agent::generate_rollout_answers::{CountRatio, StepQualityRatio};
-use crate::multi_agent::session::types::FinalAnswer;
+// use crate::direct_answer::generate_rollout_answers::{CountRatio, StepQualityRatio};
+use crate::agent::trajectory_action_types::FinalAnswer;
+use crate::schemas::tree::{CountRatio, StepQualityRatio};
 
-use super::actions::{RolloutAction, TrajectoryActionLog};
+use crate::agent::trajectory_action::{TrajectoryAction, TrajectoryActionLog};
 
-use super::types::{NextStepDecision, StepQuality, VerifierAndModeSummary};
+use crate::agent::trajectory_action_types::{
+    NextStepDecision, StepQuality, VerifierAndModeSummary,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Step {
     // pub verifier_and_mode_summary: Option<VerifierAndModeSummary>,
     // pub step_finalized: bool,
     // pub step_quality: Option<StepQuality>,
-    pub action_log: Vec<RolloutAction>,
+    pub action_log: Vec<TrajectoryAction>,
 }
 
 impl Step {
@@ -22,7 +25,7 @@ impl Step {
             .action_log
             .iter()
             .find_map(|action| match action {
-                RolloutAction::CompactorCompactStep { step_quality, .. } => {
+                TrajectoryAction::CompactorCompactStep { step_quality, .. } => {
                     Some(step_quality.clone())
                 }
                 _ => None,
@@ -35,7 +38,7 @@ impl Step {
             .action_log
             .iter()
             .find_map(|action| match action {
-                RolloutAction::PlannerDecideNextStep(mode) => Some(mode.clone()),
+                TrajectoryAction::PlannerDecideNextStep(mode) => Some(mode.clone()),
                 _ => None,
             })
             .expect("When getting verifier and mode summary, the action log must have a PlannerDecideNextStep action");
@@ -43,7 +46,7 @@ impl Step {
             .action_log
             .iter()
             .find_map(|action| match action {
-                RolloutAction::VerifierComment(comment) => Some(comment.clone()),
+                TrajectoryAction::VerifierComment(comment) => Some(comment.clone()),
                 _ => None,
             })
             .expect("When getting verifier and mode summary, the action log must have a VerifierComment action");
@@ -61,7 +64,7 @@ impl Step {
     pub fn step_finalized(&self) -> bool {
         self.action_log
             .iter()
-            .find(|action| matches!(action, RolloutAction::StartNewStep))
+            .find(|action| matches!(action, TrajectoryAction::StartNewStep))
             .is_some()
     }
 }
@@ -138,9 +141,9 @@ pub enum TreeAction {
         question_id: usize,
         node_id: usize,
     },
-    AddAction {
+    AddTrajectoryAction {
         question_id: usize,
-        action: RolloutAction,
+        action: TrajectoryAction,
     },
     RegisterLeaf {
         question_id: usize,
@@ -167,7 +170,7 @@ impl TreeAction {
         match self {
             TreeAction::CreateNode { question_id, .. } => *question_id,
             TreeAction::SetCurrentNode { question_id, .. } => *question_id,
-            TreeAction::AddAction { question_id, .. } => *question_id,
+            TreeAction::AddTrajectoryAction { question_id, .. } => *question_id,
             TreeAction::RegisterLeaf { question_id, .. } => *question_id,
             TreeAction::JudgeLeafCorrectness { question_id, .. } => *question_id,
             TreeAction::ToolWaitViolation { question_id } => *question_id,
@@ -199,7 +202,7 @@ impl Tree {
         }
     }
 
-    pub fn append_action_to_current_node(&mut self, action: RolloutAction) {
+    pub fn append_action_to_current_node(&mut self, action: TrajectoryAction) {
         let current_node = self
             .get_current_node_mut()
             .expect("AddAction requires current_node_id to be set and exist in nodes");
@@ -274,7 +277,7 @@ impl Tree {
             TreeAction::SetCurrentNode { node_id, .. } => {
                 self.set_current_node_by_id(node_id);
             }
-            TreeAction::AddAction { action, .. } => {
+            TreeAction::AddTrajectoryAction { action, .. } => {
                 self.append_action_to_current_node(action);
             }
             TreeAction::RegisterLeaf { node_id, .. } => {

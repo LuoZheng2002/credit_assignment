@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::types::VerifierAndModeSummary;
+use crate::agent::trajectory_action_types::VerifierAndModeSummary;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LeafLabel {
