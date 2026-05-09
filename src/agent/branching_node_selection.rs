@@ -70,11 +70,11 @@ pub fn determine_branching_node(tree: &Tree, rng: &mut impl rand::Rng) -> Option
             candidate_weights.push(weight);
         }
     }
-    println!(
-        "Found {} candidate branching nodes with weights: {:?}",
-        candidate_node_ids.len(),
-        candidate_weights
-    );
+    // println!(
+    //     "Found {} candidate branching nodes with weights: {:?}",
+    //     candidate_node_ids.len(),
+    //     candidate_weights
+    // );
     while !candidate_node_ids.is_empty() {
         let weighted_index = WeightedIndex::new(&candidate_weights)
             .expect("WeightedIndex construction should succeed with positive candidate weights");
@@ -124,10 +124,6 @@ pub fn determine_branching_node(tree: &Tree, rng: &mut impl rand::Rng) -> Option
                 // this node has both verifier on and off children, we skip it and resample
                 candidate_node_ids.swap_remove(sampled_candidate_index);
                 candidate_weights.swap_remove(sampled_candidate_index);
-                println!(
-                    "Candidate branching node {} has both verifier on and off children, skipping it for branching node selection.",
-                    selected_node_id
-                );
                 continue;
             }
             (true, false) | (false, true) => {

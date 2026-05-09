@@ -299,7 +299,7 @@ pub async fn produce_actions_from_state(
                     );
                 }
                 let (reasoning, tool_call, tool_wait_violation) =
-                    split_reasoning_and_tool_call(response.clone(), model);
+                    split_reasoning_and_tool_call(response.clone());
                 let mut push_end_step = false;
                 let mut has_terminal_intervention = false;
 
@@ -467,7 +467,7 @@ pub async fn produce_actions_from_state(
                     context_length_exceeded_result(question_id)
                 } else {
                     let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
-                    println!("Updated plan content: {}", updated_plan_content);
+                    // println!("Updated plan content: {}", updated_plan_content);
                     vec![TreeAction::AddTrajectoryAction {
                         question_id,
                         action: TrajectoryAction::PlannerUpdatePlan(Some(updated_plan_content)),

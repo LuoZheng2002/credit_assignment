@@ -17,7 +17,6 @@ use crate::{
 // (Option<String>, Option<String>) means (reasoning, tool_call)
 pub fn split_reasoning_and_tool_call(
     response: String,
-    model: LlmModel,
 ) -> (Option<String>, Option<String>, bool) {
     let parsers: Vec<Box<dyn ToolCallParser>> = vec![Box::new(MarkdownPythonParser {})];
     let mut min_start_position = None;
@@ -282,12 +281,13 @@ pub async fn determine_chosen_mode(
                         )
                     }
                 } else if comment.overwrite {
-                    if rng.random::<f32>() < 0.5 {
-                        NextStepDecision::Continue
-                    } else {
+                    if session_state.can_overwrite_step() && rng.random::<f32>() < 0.5 {
                         NextStepDecision::OverwriteLastStep(
                             "Please refer to the verifier's comment.".to_string(),
                         )
+                    } else {
+                        println!("[Warning] Overwrite last step is capped or not chosen by RNG.");
+                        NextStepDecision::Continue
                     }
                 } else {
                     NextStepDecision::Continue
