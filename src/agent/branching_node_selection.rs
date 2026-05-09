@@ -104,9 +104,19 @@ pub fn determine_branching_node(tree: &Tree, rng: &mut impl rand::Rng) -> Option
                 VerifierAndModeSummary::VerifierOn { .. }
                 | VerifierAndModeSummary::VerifierOnAndChangePlan { .. }
                 | VerifierAndModeSummary::VerifierOnAndOverwriteLastStep { .. } => {
-                    has_verifier_on_child = true
+                    assert!(
+                        !has_verifier_on_child,
+                        "A branching node should not have more than one verifier on child"
+                    );
+                    has_verifier_on_child = true;
                 }
-                VerifierAndModeSummary::VerifierOff => has_verifier_off_child = true,
+                VerifierAndModeSummary::VerifierOff => {
+                    assert!(
+                        !has_verifier_off_child,
+                        "A branching node should not have more than one verifier off child"
+                    );
+                    has_verifier_off_child = true;
+                }
             }
         }
         match (has_verifier_on_child, has_verifier_off_child) {
@@ -114,7 +124,8 @@ pub fn determine_branching_node(tree: &Tree, rng: &mut impl rand::Rng) -> Option
                 // this node has both verifier on and off children, we skip it and resample
                 candidate_node_ids.swap_remove(sampled_candidate_index);
                 candidate_weights.swap_remove(sampled_candidate_index);
-                println!("Candidate branching node {} has both verifier on and off children, skipping it for branching node selection.",
+                println!(
+                    "Candidate branching node {} has both verifier on and off children, skipping it for branching node selection.",
                     selected_node_id
                 );
                 continue;

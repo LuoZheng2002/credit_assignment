@@ -285,7 +285,6 @@ impl Tree {
                 self.tool_wait_violations += 1;
             }
             TreeAction::TreeComplete { question_id: _ } => {
-                panic!("before completed");
                 self.completed = true;
             }
         }

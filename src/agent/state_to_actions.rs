@@ -123,38 +123,33 @@ pub async fn produce_actions_from_state(
             actions
         }
         TrajectoryStatus::VerifierCommenting => {
-            let parent_id = session_state
+            let current_node = session_state
                 .source_tree
                 .get_current_node()
-                .expect("VerifierCommenting current node must exist")
-                .node_id;
-            let verifier_on = if parent_id == tree.root_node_id.unwrap() {
-                false
-            } else {
-                let parent_node = tree.get_node_by_id(parent_id);
-                assert!(
-                    parent_node.child_ids[0].is_none() || parent_node.child_ids[1].is_none(),
-                    "VerifierCommenting parent already has both children assigned"
-                );
-                let existing_verifier_on = parent_node.child_ids.iter().find_map(|id| {
-                    let Some(id) = id else {
-                        return None;
-                    };
-                    let other_child = tree.get_node_by_id(*id);
-                    // println!("1");
-                    println!(
-                        "parent node id: {}, other child node id: {}",
-                        parent_id, other_child.node_id
-                    );
-                    let verifier_and_mode = other_child.step.verifier_and_mode_summary();
-                    match &verifier_and_mode {
-                        VerifierAndModeSummary::VerifierOff => Some(false),
-                        _ => Some(true),
-                    }
-                });
-                existing_verifier_on
-                    .and_then(|v| Some(!v))
-                    .unwrap_or_else(|| rng.random::<f32>() < 0.5)
+                .expect("VerifierCommenting current node must exist");
+            let current_node_id = current_node.node_id;
+            let verifier_on = match current_node.parent_id {
+                None => false,
+                Some(parent_id) => {
+                    let parent_node = tree.get_node_by_id(parent_id);
+                    let sibling_id = parent_node
+                        .child_ids
+                        .iter()
+                        .copied()
+                        .flatten()
+                        .find(|id| *id != current_node_id);
+                    let existing_verifier_on = sibling_id.map(|id| {
+                        let sibling_node = tree.get_node_by_id(id);
+                        let verifier_and_mode = sibling_node.step.verifier_and_mode_summary();
+                        match verifier_and_mode {
+                            VerifierAndModeSummary::VerifierOff => false,
+                            _ => true,
+                        }
+                    });
+                    existing_verifier_on
+                        .map(|v| !v)
+                        .unwrap_or_else(|| rng.random::<f32>() < 0.5)
+                }
             };
 
             let actions = if verifier_on {
@@ -548,15 +543,16 @@ pub async fn produce_actions_from_state(
                 !tree.leaf_node_judgments.contains_key(&leaf_node_id),
                 "The leaf node for the trajectory should not have been judged yet"
             );
-            // finalize current step
-            actions.push(TreeAction::AddTrajectoryAction {
-                question_id,
-                action: TrajectoryAction::StartNewStep, // set the trajectory status to verifier commenting, finalize the old step node
-            });
-            // register leaf and judge correctness
             actions.push(register_leaf_action);
             actions.push(judge_leaf_correctness_event);
-            // then we need to decide if we want to finalize the tree or branch from a node
+            actions.push(TreeAction::AddTrajectoryAction {
+                question_id,
+                action: TrajectoryAction::StartDeterminingBranchingNode,
+            });
+            actions
+        }
+        TrajectoryStatus::DeterminingBranchingNode => {
+            let mut actions = Vec::new();
             let branching_node = determine_branching_node(tree, rng);
             match branching_node {
                 Some(branching_node) => {

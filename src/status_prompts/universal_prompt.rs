@@ -44,6 +44,7 @@ pub fn get_prompt_according_to_session_status(
         TrajectoryStatus::VerifierCommenting => get_verifier_commenting_prompts(session_state),
         // TrajectoryStatus::Empty        | 
         TrajectoryStatus::StepEnded
-        | TrajectoryStatus::TrajectoryEnded { .. } => (String::new(), String::new()),
+        | TrajectoryStatus::TrajectoryEnded { .. }
+        | TrajectoryStatus::DeterminingBranchingNode => (String::new(), String::new()),
     }
 }

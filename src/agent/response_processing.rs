@@ -62,9 +62,9 @@ pub fn split_reasoning_and_tool_call(
         tool_call.push_str("</tool_wait>");
     } else {
         tool_wait_violation = true;
-        if model.is_qwen() {
-            println!("Warning: tool call does not end with </tool_wait> tag.");
-        }
+
+        println!("Warning: tool call does not end with </tool_wait> tag.");
+
         tool_call.push_str("</tool_wait>"); // if there is no </tool_wait> tag, we also add it and trim all the content after the tool call
     }
     let reasoning = if !response[..start_position].trim().is_empty() {

@@ -31,6 +31,7 @@ pub enum TrajectoryStatus {
     TrajectoryEnded {
         final_answer: FinalAnswer,
     },
+    DeterminingBranchingNode,
 }
 
 impl TrajectoryStatus {

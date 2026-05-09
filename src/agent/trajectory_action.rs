@@ -26,6 +26,8 @@ pub enum TrajectoryAction {
     SubmitFinalAnswer(FinalAnswer),
     // for setting the trajectory state to begin step state, and for marking the end of a step in action_log
     StartNewStep,
+    // for splitting leaf registration from branching-node selection after a trajectory ends
+    StartDeterminingBranchingNode,
     // Special action that force terminates the current step
     SystemInterrupt(String),
 }
@@ -71,6 +73,9 @@ impl TrajectoryAction {
                 format!("[SystemInterruptStep]:\n{}", reason)
             }
             TrajectoryAction::StartNewStep => "[StartNewStep]".to_string(),
+            TrajectoryAction::StartDeterminingBranchingNode => {
+                "[StartDeterminingBranchingNode]".to_string()
+            }
         }
     }
 
@@ -90,6 +95,9 @@ impl TrajectoryAction {
             TrajectoryAction::SubmitFinalAnswer(_final_answer) => "[SubmitFinalAnswer]".to_string(),
             TrajectoryAction::SystemInterrupt(_reason) => "[SystemInterruptStep]".to_string(),
             TrajectoryAction::StartNewStep => "[StartNewStep]".to_string(),
+            TrajectoryAction::StartDeterminingBranchingNode => {
+                "[StartDeterminingBranchingNode]".to_string()
+            }
         }
     }
 }

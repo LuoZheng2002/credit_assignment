@@ -156,6 +156,13 @@ impl<'a> TrajectoryState<'a> {
                 );
                 self.status = TrajectoryStatus::VerifierCommenting;
             }
+            TrajectoryAction::StartDeterminingBranchingNode => {
+                assert!(
+                    matches!(self.status, TrajectoryStatus::TrajectoryEnded { .. }),
+                    "StartDeterminingBranchingNode can only be called after TrajectoryEnded status"
+                );
+                self.status = TrajectoryStatus::DeterminingBranchingNode;
+            }
             TrajectoryAction::VerifierComment(verifier_comment) => {
                 assert_eq!(
                     self.status,
@@ -448,7 +455,8 @@ impl<'a> TrajectoryState<'a> {
             let current_plan = self
                 .current_plan
                 .as_ref()
-                .expect("There should be a current plan when not making plan");
+                .cloned()
+                .unwrap_or_else(|| "No current plan available.".to_string());
             history.push_str(&format!("Current plan:\n{}\n", current_plan));
         }
         assert!(
