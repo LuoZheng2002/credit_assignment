@@ -1,23 +1,25 @@
 use rand::distr::{Distribution, weighted::WeightedIndex};
 
 use crate::agent::{
-    tool_call_execution::MAX_NUM_TRAJECTORIES,
-    trajectory_action_types::VerifierAndModeSummary,
-    tree::{Tree, TreeMasterStatus},
+    tool_call_execution::MAX_NUM_TRAJECTORIES, trajectory_action_types::VerifierAndModeSummary,
+    tree::Tree,
 };
+pub enum BranchingNodeStatus {
+    OnlyVerifierOnChild,
+    OnlyVerifierOffChild,
+}
+// pub struct BranchingNode {
+//     pub node_id: usize,
+//     pub status: BranchingNodeStatus,
+// }
 
-pub fn determine_branching_node(tree: &mut Tree, rng: &mut impl rand::Rng) -> bool {
-    assert_eq!(
-        tree.tree_master_status,
-        TreeMasterStatus::DeterminingBranchingNode,
-        "determine_branching_node requires DeterminingBranchingNode status"
-    );
+pub fn determine_branching_node(tree: &Tree, rng: &mut impl rand::Rng) -> Option<usize> {
     if tree.leaf_node_ids.len() >= MAX_NUM_TRAJECTORIES {
         println!(
             "Max num trajectories {} reached, finalizing rollout.",
             MAX_NUM_TRAJECTORIES
         );
-        return true;
+        return None;
     }
 
     let mut node_weights = vec![0.0_f64; tree.nodes.len()];
@@ -40,7 +42,11 @@ pub fn determine_branching_node(tree: &mut Tree, rng: &mut impl rand::Rng) -> bo
         trajectory_node_ids_from_leaf_to_root.reverse();
         trajectory_lengths.push(trajectory_node_ids_from_leaf_to_root.len());
         if trajectory_node_ids_from_leaf_to_root.len() < 2 {
-            return true;
+            println!(
+                "Trajectory with leaf node id {} has length less than 2, skipping it for branching node selection.",
+                trajectory_leaf_node_id
+            );
+            continue;
         }
         let per_node_weight = 1.0 / (trajectory_node_ids_from_leaf_to_root.len() - 1) as f64;
         let non_leaf_node_ids = &trajectory_node_ids_from_leaf_to_root
@@ -64,6 +70,11 @@ pub fn determine_branching_node(tree: &mut Tree, rng: &mut impl rand::Rng) -> bo
             candidate_weights.push(weight);
         }
     }
+    println!(
+        "Found {} candidate branching nodes with weights: {:?}",
+        candidate_node_ids.len(),
+        candidate_weights
+    );
     while !candidate_node_ids.is_empty() {
         let weighted_index = WeightedIndex::new(&candidate_weights)
             .expect("WeightedIndex construction should succeed with positive candidate weights");
@@ -98,15 +109,36 @@ pub fn determine_branching_node(tree: &mut Tree, rng: &mut impl rand::Rng) -> bo
                 VerifierAndModeSummary::VerifierOff => has_verifier_off_child = true,
             }
         }
-        if has_verifier_on_child && has_verifier_off_child {
-            candidate_node_ids.swap_remove(sampled_candidate_index);
-            candidate_weights.swap_remove(sampled_candidate_index);
-            continue;
+        match (has_verifier_on_child, has_verifier_off_child) {
+            (true, true) => {
+                // this node has both verifier on and off children, we skip it and resample
+                candidate_node_ids.swap_remove(sampled_candidate_index);
+                candidate_weights.swap_remove(sampled_candidate_index);
+                println!("Candidate branching node {} has both verifier on and off children, skipping it for branching node selection.",
+                    selected_node_id
+                );
+                continue;
+            }
+            (true, false) | (false, true) => {
+                // return Some(BranchingNode {
+                //     node_id: selected_node_id,
+                //     status: BranchingNodeStatus::OnlyVerifierOnChild,
+                // });
+                return Some(selected_node_id);
+            }
+            // (false, true) => {
+            //     return Some(BranchingNode {
+            //         node_id: selected_node_id,
+            //         status: BranchingNodeStatus::OnlyVerifierOffChild,
+            //     });
+            // }
+            (false, false) => {
+                panic!(
+                    "Selected branching node must have at least one child with verifier on or off"
+                )
+            }
         }
-        tree.set_current_node_by_id(selected_node_id);
-        tree.tree_master_status = TreeMasterStatus::WorkingOnTrajectory;
-        return false;
     }
     println!("No valid branching node found, finalizing rollout.");
-    return true;
+    None
 }

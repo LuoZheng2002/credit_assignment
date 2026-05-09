@@ -42,8 +42,8 @@ pub fn get_prompt_according_to_session_status(
             get_planner_updating_plan_prompts(session_state)
         }
         TrajectoryStatus::VerifierCommenting => get_verifier_commenting_prompts(session_state),
-        TrajectoryStatus::StepEnded | TrajectoryStatus::SessionEnded { .. } => {
-            (String::new(), String::new())
-        }
+        // TrajectoryStatus::Empty        | 
+        TrajectoryStatus::StepEnded
+        | TrajectoryStatus::TrajectoryEnded { .. } => (String::new(), String::new()),
     }
 }

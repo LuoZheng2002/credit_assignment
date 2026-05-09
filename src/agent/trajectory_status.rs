@@ -2,6 +2,7 @@ use crate::agent::trajectory_action_types::{FinalAnswer, NextStepDecision, Verif
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrajectoryStatus {
+    // Empty,
     VerifierCommenting,
     PlannerChoosingMode {
         verifier_comment: Option<VerifierComment>,
@@ -27,7 +28,7 @@ pub enum TrajectoryStatus {
     },
     StepEnded,
     // The special status that breaks out of the state loop
-    SessionEnded {
+    TrajectoryEnded {
         final_answer: FinalAnswer,
     },
 }

@@ -14,9 +14,6 @@ use crate::agent::trajectory_action_types::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Step {
-    // pub verifier_and_mode_summary: Option<VerifierAndModeSummary>,
-    // pub step_finalized: bool,
-    // pub step_quality: Option<StepQuality>,
     pub action_log: Vec<TrajectoryAction>,
 }
 
@@ -107,11 +104,11 @@ pub struct CorrectnessJudgment {
     pub is_correct: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TreeMasterStatus {
-    WorkingOnTrajectory,
-    DeterminingBranchingNode,
-}
+// #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+// pub enum TreeMasterStatus {
+//     WorkingOnTrajectory,
+//     DeterminingBranchingNode,
+// }
 // only working on one node at a time
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tree {
@@ -126,7 +123,8 @@ pub struct Tree {
     pub correctness_ratio: CountRatio,
     pub tool_wait_violations: usize,
     pub next_node_id: usize,
-    pub tree_master_status: TreeMasterStatus,
+    // pub tree_master_status: TreeMasterStatus,
+    pub completed: bool,
 }
 
 // we need a status after a trajectory is finished to randomly sample a node position for branching
@@ -134,12 +132,19 @@ pub struct Tree {
 // Eventually we apply the action to the Tree, and then we construct a TrajectoryState from the Tree for the current status and determine the next action to generate.
 impl Tree {
     pub fn new(question_id: usize, question: String, reference_answer: String) -> Self {
+        let root_node = Node {
+            node_id: 0,
+            step: Step::new(),
+            child_ids: [None, None],
+            parent_id: None,
+        };
+        let next_node_id = 1;
         Self {
             question_id,
             question,
-            nodes: Vec::new(),
-            root_node_id: None,
-            current_node_id: None,
+            nodes: vec![root_node],
+            root_node_id: Some(0),
+            current_node_id: Some(0),
             leaf_node_ids: Vec::new(),
             leaf_node_judgments: BTreeMap::new(),
             correctness_ratio: CountRatio {
@@ -147,9 +152,10 @@ impl Tree {
                 denominator: 0,
             },
             tool_wait_violations: 0,
-            next_node_id: 0,
-            tree_master_status: TreeMasterStatus::WorkingOnTrajectory,
+            next_node_id,
+            // tree_master_status: TreeMasterStatus::WorkingOnTrajectory,
             reference_answer,
+            completed: false,
         }
     }
 
@@ -173,11 +179,10 @@ impl Tree {
         self.current_node_id = Some(node_id);
     }
 
-    pub fn apply_event(&mut self, event: TreeAction) {
-        match event {
-            TreeAction::CreateNode {
-                node_id, parent_id, ..
-            } => {
+    pub fn apply_action(&mut self, action: TreeAction) {
+        match action {
+            TreeAction::CreateAndMoveToNode { parent_id, .. } => {
+                let node_id = self.next_node_id;
                 if let Some(parent_id) = parent_id {
                     let child = Node {
                         node_id,
@@ -185,7 +190,10 @@ impl Tree {
                         child_ids: [None, None],
                         parent_id: Some(parent_id),
                     };
-                    assert!(!self.has_id(node_id), "CreateNode node_id must be unique");
+                    assert!(
+                        !self.has_id(self.next_node_id),
+                        "CreateNode node_id must be unique"
+                    );
                     self.nodes.push(child);
                     let child_node_slot = self
                         .get_node_by_id_mut(parent_id)
@@ -217,17 +225,12 @@ impl Tree {
                     self.nodes.push(root);
                     self.root_node_id = Some(node_id);
                 }
-                assert!(
-                    node_id <= self.next_node_id,
-                    "CreateNode node_id must not skip next_node_id"
-                );
-                if node_id == self.next_node_id {
-                    self.next_node_id += 1;
-                }
-            }
-            TreeAction::SetCurrentNode { node_id, .. } => {
+                self.next_node_id += 1;
                 self.set_current_node_by_id(node_id);
             }
+            // TreeAction::SetCurrentNode { node_id, .. } => {
+            //     self.set_current_node_by_id(node_id);
+            // }
             TreeAction::AddTrajectoryAction { action, .. } => {
                 self.append_action_to_current_node(action);
             }
@@ -280,6 +283,10 @@ impl Tree {
             }
             TreeAction::ToolWaitViolation { .. } => {
                 self.tool_wait_violations += 1;
+            }
+            TreeAction::TreeComplete { question_id: _ } => {
+                panic!("before completed");
+                self.completed = true;
             }
         }
     }

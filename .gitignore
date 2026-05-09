@@ -9,7 +9,6 @@ slurm
 *.err
 AgentFlow
 results
-scripts/*.sh
 pwd.txt
 examine.json
 activate_environment.sh

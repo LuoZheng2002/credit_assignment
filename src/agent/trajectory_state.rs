@@ -136,6 +136,16 @@ impl<'a> TrajectoryState<'a> {
         MAX_ACTIONS_PER_STEP - self.current_step_num_actions
     }
 
+    // tree and trajectory?
+    // currently we're thinking about how to handle the start and stop of a step
+    // whether tree state is needed for knowing what to do next
+    // at the beginning of the rollout, the tree has no nodes
+    // we create a node when a step ends or a trajectory ends and there is a branching node
+    // we want to unify the node creation logic
+    // we create a node when the trajectory state is either "step finished" or "trajectory finished"
+    // they already have different logic
+    // we also need the transition from step ended to verifier commenting, currently it is "start new step"
+
     pub fn update(&mut self, operation: TrajectoryAction) {
         self.total_actions += 1;
         match &operation {
@@ -408,7 +418,7 @@ impl<'a> TrajectoryState<'a> {
                 }
                 self.prev_steps.push(new_step);
                 if let Some(final_answer) = self.final_answer.clone() {
-                    self.status = TrajectoryStatus::SessionEnded { final_answer }
+                    self.status = TrajectoryStatus::TrajectoryEnded { final_answer }
                 } else {
                     self.status = TrajectoryStatus::StepEnded;
                 }
