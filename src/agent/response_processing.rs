@@ -273,12 +273,13 @@ pub async fn determine_chosen_mode(
             None => NextStepDecision::Continue,
             Some(comment) => {
                 if comment.change_plan {
-                    if rng.random::<f32>() < 0.5 {
-                        NextStepDecision::Continue
-                    } else {
+                    if session_state.can_change_plan() && rng.random::<f32>() < 0.5 {
                         NextStepDecision::ChangePlan(
                             "Please refer to the verifier's comment.".to_string(),
                         )
+                    } else {
+                        println!("[Warning] Change plan is capped or not chosen by RNG.");
+                        NextStepDecision::Continue
                     }
                 } else if comment.overwrite {
                     if session_state.can_overwrite_step() && rng.random::<f32>() < 0.5 {

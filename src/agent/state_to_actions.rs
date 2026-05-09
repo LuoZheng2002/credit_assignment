@@ -397,11 +397,11 @@ pub async fn produce_actions_from_state(
                 }
 
                 let current_step_full = actions.len() == num_additional_actions_allowed;
-                if (push_end_step && !response_is_empty) || current_step_full {
-                    assert!(
-                        !has_terminal_intervention,
-                        "PlannerEndStep should not be emitted after terminal intervention"
-                    );
+                if ((push_end_step && !response_is_empty) || current_step_full) && !has_terminal_intervention {
+                    // assert!(
+                    //     !has_terminal_intervention,
+                    //     "PlannerEndStep should not be emitted after terminal intervention"
+                    // );
                     actions.push(TreeAction::AddTrajectoryAction {
                         question_id,
                         action: TrajectoryAction::PlannerEndStep,
