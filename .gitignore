@@ -4,7 +4,6 @@
 datasets
 tokenizers
 .vscode
-slurm
 *.out
 *.err
 AgentFlow
