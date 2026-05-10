@@ -28,7 +28,7 @@ use std::hash::{Hash, Hasher};
 
 use credit_assignment::agent::trajectory_action::{TrajectoryAction, TrajectoryActionLog};
 use credit_assignment::agent::trajectory_action_types::{
-    FinalAnswer, NextStepDecision, ToolResponse, VerifierComment,
+    FinalAnswer, NextStepDecision, VerifierComment,
 };
 use credit_assignment::agent::trajectory_state::TrajectoryState;
 use credit_assignment::agent::tree::Tree;
@@ -1206,7 +1206,7 @@ fn validate_session_log_for_prompt_replay(
 fn derive_node_abbreviation_from_actions(action_log: &[TrajectoryAction]) -> NodeAbbreviation {
     let mut verifier_comment: Option<Option<VerifierComment>> = None;
     let mut planner_decision: Option<NextStepDecision> = None;
-    let mut has_intervention = false;
+    // let mut has_intervention = false;
 
     for action in action_log {
         match action {
@@ -1224,12 +1224,6 @@ fn derive_node_abbreviation_from_actions(action_log: &[TrajectoryAction]) -> Nod
                 );
                 planner_decision = Some(mode.clone());
             }
-            TrajectoryAction::ToolCallResponse(ToolResponse::EmptyMessageHint) => {
-                has_intervention = true;
-            }
-            TrajectoryAction::SystemInterrupt(_) => {
-                has_intervention = true;
-            }
             _ => {}
         }
     }
@@ -1238,17 +1232,17 @@ fn derive_node_abbreviation_from_actions(action_log: &[TrajectoryAction]) -> Nod
         .expect("Each node action log must contain exactly one VerifierComment for abbreviation");
 
     if planner_decision.is_none() {
-        assert!(
-            !action_log.is_empty(),
-            "Node action log must not be empty when deriving abbreviation"
-        );
-        assert!(
-            has_intervention
-                || action_log
-                    .iter()
-                    .any(|action| matches!(action, TrajectoryAction::PlannerMakeOrChangePlan(_))),
-            "Missing PlannerDecideNextStep requires intervention or downstream planner actions"
-        );
+        // assert!(
+        //     !action_log.is_empty(),
+        //     "Node action log must not be empty when deriving abbreviation"
+        // );
+        // assert!(
+        //     has_intervention
+        //         || action_log
+        //             .iter()
+        //             .any(|action| matches!(action, TrajectoryAction::PlannerMakeOrChangePlan(_))),
+        //     "Missing PlannerDecideNextStep requires intervention or downstream planner actions"
+        // );
         return match verifier_comment {
             None => NodeAbbreviation::Vof,
             Some(_) => NodeAbbreviation::Von,

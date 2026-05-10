@@ -8,7 +8,7 @@ If you have got the answer, put it in \\boxed{} before ending with <end_step>. O
 pub enum ToolResponse {
     PythonSuccess(String),
     PythonError(String),
-    EmptyMessageHint,
+    // EmptyMessageHint,
 }
 
 impl ToolResponse {
@@ -20,7 +20,7 @@ impl ToolResponse {
             ToolResponse::PythonError(error) => {
                 format!("<tool_response>Python error: {}</tool_response>", error)
             } // ToolResponse::Intervention(content) => content.clone(),
-            ToolResponse::EmptyMessageHint => EMPTY_MESSAGE_HINT.to_string(),
+            // ToolResponse::EmptyMessageHint => EMPTY_MESSAGE_HINT.to_string(),
         }
     }
 }
