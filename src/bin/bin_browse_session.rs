@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Stdout};
@@ -32,6 +32,8 @@ use credit_assignment::agent::trajectory_action_types::{
 };
 use credit_assignment::agent::trajectory_state::TrajectoryState;
 use credit_assignment::agent::tree::Tree;
+use credit_assignment::em::em_schema::EmFitPerTree;
+use credit_assignment::parallel_process_jsonl::read_json_lines;
 use credit_assignment::schemas::tree::CompletedTree;
 
 /// Command line arguments for browsing rollout session logs.
@@ -44,17 +46,27 @@ struct Args {
         help = "Path to a jsonl file containing RolloutAnswerRaw lines"
     )]
     file: PathBuf,
+
+    #[arg(
+        long = "em-fit-file",
+        help = "Optional path to a JSON file containing one EmFitResult"
+    )]
+    em_fit_file: Option<PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     let answers = load_rollout_answers(&args.file)?;
+    let per_tree_em_fit = match args.em_fit_file.as_ref() {
+        Some(path) => load_em_fit_per_tree(path)?,
+        None => Vec::new(),
+    };
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let result = run_app(&mut terminal, answers);
+    let result = run_app(&mut terminal, answers, per_tree_em_fit);
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -86,11 +98,18 @@ fn load_rollout_answers(path: &PathBuf) -> Result<Vec<CompletedTree>, Box<dyn Er
     }
 }
 
+fn load_em_fit_per_tree(path: &PathBuf) -> Result<Vec<EmFitPerTree>, Box<dyn Error>> {
+    let items: Vec<EmFitPerTree> =
+        read_json_lines(path).map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    Ok(items)
+}
+
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     answers: Vec<CompletedTree>,
+    per_tree_em_fit: Vec<EmFitPerTree>,
 ) -> Result<(), Box<dyn Error>> {
-    let mut app = App::new(answers);
+    let mut app = App::new(answers, per_tree_em_fit);
     loop {
         terminal.draw(|f| app.draw(f))?;
         match event::read()? {
@@ -154,6 +173,7 @@ impl PaneFocus {
 
 struct App {
     answers: Vec<CompletedTree>,
+    em_fit_per_tree_by_id: HashMap<usize, EmFitPerTree>,
     selection_state: ListState,
     tree_view: Option<TreeView>,
     browsing_view: Option<SessionView>,
@@ -171,13 +191,23 @@ struct App {
 }
 
 impl App {
-    fn new(answers: Vec<CompletedTree>) -> Self {
+    fn new(answers: Vec<CompletedTree>, per_tree_em_fit: Vec<EmFitPerTree>) -> Self {
         let mut selection_state = ListState::default();
         if !answers.is_empty() {
             selection_state.select(Some(0));
         }
+        let mut em_fit_per_tree_by_id: HashMap<usize, EmFitPerTree> = HashMap::new();
+        for per_tree in per_tree_em_fit {
+            assert!(
+                em_fit_per_tree_by_id
+                    .insert(per_tree.tree_question_id, per_tree)
+                    .is_none(),
+                "Duplicate EmFitPerTree entry for tree_question_id"
+            );
+        }
         Self {
             answers,
+            em_fit_per_tree_by_id,
             selection_state,
             tree_view: None,
             browsing_view: None,
@@ -378,7 +408,8 @@ impl App {
         if let Some(selected) = self.selection_state.selected() {
             if selected < self.answers.len() {
                 let answer = self.answers[selected].clone();
-                self.tree_view = Some(TreeView::new(answer));
+                let tree_em_fit = self.em_fit_per_tree_by_id.get(&answer.id).cloned();
+                self.tree_view = Some(TreeView::new(answer, tree_em_fit));
                 self.focus = PaneFocus::Log;
                 self.tree_horizontal_scroll = 0;
                 self.tree_hovered_line_index = None;
@@ -597,19 +628,19 @@ impl App {
             .tree_lines
             .iter()
             .enumerate()
-            .map(|(i, line)| {
-                let mut item = ListItem::new(slice_line_from_char_offset(
-                    line,
-                    self.tree_horizontal_scroll,
-                ));
+            .map(|(i, _)| {
+                let mut item = ListItem::new(view.render_tree_line(i, self.tree_horizontal_scroll));
                 if self.tree_hovered_line_index == Some(i) {
                     item = item.style(Style::default().bg(Color::DarkGray));
                 }
                 item
             })
             .collect();
+        let hovered_line_index = self
+            .tree_hovered_line_index
+            .filter(|index| *index < view.tree_lines.len());
         let mut state = ListState::default();
-        state.select(Some(view.selected_tree_line_index));
+        state.select(hovered_line_index);
         frame.render_stateful_widget(
             List::new(items)
                 .block(block)
@@ -618,7 +649,7 @@ impl App {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 )
-                .highlight_symbol("▶ "),
+                .highlight_symbol(if hovered_line_index.is_some() { "▶ " } else { "" }),
             frame.area(),
             &mut state,
         );
@@ -873,9 +904,8 @@ fn clamp_scroll(value: usize) -> u16 {
 fn ratio_to_color(value: f64) -> Color {
     assert!(value.is_finite(), "ratio value for color must be finite");
     let clamped = value.clamp(0.0, 1.0);
-    let red = ((1.0 - clamped) * 255.0).round() as u8;
-    let green = (clamped * 255.0).round() as u8;
-    Color::Rgb(red, green, 0)
+    let signed_position = clamped * 2.0 - 1.0;
+    red_yellow_green_color(signed_position)
 }
 
 fn ratio_color_style(value: f64) -> Style {
@@ -1087,7 +1117,17 @@ struct TreeView {
     answer: CompletedTree,
     tree_lines: Vec<String>,
     tree_line_node_ids: Vec<usize>,
+    node_layouts: Vec<TreeRenderedNode>,
+    node_scores: Vec<Option<f64>>,
+    score_max_abs: f64,
     selected_tree_line_index: usize,
+}
+
+#[derive(Debug, Clone)]
+struct TreeRenderedNode {
+    node_id: usize,
+    row: usize,
+    col: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1407,7 +1447,7 @@ fn write_pattern(canvas: &mut [Vec<char>], row: usize, col: usize, pattern: &str
     }
 }
 
-fn build_tree_lines(tree: &Tree) -> (Vec<usize>, Vec<String>) {
+fn build_tree_lines(tree: &Tree) -> (Vec<usize>, Vec<String>, Vec<TreeRenderedNode>) {
     let root_id = tree
         .root_node_id
         .expect("Tree browser requires root_node_id to exist");
@@ -1436,6 +1476,8 @@ fn build_tree_lines(tree: &Tree) -> (Vec<usize>, Vec<String>) {
         node_col[node_id] = depth * 8;
     }
 
+    let mut node_layouts: Vec<TreeRenderedNode> = Vec::with_capacity(tree.nodes.len());
+
     for node_id in 0..tree.nodes.len() {
         let Some(row) = node_row[node_id] else {
             continue;
@@ -1448,6 +1490,7 @@ fn build_tree_lines(tree: &Tree) -> (Vec<usize>, Vec<String>) {
             "Node label must have exactly 5 chars"
         );
         write_pattern(&mut canvas, row, col, &label);
+        node_layouts.push(TreeRenderedNode { node_id, row, col });
     }
 
     for parent_id in 0..tree.nodes.len() {
@@ -1515,11 +1558,63 @@ fn build_tree_lines(tree: &Tree) -> (Vec<usize>, Vec<String>) {
         ordered_leaf_node_ids.len(),
         "Tree line count must match leaf node count"
     );
-    (ordered_leaf_node_ids, lines)
+    (ordered_leaf_node_ids, lines, node_layouts)
 }
 
-fn slice_line_from_char_offset(line: &str, offset: usize) -> String {
-    line.chars().skip(offset).collect::<String>()
+fn build_node_scores_for_tree(answer: &CompletedTree, tree_em_fit: Option<EmFitPerTree>) -> Vec<Option<f64>> {
+    let mut scores: Vec<Option<f64>> = vec![None; answer.trajectory.nodes.len()];
+    let Some(tree_em_fit) = tree_em_fit else {
+        return scores;
+    };
+
+    assert_eq!(
+        tree_em_fit.tree_question_id, answer.id,
+        "EmFitPerTree.tree_question_id must match CompletedTree.id"
+    );
+    for node_fit in tree_em_fit.per_node {
+        assert!(
+            node_fit.node_id < answer.trajectory.nodes.len(),
+            "EM per-tree node id out of bounds for completed tree"
+        );
+        assert!(
+            node_fit.mean_div_variance.is_finite(),
+            "mean_div_variance must be finite for display"
+        );
+        assert!(
+            scores[node_fit.node_id].is_none(),
+            "Duplicate node score for one tree node"
+        );
+        scores[node_fit.node_id] = Some(node_fit.mean_div_variance);
+    }
+    scores
+}
+
+fn contribution_score_to_color(score: f64, max_abs: f64) -> Color {
+    assert!(score.is_finite(), "contribution score must be finite");
+    assert!(max_abs.is_finite() && max_abs >= 0.0, "max_abs must be finite and >= 0");
+    if max_abs <= 1e-12 {
+        return Color::Rgb(255, 255, 0);
+    }
+    let normalized = (score / max_abs).clamp(-1.0, 1.0);
+    red_yellow_green_color(normalized)
+}
+
+fn red_yellow_green_color(signed_position: f64) -> Color {
+    assert!(signed_position.is_finite(), "signed color position must be finite");
+    let clamped = signed_position.clamp(-1.0, 1.0);
+    let red = ((1.0 - clamped).clamp(0.0, 1.0) * 255.0).round() as u8;
+    let green = ((1.0 + clamped).clamp(0.0, 1.0) * 255.0).round() as u8;
+    Color::Rgb(red, green, 0)
+}
+
+fn push_segment_span(spans: &mut Vec<Span<'static>>, text: String, style: Option<Style>) {
+    if text.is_empty() {
+        return;
+    }
+    match style {
+        Some(style) => spans.push(Span::styled(text, style)),
+        None => spans.push(Span::raw(text)),
+    }
 }
 
 fn count_display_turns(operations: &[TrajectoryAction]) -> usize {
@@ -1530,9 +1625,15 @@ fn count_display_turns(operations: &[TrajectoryAction]) -> usize {
 }
 
 impl TreeView {
-    fn new(answer: CompletedTree) -> Self {
+    fn new(answer: CompletedTree, tree_em_fit: Option<EmFitPerTree>) -> Self {
         validate_tree_for_browser(&answer.trajectory);
-        let (tree_line_node_ids, tree_lines) = build_tree_lines(&answer.trajectory);
+        let (tree_line_node_ids, tree_lines, node_layouts) = build_tree_lines(&answer.trajectory);
+        let node_scores = build_node_scores_for_tree(&answer, tree_em_fit);
+        let score_max_abs = node_scores
+            .iter()
+            .flatten()
+            .map(|score| score.abs())
+            .fold(0.0_f64, f64::max);
         let current_node_id = answer
             .trajectory
             .current_node_id
@@ -1550,8 +1651,75 @@ impl TreeView {
             answer,
             tree_lines,
             tree_line_node_ids,
+            node_layouts,
+            node_scores,
+            score_max_abs,
             selected_tree_line_index,
         }
+    }
+
+    fn render_tree_line(&self, row: usize, horizontal_scroll: usize) -> Line<'static> {
+        assert!(row < self.tree_lines.len(), "tree row index out of range");
+        let line = &self.tree_lines[row];
+        let line_chars: Vec<char> = line.chars().collect();
+        if horizontal_scroll >= line_chars.len() {
+            return Line::from(String::new());
+        }
+
+        let mut styles: Vec<Option<Style>> = vec![None; line_chars.len()];
+        for layout in &self.node_layouts {
+            if layout.row != row {
+                continue;
+            }
+            if layout.node_id >= self.node_scores.len() {
+                continue;
+            }
+            let Some(score) = self.node_scores[layout.node_id] else {
+                continue;
+            };
+            let style = Style::default()
+                .fg(contribution_score_to_color(score, self.score_max_abs))
+                .add_modifier(Modifier::BOLD);
+            for idx in layout.col..(layout.col + 5) {
+                if idx < styles.len() {
+                    styles[idx] = Some(style);
+                }
+            }
+        }
+
+        let tick_style = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
+        let cross_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+        for (idx, ch) in line_chars.iter().copied().enumerate() {
+            if ch == '✓' {
+                styles[idx] = Some(tick_style);
+            } else if ch == '✗' {
+                styles[idx] = Some(cross_style);
+            }
+        }
+
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut segment_text = String::new();
+        let mut segment_style = styles[horizontal_scroll];
+
+        for idx in horizontal_scroll..line_chars.len() {
+            let ch = line_chars[idx];
+            let style = styles[idx];
+            if style != segment_style {
+                if segment_text.is_empty() {
+                    panic!("segment_text must not be empty before style switch");
+                }
+                push_segment_span(&mut spans, segment_text, segment_style);
+                segment_text = String::new();
+                segment_style = style;
+            }
+            segment_text.push(ch);
+        }
+
+        if !segment_text.is_empty() {
+            push_segment_span(&mut spans, segment_text, segment_style);
+        }
+
+        Line::from(spans)
     }
 
     fn selected_node_id(&self) -> usize {

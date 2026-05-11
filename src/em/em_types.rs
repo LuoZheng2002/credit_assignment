@@ -27,7 +27,7 @@ pub struct LogStdClamp {
     pub max: f64,
 }
 
-/// Hyperparameters for the deterministic-sign + slack EM objective.
+/// Hyperparameters for the probit-style MAP objective (kept in `em` namespace).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmHyperparameters {
     /// Shared prior std in `m_i ~ N(mu_node_type(i), sigma_ordinary^2)` for all node types.
@@ -36,9 +36,9 @@ pub struct EmHyperparameters {
     pub sigma_special: f64,
     /// Prior std in `u_i ~ N(0, sigma_log_std^2)`.
     pub sigma_log_std: f64,
-    /// Coefficient for `sum_l xi_l^2` slack penalty.
+    /// Legacy field from the previous slack objective; currently unused by the fitter.
     pub lambda_slack: f64,
-    /// Numerical stabilizer used in normalized sign constraints.
+    /// Numerical stabilizer used in `tau_l = sqrt(var_l + eps)`.
     pub eps: f64,
     /// Fixed-iteration budget (current stopping rule).
     pub max_iterations: usize,
@@ -165,10 +165,4 @@ pub struct EmFitResult {
     pub global: Vec<EmNodeTypePosterior>,
     pub config: EmGlobalConfigSnapshot,
     pub diagnostics: EmFitDiagnostics,
-}
-
-/// EM fitter boundary object (optimizer implementation to be added).
-#[derive(Debug, Clone)]
-pub struct EmFitter {
-    pub hyperparameters: EmHyperparameters,
 }
