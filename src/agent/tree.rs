@@ -9,7 +9,7 @@ use crate::schemas::tree::{CountRatio, StepQualityRatio};
 use crate::agent::trajectory_action::{TrajectoryAction, TrajectoryActionLog};
 
 use crate::agent::trajectory_action_types::{
-    NextStepDecision, StepQuality, VerifierAndModeSummary,
+    NextStepDecision, NodeType, StepQuality,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,7 +31,7 @@ impl Step {
             .expect("When getting step quality, the action log must have a compact step action");
         step_quality
     }
-    pub fn verifier_and_mode_summary(&self) -> VerifierAndModeSummary {
+    pub fn node_type(&self) -> NodeType {
         let chosen_mode = self
             .action_log
             .iter()
@@ -39,7 +39,7 @@ impl Step {
                 TrajectoryAction::PlannerDecideNextStep(mode) => Some(mode.clone()),
                 _ => None,
             })
-            .expect("When getting verifier and mode summary, the action log must have a PlannerDecideNextStep action");
+            .expect("When getting node type, the action log must have a PlannerDecideNextStep action");
         let verifier_comment = self
             .action_log
             .iter()
@@ -47,15 +47,15 @@ impl Step {
                 TrajectoryAction::VerifierComment(comment) => Some(comment.clone()),
                 _ => None,
             })
-            .expect("When getting verifier and mode summary, the action log must have a VerifierComment action");
+            .expect("When getting node type, the action log must have a VerifierComment action");
         match (verifier_comment, chosen_mode) {
-            (None, _) => VerifierAndModeSummary::VerifierOff,
-            (Some(_), NextStepDecision::Continue) => VerifierAndModeSummary::VerifierOn,
+            (None, _) => NodeType::VerifierOff,
+            (Some(_), NextStepDecision::Continue) => NodeType::VerifierOn,
             (Some(_), NextStepDecision::OverwriteLastStep(_)) => {
-                VerifierAndModeSummary::VerifierOnAndOverwriteLastStep
+                NodeType::VerifierOnAndOverwriteLastStep
             }
             (Some(_), NextStepDecision::ChangePlan(_)) => {
-                VerifierAndModeSummary::VerifierOnAndChangePlan
+                NodeType::VerifierOnAndChangePlan
             }
         }
     }
@@ -69,7 +69,7 @@ impl Step {
 
 // #[derive(Debug, Clone, Serialize, Deserialize)]
 // pub enum Step {
-//     // pub verifier_and_mode_summary: Option<VerifierAndModeSummary>,
+//     // pub node_type: Option<NodeType>,
 //     // pub step_finalized: bool,
 //     // pub step_quality: Option<StepQuality>,
 //     // pub action_log: Vec<RolloutAction>,
@@ -79,7 +79,7 @@ impl Step {
 impl Step {
     pub fn new() -> Self {
         Self {
-            // verifier_and_mode_summary: None,
+            // node_type: None,
             // step_finalized: false,
             // step_quality: None,
             action_log: Vec::new(),

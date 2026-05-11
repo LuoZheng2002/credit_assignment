@@ -1,7 +1,7 @@
 use rand::distr::{Distribution, weighted::WeightedIndex};
 
 use crate::agent::{
-    tool_call_execution::MAX_NUM_TRAJECTORIES, trajectory_action_types::VerifierAndModeSummary,
+    tool_call_execution::MAX_NUM_TRAJECTORIES, trajectory_action_types::NodeType,
     tree::Tree,
 };
 pub enum BranchingNodeStatus {
@@ -100,17 +100,17 @@ pub fn determine_branching_node(tree: &Tree, rng: &mut impl rand::Rng) -> Option
                 .nodes
                 .get(child_id)
                 .expect("Child node of selected branching node must exist");
-            match child_node.step.verifier_and_mode_summary() {
-                VerifierAndModeSummary::VerifierOn { .. }
-                | VerifierAndModeSummary::VerifierOnAndChangePlan { .. }
-                | VerifierAndModeSummary::VerifierOnAndOverwriteLastStep { .. } => {
+            match child_node.step.node_type() {
+                NodeType::VerifierOn
+                | NodeType::VerifierOnAndChangePlan
+                | NodeType::VerifierOnAndOverwriteLastStep => {
                     assert!(
                         !has_verifier_on_child,
                         "A branching node should not have more than one verifier on child"
                     );
                     has_verifier_on_child = true;
                 }
-                VerifierAndModeSummary::VerifierOff => {
+                NodeType::VerifierOff => {
                     assert!(
                         !has_verifier_off_child,
                         "A branching node should not have more than one verifier off child"

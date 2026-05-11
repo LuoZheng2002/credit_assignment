@@ -11,7 +11,7 @@ use crate::agent::response_processing::{
 };
 use crate::agent::tool_call_execution::{MAX_NUM_TRAJECTORIES, execute_planner_tool_call};
 use crate::agent::trajectory_action_types::{
-    FinalAnswer, MakeOrChangePlan, NextStepDecision, ToolResponse, VerifierAndModeSummary,
+    FinalAnswer, MakeOrChangePlan, NextStepDecision, NodeType, ToolResponse,
 };
 use crate::agent::trajectory_state::TrajectoryState;
 use crate::agent::trajectory_status::TrajectoryStatus;
@@ -140,9 +140,9 @@ pub async fn produce_actions_from_state(
                         .find(|id| *id != current_node_id);
                     let existing_verifier_on = sibling_id.map(|id| {
                         let sibling_node = tree.get_node_by_id(id);
-                        let verifier_and_mode = sibling_node.step.verifier_and_mode_summary();
-                        match verifier_and_mode {
-                            VerifierAndModeSummary::VerifierOff => false,
+                        let sibling_node_type = sibling_node.step.node_type();
+                        match sibling_node_type {
+                            NodeType::VerifierOff => false,
                             _ => true,
                         }
                     });
@@ -180,7 +180,7 @@ pub async fn produce_actions_from_state(
                     vec![action]
                 }
             } else {
-                // if verifier is off, we still want to add a TrajectoryAction to record the verifier comment is off for the current step, which will be used for determining the mode in the next step
+                // if verifier is off, we still want to add a TrajectoryAction to record the verifier comment is off for the current step, which will be used for determining the node type in the next step
                 let action = TreeAction::AddTrajectoryAction {
                     question_id,
                     action: TrajectoryAction::VerifierComment(None),

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::agent::trajectory_action_types::VerifierAndModeSummary;
+use crate::agent::trajectory_action_types::NodeType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LeafLabel {
@@ -30,14 +30,12 @@ pub struct LogStdClamp {
 /// Hyperparameters for the deterministic-sign + slack EM objective.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmHyperparameters {
-    /// Prior std in `m_i ~ N(mu_mode(i), sigma_mean^2)`.
-    pub sigma_mean: f64,
-    /// Prior std for shared mode centers (`mu_k` and `nu_k`).
-    pub sigma_mode: f64,
-    /// Prior std in `u_i ~ N(nu_mode(i), sigma_log_std^2)`.
+    /// Shared prior std in `m_i ~ N(mu_node_type(i), sigma_ordinary^2)` for all node types.
+    pub sigma_ordinary: f64,
+    /// Prior std for shared special-node contribution centers (`mu_k`).
+    pub sigma_special: f64,
+    /// Prior std in `u_i ~ N(0, sigma_log_std^2)`.
     pub sigma_log_std: f64,
-    /// Prior center for mode-level log-std means `nu_k`.
-    pub mu_log_std_mode: f64,
     /// Coefficient for `sum_l xi_l^2` slack penalty.
     pub lambda_slack: f64,
     /// Numerical stabilizer used in normalized sign constraints.
@@ -54,8 +52,8 @@ pub struct EmNodeBinding {
     pub global_node_id: usize,
     pub tree_question_id: usize,
     pub node_id: usize,
-    /// Mode used for both contribution and log-std priors.
-    pub mode: VerifierAndModeSummary,
+    /// Node type tag (ordinary/special variant) used for contribution prior grouping.
+    pub node_type: NodeType,
 }
 
 /// Mapping from flattened global leaf index to original tree leaf and label.
@@ -109,17 +107,15 @@ pub struct EmNodePosterior {
     pub mean: f64,
     /// Fitted log standard deviation (`u_i = log_std_i`).
     pub log_std: f64,
-    pub mode: VerifierAndModeSummary,
+    pub node_type: NodeType,
 }
 
-/// Fitted shared priors for each mode.
+/// Fitted shared priors for each node type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmModePosterior {
-    pub mode: VerifierAndModeSummary,
-    /// Contribution prior center for this mode.
+pub struct EmNodeTypePosterior {
+    pub node_type: NodeType,
+    /// Contribution prior center for this node type.
     pub mu_k: f64,
-    /// Log-std prior center for this mode.
-    pub nu_k: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,7 +162,7 @@ pub struct EmGlobalConfigSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmFitResult {
     pub per_node: Vec<EmNodePosterior>,
-    pub global: Vec<EmModePosterior>,
+    pub global: Vec<EmNodeTypePosterior>,
     pub config: EmGlobalConfigSnapshot,
     pub diagnostics: EmFitDiagnostics,
 }

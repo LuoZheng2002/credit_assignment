@@ -1,6 +1,6 @@
 ## Goal
 
-Estimate per-node contribution values from leaf correctness outcomes, while jointly learning shared mode-level priors (`\mu_special_mode`) across many trees.
+Estimate per-node contribution values from leaf correctness outcomes, while jointly learning shared special-node priors (`\mu_special`) across many trees.
 
 Contribution semantics: each node contributes a signed scalar to trajectory outcome; the trajectory latent outcome is the sum of node contributions along the path. Positive pushes toward success, negative pushes toward failure.
 
@@ -11,11 +11,11 @@ Contribution semantics: each node contributes a signed scalar to trajectory outc
 Each judged leaf trajectory has a latent scalar score formed by summing node contributions along its path.
 Observed outcome is binary success/failure derived from deterministic thresholding of that latent score.
 
-Node priors are mode-dependent:
+Node priors are node-type-dependent:
 
-- Normal mode (`VerifierAndModeSummary::VerifierOff`): prior mean `0`
-- Special modes (`VerifierOn`, `VerifierOnAndOverwriteLastStep`, `VerifierOnAndChangePlan`): prior mean `\mu_k`
-- Shared mode means `\mu_k` are learned jointly across all trees with a zero-centered prior.
+- Ordinary (`NodeType::VerifierOff`): prior mean `0`
+- Special (`VerifierOn`, `VerifierOnAndOverwriteLastStep`, `VerifierOnAndChangePlan`): prior mean `\mu_k`
+- Shared special-node means `\mu_k` are learned jointly across all trees with a zero-centered prior.
 
 Each node also has a learned uncertainty scale parameter `log_std_i` that is regularized by a prior and enters the normalized trajectory sign constraint through path uncertainty.
 
@@ -61,16 +61,20 @@ Return per-node parameters:
 
 Model sketch:
 
-- `mean_i ~ N(mu_{mode(i)}, sigma_mean^2)`
-- `mu_k ~ N(0, sigma_mode^2)`
-- `log_std_i ~ N(mu_log_std_mode(i), sigma_log_std^2)` (or zero-centered if mode-specific prior for log-std is not used)
+- `mean_i ~ N(mu_{node_type(i)}, sigma_ordinary^2)`
+- `mu_k ~ N(0, sigma_special^2)`
+- `log_std_i ~ N(0, sigma_log_std^2)`
+
+Interpretation of renamed scales:
+
+- `sigma_ordinary` controls the shared contribution distribution width for all node types
+- `sigma_special` controls the prior-mean distribution width for special nodes
 
 Need concrete values or tuning policy for:
 
-- `sigma_mean`
-- `sigma_mode`
+- `sigma_ordinary`
+- `sigma_special`
 - `sigma_log_std`
-- optional `mu_log_std_mode`
 
 Status: fixed constants selected for now; revisit after first global fit diagnostics.
 
@@ -96,10 +100,10 @@ Future TODO (optional):
 
 ### 3) Identifiability constraints
 
-To prevent drift/confounding between node effects and mode means:
+To prevent drift/confounding between node effects and special-node prior means:
 
 - **Option A:** rely on Gaussian priors only
-- **Option B:** priors + explicit centering constraint on node residuals per mode
+- **Option B:** priors + explicit centering constraint on node residuals per node type
 - **Option C:** priors + fixed intercept convention (e.g., root as intercept only)
 
 Status: Option A selected (Gaussian priors only).
@@ -152,7 +156,7 @@ Given project coding style, decide required asserts:
 - each judged leaf path resolves to root without broken parent chain
 - no duplicated node ids in a single path
 - all referenced node ids are in bounds and index-consistent
-- mode tag exists when required by fitting rule
+- node-type tag exists when required by fitting rule
 
 Status: pending final confirmation with added leaf/judgment set-equality asserts below.
 
@@ -189,7 +193,7 @@ What artifacts should be persisted?
 Recommended schema (minimum):
 
 - per-node: `{global_node_id, tree_question_id, node_id, mean, log_std, mode}`
-- global: `{mu_k_by_mode, nu_k_by_mode, lambda_slack, sigma_mean, sigma_mode, sigma_log_std, eps, max_iterations}`
+- global: `{mu_k_by_node_type, lambda_slack, sigma_ordinary, sigma_special, sigma_log_std, eps, max_iterations}`
 - diagnostics: `{objective_trace, converged_flag=false|true, final_train_sign_accuracy, final_val_sign_accuracy, mean_slack_train, mean_slack_val}`
 
 Confirmed persisted diagnostics and schema direction.
@@ -220,8 +224,8 @@ Decide items in this order (to unblock implementation fastest):
 3. Path inclusion rule:
    - Include root node: **yes**
    - Include terminal leaf node: **yes**
-   - Include nodes with `step.verifier_and_mode_summary == None`: **yes**
-   - Fitting-time mode mapping for `None`: **treat as VerifierOff**
+   - Include nodes where `step.node_type` is unavailable: **yes**
+   - Fitting-time node-type mapping for `None`: **treat as VerifierOff**
 
 4. Leaf eligibility rule:
    - Prefer `leaf_node_judgments` (labels source)
@@ -229,10 +233,9 @@ Decide items in this order (to unblock implementation fastest):
 
 5. Prior hierarchy and variances: **fixed values for now**
    - Recommended initialization:
-     - `sigma_mean = 1.0`
-     - `sigma_mode = 1.0`
+     - `sigma_ordinary = 1.0`
+     - `sigma_special = 1.0`
      - `sigma_log_std = 1.0`
-     - `mu_log_std_mode = 0.0` (implies prior center at `std = exp(0)=1`)
 
 6. Identifiability: **Gaussian priors only**
 
@@ -281,17 +284,16 @@ Path indicator:
 - `x_{l,i} = 1` iff node `i` is on judged leaf `l` path
 - By decision: path includes root and terminal leaf nodes.
 
-Mode mapping:
+Node-type mapping:
 
 - `mode(i) in {VerifierOff, VerifierOn, VerifierOnAndOverwriteLastStep, VerifierOnAndChangePlan}`
-- If `step.verifier_and_mode_summary == None`, map to `VerifierOff`.
+- If `step.node_type` is unavailable, map to `VerifierOff`.
 
 ### Parameters to optimize
 
 - Per-node contribution mean: `m_i` for each `i in N`
 - Per-node log std: `u_i` for each `i in N` (where `std_i = exp(u_i)`)
-- Shared mode means for contributions: `mu_k` for each mode `k`
-- Shared mode means for log-std priors: `nu_k` for each mode `k`
+- Shared special-node means for contributions: `mu_k` for each special node type `k`
 - Per-leaf slack: `xi_l >= 0` for each `l in L`
 
 ### Deterministic constraints with uncertainty coupling (chosen)
@@ -324,32 +326,26 @@ Interpretation:
 
 Contribution-mean prior:
 
-- `m_i ~ N(mu_{mode(i)}, sigma_mean^2)`
+- `m_i ~ N(mu_{node_type(i)}, sigma_ordinary^2)`
 
-Mode-mean prior:
+Special-node prior-mean prior:
 
-- `mu_k ~ N(0, sigma_mode^2)`
+- `mu_k ~ N(0, sigma_special^2)`
 
 Log-std prior:
 
-- `u_i ~ N(nu_{mode(i)}, sigma_log_std^2)`
-
-Mode prior for log-std centers:
-
-- `nu_k ~ N(mu_log_std_mode, sigma_mode^2)`
-- Current default center: `mu_log_std_mode = 0.0`
+- `u_i ~ N(0, sigma_log_std^2)`
 
 ### Optimization objective (minimization)
 
-`J = J_constraints + J_mean_prior + J_mode_prior + J_log_std_prior + J_log_std_mode_prior`
+`J = J_constraints + J_mean_prior + J_mode_prior + J_log_std_prior`
 
 where:
 
 - `J_constraints = lambda_slack * sum_{l in L} xi_l^2`
-- `J_mean_prior = (1 / (2 * sigma_mean^2)) * sum_{i in N} (m_i - mu_{mode(i)})^2`
-- `J_mode_prior = (1 / (2 * sigma_mode^2)) * sum_k mu_k^2`
-- `J_log_std_prior = (1 / (2 * sigma_log_std^2)) * sum_{i in N} (u_i - nu_{mode(i)})^2`
-- `J_log_std_mode_prior = (1 / (2 * sigma_mode^2)) * sum_k (nu_k - mu_log_std_mode)^2`
+- `J_mean_prior = (1 / (2 * sigma_ordinary^2)) * sum_{i in N} (m_i - mu_{node_type(i)})^2`
+- `J_mode_prior = (1 / (2 * sigma_special^2)) * sum_k mu_k^2`
+- `J_log_std_prior = (1 / (2 * sigma_log_std^2)) * sum_{i in N} u_i^2`
 
 Subject to:
 
@@ -358,10 +354,9 @@ Subject to:
 
 ### Fixed initial hyperparameters (current default)
 
-- `sigma_mean = 1.0`
-- `sigma_mode = 1.0`
+- `sigma_ordinary = 1.0`
+- `sigma_special = 1.0`
 - `sigma_log_std = 1.0`
-- `mu_log_std_mode = 0.0`
 - `eps = 1e-6`
 - `lambda_slack = 1.0` (recommended start)
 - `log_std clamp: u_i in [-4.0, 2.0]`

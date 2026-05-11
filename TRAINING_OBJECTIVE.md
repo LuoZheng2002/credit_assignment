@@ -9,3 +9,8 @@ Fatal error that causes trajectory to terminate midway: use GRPO to determine th
 Trajectory length score: should be taken care of by unfocused penalty.
 
 Ratio: 5:1:1:1:1
+
+
+
+How do we determine the importance of the training samples?
+

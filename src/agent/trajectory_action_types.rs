@@ -104,7 +104,7 @@ pub struct FailedAttempt {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum VerifierAndModeSummary {
+pub enum NodeType {
     VerifierOff,
     VerifierOn,
     VerifierOnAndOverwriteLastStep,

@@ -48,7 +48,7 @@ and make branching orchestration explicit and event-sourced.
    - new switch argument: `take_over_mode_decision`
    - extracted chosen-mode logic into dedicated `determine_chosen_mode(...)`
 15. Populated per-node-step metadata in event replay application:
-   - `Step.verifier_and_mode_summary` is set on `PlannerDecideNextStep`
+   - `Step.node_type` is set on `PlannerDecideNextStep`
    - `Step.step_finalized` is set on `PlannerEndStep` and terminal intervention tool responses
 16. Hardcoded verifier-on first-expansion random split to `0.5` where branch type is chosen.
 
