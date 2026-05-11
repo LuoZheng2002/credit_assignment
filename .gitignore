@@ -11,6 +11,7 @@ results
 pwd.txt
 examine.json
 activate_environment.sh
+results_version_tracking
 # Added by cargo
 
 /target
