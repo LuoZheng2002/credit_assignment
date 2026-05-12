@@ -11,12 +11,19 @@ pub fn is_context_length_exceeded_response(response: &str) -> bool {
     response == CONTEXT_LENGTH_EXCEEDED_RESPONSE
 }
 
-pub fn context_length_exceeded_result(question_id: usize) -> Vec<TreeAction> {
+pub fn context_length_exceeded_result(
+    question_id: usize,
+    final_answer_submitted: bool,
+) -> Vec<TreeAction> {
     println!("[Warning] Model context length exceeded, ending session.");
-    vec![TreeAction::AddTrajectoryAction {
-        question_id,
-        action: TrajectoryAction::SubmitFinalAnswer(FinalAnswer::Failure(
-            CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
-        )),
-    }]
+    if !final_answer_submitted {
+        vec![TreeAction::AddTrajectoryAction {
+            question_id,
+            action: TrajectoryAction::SubmitFinalAnswer(FinalAnswer::Failure(
+                CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
+            )),
+        }]
+    } else {
+        vec![]
+    }
 }
