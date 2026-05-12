@@ -9,12 +9,20 @@ use std::{
 
 use clap::Parser;
 use credit_assignment::{
-    agent::{rollout_loop::rollout, tree_action::TreeAction},
+    agent::{
+        rollout_loop::rollout,
+        tree_action::TreeAction,
+        tree_schema::{
+            AssetFileTrees, AssetFileTreesTracking, CompletedTree, get_rollout_log_path,
+        },
+    },
     call_llm::set_vllm_port,
-    datasets::{DeepMathQuestion, get_question_path},
+    datasets::DeepMathQuestion,
     direct_answer::generate_raw_answers::LlmModel,
-    parallel_process_jsonl::{read_json_lines, read_json_lines_indexed, write_jsonl_file},
-    schemas::tree::{CompletedTree, get_rollout_trajectory_path, get_session_log_path},
+    parallel_process_jsonl::{
+        read_json_lines, read_json_lines_indexed, write_json, write_jsonl_file,
+    },
+    version_tracking::{AssetFile, AssetFileDataset},
 };
 use futures::future::join_all;
 use indexmap::IndexMap;
@@ -85,34 +93,46 @@ async fn main() {
     let client = Client::new();
     let mut rng = StdRng::seed_from_u64(42);
     // read log file
-    let session_log_path = get_session_log_path(model, &dataset_name, num_samples);
-    let mut session_log_items: Vec<TreeAction> =
-        read_json_lines(&session_log_path).unwrap_or_default();
+    let rollout_log_path = get_rollout_log_path(model, &dataset_name, num_samples);
+    let mut rollout_log_items: Vec<TreeAction> =
+        read_json_lines(&rollout_log_path).unwrap_or_default();
     // read trajectory file
-    let trajectory_path = get_rollout_trajectory_path(model, &dataset_name, num_samples);
-    let trajectory_items: IndexMap<usize, CompletedTree> =
-        read_json_lines_indexed(&trajectory_path).unwrap_or_default();
-    let trajectory_completed_ids: HashSet<usize> = trajectory_items.keys().cloned().collect();
+    // let trajectory_path = get_rollout_trees_path(model, &dataset_name, num_samples);
+    let asset_file_trees = AssetFileTrees {
+        model,
+        dataset: dataset_name.clone(),
+        num_samples,
+    };
+    let trees_path = asset_file_trees.file_path();
+
+    let tree_items: IndexMap<usize, CompletedTree> =
+        read_json_lines_indexed(&trees_path).unwrap_or_default();
+    let tree_completed_ids: HashSet<usize> = tree_items.keys().cloned().collect();
     // delete parts in log file that is already finished and write back
-    session_log_items.retain(|item| !trajectory_completed_ids.contains(&item.question_id()));
-    write_jsonl_file(&session_log_path, &session_log_items).unwrap();
+    rollout_log_items.retain(|item| !tree_completed_ids.contains(&item.question_id()));
+    write_jsonl_file(&rollout_log_path, &rollout_log_items).unwrap();
     // construct a hashmap of loaded session logs
     let mut loaded_session_logs: IndexMap<usize, Vec<TreeAction>> = IndexMap::new();
-    for log_item in session_log_items {
+    for log_item in rollout_log_items {
         loaded_session_logs
             .entry(log_item.question_id())
             .or_insert_with(Vec::new)
             .push(log_item);
     }
     // load questions and answers for unfinished trajectories
-    let question_path = get_question_path(&dataset_name, num_samples);
-    let questions: IndexMap<usize, DeepMathQuestion> =
-        read_json_lines_indexed(&question_path).unwrap();
-    // let mut unfinished_trajectories: IndexMap<usize, DeepMathQuestion> =
-    //     read_json_lines_indexed(&question_path).unwrap();
-    // unfinished_trajectories.retain(|id, _| !trajectory_completed_ids.contains(id));
-    let mut unfinished_trajectory_ids: HashSet<usize> = questions.keys().cloned().collect();
-    unfinished_trajectory_ids.retain(|id| !trajectory_completed_ids.contains(id));
+    let asset_file_dataset = AssetFileDataset {
+        dataset: dataset_name.clone(),
+        num_samples,
+    };
+    let dataset_hash = asset_file_dataset.synchronize();
+    let dataset = asset_file_dataset.fetch();
+    let questions = dataset
+        .into_iter()
+        .map(|q| (q.id, q))
+        .collect::<IndexMap<usize, DeepMathQuestion>>();
+
+    let mut unfinished_tree_ids: HashSet<usize> = questions.keys().cloned().collect();
+    unfinished_tree_ids.retain(|id| !tree_completed_ids.contains(id));
 
     let sem = Arc::new(Semaphore::new(max_tasks));
     SHUTDOWN.store(false, Ordering::SeqCst);
@@ -128,15 +148,22 @@ async fn main() {
     let mut session_log_file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&session_log_path)
+        .open(&rollout_log_path)
         .unwrap();
-    let mut trajectory_file = OpenOptions::new()
+    let mut trees_file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true) // truncate and rewrite history to let the items flow through the channel
-        .open(&trajectory_path)
+        .open(&trees_path)
         .unwrap();
-    for trajectory in trajectory_items.into_values() {
+    // write the tracking file directly to mark the existence of the tree file.
+    let tracking_content = AssetFileTreesTracking { dataset_hash };
+    write_json(
+        asset_file_dataset.version_tracking_path(),
+        &tracking_content,
+    )
+    .unwrap();
+    for trajectory in tree_items.into_values() {
         trajectory_tx.send(trajectory).unwrap();
     }
     let action_tx_for_submit = action_tx.clone();
@@ -148,8 +175,8 @@ async fn main() {
         let trajectory_tx = trajectory_tx_for_submit;
         async move {
             let finished_count = Arc::new(AtomicUsize::new(0));
-            let total_count = unfinished_trajectory_ids.len();
-            for id in unfinished_trajectory_ids {
+            let total_count = unfinished_tree_ids.len();
+            for id in unfinished_tree_ids {
                 if SHUTDOWN.load(Ordering::SeqCst) {
                     break;
                 }
@@ -207,7 +234,7 @@ async fn main() {
                 break;
             }
             let json_line = serde_json::to_string(&trajectory).unwrap();
-            writeln!(trajectory_file, "{}", json_line).unwrap();
+            writeln!(trees_file, "{}", json_line).unwrap();
             total_correct += trajectory.trajectory.correctness_ratio.numerator;
             total_judged += trajectory.trajectory.correctness_ratio.denominator;
             let running_accuracy = if total_judged == 0 {
@@ -234,11 +261,10 @@ async fn main() {
     ])
     .await;
     // read trajectory file and sort by id
-    let mut trajectories: Vec<CompletedTree> =
-        read_json_lines(&trajectory_path).unwrap_or_default();
+    let mut trajectories: Vec<CompletedTree> = read_json_lines(&trees_path).unwrap_or_default();
     trajectories.sort_by_key(|t| t.id);
     // write back sorted trajectories
-    write_jsonl_file(&trajectory_path, &trajectories).unwrap();
+    write_jsonl_file(&trees_path, &trajectories).unwrap();
 
     let mut overall_correct = 0usize;
     let mut overall_denominator = 0usize;

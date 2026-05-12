@@ -12,3 +12,4 @@ pub mod trajectory_state;
 pub mod trajectory_status;
 pub mod tree;
 pub mod tree_action;
+pub mod tree_schema;

@@ -32,9 +32,9 @@ use credit_assignment::agent::trajectory_action_types::{
 };
 use credit_assignment::agent::trajectory_state::TrajectoryState;
 use credit_assignment::agent::tree::Tree;
+use credit_assignment::agent::tree_schema::CompletedTree;
 use credit_assignment::em::em_schema::EmFitPerTree;
 use credit_assignment::parallel_process_jsonl::read_json_lines;
-use credit_assignment::schemas::tree::CompletedTree;
 
 /// Command line arguments for browsing rollout session logs.
 #[derive(Parser, Debug)]
@@ -649,7 +649,11 @@ impl App {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 )
-                .highlight_symbol(if hovered_line_index.is_some() { "▶ " } else { "" }),
+                .highlight_symbol(if hovered_line_index.is_some() {
+                    "▶ "
+                } else {
+                    ""
+                }),
             frame.area(),
             &mut state,
         );
@@ -1561,7 +1565,10 @@ fn build_tree_lines(tree: &Tree) -> (Vec<usize>, Vec<String>, Vec<TreeRenderedNo
     (ordered_leaf_node_ids, lines, node_layouts)
 }
 
-fn build_node_scores_for_tree(answer: &CompletedTree, tree_em_fit: Option<EmFitPerTree>) -> Vec<Option<f64>> {
+fn build_node_scores_for_tree(
+    answer: &CompletedTree,
+    tree_em_fit: Option<EmFitPerTree>,
+) -> Vec<Option<f64>> {
     let mut scores: Vec<Option<f64>> = vec![None; answer.trajectory.nodes.len()];
     let Some(tree_em_fit) = tree_em_fit else {
         return scores;
@@ -1591,7 +1598,10 @@ fn build_node_scores_for_tree(answer: &CompletedTree, tree_em_fit: Option<EmFitP
 
 fn contribution_score_to_color(score: f64, max_abs: f64) -> Color {
     assert!(score.is_finite(), "contribution score must be finite");
-    assert!(max_abs.is_finite() && max_abs >= 0.0, "max_abs must be finite and >= 0");
+    assert!(
+        max_abs.is_finite() && max_abs >= 0.0,
+        "max_abs must be finite and >= 0"
+    );
     if max_abs <= 1e-12 {
         return Color::Rgb(255, 255, 0);
     }
@@ -1600,7 +1610,10 @@ fn contribution_score_to_color(score: f64, max_abs: f64) -> Color {
 }
 
 fn red_yellow_green_color(signed_position: f64) -> Color {
-    assert!(signed_position.is_finite(), "signed color position must be finite");
+    assert!(
+        signed_position.is_finite(),
+        "signed color position must be finite"
+    );
     let clamped = signed_position.clamp(-1.0, 1.0);
     let red = ((1.0 - clamped).clamp(0.0, 1.0) * 255.0).round() as u8;
     let green = ((1.0 + clamped).clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -1687,7 +1700,9 @@ impl TreeView {
             }
         }
 
-        let tick_style = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
+        let tick_style = Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD);
         let cross_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
         for (idx, ch) in line_chars.iter().copied().enumerate() {
             if ch == '✓' {

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::em::em_types::EmFitResult;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct EmNodeFitPerTree {
+pub struct EmNodeFit {
     pub node_id: usize,
     pub mean: f64,
     pub log_std: f64,
@@ -16,11 +16,11 @@ pub struct EmNodeFitPerTree {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct EmFitPerTree {
     pub tree_question_id: usize,
-    pub per_node: Vec<EmNodeFitPerTree>,
+    pub per_node: Vec<EmNodeFit>,
 }
 
 pub fn split_em_fit_result_per_tree(em_fit: &EmFitResult) -> Vec<EmFitPerTree> {
-    let mut grouped: BTreeMap<usize, Vec<EmNodeFitPerTree>> = BTreeMap::new();
+    let mut grouped: BTreeMap<usize, Vec<EmNodeFit>> = BTreeMap::new();
     let mut seen_per_tree: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
 
     for per_node in &em_fit.per_node {
@@ -51,7 +51,7 @@ pub fn split_em_fit_result_per_tree(em_fit: &EmFitResult) -> Vec<EmFitPerTree> {
         grouped
             .entry(per_node.tree_question_id)
             .or_default()
-            .push(EmNodeFitPerTree {
+            .push(EmNodeFit {
                 node_id: per_node.node_id,
                 mean: per_node.mean,
                 log_std: per_node.log_std,

@@ -3,6 +3,7 @@ use std::fs::File;
 use std::path::PathBuf;
 
 use clap::Parser;
+use credit_assignment::agent::tree_schema::CompletedTree;
 use credit_assignment::em::em_dataset_builder::EmDatasetBuilder;
 use credit_assignment::em::em_fitting::EmFitter;
 use credit_assignment::em::em_schema::split_em_fit_result_per_tree;
@@ -10,7 +11,6 @@ use credit_assignment::em::em_types::{
     EmFitDiagnostics, EmGlobalConfigSnapshot, EmHyperparameters, EmNodeTypePosterior, LogStdClamp,
 };
 use credit_assignment::parallel_process_jsonl::{read_json_lines, write_jsonl_file};
-use credit_assignment::schemas::tree::CompletedTree;
 use serde::Serialize;
 
 #[derive(Serialize, Debug)]
@@ -29,7 +29,10 @@ struct Args {
     #[arg(long, help = "Output jsonl path for EmFitPerTree entries")]
     output_file: PathBuf,
 
-    #[arg(long, help = "Output json path for EM fit metadata (global priors/config/diagnostics)")]
+    #[arg(
+        long,
+        help = "Output json path for EM fit metadata (global priors/config/diagnostics)"
+    )]
     em_fit_meta_file: PathBuf,
 
     #[arg(long, default_value_t = 1.0)]
@@ -59,8 +62,14 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    let completed_trees: Vec<CompletedTree> = read_json_lines(&args.trees_file)
-        .unwrap_or_else(|err| panic!("Failed to read trees file {}: {}", args.trees_file.display(), err));
+    let completed_trees: Vec<CompletedTree> =
+        read_json_lines(&args.trees_file).unwrap_or_else(|err| {
+            panic!(
+                "Failed to read trees file {}: {}",
+                args.trees_file.display(),
+                err
+            )
+        });
     assert!(
         !completed_trees.is_empty(),
         "Input trees file must contain at least one CompletedTree entry"
@@ -102,7 +111,10 @@ fn main() {
         completed_trees.len(),
         "Output EmFitPerTree entries must match input CompletedTree count"
     );
-    let actual_tree_ids: BTreeSet<usize> = per_tree.iter().map(|entry| entry.tree_question_id).collect();
+    let actual_tree_ids: BTreeSet<usize> = per_tree
+        .iter()
+        .map(|entry| entry.tree_question_id)
+        .collect();
     assert_eq!(
         actual_tree_ids, expected_tree_ids,
         "Output EmFitPerTree tree id set must match input CompletedTree id set"

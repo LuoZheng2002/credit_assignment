@@ -29,9 +29,9 @@ impl HasId for DeepMathQuestionReasoning {
     }
 }
 
-pub fn get_question_path(dataset_name: &str, num_samples: usize) -> String {
-    format!("datasets/{}_samples_{}.jsonl", dataset_name, num_samples)
-}
+// pub fn get_question_path(dataset_name: &str, num_samples: usize) -> String {
+//     format!("datasets/{}_samples_{}.jsonl", dataset_name, num_samples)
+// }
 
 pub fn get_questions_with_reasoning_path(dataset_name: &str, num_samples: usize) -> String {
     format!(

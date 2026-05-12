@@ -1,10 +1,11 @@
 use crate::{
     call_llm::call_llm_chat_completions,
-    datasets::{DeepMathQuestion, get_question_path},
-    parallel_process_jsonl::{HasId, parallel_process_jsonl},
+    datasets::DeepMathQuestion,
+    parallel_process_jsonl::{HasId, parallel_process_jsonl}, version_tracking::{AssetFile, AssetFileDataset},
 };
+use clap::ValueEnum;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(clap::ValueEnum, Clone, Debug, Copy)]
 pub enum LlmModel {
@@ -20,6 +21,28 @@ pub enum LlmModel {
     Qwen3_8b,
     #[value(name = "qwen3.5-4b")]
     Qwen35_4b,
+}
+
+impl Serialize for LlmModel {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let possible_value = self
+            .to_possible_value()
+            .expect("LlmModel variant should always have a clap value name");
+        serializer.serialize_str(possible_value.get_name())
+    }
+}
+
+impl<'de> Deserialize<'de> for LlmModel {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        LlmModel::from_str(&value, false).map_err(serde::de::Error::custom)
+    }
 }
 
 impl LlmModel {
@@ -111,7 +134,11 @@ pub async fn generate_raw_answers(
     client: Client,
     model: LlmModel,
 ) {
-    let questions_path = get_question_path(dataset_name, num_samples);
+    let asset_file_dataset = AssetFileDataset {
+        dataset: dataset_name.to_string(),
+        num_samples,
+    };
+    let questions_path = asset_file_dataset.file_path();
     let raw_output_path = get_raw_answer_path(model, dataset_name, num_samples);
     parallel_process_jsonl(
         &[&questions_path],

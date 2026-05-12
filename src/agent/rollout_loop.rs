@@ -1,9 +1,9 @@
 use reqwest::Client;
 
 use crate::{
+    agent::tree_schema::CompletedTree,
     agent::{state_to_actions::produce_actions_from_state, tree::Tree, tree_action::TreeAction},
     direct_answer::generate_raw_answers::LlmModel,
-    schemas::tree::CompletedTree,
 };
 
 // it will output action logs and final trajectory

@@ -4,13 +4,11 @@ use std::collections::BTreeMap;
 // use crate::direct_answer::generate_rollout_answers::{CountRatio, StepQualityRatio};
 use crate::agent::trajectory_action_types::FinalAnswer;
 use crate::agent::tree_action::TreeAction;
-use crate::schemas::tree::{CountRatio, StepQualityRatio};
+use crate::agent::tree_schema::{CountRatio, StepQualityRatio};
 
 use crate::agent::trajectory_action::{TrajectoryAction, TrajectoryActionLog};
 
-use crate::agent::trajectory_action_types::{
-    NextStepDecision, NodeType, StepQuality,
-};
+use crate::agent::trajectory_action_types::{NextStepDecision, NodeType, StepQuality};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Step {
@@ -39,7 +37,9 @@ impl Step {
                 TrajectoryAction::PlannerDecideNextStep(mode) => Some(mode.clone()),
                 _ => None,
             })
-            .expect("When getting node type, the action log must have a PlannerDecideNextStep action");
+            .expect(
+                "When getting node type, the action log must have a PlannerDecideNextStep action",
+            );
         let verifier_comment = self
             .action_log
             .iter()
@@ -54,9 +54,7 @@ impl Step {
             (Some(_), NextStepDecision::OverwriteLastStep(_)) => {
                 NodeType::VerifierOnAndOverwriteLastStep
             }
-            (Some(_), NextStepDecision::ChangePlan(_)) => {
-                NodeType::VerifierOnAndChangePlan
-            }
+            (Some(_), NextStepDecision::ChangePlan(_)) => NodeType::VerifierOnAndChangePlan,
         }
     }
     pub fn step_finalized(&self) -> bool {
