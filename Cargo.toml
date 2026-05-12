@@ -13,6 +13,7 @@ dotenvy = "0.15.7"
 futures = "0.3.32"
 hex = "0.4.3"
 indexmap = "2.13.1"
+kdtree = "0.8.0"
 minijinja = "2.19.0"
 pyo3 = {version="0.28.3", features=["abi3"]}
 rand = "0.10.0"

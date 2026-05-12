@@ -18,11 +18,12 @@ use crate::{
 };
 
 // The prompt is collected when the TrajectoryStatus enters "PlannerWorkingOnStep" (after the action TrajectoryAction::PlannerMakeOrChangePlan)
-// The response content is composed of the following actions after that point:
+// The response content is composed of the following actions after that point and wrapped in
+// <__response_start__> ... <__response_end__>:
 // TrajectoryAction::PlannerReasoning
 // TrajectoryAction::PlannerToolCall
 // TrajectoryAction::ToolCallResponse
-// For TrajectoryAction::ToolCallResponse specifically, it needs to be wrapped in <__tool_response_start_> and <_tool_response_end_> tags in the response content.
+// For TrajectoryAction::ToolCallResponse specifically, it needs to be wrapped in <__tool_response_start__> and <__tool_response_end__> tags in the response content.
 pub fn generate_sample_formatted_from_tree_node(
     tree: &CompletedTree,
     advantage_composition: &AdvantageCompositionPerTree,
@@ -99,7 +100,7 @@ pub fn generate_sample_formatted_from_tree_node(
     let (prompt_before_assistant, prompt_after_assistant) =
         get_prompt_according_to_session_status(&session_state);
 
-    let mut response_content = String::new();
+    let mut response_content = String::from("<__response_start__>");
     let mut collecting = false;
     for action in &target_node.step.action_log {
         if collecting {
@@ -111,9 +112,9 @@ pub fn generate_sample_formatted_from_tree_node(
                     response_content.push_str(tool_call);
                 }
                 TrajectoryAction::ToolCallResponse(tool_response) => {
-                    response_content.push_str("<__tool_response_start_>");
+                    response_content.push_str("<__tool_response_start__>");
                     response_content.push_str(&tool_response.to_raw_content());
-                    response_content.push_str("<_tool_response_end_>");
+                    response_content.push_str("<__tool_response_end__>");
                 }
                 _ => {}
             }
@@ -124,6 +125,7 @@ pub fn generate_sample_formatted_from_tree_node(
             collecting = true;
         }
     }
+    response_content.push_str("<__response_end__>");
 
     let mut planner_chat_template_prompt =
         apply_vllm_model_chat_template(model, &prompt_before_assistant, false);
