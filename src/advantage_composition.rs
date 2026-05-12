@@ -27,7 +27,7 @@ pub struct AdvantageCompositionPerNode {
     pub contribution_mean: f64, // when displayed, normalize only the scaling factor, and set pure red / green color beyond 95% ci
     pub contribution_log_std: f64, // when displayed, normalize both the mean and std, and set pure red / green color beyond 95% ci
     pub contribution_mean_div_var: f64, // when displayed, normalize only the scaling factor, and set pure red / green color beyond 95% ci
-    pub contribution_mean_div_var_normalized: f64, // this already normalizes both the mean and std within the tree. For display, it should be multiplied by a weight factor, and then set pure red / green color beyond 95% ci of N(0, 1)
+    pub contribution_mean_div_var_normalized: f64, // this already normalizes both the mean and std within the tree, then multiplied by the tree-level win_loss_ratio_factor. For display, it should be multiplied by a weight factor, and then set pure red / green color beyond 95% ci of N(0, 1)
     pub step_quality_tool_advantage_normalized: f64, // normalized across all trees to N(0, 1). For display, multiplied by a weight factor, and then set pure red / green color beyond 95% ci of N(0, 1)
     pub step_quality_complete_advantage_normalized: f64, // same as above
     pub step_quality_focused_advantage_normalized: f64, // same as above
@@ -83,6 +83,14 @@ impl AssetFileAdvantageComposition {
             let decay = std::f64::consts::LN_2 / 6.0;
             (-(average_trajectory_length - 6.0) * decay).exp()
         }
+    }
+
+    fn win_loss_ratio_factor(tree_accuracy: f64) -> f64 {
+        assert!(
+            tree_accuracy.is_finite() && (0.0..=1.0).contains(&tree_accuracy),
+            "tree_accuracy must be finite and within [0, 1]"
+        );
+        1.0 - 2.0 * (tree_accuracy - 0.5).abs()
     }
 
     fn average_leaf_path_length(tree: &CompletedTree) -> f64 {
@@ -196,6 +204,7 @@ impl AssetFileAdvantageComposition {
         );
 
         let mut tree_length_factor_raw_by_tree_id: BTreeMap<usize, f64> = BTreeMap::new();
+        let mut win_loss_ratio_factor_by_tree_id: BTreeMap<usize, f64> = BTreeMap::new();
         for (&tree_id, tree) in &trees_by_id {
             let average_trajectory_length = Self::average_leaf_path_length(tree);
             let factor = Self::trajectory_length_factor(average_trajectory_length);
@@ -205,6 +214,27 @@ impl AssetFileAdvantageComposition {
                 tree_id
             );
             tree_length_factor_raw_by_tree_id.insert(tree_id, factor);
+
+            let correctness_ratio = &tree.trajectory.correctness_ratio;
+            assert!(
+                correctness_ratio.denominator > 0,
+                "Tree {} correctness_ratio denominator must be > 0",
+                tree_id
+            );
+            assert!(
+                correctness_ratio.numerator <= correctness_ratio.denominator,
+                "Tree {} correctness_ratio numerator must be <= denominator",
+                tree_id
+            );
+            let tree_accuracy =
+                correctness_ratio.numerator as f64 / correctness_ratio.denominator as f64;
+            let win_loss_ratio_factor = Self::win_loss_ratio_factor(tree_accuracy);
+            assert!(
+                win_loss_ratio_factor.is_finite(),
+                "win_loss_ratio_factor must be finite for tree {}",
+                tree_id
+            );
+            win_loss_ratio_factor_by_tree_id.insert(tree_id, win_loss_ratio_factor);
         }
 
         let tree_length_factors_raw: Vec<f64> = tree_length_factor_raw_by_tree_id
@@ -304,9 +334,9 @@ impl AssetFileAdvantageComposition {
             let trajectory_advantage_normalized = *tree_length_factor_normalized_by_tree_id
                 .get(&tree_id)
                 .expect("Tree id existence already validated for trajectory factors");
-            let trajectory_length_factor_raw = *tree_length_factor_raw_by_tree_id
+            let win_loss_ratio_factor = *win_loss_ratio_factor_by_tree_id
                 .get(&tree_id)
-                .expect("Tree id existence already validated for raw trajectory factors");
+                .expect("Tree id existence already validated for win/loss ratio factors");
 
             let mut per_node = Vec::with_capacity(tree_fit.per_node.len());
             for node_fit in &tree_fit.per_node {
@@ -317,7 +347,7 @@ impl AssetFileAdvantageComposition {
                     .get(&node_fit.node_id)
                     .expect("Contribution normalization map should contain all EM nodes");
                 let contribution_mean_div_var_normalized =
-                    contribution_mean_div_var_normalized * trajectory_length_factor_raw;
+                    contribution_mean_div_var_normalized * win_loss_ratio_factor;
                 per_node.push(AdvantageCompositionPerNode {
                     node_id: node_fit.node_id,
                     contribution_mean: node_fit.mean,

@@ -15,7 +15,12 @@ We first get contribution_mean_div_var from the current em fitting implementatio
 
 Then we normalize this value within a tree to N(0, 1), applying both shifting and scaling.
 
-After that normalization, we multiply by the raw trajectory length factor for that tree (the same factor defined below: 0.0 at average length 1, 1.0 at average length 6, and 0.5 at average length 12), and we get normalized_contribution.
+After that normalization, we multiply by the win_loss_ratio_factor for that tree, and we get normalized_contribution.
+
+win_loss_ratio_factor is based on the tree accuracy (correctness_ratio numerator / denominator):
+- factor = 0.0 when accuracy is 0.0 or 1.0
+- factor = 1.0 when accuracy is 0.5
+- factor changes linearly between those points (equivalently: `1 - 2 * abs(accuracy - 0.5)`).
 
 average_trajectory_length_factor_normalized is calculated as following:
 For each tree, we find the average trajectory length across all trajectories (identified by leaf nodes), and apply a formula for finding the average trajectory length factor:
