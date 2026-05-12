@@ -19,7 +19,7 @@ impl LeafLabel {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LogStdClamp {
     /// Lower bound for per-node `u_i = log_std_i` during optimization.
     pub min: f64,
@@ -28,7 +28,7 @@ pub struct LogStdClamp {
 }
 
 /// Hyperparameters for the probit-style MAP objective (kept in `em` namespace).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EmHyperparameters {
     /// Shared prior std in `m_i ~ N(mu_node_type(i), sigma_ordinary^2)` for all node types.
     pub sigma_ordinary: f64,

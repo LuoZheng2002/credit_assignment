@@ -158,11 +158,7 @@ async fn main() {
         .unwrap();
     // write the tracking file directly to mark the existence of the tree file.
     let tracking_content = AssetFileTreesTracking { dataset_hash };
-    write_json(
-        asset_file_trees.version_tracking_path(),
-        &tracking_content,
-    )
-    .unwrap();
+    write_json(asset_file_trees.version_tracking_path(), &tracking_content).unwrap();
     for trajectory in tree_items.into_values() {
         trajectory_tx.send(trajectory).unwrap();
     }

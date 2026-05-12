@@ -474,6 +474,7 @@ dependencies = [
  "crossterm",
  "dotenvy",
  "futures",
+ "hex",
  "indexmap",
  "minijinja",
  "pyo3",

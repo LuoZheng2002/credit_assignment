@@ -11,7 +11,6 @@ use crate::{
     em::em_types::EmFitResult,
     em::em_types::{
         EmFitDiagnostics, EmGlobalConfigSnapshot, EmHyperparameters, EmNodeTypePosterior,
-        LogStdClamp,
     },
     parallel_process_jsonl::{read_json, read_json_lines, write_json, write_jsonl_file},
     version_tracking::{AssetFile, Base64Hash, hash_file},
@@ -120,19 +119,17 @@ pub fn get_em_fit_meta_path(model: LlmModel, dataset: &str, num_samples: usize) 
     )
 }
 
-fn default_em_hyperparameters() -> EmHyperparameters {
-    EmHyperparameters {
-        sigma_ordinary: 1.0,
-        sigma_special: 1.0,
-        sigma_log_std: 1.0,
-        lambda_slack: 1.0,
-        eps: 1e-6,
-        max_iterations: 100,
-        log_std_clamp: LogStdClamp {
-            min: -4.0,
-            max: 2.0,
-        },
-    }
+pub fn short_hyperparameter_hash(hyperparameters: &EmHyperparameters) -> String {
+    let serialized_hyperparameters =
+        serde_json::to_vec(hyperparameters).expect("EmHyperparameters should be serializable");
+    let hash = blake3::hash(&serialized_hyperparameters);
+    let short_hash = hex::encode(&hash.as_bytes()[..2]);
+    assert_eq!(
+        short_hash.len(),
+        4,
+        "Expected a 4-character hexadecimal hyperparameter hash"
+    );
+    short_hash
 }
 
 pub fn run_em_fit_on_completed_trees(
@@ -191,29 +188,48 @@ pub struct AssetFileEmFitTracking {
     pub per_tree_file_hash: Base64Hash,
     pub meta_file_hash: Base64Hash,
     pub trajectory_hash: Base64Hash,
+    pub hyperparameters: EmHyperparameters,
 }
 
 pub struct AssetFileEmFit {
     pub model: LlmModel,
     pub dataset: String,
     pub num_samples: usize,
+    pub hyperparameters: EmHyperparameters,
 }
 
 impl AssetFileEmFit {
+    pub fn hyperparameter_hash(&self) -> String {
+        short_hyperparameter_hash(&self.hyperparameters)
+    }
+
     pub fn per_tree_file_path(&self) -> String {
-        get_em_fit_per_tree_path(self.model, &self.dataset, self.num_samples)
+        format!(
+            "results/{}/rollout/{}_em_fit_per_tree_{}_{}.jsonl",
+            self.model.cli_name(),
+            self.dataset,
+            self.num_samples,
+            self.hyperparameter_hash(),
+        )
     }
 
     pub fn meta_file_path(&self) -> String {
-        get_em_fit_meta_path(self.model, &self.dataset, self.num_samples)
+        format!(
+            "results/{}/rollout/{}_em_fit_meta_{}_{}.json",
+            self.model.cli_name(),
+            self.dataset,
+            self.num_samples,
+            self.hyperparameter_hash(),
+        )
     }
 
     pub fn version_tracking_path(&self) -> String {
         format!(
-            "results_version_tracking/{}/rollout/{}_em_fit_{}.version.json",
+            "results_version_tracking/{}/rollout/{}_em_fit_{}_{}.version.json",
             self.model.cli_name(),
             self.dataset,
-            self.num_samples
+            self.num_samples,
+            self.hyperparameter_hash(),
         )
     }
 }
@@ -264,6 +280,10 @@ fn synchronize_em_fit_outputs(asset_file_em_fit: &AssetFileEmFit) {
         Some(tracking) => tracking.trajectory_hash == trajectory_hash,
         _ => false,
     };
+    let hyperparameters_match_tracking = match &tracking {
+        Some(tracking) => tracking.hyperparameters == asset_file_em_fit.hyperparameters,
+        _ => false,
+    };
 
     let mut stale_reasons: Vec<&str> = Vec::new();
     if !per_tree_file_exists {
@@ -284,12 +304,16 @@ fn synchronize_em_fit_outputs(asset_file_em_fit: &AssetFileEmFit) {
     if !dependency_hash_matches_tracking {
         stale_reasons.push("trajectory dependency hash mismatch");
     }
+    if !hyperparameters_match_tracking {
+        stale_reasons.push("hyperparameters mismatch");
+    }
 
     let stale = !per_tree_file_exists
         || !meta_file_exists
         || !per_tree_hash_matches_tracking
         || !meta_hash_matches_tracking
-        || !dependency_hash_matches_tracking;
+        || !dependency_hash_matches_tracking
+        || !hyperparameters_match_tracking;
 
     if stale {
         println!(
@@ -299,16 +323,16 @@ fn synchronize_em_fit_outputs(asset_file_em_fit: &AssetFileEmFit) {
             asset_file_em_fit.num_samples,
             stale_reasons.join(", ")
         );
-        let completed_trees: Vec<CompletedTree> = read_json_lines(&trajectory_path).unwrap_or_else(|err| {
-            panic!(
-                "Failed to read dependency trajectory file {}: {}",
-                trajectory_path,
-                err
-            )
-        });
+        let completed_trees: Vec<CompletedTree> =
+            read_json_lines(&trajectory_path).unwrap_or_else(|err| {
+                panic!(
+                    "Failed to read dependency trajectory file {}: {}",
+                    trajectory_path, err
+                )
+            });
         let (per_tree, meta) = run_em_fit_on_completed_trees(
             &completed_trees,
-            default_em_hyperparameters(),
+            asset_file_em_fit.hyperparameters.clone(),
         );
         write_jsonl_file(&per_tree_path, &per_tree).unwrap_or_else(|err| {
             panic!(
@@ -317,24 +341,25 @@ fn synchronize_em_fit_outputs(asset_file_em_fit: &AssetFileEmFit) {
             )
         });
         write_json(&meta_path, &meta).unwrap_or_else(|err| {
-            panic!("Failed to write EM fit metadata output to {}: {}", meta_path, err)
+            panic!(
+                "Failed to write EM fit metadata output to {}: {}",
+                meta_path, err
+            )
         });
 
         let per_tree_hash = hash_file(&per_tree_path)
             .unwrap_or_else(|err| panic!("Failed to hash file {}: {}", per_tree_path, err));
-        let meta_hash =
-            hash_file(&meta_path).unwrap_or_else(|err| panic!("Failed to hash file {}: {}", meta_path, err));
+        let meta_hash = hash_file(&meta_path)
+            .unwrap_or_else(|err| panic!("Failed to hash file {}: {}", meta_path, err));
 
         let tracking_content = AssetFileEmFitTracking {
             per_tree_file_hash: per_tree_hash,
             meta_file_hash: meta_hash,
             trajectory_hash,
+            hyperparameters: asset_file_em_fit.hyperparameters.clone(),
         };
         write_json(&tracking_path, &tracking_content).unwrap_or_else(|err| {
-            panic!(
-                "Failed to write tracking file {}: {}",
-                tracking_path, err
-            )
+            panic!("Failed to write tracking file {}: {}", tracking_path, err)
         });
     } else {
         println!(
