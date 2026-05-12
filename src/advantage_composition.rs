@@ -150,10 +150,13 @@ impl AssetFileAdvantageComposition {
             .sum::<f64>()
             / values.len() as f64;
         assert!(
-            variance.is_finite() && variance > 0.0,
-            "Cannot normalize {} because variance is not strictly positive",
+            variance.is_finite() && variance >= 0.0,
+            "Cannot normalize {} because variance is negative or non-finite",
             name
         );
+        if variance == 0.0 {
+            return vec![0.0; values.len()];
+        }
         let std = variance.sqrt();
         values.iter().map(|value| (*value - mean) / std).collect()
     }

@@ -9,3 +9,4 @@ pub mod em;
 pub mod parallel_process_jsonl;
 pub mod status_prompts;
 pub mod version_tracking;
+pub mod training_set;
