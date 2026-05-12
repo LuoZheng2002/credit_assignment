@@ -159,7 +159,7 @@ async fn main() {
     // write the tracking file directly to mark the existence of the tree file.
     let tracking_content = AssetFileTreesTracking { dataset_hash };
     write_json(
-        asset_file_dataset.version_tracking_path(),
+        asset_file_trees.version_tracking_path(),
         &tracking_content,
     )
     .unwrap();

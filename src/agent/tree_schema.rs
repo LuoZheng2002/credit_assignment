@@ -64,6 +64,27 @@ pub struct AssetFileTrees {
     pub dataset: String,
     pub num_samples: usize,
 }
+
+impl AssetFileTrees {
+    pub fn file_path(&self) -> String {
+        format!(
+            "results/{}/agent/{}_trees_{}.jsonl",
+            self.model.cli_name(),
+            self.dataset,
+            self.num_samples
+        )
+    }
+
+    pub fn version_tracking_path(&self) -> String {
+        format!(
+            "results_version_tracking/{}/agent/{}_trees_{}.version.json",
+            self.model.cli_name(),
+            self.dataset,
+            self.num_samples
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetFileTreesTracking {
     pub dataset_hash: Base64Hash,
@@ -108,21 +129,5 @@ impl AssetFile for AssetFileTrees {
     fn fetch(&self) -> Self::FileModel {
         self.synchronize();
         read_json_lines(self.file_path()).unwrap()
-    }
-    fn file_path(&self) -> String {
-        format!(
-            "results/{}/agent/{}_trees_{}.jsonl",
-            self.model.cli_name(),
-            self.dataset,
-            self.num_samples
-        )
-    }
-    fn version_tracking_path(&self) -> String {
-        format!(
-            "results_version_tracking/{}/agent/{}_trees_{}.version.json",
-            self.model.cli_name(),
-            self.dataset,
-            self.num_samples
-        )
     }
 }

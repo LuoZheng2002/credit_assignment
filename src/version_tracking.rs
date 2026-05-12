@@ -12,8 +12,6 @@ pub trait AssetFile {
     // fetch() should call synchronize() at the beginning.
     fn synchronize(&self) -> Base64Hash;
     fn fetch(&self) -> Self::FileModel;
-    fn file_path(&self) -> String;
-    fn version_tracking_path(&self) -> String;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

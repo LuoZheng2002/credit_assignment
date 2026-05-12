@@ -45,6 +45,19 @@ pub struct AssetFileDataset {
     pub num_samples: usize,
 }
 
+impl AssetFileDataset {
+    pub fn file_path(&self) -> String {
+        format!(
+            "datasets/{}_samples_{}.jsonl",
+            self.dataset, self.num_samples
+        )
+    }
+
+    pub fn version_tracking_path(&self) -> String {
+        unreachable!("Dataset file does not have a tracking file.")
+    }
+}
+
 impl AssetFile for AssetFileDataset {
     type FileModel = Vec<DeepMathQuestion>;
 
@@ -54,14 +67,5 @@ impl AssetFile for AssetFileDataset {
     fn fetch(&self) -> Self::FileModel {
         self.synchronize();
         read_json_lines(self.file_path()).unwrap()
-    }
-    fn file_path(&self) -> String {
-        format!(
-            "datasets/{}_samples_{}.jsonl",
-            self.dataset, self.num_samples
-        )
-    }
-    fn version_tracking_path(&self) -> String {
-        unreachable!("Dataset file does not have a tracking file.")
     }
 }
