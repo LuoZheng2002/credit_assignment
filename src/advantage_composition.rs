@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AdvantageCompositionPerTree {
     pub question_id: usize,
@@ -17,5 +16,5 @@ pub struct AdvantageCompositionPerNode {
     pub step_quality_tool_advantage_normalized: f64, // normalized across all trees to N(0, 1). For display, multiplied by a weight factor, and then set pure red / green color beyond 95% ci of N(0, 1)
     pub step_quality_complete_advantage_normalized: f64, // same as above
     pub step_quality_focused_advantage_normalized: f64, // same as above
-    pub trajectory_advantage_normalized: f64, // same as above
+    pub trajectory_advantage_normalized: f64,        // same as above
 }

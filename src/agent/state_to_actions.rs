@@ -368,7 +368,9 @@ pub async fn produce_actions_from_state(
                         // )),
                         // action: TrajectoryAction::ToolCallResponse(ToolResponse::EmptyMessageHint),
                         // action: TrajectoryAction::SystemInterrupt("Model tries to end the step at the beginning of a step.".into())
-                        action: TrajectoryAction::SubmitFinalAnswer(FinalAnswer::Failure("Model tries to end the step at the beginning of a step.".into()))
+                        action: TrajectoryAction::SubmitFinalAnswer(FinalAnswer::Failure(
+                            "Model tries to end the step at the beginning of a step.".into(),
+                        )),
                     });
                     has_step_terminate_intervention = true;
                 }
@@ -400,7 +402,9 @@ pub async fn produce_actions_from_state(
                 }
 
                 let current_step_full = actions.len() == num_additional_actions_allowed;
-                if ((push_end_step && !response_is_empty) || current_step_full) && !has_step_terminate_intervention {
+                if ((push_end_step && !response_is_empty) || current_step_full)
+                    && !has_step_terminate_intervention
+                {
                     // assert!(
                     //     !has_terminal_intervention,
                     //     "PlannerEndStep should not be emitted after terminal intervention"

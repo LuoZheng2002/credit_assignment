@@ -17,12 +17,12 @@ use credit_assignment::{
         },
     },
     call_llm::set_vllm_port,
-    datasets::DeepMathQuestion,
+    datasets::{AssetFileDataset, DeepMathQuestion},
     direct_answer::generate_raw_answers::LlmModel,
     parallel_process_jsonl::{
         read_json_lines, read_json_lines_indexed, write_json, write_jsonl_file,
     },
-    version_tracking::{AssetFile, AssetFileDataset},
+    version_tracking::AssetFile,
 };
 use futures::future::join_all;
 use indexmap::IndexMap;

@@ -1,5 +1,9 @@
 use crate::{
-    agent::tree::Tree, direct_answer::generate_raw_answers::LlmModel, parallel_process_jsonl::{HasId, read_json, read_json_lines}, version_tracking::{AssetFile, AssetFileDataset, Base64Hash, hash_file},
+    agent::tree::Tree,
+    datasets::AssetFileDataset,
+    direct_answer::generate_raw_answers::LlmModel,
+    parallel_process_jsonl::{HasId, read_json, read_json_lines},
+    version_tracking::{AssetFile, Base64Hash, hash_file},
 };
 use serde::{Deserialize, Serialize};
 
@@ -54,8 +58,6 @@ pub fn get_rollout_log_path(model: LlmModel, dataset_name: &str, num_samples: us
         num_samples
     )
 }
-
-
 
 pub struct AssetFileTrees {
     pub model: LlmModel,

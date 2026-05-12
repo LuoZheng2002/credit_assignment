@@ -337,8 +337,7 @@ impl<'a> TrajectoryState<'a> {
                     }
                     ToolResponse::PythonError(error) => {
                         self.current_step_last_python_error = Some(error.clone());
-                    }
-                    // ToolResponse::EmptyMessageHint => {}
+                    } // ToolResponse::EmptyMessageHint => {}
                 }
                 step_content_raw.push_str(&tool_response.to_raw_content());
             }

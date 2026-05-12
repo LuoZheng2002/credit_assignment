@@ -58,15 +58,18 @@ impl EmFitter {
 
     fn assert_hyperparameters(&self) {
         assert!(
-            self.hyperparameters.sigma_ordinary.is_finite() && self.hyperparameters.sigma_ordinary > 0.0,
+            self.hyperparameters.sigma_ordinary.is_finite()
+                && self.hyperparameters.sigma_ordinary > 0.0,
             "sigma_ordinary must be finite and > 0"
         );
         assert!(
-            self.hyperparameters.sigma_special.is_finite() && self.hyperparameters.sigma_special > 0.0,
+            self.hyperparameters.sigma_special.is_finite()
+                && self.hyperparameters.sigma_special > 0.0,
             "sigma_special must be finite and > 0"
         );
         assert!(
-            self.hyperparameters.sigma_log_std.is_finite() && self.hyperparameters.sigma_log_std > 0.0,
+            self.hyperparameters.sigma_log_std.is_finite()
+                && self.hyperparameters.sigma_log_std > 0.0,
             "sigma_log_std must be finite and > 0"
         );
         assert!(
@@ -143,7 +146,11 @@ impl EmFitter {
         EmIndexing { special_node_types }
     }
 
-    fn initialize_state(&self, dataset: &EmFitDataset, indexing: &EmIndexing) -> EmOptimizationState {
+    fn initialize_state(
+        &self,
+        dataset: &EmFitDataset,
+        indexing: &EmIndexing,
+    ) -> EmOptimizationState {
         EmOptimizationState {
             node_means: vec![0.0; dataset.node_bindings.len()],
             node_log_stds: vec![0.0; dataset.node_bindings.len()],
@@ -194,8 +201,10 @@ impl EmFitter {
                 );
                 self.clamp_log_stds_in_place(&mut candidate.node_log_stds);
 
-                let candidate_eval = self.evaluate_objective_and_gradients(dataset, indexing, &candidate);
-                if candidate_eval.objective.is_finite() && candidate_eval.objective < eval.objective {
+                let candidate_eval =
+                    self.evaluate_objective_and_gradients(dataset, indexing, &candidate);
+                if candidate_eval.objective.is_finite() && candidate_eval.objective < eval.objective
+                {
                     *state = candidate;
                     accepted = true;
                     break;
@@ -237,9 +246,12 @@ impl EmFitter {
             "special_mus must align with special node types"
         );
 
-        let inv_sigma_ordinary_sq = 1.0 / (self.hyperparameters.sigma_ordinary * self.hyperparameters.sigma_ordinary);
-        let inv_sigma_special_sq = 1.0 / (self.hyperparameters.sigma_special * self.hyperparameters.sigma_special);
-        let inv_sigma_log_std_sq = 1.0 / (self.hyperparameters.sigma_log_std * self.hyperparameters.sigma_log_std);
+        let inv_sigma_ordinary_sq =
+            1.0 / (self.hyperparameters.sigma_ordinary * self.hyperparameters.sigma_ordinary);
+        let inv_sigma_special_sq =
+            1.0 / (self.hyperparameters.sigma_special * self.hyperparameters.sigma_special);
+        let inv_sigma_log_std_sq =
+            1.0 / (self.hyperparameters.sigma_log_std * self.hyperparameters.sigma_log_std);
 
         let mut objective = 0.0;
         let mut grad_node_means = vec![0.0; dataset.node_bindings.len()];
@@ -247,7 +259,8 @@ impl EmFitter {
         let mut grad_special_mus = vec![0.0; indexing.special_node_types.len()];
 
         for (node_idx, binding) in dataset.node_bindings.iter().enumerate() {
-            let target_mean = self.node_type_prior_mean(indexing, &binding.node_type, &state.special_mus);
+            let target_mean =
+                self.node_type_prior_mean(indexing, &binding.node_type, &state.special_mus);
             let residual = state.node_means[node_idx] - target_mean;
             objective += 0.5 * inv_sigma_ordinary_sq * residual * residual;
             grad_node_means[node_idx] += inv_sigma_ordinary_sq * residual;
@@ -272,7 +285,10 @@ impl EmFitter {
             .copied()
             .map(|u_i| {
                 let v = (2.0 * u_i).exp();
-                assert!(v.is_finite() && v > 0.0, "exp(2*u_i) must be finite and > 0");
+                assert!(
+                    v.is_finite() && v > 0.0,
+                    "exp(2*u_i) must be finite and > 0"
+                );
                 v
             })
             .collect();
@@ -288,7 +304,10 @@ impl EmFitter {
             let (mu_l, var_l) = self.compute_leaf_score_stats(leaf_path, state, &exp_two_u);
             let y_l = leaf_binding.label.as_sign();
             let tau_l = (var_l + self.hyperparameters.eps).sqrt();
-            assert!(tau_l.is_finite() && tau_l > 0.0, "leaf tau must be finite and > 0");
+            assert!(
+                tau_l.is_finite() && tau_l > 0.0,
+                "leaf tau must be finite and > 0"
+            );
 
             let z_l = y_l * mu_l / tau_l;
             let xi_l = (-z_l).max(0.0);
@@ -299,7 +318,10 @@ impl EmFitter {
 
             let d_obj_d_z = -pdf_over_cdf;
             let tau_cubed = tau_l * tau_l * tau_l;
-            assert!(tau_cubed.is_finite() && tau_cubed > 0.0, "tau^3 must be finite and > 0");
+            assert!(
+                tau_cubed.is_finite() && tau_cubed > 0.0,
+                "tau^3 must be finite and > 0"
+            );
             for term in &leaf_path.terms {
                 let node_idx = term.global_node_id;
                 let x_li = term.x_li;
@@ -355,7 +377,8 @@ impl EmFitter {
         let mean_slack_train = if optimization.per_leaf_slack.is_empty() {
             0.0
         } else {
-            optimization.per_leaf_slack.iter().sum::<f64>() / optimization.per_leaf_slack.len() as f64
+            optimization.per_leaf_slack.iter().sum::<f64>()
+                / optimization.per_leaf_slack.len() as f64
         };
 
         EmFitResult {
@@ -409,8 +432,12 @@ impl EmFitter {
         let sum_xi = per_leaf_slack.iter().sum::<f64>();
         let num_positive_xi = per_leaf_slack.iter().filter(|&&xi| xi > 0.0).count();
 
-        let mut with_index: Vec<(usize, f64)> = per_leaf_slack.iter().copied().enumerate().collect();
-        with_index.sort_by(|a, b| b.1.partial_cmp(&a.1).expect("slack values must be comparable"));
+        let mut with_index: Vec<(usize, f64)> =
+            per_leaf_slack.iter().copied().enumerate().collect();
+        with_index.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .expect("slack values must be comparable")
+        });
 
         let largest_violators: Vec<EmLeafSlack> = with_index
             .into_iter()
@@ -433,14 +460,21 @@ impl EmFitter {
         }
     }
 
-    fn compute_train_sign_accuracy(&self, dataset: &EmFitDataset, state: &EmOptimizationState) -> f64 {
+    fn compute_train_sign_accuracy(
+        &self,
+        dataset: &EmFitDataset,
+        state: &EmOptimizationState,
+    ) -> f64 {
         let exp_two_u: Vec<f64> = state
             .node_log_stds
             .iter()
             .copied()
             .map(|u_i| {
                 let v = (2.0 * u_i).exp();
-                assert!(v.is_finite() && v > 0.0, "exp(2*u_i) must be finite and > 0");
+                assert!(
+                    v.is_finite() && v > 0.0,
+                    "exp(2*u_i) must be finite and > 0"
+                );
                 v
             })
             .collect();
@@ -450,7 +484,10 @@ impl EmFitter {
             let leaf_path = &dataset.leaf_paths[leaf_idx];
             let (mu_l, var_l) = self.compute_leaf_score_stats(leaf_path, state, &exp_two_u);
             let tau_l = (var_l + self.hyperparameters.eps).sqrt();
-            assert!(tau_l.is_finite() && tau_l > 0.0, "leaf tau must be finite and > 0");
+            assert!(
+                tau_l.is_finite() && tau_l > 0.0,
+                "leaf tau must be finite and > 0"
+            );
             let normalized_margin = leaf_binding.label.as_sign() * mu_l / tau_l;
             if normalized_margin >= 0.0 {
                 num_correct += 1;
@@ -478,14 +515,20 @@ impl EmFitter {
                 term.global_node_id < state.node_means.len(),
                 "leaf path references global_node_id out of bounds"
             );
-            assert!(term.x_li.is_finite() && term.x_li >= 0.0, "x_li must be finite and >= 0");
+            assert!(
+                term.x_li.is_finite() && term.x_li >= 0.0,
+                "x_li must be finite and >= 0"
+            );
             let node_idx = term.global_node_id;
             let x_li = term.x_li;
             mu_l += x_li * state.node_means[node_idx];
             var_l += x_li * exp_two_u[node_idx];
         }
 
-        assert!(var_l.is_finite() && var_l > 0.0, "leaf variance must be finite and > 0");
+        assert!(
+            var_l.is_finite() && var_l > 0.0,
+            "leaf variance must be finite and > 0"
+        );
         (mu_l, var_l)
     }
 
@@ -529,7 +572,10 @@ fn gradient_step_in_place(
     grad_special_mus: &[f64],
     step_size: f64,
 ) {
-    assert!(step_size.is_finite() && step_size > 0.0, "step_size must be finite and > 0");
+    assert!(
+        step_size.is_finite() && step_size > 0.0,
+        "step_size must be finite and > 0"
+    );
     assert_eq!(
         state.node_means.len(),
         grad_node_means.len(),
@@ -546,7 +592,11 @@ fn gradient_step_in_place(
         "grad_special_mus must align with special_mus"
     );
 
-    for (value, grad) in state.node_means.iter_mut().zip(grad_node_means.iter().copied()) {
+    for (value, grad) in state
+        .node_means
+        .iter_mut()
+        .zip(grad_node_means.iter().copied())
+    {
         *value -= step_size * grad;
     }
     for (value, grad) in state
@@ -556,7 +606,11 @@ fn gradient_step_in_place(
     {
         *value -= step_size * grad;
     }
-    for (value, grad) in state.special_mus.iter_mut().zip(grad_special_mus.iter().copied()) {
+    for (value, grad) in state
+        .special_mus
+        .iter_mut()
+        .zip(grad_special_mus.iter().copied())
+    {
         *value -= step_size * grad;
     }
 }
@@ -570,7 +624,10 @@ fn node_type_eq(lhs: &NodeType, rhs: &NodeType) -> bool {
                 NodeType::VerifierOnAndOverwriteLastStep,
                 NodeType::VerifierOnAndOverwriteLastStep
             )
-            | (NodeType::VerifierOnAndChangePlan, NodeType::VerifierOnAndChangePlan)
+            | (
+                NodeType::VerifierOnAndChangePlan,
+                NodeType::VerifierOnAndChangePlan
+            )
     )
 }
 
@@ -592,12 +649,18 @@ fn stable_log_standard_normal_cdf_and_pdf_over_cdf(z: f64) -> (f64, f64) {
     let inv_x2 = inv_x * inv_x;
     let inv_x4 = inv_x2 * inv_x2;
     let series = 1.0 - inv_x2 + 3.0 * inv_x4;
-    assert!(series.is_finite() && series > 0.0, "tail series must be finite and > 0");
+    assert!(
+        series.is_finite() && series > 0.0,
+        "tail series must be finite and > 0"
+    );
 
     let log_cdf = -0.5 * z * z - x.ln() - LOG_SQRT_2PI + series.ln();
     let pdf_over_cdf = x + inv_x - 2.0 * inv_x * inv_x2;
     assert!(log_cdf.is_finite(), "tail log_cdf must be finite");
-    assert!(pdf_over_cdf.is_finite() && pdf_over_cdf > 0.0, "tail pdf_over_cdf must be finite and > 0");
+    assert!(
+        pdf_over_cdf.is_finite() && pdf_over_cdf > 0.0,
+        "tail pdf_over_cdf must be finite and > 0"
+    );
     (log_cdf, pdf_over_cdf)
 }
 
@@ -613,16 +676,14 @@ fn erf_approx(x: f64) -> f64 {
     let sign = if x < 0.0 { -1.0 } else { 1.0 };
     let a = x.abs();
     let t = 1.0 / (1.0 + 0.5 * a);
-    let poly = -a * a
-        - 1.265_512_23
+    let poly = -a * a - 1.265_512_23
         + t * (1.000_023_68
             + t * (0.374_091_96
                 + t * (0.096_784_18
                     + t * (-0.186_288_06
                         + t * (0.278_868_07
                             + t * (-1.135_203_98
-                                + t * (1.488_515_87
-                                    + t * (-0.822_152_23 + t * 0.170_872_77))))))));
+                                + t * (1.488_515_87 + t * (-0.822_152_23 + t * 0.170_872_77))))))));
     sign * (1.0 - t * poly.exp())
 }
 

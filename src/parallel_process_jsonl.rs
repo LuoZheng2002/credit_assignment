@@ -197,7 +197,6 @@ where
     Ok(())
 }
 
-
 pub fn read_json<T: DeserializeOwned>(path: impl AsRef<Path>) -> Result<T, String> {
     let file = File::open(path.as_ref())
         .map_err(|e| format!("Cannot open file {}: {}", path.as_ref().display(), e))?;

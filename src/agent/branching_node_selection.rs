@@ -1,8 +1,7 @@
 use rand::distr::{Distribution, weighted::WeightedIndex};
 
 use crate::agent::{
-    tool_call_execution::MAX_NUM_TRAJECTORIES, trajectory_action_types::NodeType,
-    tree::Tree,
+    tool_call_execution::MAX_NUM_TRAJECTORIES, trajectory_action_types::NodeType, tree::Tree,
 };
 pub enum BranchingNodeStatus {
     OnlyVerifierOnChild,

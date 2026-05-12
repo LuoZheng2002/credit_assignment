@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::parallel_process_jsonl::HasId;
+use crate::{
+    parallel_process_jsonl::{HasId, read_json_lines},
+    version_tracking::{AssetFile, Base64Hash, hash_file},
+};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DeepMathQuestion {
@@ -29,13 +32,36 @@ impl HasId for DeepMathQuestionReasoning {
     }
 }
 
-// pub fn get_question_path(dataset_name: &str, num_samples: usize) -> String {
-//     format!("datasets/{}_samples_{}.jsonl", dataset_name, num_samples)
-// }
-
+// legacy non-agent helper function
 pub fn get_questions_with_reasoning_path(dataset_name: &str, num_samples: usize) -> String {
     format!(
         "datasets/{}_samples_{}_reasoning.jsonl",
         dataset_name, num_samples
     )
+}
+
+pub struct AssetFileDataset {
+    pub dataset: String,
+    pub num_samples: usize,
+}
+
+impl AssetFile for AssetFileDataset {
+    type FileModel = Vec<DeepMathQuestion>;
+
+    fn synchronize(&self) -> Base64Hash {
+        hash_file(self.file_path()).unwrap()
+    }
+    fn fetch(&self) -> Self::FileModel {
+        self.synchronize();
+        read_json_lines(self.file_path()).unwrap()
+    }
+    fn file_path(&self) -> String {
+        format!(
+            "datasets/{}_samples_{}.jsonl",
+            self.dataset, self.num_samples
+        )
+    }
+    fn version_tracking_path(&self) -> String {
+        unreachable!("Dataset file does not have a tracking file.")
+    }
 }

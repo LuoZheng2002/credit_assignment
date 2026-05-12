@@ -2,7 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::em::em_types::EmFitResult;
+use crate::{
+    direct_answer::generate_raw_answers::LlmModel,
+    em::em_types::EmFitResult,
+    parallel_process_jsonl::read_json_lines,
+    version_tracking::{AssetFile, Base64Hash},
+};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct EmNodeFit {
@@ -71,4 +76,38 @@ pub fn split_em_fit_result_per_tree(em_fit: &EmFitResult) -> Vec<EmFitPerTree> {
         .collect();
     per_tree.sort_by_key(|tree_fit| tree_fit.tree_question_id);
     per_tree
+}
+
+pub struct AssetFileEmFitPerTree {
+    model: LlmModel,
+    dataset: String,
+    num_samples: usize,
+}
+
+impl AssetFile for AssetFileEmFitPerTree {
+    type FileModel = Vec<EmFitPerTree>;
+    fn synchronize(&self) -> Base64Hash {
+        // it needs to generate em fitting per tree if the file is missing or outdated
+        todo!()
+    }
+    fn fetch(&self) -> Self::FileModel {
+        self.synchronize();
+        read_json_lines(self.file_path()).unwrap()
+    }
+    fn file_path(&self) -> String {
+        format!(
+            "results/{}/agent/{}_em_fit_per_tree_{}.jsonl",
+            self.model.cli_name(),
+            self.dataset,
+            self.num_samples
+        )
+    }
+    fn version_tracking_path(&self) -> String {
+        format!(
+            "results_version_tracking/{}/agent/{}_em_fit_per_tree_{}.tracking.json",
+            self.model.cli_name(),
+            self.dataset,
+            self.num_samples
+        )
+    }
 }

@@ -20,7 +20,7 @@ impl ToolResponse {
             ToolResponse::PythonError(error) => {
                 format!("<tool_response>Python error: {}</tool_response>", error)
             } // ToolResponse::Intervention(content) => content.clone(),
-            // ToolResponse::EmptyMessageHint => EMPTY_MESSAGE_HINT.to_string(),
+              // ToolResponse::EmptyMessageHint => EMPTY_MESSAGE_HINT.to_string(),
         }
     }
 }

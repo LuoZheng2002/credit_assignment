@@ -16,7 +16,10 @@ impl EmDatasetBuilder {
     }
 
     pub fn build_from_trees(&self, trees: &[Tree]) -> EmFitDataset {
-        assert!(!trees.is_empty(), "EM dataset build requires at least one tree");
+        assert!(
+            !trees.is_empty(),
+            "EM dataset build requires at least one tree"
+        );
 
         let mut node_bindings: Vec<EmNodeBinding> = Vec::new();
         let mut leaf_bindings: Vec<EmLeafBinding> = Vec::new();
@@ -68,8 +71,7 @@ impl EmDatasetBuilder {
                     tree.nodes.len()
                 );
                 assert_eq!(
-                    tree.nodes[node.node_id].node_id,
-                    node.node_id,
+                    tree.nodes[node.node_id].node_id, node.node_id,
                     "Tree {} node index must equal node_id",
                     tree.question_id
                 );

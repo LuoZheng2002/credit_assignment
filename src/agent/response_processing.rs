@@ -15,9 +15,7 @@ use crate::{
 };
 
 // (Option<String>, Option<String>) means (reasoning, tool_call)
-pub fn split_reasoning_and_tool_call(
-    response: String,
-) -> (Option<String>, Option<String>, bool) {
+pub fn split_reasoning_and_tool_call(response: String) -> (Option<String>, Option<String>, bool) {
     let parsers: Vec<Box<dyn ToolCallParser>> = vec![Box::new(MarkdownPythonParser {})];
     let mut min_start_position = None;
     let mut selected_parser = None;
