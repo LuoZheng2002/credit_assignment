@@ -13,7 +13,9 @@ step_quality_weight = 0.05
 normalized contribution is calculated as following:
 We first get contribution_mean_div_var from the current em fitting implementation.
 
-Then we normalize this value within a tree to N(0, 1), applying both shifting and scaling, and we get normalized_contribution.
+Then we normalize this value within a tree to N(0, 1), applying both shifting and scaling.
+
+After that normalization, we multiply by the raw trajectory length factor for that tree (the same factor defined below: 0.0 at average length 1, 1.0 at average length 6, and 0.5 at average length 12), and we get normalized_contribution.
 
 average_trajectory_length_factor_normalized is calculated as following:
 For each tree, we find the average trajectory length across all trajectories (identified by leaf nodes), and apply a formula for finding the average trajectory length factor:
@@ -29,4 +31,3 @@ Statistics to look for before and after training:
 1. model proposed step quality
 2. tree average trajectory length distribution
 3. average accuracy (per leaf or per question)
-

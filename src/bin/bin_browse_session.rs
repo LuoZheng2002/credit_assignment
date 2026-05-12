@@ -1,11 +1,17 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, Stdout};
-use std::path::PathBuf;
+use std::io::{self, Stdout};
 
 use clap::Parser;
+use credit_assignment::advantage_composition::{
+    AdvantageCompositionPerTree, AssetFileAdvantageComposition,
+};
+use credit_assignment::agent::tree_schema::AssetFileTrees;
+use credit_assignment::direct_answer::generate_raw_answers::LlmModel;
+use credit_assignment::em::em_schema::{AssetFileEmFit, EmFitPerTree};
+use credit_assignment::em::em_types::{EmHyperparameters, LogStdClamp};
 use credit_assignment::status_prompts::universal_prompt::get_prompt_according_to_session_status;
+use credit_assignment::version_tracking::AssetFile;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseButton,
     MouseEvent, MouseEventKind,
@@ -22,7 +28,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui_core::buffer::Buffer;
-use serde_json;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -33,40 +38,106 @@ use credit_assignment::agent::trajectory_action_types::{
 use credit_assignment::agent::trajectory_state::TrajectoryState;
 use credit_assignment::agent::tree::Tree;
 use credit_assignment::agent::tree_schema::CompletedTree;
-use credit_assignment::em::em_schema::EmFitPerTree;
-use credit_assignment::parallel_process_jsonl::read_json_lines;
 
 /// Command line arguments for browsing rollout session logs.
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Interactively browse rollout session logs")]
 struct Args {
-    #[arg(
-        short = 'f',
-        long = "file",
-        help = "Path to a jsonl file containing RolloutAnswerRaw lines"
-    )]
-    file: PathBuf,
+    #[arg(value_enum, short, long)]
+    model: LlmModel,
 
-    #[arg(
-        long = "em-fit-file",
-        help = "Optional path to a JSON file containing one EmFitResult"
-    )]
-    em_fit_file: Option<PathBuf>,
+    #[arg(short, long)]
+    dataset_name: String,
+
+    #[arg(short, long, alias = "num_steps")]
+    num_samples: usize,
+
+    #[arg(long, default_value_t = 1.0)]
+    sigma_ordinary: f64,
+
+    #[arg(long, default_value_t = 1.0)]
+    sigma_special: f64,
+
+    #[arg(long, default_value_t = 1.0)]
+    sigma_log_std: f64,
+
+    #[arg(long, default_value_t = 1.0)]
+    lambda_slack: f64,
+
+    #[arg(long, default_value_t = 1e-6)]
+    eps: f64,
+
+    #[arg(long, default_value_t = 100)]
+    max_iterations: usize,
+
+    #[arg(long, default_value_t = -4.0)]
+    log_std_min: f64,
+
+    #[arg(long, default_value_t = 2.0)]
+    log_std_max: f64,
+
+    #[arg(long, default_value_t = 0.6)]
+    contribution_weight: f64,
+
+    #[arg(long, default_value_t = 0.25)]
+    trajectory_weight: f64,
+
+    #[arg(long, default_value_t = 0.05)]
+    step_quality_weight: f64,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
-    let answers = load_rollout_answers(&args.file)?;
-    let per_tree_em_fit = match args.em_fit_file.as_ref() {
-        Some(path) => load_em_fit_per_tree(path)?,
-        None => Vec::new(),
+    let hyperparameters = EmHyperparameters {
+        sigma_ordinary: args.sigma_ordinary,
+        sigma_special: args.sigma_special,
+        sigma_log_std: args.sigma_log_std,
+        lambda_slack: args.lambda_slack,
+        eps: args.eps,
+        max_iterations: args.max_iterations,
+        log_std_clamp: LogStdClamp {
+            min: args.log_std_min,
+            max: args.log_std_max,
+        },
     };
+    let asset_trees = AssetFileTrees {
+        model: args.model,
+        dataset: args.dataset_name.clone(),
+        num_samples: args.num_samples,
+    };
+    let asset_em_fit = AssetFileEmFit {
+        model: args.model,
+        dataset: args.dataset_name.clone(),
+        num_samples: args.num_samples,
+        hyperparameters: hyperparameters.clone(),
+    };
+    let asset_advantage = AssetFileAdvantageComposition {
+        model: args.model,
+        dataset: args.dataset_name,
+        num_samples: args.num_samples,
+        hyperparameters,
+    };
+    let mut answers = asset_trees.fetch();
+    answers.sort_by_key(|answer| answer.id);
+    let (per_tree_em_fit, _meta) = asset_em_fit.fetch();
+    let per_tree_advantage = asset_advantage.fetch();
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let result = run_app(&mut terminal, answers, per_tree_em_fit);
+    let result = run_app(
+        &mut terminal,
+        answers,
+        per_tree_em_fit,
+        per_tree_advantage,
+        AdvantageWeights {
+            contribution: args.contribution_weight,
+            trajectory: args.trajectory_weight,
+            step_quality: args.step_quality_weight,
+        },
+    );
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -77,39 +148,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     result
 }
 
-fn load_rollout_answers(path: &PathBuf) -> Result<Vec<CompletedTree>, Box<dyn Error>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut answers = Vec::new();
-    for line in reader.lines() {
-        let line = line?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let answer: CompletedTree = serde_json::from_str(trimmed)?;
-        answers.push(answer);
-    }
-    if answers.is_empty() {
-        Err("The provided jsonl file does not contain any RolloutAnswerRaw entries".into())
-    } else {
-        answers.sort_by_key(|answer| answer.id);
-        Ok(answers)
-    }
-}
-
-fn load_em_fit_per_tree(path: &PathBuf) -> Result<Vec<EmFitPerTree>, Box<dyn Error>> {
-    let items: Vec<EmFitPerTree> =
-        read_json_lines(path).map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-    Ok(items)
-}
-
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     answers: Vec<CompletedTree>,
     per_tree_em_fit: Vec<EmFitPerTree>,
+    per_tree_advantage: Vec<AdvantageCompositionPerTree>,
+    advantage_weights: AdvantageWeights,
 ) -> Result<(), Box<dyn Error>> {
-    let mut app = App::new(answers, per_tree_em_fit);
+    let mut app = App::new(
+        answers,
+        per_tree_em_fit,
+        per_tree_advantage,
+        advantage_weights,
+    );
     loop {
         terminal.draw(|f| app.draw(f))?;
         match event::read()? {
@@ -174,6 +225,8 @@ impl PaneFocus {
 struct App {
     answers: Vec<CompletedTree>,
     em_fit_per_tree_by_id: HashMap<usize, EmFitPerTree>,
+    advantage_per_tree_by_id: HashMap<usize, AdvantageCompositionPerTree>,
+    advantage_weights: AdvantageWeights,
     selection_state: ListState,
     tree_view: Option<TreeView>,
     browsing_view: Option<SessionView>,
@@ -185,13 +238,19 @@ struct App {
     log_area: Option<Rect>,
     prompt_area: Option<Rect>,
     action_area: Option<Rect>,
+    tree_checkbox_area: Option<Rect>,
     selection_area: Option<Rect>,
     prompt_metrics: Option<PaneMetrics>,
     action_metrics: Option<PaneMetrics>,
 }
 
 impl App {
-    fn new(answers: Vec<CompletedTree>, per_tree_em_fit: Vec<EmFitPerTree>) -> Self {
+    fn new(
+        answers: Vec<CompletedTree>,
+        per_tree_em_fit: Vec<EmFitPerTree>,
+        per_tree_advantage: Vec<AdvantageCompositionPerTree>,
+        advantage_weights: AdvantageWeights,
+    ) -> Self {
         let mut selection_state = ListState::default();
         if !answers.is_empty() {
             selection_state.select(Some(0));
@@ -205,9 +264,21 @@ impl App {
                 "Duplicate EmFitPerTree entry for tree_question_id"
             );
         }
+        let mut advantage_per_tree_by_id: HashMap<usize, AdvantageCompositionPerTree> =
+            HashMap::new();
+        for per_tree in per_tree_advantage {
+            assert!(
+                advantage_per_tree_by_id
+                    .insert(per_tree.question_id, per_tree)
+                    .is_none(),
+                "Duplicate AdvantageCompositionPerTree entry for question_id"
+            );
+        }
         Self {
             answers,
             em_fit_per_tree_by_id,
+            advantage_per_tree_by_id,
+            advantage_weights,
             selection_state,
             tree_view: None,
             browsing_view: None,
@@ -219,6 +290,7 @@ impl App {
             log_area: None,
             prompt_area: None,
             action_area: None,
+            tree_checkbox_area: None,
             selection_area: None,
             prompt_metrics: None,
             action_metrics: None,
@@ -247,6 +319,7 @@ impl App {
                     );
                     self.tree_horizontal_scroll = 0;
                     self.tree_hovered_line_index = None;
+                    self.tree_checkbox_area = None;
                     false
                 }
             }
@@ -257,6 +330,7 @@ impl App {
                     self.tree_view = None;
                     self.tree_horizontal_scroll = 0;
                     self.tree_hovered_line_index = None;
+                    self.tree_checkbox_area = None;
                     false
                 }
                 TreeAction::OpenSession => {
@@ -313,6 +387,19 @@ impl App {
                     false
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
+                    let checkbox_index =
+                        self.tree_checkbox_index_from_mouse(mouse_event.column, mouse_event.row);
+                    if let Some(view) = self.tree_view.as_mut() {
+                        if let Some(index) = checkbox_index {
+                            match index {
+                                0 => view.show_contribution = !view.show_contribution,
+                                1 => view.show_trajectory = !view.show_trajectory,
+                                2 => view.show_step_quality = !view.show_step_quality,
+                                _ => panic!("checkbox index must be in range [0, 2]"),
+                            }
+                            return false;
+                        }
+                    }
                     if let Some(local_index) =
                         self.tree_line_index_from_mouse(mouse_event.column, mouse_event.row)
                     {
@@ -409,12 +496,29 @@ impl App {
             if selected < self.answers.len() {
                 let answer = self.answers[selected].clone();
                 let tree_em_fit = self.em_fit_per_tree_by_id.get(&answer.id).cloned();
-                self.tree_view = Some(TreeView::new(answer, tree_em_fit));
+                let tree_advantage = self.advantage_per_tree_by_id.get(&answer.id).cloned();
+                assert!(
+                    tree_em_fit.is_some(),
+                    "Missing EmFitPerTree for selected question {}",
+                    answer.id
+                );
+                assert!(
+                    tree_advantage.is_some(),
+                    "Missing AdvantageCompositionPerTree for selected question {}",
+                    answer.id
+                );
+                self.tree_view = Some(TreeView::new(
+                    answer,
+                    tree_em_fit,
+                    tree_advantage,
+                    self.advantage_weights,
+                ));
                 self.focus = PaneFocus::Log;
                 self.tree_horizontal_scroll = 0;
                 self.tree_hovered_line_index = None;
                 self.prompt_scroll = 0;
                 self.action_scroll = 0;
+                self.tree_checkbox_area = None;
                 self.selection_area = None;
             }
         }
@@ -487,6 +591,18 @@ impl App {
                 KeyCode::Enter => TreeAction::OpenSession,
                 KeyCode::Esc => TreeAction::GoBack,
                 KeyCode::Char('q') => TreeAction::GoBack,
+                KeyCode::Char('1') => {
+                    view.show_contribution = !view.show_contribution;
+                    TreeAction::Continue
+                }
+                KeyCode::Char('2') => {
+                    view.show_trajectory = !view.show_trajectory;
+                    TreeAction::Continue
+                }
+                KeyCode::Char('3') => {
+                    view.show_step_quality = !view.show_step_quality;
+                    TreeAction::Continue
+                }
                 _ => TreeAction::Continue,
             }
         };
@@ -613,7 +729,12 @@ impl App {
     fn draw_tree(&mut self, frame: &mut ratatui::Frame<'_>) {
         let view = self.tree_view.as_ref().unwrap();
         self.selection_area = None;
-        self.log_area = Some(frame.area());
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(6), Constraint::Min(3)])
+            .split(frame.area());
+        self.tree_checkbox_area = Some(chunks[0]);
+        self.log_area = Some(chunks[1]);
         self.prompt_area = None;
         self.action_area = None;
 
@@ -623,6 +744,10 @@ impl App {
             view.selected_node_id(),
             self.tree_horizontal_scroll,
         );
+        let controls = Paragraph::new(view.checkbox_lines())
+            .block(Block::default().borders(Borders::ALL).title("Advantages"));
+        frame.render_widget(controls, chunks[0]);
+
         let block = Block::default().borders(Borders::ALL).title(title);
         let items: Vec<ListItem> = view
             .tree_lines
@@ -654,7 +779,7 @@ impl App {
                 } else {
                     ""
                 }),
-            frame.area(),
+            chunks[1],
             &mut state,
         );
     }
@@ -675,7 +800,23 @@ impl App {
         Some(local_row as usize)
     }
 
+    fn tree_checkbox_index_from_mouse(&self, column: u16, row: u16) -> Option<usize> {
+        let rect = self.tree_checkbox_area?;
+        if !contains_point(rect, column, row) {
+            return None;
+        }
+        if row <= rect.y || row >= rect.y + rect.height - 1 {
+            return None;
+        }
+        let local_row = row - rect.y - 1;
+        if local_row > 2 {
+            return None;
+        }
+        Some(local_row as usize)
+    }
+
     fn draw_selection(&mut self, frame: &mut ratatui::Frame<'_>) {
+        self.tree_checkbox_area = None;
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -728,6 +869,7 @@ impl App {
     fn draw_session(&mut self, frame: &mut ratatui::Frame<'_>) {
         let view = self.browsing_view.as_ref().unwrap();
         self.selection_area = None;
+        self.tree_checkbox_area = None;
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -1117,13 +1259,29 @@ struct SessionView {
     total_actual_turns: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AdvantageWeights {
+    contribution: f64,
+    trajectory: f64,
+    step_quality: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct NodeAdvantageEffects {
+    contribution: f64,
+    trajectory: f64,
+    step_quality: f64,
+}
+
 struct TreeView {
     answer: CompletedTree,
     tree_lines: Vec<String>,
     tree_line_node_ids: Vec<usize>,
     node_layouts: Vec<TreeRenderedNode>,
-    node_scores: Vec<Option<f64>>,
-    score_max_abs: f64,
+    node_effects: Vec<Option<NodeAdvantageEffects>>,
+    show_contribution: bool,
+    show_trajectory: bool,
+    show_step_quality: bool,
     selected_tree_line_index: usize,
 }
 
@@ -1565,47 +1723,92 @@ fn build_tree_lines(tree: &Tree) -> (Vec<usize>, Vec<String>, Vec<TreeRenderedNo
     (ordered_leaf_node_ids, lines, node_layouts)
 }
 
-fn build_node_scores_for_tree(
+fn build_node_advantage_effects_for_tree(
     answer: &CompletedTree,
     tree_em_fit: Option<EmFitPerTree>,
-) -> Vec<Option<f64>> {
-    let mut scores: Vec<Option<f64>> = vec![None; answer.trajectory.nodes.len()];
-    let Some(tree_em_fit) = tree_em_fit else {
-        return scores;
-    };
+    tree_advantage: Option<AdvantageCompositionPerTree>,
+    weights: AdvantageWeights,
+) -> Vec<Option<NodeAdvantageEffects>> {
+    let mut effects: Vec<Option<NodeAdvantageEffects>> = vec![None; answer.trajectory.nodes.len()];
+
+    let tree_em_fit = tree_em_fit.expect("Tree view requires EmFitPerTree to be available");
+    let tree_advantage =
+        tree_advantage.expect("Tree view requires AdvantageCompositionPerTree to be available");
 
     assert_eq!(
         tree_em_fit.tree_question_id, answer.id,
         "EmFitPerTree.tree_question_id must match CompletedTree.id"
     );
-    for node_fit in tree_em_fit.per_node {
+    assert_eq!(
+        tree_advantage.question_id, answer.id,
+        "AdvantageCompositionPerTree.question_id must match CompletedTree.id"
+    );
+
+    for node_fit in &tree_em_fit.per_node {
         assert!(
             node_fit.node_id < answer.trajectory.nodes.len(),
             "EM per-tree node id out of bounds for completed tree"
         );
-        assert!(
-            node_fit.mean_div_variance.is_finite(),
-            "mean_div_variance must be finite for display"
-        );
-        assert!(
-            scores[node_fit.node_id].is_none(),
-            "Duplicate node score for one tree node"
-        );
-        scores[node_fit.node_id] = Some(node_fit.mean_div_variance);
     }
-    scores
+
+    for per_node in tree_advantage.per_node {
+        assert!(
+            per_node.node_id < answer.trajectory.nodes.len(),
+            "Advantage per-tree node id out of bounds for completed tree"
+        );
+        assert!(
+            per_node.contribution_mean_div_var_normalized.is_finite()
+                && per_node.trajectory_advantage_normalized.is_finite()
+                && per_node.step_quality_tool_advantage_normalized.is_finite()
+                && per_node
+                    .step_quality_complete_advantage_normalized
+                    .is_finite()
+                && per_node
+                    .step_quality_focused_advantage_normalized
+                    .is_finite(),
+            "All normalized advantage values must be finite"
+        );
+        let step_quality_sum = per_node.step_quality_tool_advantage_normalized
+            + per_node.step_quality_complete_advantage_normalized
+            + per_node.step_quality_focused_advantage_normalized;
+        let node_effect = NodeAdvantageEffects {
+            contribution: per_node.contribution_mean_div_var_normalized * weights.contribution,
+            trajectory: per_node.trajectory_advantage_normalized * weights.trajectory,
+            step_quality: step_quality_sum * weights.step_quality,
+        };
+        assert!(
+            effects[per_node.node_id].is_none(),
+            "Duplicate node effect for one tree node"
+        );
+        effects[per_node.node_id] = Some(node_effect);
+    }
+
+    effects
 }
 
-fn contribution_score_to_color(score: f64, max_abs: f64) -> Color {
-    assert!(score.is_finite(), "contribution score must be finite");
-    assert!(
-        max_abs.is_finite() && max_abs >= 0.0,
-        "max_abs must be finite and >= 0"
-    );
-    if max_abs <= 1e-12 {
-        return Color::Rgb(255, 255, 0);
+fn combined_advantage_effect(
+    effect: NodeAdvantageEffects,
+    show_contribution: bool,
+    show_trajectory: bool,
+    show_step_quality: bool,
+) -> f64 {
+    let mut total = 0.0;
+    if show_contribution {
+        total += effect.contribution;
     }
-    let normalized = (score / max_abs).clamp(-1.0, 1.0);
+    if show_trajectory {
+        total += effect.trajectory;
+    }
+    if show_step_quality {
+        total += effect.step_quality;
+    }
+    total
+}
+
+fn advantage_effect_to_color(effect: f64) -> Color {
+    const CI_95_N01: f64 = 1.959_963_984_540_054;
+    assert!(effect.is_finite(), "advantage effect must be finite");
+    let normalized = (effect / CI_95_N01).clamp(-1.0, 1.0);
     red_yellow_green_color(normalized)
 }
 
@@ -1638,15 +1841,16 @@ fn count_display_turns(operations: &[TrajectoryAction]) -> usize {
 }
 
 impl TreeView {
-    fn new(answer: CompletedTree, tree_em_fit: Option<EmFitPerTree>) -> Self {
+    fn new(
+        answer: CompletedTree,
+        tree_em_fit: Option<EmFitPerTree>,
+        tree_advantage: Option<AdvantageCompositionPerTree>,
+        weights: AdvantageWeights,
+    ) -> Self {
         validate_tree_for_browser(&answer.trajectory);
         let (tree_line_node_ids, tree_lines, node_layouts) = build_tree_lines(&answer.trajectory);
-        let node_scores = build_node_scores_for_tree(&answer, tree_em_fit);
-        let score_max_abs = node_scores
-            .iter()
-            .flatten()
-            .map(|score| score.abs())
-            .fold(0.0_f64, f64::max);
+        let node_effects =
+            build_node_advantage_effects_for_tree(&answer, tree_em_fit, tree_advantage, weights);
         let current_node_id = answer
             .trajectory
             .current_node_id
@@ -1665,10 +1869,22 @@ impl TreeView {
             tree_lines,
             tree_line_node_ids,
             node_layouts,
-            node_scores,
-            score_max_abs,
+            node_effects,
+            show_contribution: true,
+            show_trajectory: true,
+            show_step_quality: true,
             selected_tree_line_index,
         }
+    }
+
+    fn checkbox_lines(&self) -> String {
+        let contribution = if self.show_contribution { "x" } else { " " };
+        let trajectory = if self.show_trajectory { "x" } else { " " };
+        let step_quality = if self.show_step_quality { "x" } else { " " };
+        format!(
+            "[{}] Contribution (1)\n[{}] Trajectory length (2)\n[{}] Step quality (3)\nToggle: keys 1/2/3 (click rows too)",
+            contribution, trajectory, step_quality
+        )
     }
 
     fn render_tree_line(&self, row: usize, horizontal_scroll: usize) -> Line<'static> {
@@ -1684,14 +1900,20 @@ impl TreeView {
             if layout.row != row {
                 continue;
             }
-            if layout.node_id >= self.node_scores.len() {
+            if layout.node_id >= self.node_effects.len() {
                 continue;
             }
-            let Some(score) = self.node_scores[layout.node_id] else {
+            let Some(effect) = self.node_effects[layout.node_id] else {
                 continue;
             };
+            let combined_effect = combined_advantage_effect(
+                effect,
+                self.show_contribution,
+                self.show_trajectory,
+                self.show_step_quality,
+            );
             let style = Style::default()
-                .fg(contribution_score_to_color(score, self.score_max_abs))
+                .fg(advantage_effect_to_color(combined_effect))
                 .add_modifier(Modifier::BOLD);
             for idx in layout.col..(layout.col + 5) {
                 if idx < styles.len() {

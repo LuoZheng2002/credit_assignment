@@ -14,6 +14,8 @@ pub struct EmFitter {
 struct EmIndexing {
     /// Ordered list of special node types that get free `mu_k` parameters.
     special_node_types: Vec<NodeType>,
+    /// Data-calibrated prior mean for ordinary nodes (`NodeType::VerifierOff`).
+    ordinary_prior_mean: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -143,7 +145,11 @@ impl EmFitter {
                 special_node_types.push(binding.node_type.clone());
             }
         }
-        EmIndexing { special_node_types }
+        let ordinary_prior_mean = self.calibrated_ordinary_prior_mean(dataset);
+        EmIndexing {
+            special_node_types,
+            ordinary_prior_mean,
+        }
     }
 
     fn initialize_state(
@@ -151,8 +157,18 @@ impl EmFitter {
         dataset: &EmFitDataset,
         indexing: &EmIndexing,
     ) -> EmOptimizationState {
+        let mut node_means: Vec<f64> = Vec::with_capacity(dataset.node_bindings.len());
+        for binding in &dataset.node_bindings {
+            let initial_mean = if matches!(binding.node_type, NodeType::VerifierOff) {
+                indexing.ordinary_prior_mean
+            } else {
+                0.0
+            };
+            node_means.push(initial_mean);
+        }
+
         EmOptimizationState {
-            node_means: vec![0.0; dataset.node_bindings.len()],
+            node_means,
             node_log_stds: vec![0.0; dataset.node_bindings.len()],
             special_mus: vec![0.0; indexing.special_node_types.len()],
         }
@@ -386,6 +402,7 @@ impl EmFitter {
             global,
             config: EmGlobalConfigSnapshot {
                 hyperparameters: self.hyperparameters.clone(),
+                ordinary_prior_mean: indexing.ordinary_prior_mean,
             },
             diagnostics: EmFitDiagnostics {
                 objective_trace: optimization.objective_trace,
@@ -539,9 +556,52 @@ impl EmFitter {
         special_mus: &[f64],
     ) -> f64 {
         if let Some(special_idx) = self.special_mu_index(indexing, node_type) {
-            return special_mus[special_idx];
+            return indexing.ordinary_prior_mean + special_mus[special_idx];
         }
-        0.0
+        indexing.ordinary_prior_mean
+    }
+
+    fn calibrated_ordinary_prior_mean(&self, dataset: &EmFitDataset) -> f64 {
+        assert!(
+            !dataset.leaf_bindings.is_empty(),
+            "EM fit dataset requires at least one leaf binding"
+        );
+        assert_eq!(
+            dataset.leaf_bindings.len(),
+            dataset.leaf_paths.len(),
+            "EM fit dataset requires one sparse path per leaf"
+        );
+
+        let num_correct = dataset
+            .leaf_bindings
+            .iter()
+            .filter(|leaf| leaf.label.as_sign() > 0.0)
+            .count();
+        let empirical_accuracy = num_correct as f64 / dataset.leaf_bindings.len() as f64;
+        assert!(
+            empirical_accuracy.is_finite() && (0.0..=1.0).contains(&empirical_accuracy),
+            "empirical accuracy must be finite and within [0, 1]"
+        );
+
+        let p = empirical_accuracy.clamp(1e-6, 1.0 - 1e-6);
+        let baseline_margin = standard_normal_inverse_cdf(p);
+
+        let mut sum_sqrt_path_mass = 0.0;
+        for leaf_path in &dataset.leaf_paths {
+            let path_mass = leaf_path.terms.iter().map(|term| term.x_li).sum::<f64>();
+            assert!(
+                path_mass.is_finite() && path_mass > 0.0,
+                "Each leaf path must have positive finite path mass"
+            );
+            sum_sqrt_path_mass += path_mass.sqrt();
+        }
+        let mean_sqrt_path_mass = sum_sqrt_path_mass / dataset.leaf_paths.len() as f64;
+        assert!(
+            mean_sqrt_path_mass.is_finite() && mean_sqrt_path_mass > 0.0,
+            "Mean sqrt path mass must be finite and > 0"
+        );
+
+        baseline_margin / mean_sqrt_path_mass
     }
 
     fn special_mu_index(&self, indexing: &EmIndexing, node_type: &NodeType) -> Option<usize> {
@@ -670,6 +730,58 @@ fn standard_normal_pdf(z: f64) -> f64 {
 
 fn standard_normal_cdf(z: f64) -> f64 {
     0.5 * (1.0 + erf_approx(z * FRAC_1_SQRT_2))
+}
+
+fn standard_normal_inverse_cdf(p: f64) -> f64 {
+    assert!(
+        p.is_finite() && p > 0.0 && p < 1.0,
+        "p must be finite and in (0, 1)"
+    );
+
+    // Acklam's rational approximation for inverse normal CDF.
+    const A1: f64 = -3.969_683_028_665_376e1;
+    const A2: f64 = 2.209_460_984_245_205e2;
+    const A3: f64 = -2.759_285_104_469_687e2;
+    const A4: f64 = 1.383_577_518_672_69e2;
+    const A5: f64 = -3.066_479_806_614_716e1;
+    const A6: f64 = 2.506_628_277_459_239;
+    const B1: f64 = -5.447_609_879_822_406e1;
+    const B2: f64 = 1.615_858_368_580_409e2;
+    const B3: f64 = -1.556_989_798_598_866e2;
+    const B4: f64 = 6.680_131_188_771_972e1;
+    const B5: f64 = -1.328_068_155_288_572e1;
+    const C1: f64 = -7.784_894_002_430_293e-3;
+    const C2: f64 = -3.223_964_580_411_365e-1;
+    const C3: f64 = -2.400_758_277_161_838;
+    const C4: f64 = -2.549_732_539_343_734;
+    const C5: f64 = 4.374_664_141_464_968;
+    const C6: f64 = 2.938_163_982_698_783;
+    const D1: f64 = 7.784_695_709_041_462e-3;
+    const D2: f64 = 3.224_671_290_700_398e-1;
+    const D3: f64 = 2.445_134_137_142_996;
+    const D4: f64 = 3.754_408_661_907_416;
+    const P_LOW: f64 = 0.024_25;
+    const P_HIGH: f64 = 1.0 - P_LOW;
+
+    if p < P_LOW {
+        let q = (-2.0 * p.ln()).sqrt();
+        let num = ((((C1 * q + C2) * q + C3) * q + C4) * q + C5) * q + C6;
+        let den = (((D1 * q + D2) * q + D3) * q + D4) * q + 1.0;
+        return num / den;
+    }
+
+    if p <= P_HIGH {
+        let q = p - 0.5;
+        let r = q * q;
+        let num = (((((A1 * r + A2) * r + A3) * r + A4) * r + A5) * r + A6) * q;
+        let den = ((((B1 * r + B2) * r + B3) * r + B4) * r + B5) * r + 1.0;
+        return num / den;
+    }
+
+    let q = (-2.0 * (1.0 - p).ln()).sqrt();
+    let num = -(((((C1 * q + C2) * q + C3) * q + C4) * q + C5) * q + C6);
+    let den = (((D1 * q + D2) * q + D3) * q + D4) * q + 1.0;
+    num / den
 }
 
 fn erf_approx(x: f64) -> f64 {

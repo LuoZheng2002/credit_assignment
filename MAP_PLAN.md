@@ -32,8 +32,8 @@ Leaf score moments:
 
 Node-type prior center:
 
-- Ordinary (`NodeType::VerifierOff`): prior mean `0`
-- Special types: prior mean `mu_k` (learned shared parameter per special node type)
+- Ordinary (`NodeType::VerifierOff`): prior mean `ordinary_prior_mean` (data-calibrated from aggregated leaf accuracy)
+- Special types: prior mean `ordinary_prior_mean + mu_k` (learned shared offset per special node type)
 
 ---
 
@@ -116,8 +116,17 @@ Input boundary stays the same:
 Persisted fitting result stays compatible with current structs:
 
 - per-node: `mean`, `log_std`, `node_type`, id bindings
-- global: special node-type prior centers `mu_k`
+- global: special node-type prior offsets `mu_k` relative to ordinary baseline
 - diagnostics: objective trace, convergence flag, train metrics
+- meta/config: includes `ordinary_prior_mean`
+
+---
+
+## Change log
+
+- Ordinary prior mean is no longer fixed at `0`; it is calibrated from aggregated judged-leaf accuracy using a probit baseline and path-mass normalization.
+- Special node-type prior now composes on top of ordinary baseline (`ordinary_prior_mean + mu_k`) so `mu_k` directly indicates uplift/downshift versus ordinary behavior.
+- `EmFitMeta` records `ordinary_prior_mean` for downstream interpretation.
 
 Per-tree visualization artifact:
 

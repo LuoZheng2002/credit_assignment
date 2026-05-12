@@ -114,7 +114,7 @@ pub struct EmNodePosterior {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmNodeTypePosterior {
     pub node_type: NodeType,
-    /// Contribution prior center for this node type.
+    /// Contribution prior offset for this node type relative to ordinary prior mean.
     pub mu_k: f64,
 }
 
@@ -156,6 +156,9 @@ pub struct EmFitDiagnostics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmGlobalConfigSnapshot {
     pub hyperparameters: EmHyperparameters,
+    /// Data-calibrated baseline prior mean for ordinary nodes.
+    #[serde(default)]
+    pub ordinary_prior_mean: f64,
 }
 
 /// Persistable result container for downstream credit assignment use.

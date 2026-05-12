@@ -87,6 +87,8 @@ pub fn split_em_fit_result_per_tree(em_fit: &EmFitResult) -> Vec<EmFitPerTree> {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct EmFitMeta {
+    #[serde(default)]
+    pub ordinary_prior_mean: f64,
     pub global: Vec<EmNodeTypePosterior>,
     pub config: EmGlobalConfigSnapshot,
     pub diagnostics: EmFitDiagnostics,
@@ -149,6 +151,7 @@ pub fn run_em_fit(
     );
 
     let meta_output = EmFitMeta {
+        ordinary_prior_mean: fit_result.config.ordinary_prior_mean,
         global: fit_result.global,
         config: fit_result.config,
         diagnostics: fit_result.diagnostics,
