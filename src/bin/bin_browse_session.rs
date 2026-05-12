@@ -7,6 +7,10 @@ use credit_assignment::advantage_composition::{
     AdvantageCompositionPerTree, AssetFileAdvantageComposition,
 };
 use credit_assignment::agent::tree_schema::AssetFileTrees;
+use credit_assignment::constants::{
+    FIXED_ADVANTAGE_WEIGHT_CONTRIBUTION, FIXED_ADVANTAGE_WEIGHT_STEP_QUALITY,
+    FIXED_ADVANTAGE_WEIGHT_TRAJECTORY,
+};
 use credit_assignment::direct_answer::generate_raw_answers::LlmModel;
 use credit_assignment::em::em_schema::{AssetFileEmFit, EmFitPerTree};
 use credit_assignment::em::em_types::{EmHyperparameters, LogStdClamp};
@@ -75,15 +79,6 @@ struct Args {
 
     #[arg(long, default_value_t = 2.0)]
     log_std_max: f64,
-
-    #[arg(long, default_value_t = 0.6)]
-    contribution_weight: f64,
-
-    #[arg(long, default_value_t = 0.25)]
-    trajectory_weight: f64,
-
-    #[arg(long, default_value_t = 0.05)]
-    step_quality_weight: f64,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -133,9 +128,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         per_tree_em_fit,
         per_tree_advantage,
         AdvantageWeights {
-            contribution: args.contribution_weight,
-            trajectory: args.trajectory_weight,
-            step_quality: args.step_quality_weight,
+            contribution: FIXED_ADVANTAGE_WEIGHT_CONTRIBUTION,
+            trajectory: FIXED_ADVANTAGE_WEIGHT_TRAJECTORY,
+            step_quality: FIXED_ADVANTAGE_WEIGHT_STEP_QUALITY,
         },
     );
     disable_raw_mode()?;
