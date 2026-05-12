@@ -43,8 +43,6 @@ struct Args {
     model: LlmModel,
     #[arg(long)]
     vllm_port: u16,
-    #[arg(long, default_value_t = 1000)]
-    max_tasks: usize,
     #[arg(long, action = clap::ArgAction::Set)]
     take_over_mode_decision: bool,
 }
@@ -57,6 +55,7 @@ struct Args {
 
 // const MAX_TASKS: usize = 100;
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+const MAX_CONCURRENT_ROLLOUT_JOBS: usize = 10;
 
 #[tokio::main]
 async fn main() {
@@ -76,7 +75,6 @@ async fn main() {
         model,
         num_samples,
         vllm_port,
-        max_tasks,
         take_over_mode_decision,
     } = Args::parse();
     assert!(vllm_port > 0, "--vllm-port must be greater than 0");
@@ -86,10 +84,7 @@ async fn main() {
         "Evaluating model {} on {} dataset with {} samples (vLLM port: {})",
         model_name, dataset_name, num_samples, vllm_port
     );
-    println!(
-        "max_tasks: {}, take_over_mode_decision: {}",
-        max_tasks, take_over_mode_decision
-    );
+    println!("take_over_mode_decision: {}", take_over_mode_decision);
     let client = Client::new();
     let mut rng = StdRng::seed_from_u64(42);
     // read log file
@@ -134,7 +129,12 @@ async fn main() {
     let mut unfinished_tree_ids: HashSet<usize> = questions.keys().cloned().collect();
     unfinished_tree_ids.retain(|id| !tree_completed_ids.contains(id));
 
-    let sem = Arc::new(Semaphore::new(max_tasks));
+    let rollout_concurrency = MAX_CONCURRENT_ROLLOUT_JOBS;
+    println!(
+        "rollout concurrency limit: {}",
+        rollout_concurrency
+    );
+    let sem = Arc::new(Semaphore::new(rollout_concurrency));
     SHUTDOWN.store(false, Ordering::SeqCst);
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.unwrap();
