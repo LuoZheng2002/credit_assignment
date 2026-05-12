@@ -16,6 +16,9 @@ use crate::{
 pub struct TrainingSampleFormatted {
     pub question_id: usize,
     pub node_id: usize,
+    // content_formatted uses mask delimiters:
+    // <__start_mask__> ... <__end_mask_with_eos__>
+    // and always ends with <__end_mask_with_eos__>.
     pub content_formatted: String,
     pub advantage: f64,
 }
@@ -31,9 +34,12 @@ pub struct AssetFileTrainingFormatted {
 pub struct AssetFileTrainingFormattedTracking {
     pub trees_hash: Base64Hash,
     pub advantage_hash: Base64Hash,
+    pub formatted_schema_version: usize,
 }
 
 impl AssetFileTrainingFormatted {
+    const FORMATTED_SCHEMA_VERSION: usize = 3;
+
     pub fn hyperparameter_hash(&self) -> String {
         short_hyperparameter_hash(&self.hyperparameters)
     }
@@ -139,7 +145,10 @@ impl AssetFile for AssetFileTrainingFormatted {
             self.version_tracking_path(),
         ) {
             Ok(mut tracking) => {
-                if tracking.trees_hash != trees_hash || tracking.advantage_hash != advantage_hash {
+                if tracking.trees_hash != trees_hash
+                    || tracking.advantage_hash != advantage_hash
+                    || tracking.formatted_schema_version != Self::FORMATTED_SCHEMA_VERSION
+                {
                     let trees = asset_file_trees.fetch();
                     let advantage_per_tree = asset_file_advantage.fetch();
                     let samples = self.generate_formatted_samples(&trees, &advantage_per_tree);
@@ -152,6 +161,7 @@ impl AssetFile for AssetFileTrainingFormatted {
                     });
                     tracking.trees_hash = trees_hash.clone();
                     tracking.advantage_hash = advantage_hash.clone();
+                    tracking.formatted_schema_version = Self::FORMATTED_SCHEMA_VERSION;
                 }
                 tracking
             }
@@ -169,6 +179,7 @@ impl AssetFile for AssetFileTrainingFormatted {
                 AssetFileTrainingFormattedTracking {
                     trees_hash,
                     advantage_hash,
+                    formatted_schema_version: Self::FORMATTED_SCHEMA_VERSION,
                 }
             }
         };
