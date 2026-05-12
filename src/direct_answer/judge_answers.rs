@@ -34,7 +34,7 @@ pub fn get_correctness_path(
 ) -> String {
     if is_rollout {
         format!(
-            "results/{}/rollout/{}_correctness_{}.jsonl",
+            "results/{}/agent/{}_correctness_{}.jsonl",
             model.cli_name(),
             dataset_name,
             num_samples
@@ -57,7 +57,7 @@ pub fn get_accuracy_path(
 ) -> String {
     if is_rollout {
         format!(
-            "results/{}/rollout/{}_accuracy_{}.json",
+            "results/{}/agent/{}_accuracy_{}.json",
             model.cli_name(),
             dataset_name,
             num_samples

@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::tree_schema::AssetFileTrees;
 use crate::{
     agent::tree_schema::CompletedTree,
     direct_answer::generate_raw_answers::LlmModel,
@@ -92,33 +92,6 @@ pub struct EmFitMeta {
     pub diagnostics: EmFitDiagnostics,
 }
 
-pub fn get_rollout_trajectory_path(model: LlmModel, dataset: &str, num_samples: usize) -> String {
-    format!(
-        "results/{}/rollout/{}_trajectory_{}.jsonl",
-        model.cli_name(),
-        dataset,
-        num_samples
-    )
-}
-
-pub fn get_em_fit_per_tree_path(model: LlmModel, dataset: &str, num_samples: usize) -> String {
-    format!(
-        "results/{}/rollout/{}_em_fit_per_tree_{}.jsonl",
-        model.cli_name(),
-        dataset,
-        num_samples
-    )
-}
-
-pub fn get_em_fit_meta_path(model: LlmModel, dataset: &str, num_samples: usize) -> String {
-    format!(
-        "results/{}/rollout/{}_em_fit_meta_{}.json",
-        model.cli_name(),
-        dataset,
-        num_samples
-    )
-}
-
 pub fn short_hyperparameter_hash(hyperparameters: &EmHyperparameters) -> String {
     let serialized_hyperparameters =
         serde_json::to_vec(hyperparameters).expect("EmHyperparameters should be serializable");
@@ -132,7 +105,7 @@ pub fn short_hyperparameter_hash(hyperparameters: &EmHyperparameters) -> String 
     short_hash
 }
 
-pub fn run_em_fit_on_completed_trees(
+pub fn run_em_fit(
     completed_trees: &[CompletedTree],
     hyperparameters: EmHyperparameters,
 ) -> (Vec<EmFitPerTree>, EmFitMeta) {
@@ -185,9 +158,9 @@ pub fn run_em_fit_on_completed_trees(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetFileEmFitTracking {
-    pub per_tree_file_hash: Base64Hash,
-    pub meta_file_hash: Base64Hash,
-    pub trajectory_hash: Base64Hash,
+    // pub per_tree_file_hash: Base64Hash,
+    // pub meta_file_hash: Base64Hash,
+    pub trees_hash: Base64Hash,
     pub hyperparameters: EmHyperparameters,
 }
 
@@ -205,7 +178,7 @@ impl AssetFileEmFit {
 
     pub fn per_tree_file_path(&self) -> String {
         format!(
-            "results/{}/rollout/{}_em_fit_per_tree_{}_{}.jsonl",
+            "results/{}/agent/{}_em_fit_per_tree_{}_{}.jsonl",
             self.model.cli_name(),
             self.dataset,
             self.num_samples,
@@ -215,7 +188,7 @@ impl AssetFileEmFit {
 
     pub fn meta_file_path(&self) -> String {
         format!(
-            "results/{}/rollout/{}_em_fit_meta_{}_{}.json",
+            "results/{}/agent/{}_em_fit_meta_{}_{}.json",
             self.model.cli_name(),
             self.dataset,
             self.num_samples,
@@ -225,149 +198,28 @@ impl AssetFileEmFit {
 
     pub fn version_tracking_path(&self) -> String {
         format!(
-            "results_version_tracking/{}/rollout/{}_em_fit_{}_{}.version.json",
+            "results_version_tracking/{}/agent/{}_em_fit_{}_{}.version.json",
             self.model.cli_name(),
             self.dataset,
             self.num_samples,
             self.hyperparameter_hash(),
         )
     }
-}
-
-fn synchronize_em_fit_outputs(asset_file_em_fit: &AssetFileEmFit) {
-    let trajectory_path = get_rollout_trajectory_path(
-        asset_file_em_fit.model,
-        &asset_file_em_fit.dataset,
-        asset_file_em_fit.num_samples,
-    );
-    let per_tree_path = asset_file_em_fit.per_tree_file_path();
-    let meta_path = asset_file_em_fit.meta_file_path();
-    let tracking_path = asset_file_em_fit.version_tracking_path();
-
-    let trajectory_hash = hash_file(&trajectory_path).unwrap_or_else(|err| {
-        panic!(
-            "Failed to hash dependency trajectory file {}: {}",
-            trajectory_path, err
-        )
-    });
-
-    let per_tree_file_exists = Path::new(&per_tree_path).exists();
-    let meta_file_exists = Path::new(&meta_path).exists();
-    let tracking = read_json::<AssetFileEmFitTracking>(&tracking_path).ok();
-
-    let per_tree_hash_matches_tracking = if per_tree_file_exists {
-        let actual_hash = hash_file(&per_tree_path)
-            .unwrap_or_else(|err| panic!("Failed to hash file {}: {}", per_tree_path, err));
-        match &tracking {
-            Some(tracking) => tracking.per_tree_file_hash == actual_hash,
-            None => false,
-        }
-    } else {
-        false
-    };
-    let meta_hash_matches_tracking = if meta_file_exists {
-        let actual_hash = hash_file(&meta_path)
-            .unwrap_or_else(|err| panic!("Failed to hash file {}: {}", meta_path, err));
-        match &tracking {
-            Some(tracking) => tracking.meta_file_hash == actual_hash,
-            None => false,
-        }
-    } else {
-        false
-    };
-
-    let dependency_hash_matches_tracking = match &tracking {
-        Some(tracking) => tracking.trajectory_hash == trajectory_hash,
-        _ => false,
-    };
-    let hyperparameters_match_tracking = match &tracking {
-        Some(tracking) => tracking.hyperparameters == asset_file_em_fit.hyperparameters,
-        _ => false,
-    };
-
-    let mut stale_reasons: Vec<&str> = Vec::new();
-    if !per_tree_file_exists {
-        stale_reasons.push("missing per-tree output");
-    }
-    if !meta_file_exists {
-        stale_reasons.push("missing meta output");
-    }
-    if tracking.is_none() {
-        stale_reasons.push("missing tracking file");
-    }
-    if !per_tree_hash_matches_tracking {
-        stale_reasons.push("per-tree hash mismatch");
-    }
-    if !meta_hash_matches_tracking {
-        stale_reasons.push("meta hash mismatch");
-    }
-    if !dependency_hash_matches_tracking {
-        stale_reasons.push("trajectory dependency hash mismatch");
-    }
-    if !hyperparameters_match_tracking {
-        stale_reasons.push("hyperparameters mismatch");
-    }
-
-    let stale = !per_tree_file_exists
-        || !meta_file_exists
-        || !per_tree_hash_matches_tracking
-        || !meta_hash_matches_tracking
-        || !dependency_hash_matches_tracking
-        || !hyperparameters_match_tracking;
-
-    if stale {
-        println!(
-            "[AssetFileEmFit] Regenerating outputs for model={}, dataset={}, num_samples={} ({})",
-            asset_file_em_fit.model.cli_name(),
-            asset_file_em_fit.dataset,
-            asset_file_em_fit.num_samples,
-            stale_reasons.join(", ")
-        );
-        let completed_trees: Vec<CompletedTree> =
-            read_json_lines(&trajectory_path).unwrap_or_else(|err| {
-                panic!(
-                    "Failed to read dependency trajectory file {}: {}",
-                    trajectory_path, err
-                )
-            });
-        let (per_tree, meta) = run_em_fit_on_completed_trees(
-            &completed_trees,
-            asset_file_em_fit.hyperparameters.clone(),
-        );
-        write_jsonl_file(&per_tree_path, &per_tree).unwrap_or_else(|err| {
+    pub fn store_em_fit_results(&self, per_tree: &[EmFitPerTree], meta: &EmFitMeta) {
+        let per_tree_path = self.per_tree_file_path();
+        let meta_path = self.meta_file_path();
+        write_jsonl_file(&per_tree_path, per_tree).unwrap_or_else(|err| {
             panic!(
                 "Failed to write EmFitPerTree output to {}: {}",
                 per_tree_path, err
             )
         });
-        write_json(&meta_path, &meta).unwrap_or_else(|err| {
+        write_json(&meta_path, meta).unwrap_or_else(|err| {
             panic!(
                 "Failed to write EM fit metadata output to {}: {}",
                 meta_path, err
             )
         });
-
-        let per_tree_hash = hash_file(&per_tree_path)
-            .unwrap_or_else(|err| panic!("Failed to hash file {}: {}", per_tree_path, err));
-        let meta_hash = hash_file(&meta_path)
-            .unwrap_or_else(|err| panic!("Failed to hash file {}: {}", meta_path, err));
-
-        let tracking_content = AssetFileEmFitTracking {
-            per_tree_file_hash: per_tree_hash,
-            meta_file_hash: meta_hash,
-            trajectory_hash,
-            hyperparameters: asset_file_em_fit.hyperparameters.clone(),
-        };
-        write_json(&tracking_path, &tracking_content).unwrap_or_else(|err| {
-            panic!("Failed to write tracking file {}: {}", tracking_path, err)
-        });
-    } else {
-        println!(
-            "[AssetFileEmFit] Up-to-date: model={}, dataset={}, num_samples={}",
-            asset_file_em_fit.model.cli_name(),
-            asset_file_em_fit.dataset,
-            asset_file_em_fit.num_samples
-        );
     }
 }
 
@@ -375,7 +227,51 @@ impl AssetFile for AssetFileEmFit {
     type FileModel = (Vec<EmFitPerTree>, EmFitMeta);
 
     fn synchronize(&self) -> Base64Hash {
-        synchronize_em_fit_outputs(self);
+        let asset_file_trees = AssetFileTrees {
+            model: self.model.clone(),
+            dataset: self.dataset.clone(),
+            num_samples: self.num_samples,
+        };
+        let trees_hash = asset_file_trees.synchronize();
+        let tracking_content = match read_json::<AssetFileEmFitTracking>(
+            &self.version_tracking_path(),
+        ) {
+            Ok(mut tracking) => {
+                if tracking.trees_hash != trees_hash {
+                    println!(
+                        "[AssetFileEmFit] Detected stale output for model={}, dataset={}, num_samples={}, hyperparameters={:?} due to dependency trees hash mismatch. Regenerating outputs.",
+                        self.model.cli_name(),
+                        self.dataset,
+                        self.num_samples,
+                        self.hyperparameters
+                    );
+                    let completed_trees = asset_file_trees.fetch();
+                    let (per_tree, meta) =
+                        run_em_fit(&completed_trees, self.hyperparameters.clone());
+                    self.store_em_fit_results(&per_tree, &meta);
+                    tracking.trees_hash = trees_hash.clone();
+                }
+                tracking
+            }
+            Err(_) => {
+                println!(
+                    "[AssetFileEmFit] No existing tracking file found for model={}, dataset={}, num_samples={}, hyperparameters={:?}. Creating new tracking.",
+                    self.model.cli_name(),
+                    self.dataset,
+                    self.num_samples,
+                    self.hyperparameters
+                );
+                let completed_trees = asset_file_trees.fetch();
+                let (per_tree, meta) = run_em_fit(&completed_trees, self.hyperparameters.clone());
+                self.store_em_fit_results(&per_tree, &meta);
+                AssetFileEmFitTracking {
+                    trees_hash,
+                    hyperparameters: self.hyperparameters.clone(),
+                }
+            }
+        };
+        write_json(self.version_tracking_path(), &tracking_content).unwrap();
+        // we only hash one for simplicity
         hash_file(self.per_tree_file_path()).unwrap()
     }
 

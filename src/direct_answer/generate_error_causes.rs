@@ -51,7 +51,7 @@ pub fn get_error_causes_path(
 ) -> String {
     if is_rollout {
         format!(
-            "results/{}/rollout/{}_error_causes_{}.jsonl",
+            "results/{}/agent/{}_error_causes_{}.jsonl",
             model.cli_name(),
             dataset_name,
             num_samples
