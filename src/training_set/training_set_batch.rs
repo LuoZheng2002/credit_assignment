@@ -20,7 +20,6 @@ pub struct TrainingSampleMeta {
     pub advantage_normalized: f64,
 }
 
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TrainingBatch(Vec<TrainingSampleTokenized>);
 
@@ -67,7 +66,10 @@ impl AssetFileTrainingBatch {
     fn normalize(values: &[f64]) -> Vec<f64> {
         assert!(!values.is_empty(), "Cannot normalize an empty value array");
         for value in values {
-            assert!(value.is_finite(), "All values for normalization must be finite");
+            assert!(
+                value.is_finite(),
+                "All values for normalization must be finite"
+            );
         }
         let mean = values.iter().sum::<f64>() / values.len() as f64;
         let variance = values
@@ -184,7 +186,8 @@ impl AssetFileTrainingBatch {
                 let chosen_candidate = nearest_candidates
                     .iter()
                     .find_map(|(_, candidate_index)| {
-                        let candidate_sign = Self::sign(tokenized_samples[**candidate_index].advantage);
+                        let candidate_sign =
+                            Self::sign(tokenized_samples[**candidate_index].advantage);
                         if cumulative_sign == 0 {
                             Some(**candidate_index)
                         } else if candidate_sign != 0 && candidate_sign != cumulative_sign {
@@ -242,7 +245,8 @@ impl AssetFile for AssetFileTrainingBatch {
                 Ok(mut tracking) => {
                     if tracking.tokenized_hash != tokenized_hash {
                         let tokenized_samples = tokenized_asset.fetch();
-                        let batches = self.generate_batches_from_tokenized_samples(&tokenized_samples);
+                        let batches =
+                            self.generate_batches_from_tokenized_samples(&tokenized_samples);
                         write_jsonl_file(self.file_path(), &batches).unwrap();
                         tracking.tokenized_hash = tokenized_hash.clone();
                     }

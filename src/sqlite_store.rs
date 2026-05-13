@@ -147,7 +147,10 @@ where
         let payload: Option<String> = self
             .connection
             .query_row(
-                &format!("SELECT payload_json FROM {} WHERE id = ?1", SQLITE_STORE_TABLE_NAME),
+                &format!(
+                    "SELECT payload_json FROM {} WHERE id = ?1",
+                    SQLITE_STORE_TABLE_NAME
+                ),
                 params![key.to_i64()],
                 |row| row.get(0),
             )
@@ -236,7 +239,10 @@ where
         &mut self,
     ) -> Result<rusqlite::MappedRows<'_, fn(&Row<'_>) -> rusqlite::Result<V>>, String> {
         self.statement
-            .query_map([], decode_payload_row::<V> as fn(&Row<'_>) -> rusqlite::Result<V>)
+            .query_map(
+                [],
+                decode_payload_row::<V> as fn(&Row<'_>) -> rusqlite::Result<V>,
+            )
             .map_err(|e| {
                 format!(
                     "Failed to execute scan query for table {} in {}: {}",

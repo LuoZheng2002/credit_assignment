@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
 use std::borrow::Borrow;
+use std::collections::BTreeSet;
 
 use crate::agent::tree::Tree;
 

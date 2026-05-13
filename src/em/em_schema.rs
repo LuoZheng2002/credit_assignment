@@ -119,7 +119,10 @@ pub fn run_em_fit(
         let completed_tree = match rows.next() {
             Some(Ok(tree)) => tree,
             Some(Err(err)) => {
-                panic!("Failed to read completed tree row during EM dataset build: {}", err)
+                panic!(
+                    "Failed to read completed tree row during EM dataset build: {}",
+                    err
+                )
             }
             None => return None,
         };

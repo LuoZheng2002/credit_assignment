@@ -69,8 +69,10 @@ impl AssetFileTrainingFormatted {
         trees: &crate::agent::tree_schema::CompletedTreeStore,
         advantage_per_tree: &[AdvantageCompositionPerTree],
     ) -> Vec<TrainingSampleFormatted> {
-        let advantage_by_id: BTreeMap<usize, &AdvantageCompositionPerTree> =
-            advantage_per_tree.iter().map(|tree| (tree.question_id, tree)).collect();
+        let advantage_by_id: BTreeMap<usize, &AdvantageCompositionPerTree> = advantage_per_tree
+            .iter()
+            .map(|tree| (tree.question_id, tree))
+            .collect();
         assert_eq!(
             advantage_by_id.len(),
             advantage_per_tree.len(),
@@ -132,36 +134,35 @@ impl AssetFile for AssetFileTrainingFormatted {
         };
         let advantage_hash = asset_file_advantage.synchronize();
 
-        let tracking_content = match read_json::<AssetFileTrainingFormattedTracking>(
-            self.version_tracking_path(),
-        ) {
-            Ok(mut tracking) => {
-                if tracking.trees_hash != trees_hash
-                    || tracking.advantage_hash != advantage_hash
-                    || tracking.formatted_schema_version != Self::FORMATTED_SCHEMA_VERSION
-                {
+        let tracking_content =
+            match read_json::<AssetFileTrainingFormattedTracking>(self.version_tracking_path()) {
+                Ok(mut tracking) => {
+                    if tracking.trees_hash != trees_hash
+                        || tracking.advantage_hash != advantage_hash
+                        || tracking.formatted_schema_version != Self::FORMATTED_SCHEMA_VERSION
+                    {
+                        let trees = asset_file_trees.fetch();
+                        let advantage_per_tree = asset_file_advantage.fetch();
+                        let samples = self.generate_formatted_samples(&trees, &advantage_per_tree);
+                        write_jsonl_file(self.file_path(), &samples).unwrap();
+                        tracking.trees_hash = trees_hash.clone();
+                        tracking.advantage_hash = advantage_hash.clone();
+                        tracking.formatted_schema_version = Self::FORMATTED_SCHEMA_VERSION;
+                    }
+                    tracking
+                }
+                Err(_) => {
                     let trees = asset_file_trees.fetch();
                     let advantage_per_tree = asset_file_advantage.fetch();
                     let samples = self.generate_formatted_samples(&trees, &advantage_per_tree);
                     write_jsonl_file(self.file_path(), &samples).unwrap();
-                    tracking.trees_hash = trees_hash.clone();
-                    tracking.advantage_hash = advantage_hash.clone();
-                    tracking.formatted_schema_version = Self::FORMATTED_SCHEMA_VERSION;
+                    AssetFileTrainingFormattedTracking {
+                        trees_hash,
+                        advantage_hash,
+                        formatted_schema_version: Self::FORMATTED_SCHEMA_VERSION,
+                    }
                 }
-                tracking
-            }
-            Err(_) => {
-                let trees = asset_file_trees.fetch();
-                let advantage_per_tree = asset_file_advantage.fetch();
-                let samples = self.generate_formatted_samples(&trees, &advantage_per_tree);
-                write_jsonl_file(self.file_path(), &samples).unwrap();
-                AssetFileTrainingFormattedTracking {
-                    trees_hash,
-                    advantage_hash,
-                    formatted_schema_version: Self::FORMATTED_SCHEMA_VERSION,
-                }
-            }
-        };
+            };
 
         write_json(self.version_tracking_path(), &tracking_content).unwrap();
         hash_file(self.file_path()).unwrap()

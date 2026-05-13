@@ -169,7 +169,10 @@ pub async fn produce_actions_from_state(
                 )
                 .await;
                 if is_context_length_exceeded_response(&response) {
-                    context_length_exceeded_result(question_id, session_state.final_answer.is_some())
+                    context_length_exceeded_result(
+                        question_id,
+                        session_state.final_answer.is_some(),
+                    )
                 } else {
                     let action = TreeAction::AddTrajectoryAction {
                         question_id,
@@ -215,7 +218,10 @@ pub async fn produce_actions_from_state(
                 )
                 .await;
                 if is_context_length_exceeded_response(&response) {
-                    context_length_exceeded_result(question_id, session_state.final_answer.is_some())
+                    context_length_exceeded_result(
+                        question_id,
+                        session_state.final_answer.is_some(),
+                    )
                 } else {
                     let plan_content = match planner_chosen_mode {
                         NextStepDecision::ChangePlan(reason) => {
@@ -251,9 +257,10 @@ pub async fn produce_actions_from_state(
             )
             .await
             {
-                ChosenModeDecision::ContextLengthExceeded => {
-                    context_length_exceeded_result(question_id, session_state.final_answer.is_some())
-                }
+                ChosenModeDecision::ContextLengthExceeded => context_length_exceeded_result(
+                    question_id,
+                    session_state.final_answer.is_some(),
+                ),
                 ChosenModeDecision::Chosen(chosen_mode) => vec![TreeAction::AddTrajectoryAction {
                     question_id,
                     action: TrajectoryAction::PlannerDecideNextStep(chosen_mode),
@@ -471,7 +478,10 @@ pub async fn produce_actions_from_state(
                 )
                 .await;
                 if is_context_length_exceeded_response(&response) {
-                    context_length_exceeded_result(question_id, session_state.final_answer.is_some())
+                    context_length_exceeded_result(
+                        question_id,
+                        session_state.final_answer.is_some(),
+                    )
                 } else {
                     let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
                     // println!("Updated plan content: {}", updated_plan_content);

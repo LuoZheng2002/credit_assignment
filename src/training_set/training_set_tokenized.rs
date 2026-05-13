@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 use tokenizers::Tokenizer;
 
 use crate::{
-    direct_answer::generate_raw_answers::LlmModel, em::em_types::EmHyperparameters,
+    direct_answer::generate_raw_answers::LlmModel,
     em::em_schema::short_hyperparameter_hash,
+    em::em_types::EmHyperparameters,
     parallel_process_jsonl::{read_json, read_json_lines, write_json, write_jsonl_file},
     training_set::training_set_formatted::{AssetFileTrainingFormatted, TrainingSampleFormatted},
     version_tracking::{AssetFile, Base64Hash, hash_file},
@@ -79,7 +80,10 @@ impl AssetFileTrainingTokenized {
     }
 
     fn load_tokenizer(&self) -> Tokenizer {
-        assert!(self.model.is_qwen(), "Training tokenization currently supports Qwen models only");
+        assert!(
+            self.model.is_qwen(),
+            "Training tokenization currently supports Qwen models only"
+        );
         Tokenizer::from_pretrained(self.model.api_name(), None).unwrap()
     }
 
@@ -192,7 +196,10 @@ impl AssetFileTrainingTokenized {
             original.contains(Self::START_MASK_TAG),
             "Formatted sample must contain at least one mask segment"
         );
-        assert!(!segments.is_empty(), "Formatted sample cannot produce empty segment list");
+        assert!(
+            !segments.is_empty(),
+            "Formatted sample cannot produce empty segment list"
+        );
 
         let mut input_ids: Vec<i32> = Vec::new();
         let mut labels: Vec<i32> = Vec::new();
@@ -202,9 +209,7 @@ impl AssetFileTrainingTokenized {
             if segment.text.is_empty() {
                 continue;
             }
-            let segment_encoding = tokenizer
-                .encode(segment.text.clone(), false)
-                .unwrap();
+            let segment_encoding = tokenizer.encode(segment.text.clone(), false).unwrap();
             let segment_ids: Vec<i32> = segment_encoding
                 .get_ids()
                 .iter()
@@ -229,7 +234,11 @@ impl AssetFileTrainingTokenized {
         }
 
         assert!(!input_ids.is_empty(), "Tokenized input must be non-empty");
-        assert_eq!(labels.len(), input_ids.len(), "labels must align with input_ids");
+        assert_eq!(
+            labels.len(),
+            input_ids.len(),
+            "labels must align with input_ids"
+        );
         assert!(
             !masked_segment_end_indices.is_empty(),
             "At least one masked segment must contain tokenized text"
@@ -258,8 +267,7 @@ impl AssetFileTrainingTokenized {
         }
 
         assert_eq!(
-            reconstructed,
-            formatted_sample.content_formatted,
+            reconstructed, formatted_sample.content_formatted,
             "Reconstructed content must match formatted content"
         );
 
@@ -314,31 +322,30 @@ impl AssetFile for AssetFileTrainingTokenized {
         };
         let formatted_hash = asset_file_training_formatted.synchronize();
 
-        let tracking_content = match read_json::<AssetFileTrainingTokenizedTracking>(
-            self.version_tracking_path(),
-        ) {
-            Ok(mut tracking) => {
-                if tracking.formatted_hash != formatted_hash
-                    || tracking.tokenized_schema_version != Self::TOKENIZED_SCHEMA_VERSION
-                {
+        let tracking_content =
+            match read_json::<AssetFileTrainingTokenizedTracking>(self.version_tracking_path()) {
+                Ok(mut tracking) => {
+                    if tracking.formatted_hash != formatted_hash
+                        || tracking.tokenized_schema_version != Self::TOKENIZED_SCHEMA_VERSION
+                    {
+                        let formatted_samples = asset_file_training_formatted.fetch();
+                        let tokenized_samples = self.generate_tokenized_samples(&formatted_samples);
+                        write_jsonl_file(self.file_path(), &tokenized_samples).unwrap();
+                        tracking.formatted_hash = formatted_hash.clone();
+                        tracking.tokenized_schema_version = Self::TOKENIZED_SCHEMA_VERSION;
+                    }
+                    tracking
+                }
+                Err(_) => {
                     let formatted_samples = asset_file_training_formatted.fetch();
                     let tokenized_samples = self.generate_tokenized_samples(&formatted_samples);
                     write_jsonl_file(self.file_path(), &tokenized_samples).unwrap();
-                    tracking.formatted_hash = formatted_hash.clone();
-                    tracking.tokenized_schema_version = Self::TOKENIZED_SCHEMA_VERSION;
+                    AssetFileTrainingTokenizedTracking {
+                        formatted_hash,
+                        tokenized_schema_version: Self::TOKENIZED_SCHEMA_VERSION,
+                    }
                 }
-                tracking
-            }
-            Err(_) => {
-                let formatted_samples = asset_file_training_formatted.fetch();
-                let tokenized_samples = self.generate_tokenized_samples(&formatted_samples);
-                write_jsonl_file(self.file_path(), &tokenized_samples).unwrap();
-                AssetFileTrainingTokenizedTracking {
-                    formatted_hash,
-                    tokenized_schema_version: Self::TOKENIZED_SCHEMA_VERSION,
-                }
-            }
-        };
+            };
         write_json(self.version_tracking_path(), &tracking_content).unwrap();
         hash_file(self.file_path()).unwrap()
     }

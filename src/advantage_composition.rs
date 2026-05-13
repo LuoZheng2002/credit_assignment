@@ -175,7 +175,10 @@ impl AssetFileAdvantageComposition {
                 tree_fit.tree_question_id
             );
         }
-        assert!(!em_by_tree_id.is_empty(), "Advantage composition requires at least one tree");
+        assert!(
+            !em_by_tree_id.is_empty(),
+            "Advantage composition requires at least one tree"
+        );
 
         let em_tree_ids: BTreeSet<usize> = em_by_tree_id.keys().copied().collect();
 
@@ -222,7 +225,8 @@ impl AssetFileAdvantageComposition {
                 "Tree {} correctness_ratio numerator must be <= denominator",
                 tree.id
             );
-            let tree_accuracy = correctness_ratio.numerator as f64 / correctness_ratio.denominator as f64;
+            let tree_accuracy =
+                correctness_ratio.numerator as f64 / correctness_ratio.denominator as f64;
             let win_loss_ratio_factor = Self::win_loss_ratio_factor(tree_accuracy);
             assert!(
                 win_loss_ratio_factor.is_finite(),
@@ -231,7 +235,10 @@ impl AssetFileAdvantageComposition {
             );
             win_loss_ratio_factor_by_tree_id.insert(tree.id, win_loss_ratio_factor);
         }
-        assert!(!tree_ids.is_empty(), "Advantage composition requires at least one tree");
+        assert!(
+            !tree_ids.is_empty(),
+            "Advantage composition requires at least one tree"
+        );
 
         assert_eq!(
             tree_ids, em_tree_ids,

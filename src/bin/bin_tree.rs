@@ -1,6 +1,5 @@
 use std::{
     collections::HashSet,
-    fs::OpenOptions,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -20,7 +19,8 @@ use credit_assignment::{
     call_llm::set_vllm_port,
     datasets::{AssetFileDataset, DeepMathQuestion},
     direct_answer::generate_raw_answers::LlmModel,
-    parallel_process_jsonl::{read_json_lines, write_json, write_jsonl_file},
+    parallel_process_jsonl::write_json,
+    sqlite_session_log::SqliteSessionLogStore,
     version_tracking::AssetFile,
 };
 use futures::future::join_all;
@@ -28,7 +28,6 @@ use indexmap::IndexMap;
 use pyo3::Python;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use reqwest::Client;
-use std::io::Write;
 use tokio::sync::Semaphore;
 
 #[derive(Parser, Debug)]
@@ -88,8 +87,7 @@ async fn main() {
     let mut rng = StdRng::seed_from_u64(42);
     // read log file
     let rollout_log_path = get_rollout_log_path(model, &dataset_name, num_samples);
-    let mut rollout_log_items: Vec<TreeAction> =
-        read_json_lines(&rollout_log_path).unwrap_or_default();
+    let rollout_log_store_for_loading = SqliteSessionLogStore::new(&rollout_log_path).unwrap();
     // read trajectory file
     // let trajectory_path = get_rollout_trees_path(model, &dataset_name, num_samples);
     let asset_file_trees = AssetFileTrees {
@@ -105,16 +103,11 @@ async fn main() {
         let tree = row.unwrap();
         tree_completed_ids.insert(tree.id);
     }
-    // delete parts in log file that is already finished and write back
-    rollout_log_items.retain(|item| !tree_completed_ids.contains(&item.question_id()));
-    write_jsonl_file(&rollout_log_path, &rollout_log_items).unwrap();
-    // construct a hashmap of loaded session logs
-    let mut loaded_session_logs: IndexMap<usize, Vec<TreeAction>> = IndexMap::new();
-    for log_item in rollout_log_items {
-        loaded_session_logs
-            .entry(log_item.question_id())
-            .or_insert_with(Vec::new)
-            .push(log_item);
+    // delete tables in session log database that are already finished
+    for tree_id in &tree_completed_ids {
+        rollout_log_store_for_loading
+            .drop_question_table(*tree_id)
+            .unwrap();
     }
     // load questions and answers for unfinished trajectories
     let asset_file_dataset = AssetFileDataset {
@@ -130,12 +123,17 @@ async fn main() {
 
     let mut unfinished_tree_ids: HashSet<usize> = questions.keys().cloned().collect();
     unfinished_tree_ids.retain(|id| !tree_completed_ids.contains(id));
+    // construct a hashmap of loaded session logs
+    let mut loaded_session_logs: IndexMap<usize, Vec<TreeAction>> = IndexMap::new();
+    for unfinished_tree_id in &unfinished_tree_ids {
+        let loaded_actions = rollout_log_store_for_loading
+            .load_question_actions(*unfinished_tree_id)
+            .unwrap();
+        loaded_session_logs.insert(*unfinished_tree_id, loaded_actions);
+    }
 
     let rollout_concurrency = MAX_CONCURRENT_ROLLOUT_JOBS;
-    println!(
-        "rollout concurrency limit: {}",
-        rollout_concurrency
-    );
+    println!("rollout concurrency limit: {}", rollout_concurrency);
     let sem = Arc::new(Semaphore::new(rollout_concurrency));
     SHUTDOWN.store(false, Ordering::SeqCst);
     tokio::spawn(async move {
@@ -147,11 +145,8 @@ async fn main() {
     let (trajectory_tx, mut trajectory_rx) =
         tokio::sync::mpsc::unbounded_channel::<CompletedTree>();
     let mut sumit_task_rng = StdRng::seed_from_u64(rng.next_u64());
-    let mut session_log_file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&rollout_log_path)
-        .unwrap();
+    let rollout_log_store_for_writer = SqliteSessionLogStore::new(&rollout_log_path).unwrap();
+    let rollout_log_store_for_cleanup = SqliteSessionLogStore::new(&rollout_log_path).unwrap();
     // write the tracking file directly to mark the existence of the tree file.
     let tracking_content = AssetFileTreesTracking { dataset_hash };
     write_json(asset_file_trees.version_tracking_path(), &tracking_content).unwrap();
@@ -218,8 +213,10 @@ async fn main() {
             if SHUTDOWN.load(Ordering::SeqCst) {
                 break;
             }
-            let json_line = serde_json::to_string(&action_log_item).unwrap();
-            writeln!(session_log_file, "{}", json_line).unwrap();
+            let question_id = action_log_item.question_id();
+            rollout_log_store_for_writer
+                .append_action(question_id, &action_log_item)
+                .unwrap();
         }
     });
     let receive_trajectory_handle = tokio::spawn(async move {
@@ -229,7 +226,12 @@ async fn main() {
             if SHUTDOWN.load(Ordering::SeqCst) {
                 break;
             }
-            trees_store_for_writer.upsert(trajectory.id, &trajectory).unwrap();
+            trees_store_for_writer
+                .upsert(trajectory.id, &trajectory)
+                .unwrap();
+            rollout_log_store_for_cleanup
+                .drop_question_table(trajectory.id)
+                .unwrap();
             total_correct += trajectory.trajectory.correctness_ratio.numerator;
             total_judged += trajectory.trajectory.correctness_ratio.denominator;
             let running_accuracy = if total_judged == 0 {

@@ -34,7 +34,10 @@ pub fn generate_sample_formatted_from_tree_node(
     node_id: usize,
     model: LlmModel,
 ) -> TrainingSampleFormatted {
-    assert!(model.is_qwen(), "Training sample formatting currently requires a Qwen model");
+    assert!(
+        model.is_qwen(),
+        "Training sample formatting currently requires a Qwen model"
+    );
     assert_eq!(
         tree.id, tree.trajectory.question_id,
         "CompletedTree.id must equal Tree.question_id"
@@ -49,7 +52,10 @@ pub fn generate_sample_formatted_from_tree_node(
     );
 
     let target_node = &tree.trajectory.nodes[node_id];
-    assert_eq!(target_node.node_id, node_id, "Node index must equal node_id");
+    assert_eq!(
+        target_node.node_id, node_id,
+        "Node index must equal node_id"
+    );
 
     let mut path_ids_from_target_to_root: Vec<usize> = Vec::new();
     let mut seen: BTreeSet<usize> = BTreeSet::new();
