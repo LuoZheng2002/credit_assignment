@@ -429,7 +429,7 @@ impl AssetFile for AssetFileAdvantageComposition {
                         self.num_samples,
                         self.hyperparameters
                     );
-                    let trees = asset_file_trees.fetch();
+                    let trees = asset_file_trees.fetch().load_all().unwrap();
                     let (em_fit_per_tree, _meta) = asset_file_em_fit.fetch();
                     let advantage = Self::compose_advantage(&trees, &em_fit_per_tree);
                     write_json(self.file_path(), &advantage).unwrap_or_else(|err| {
@@ -452,7 +452,7 @@ impl AssetFile for AssetFileAdvantageComposition {
                     self.num_samples,
                     self.hyperparameters
                 );
-                let trees = asset_file_trees.fetch();
+                let trees = asset_file_trees.fetch().load_all().unwrap();
                 let (em_fit_per_tree, _meta) = asset_file_em_fit.fetch();
                 let advantage = Self::compose_advantage(&trees, &em_fit_per_tree);
                 write_json(self.file_path(), &advantage).unwrap_or_else(|err| {

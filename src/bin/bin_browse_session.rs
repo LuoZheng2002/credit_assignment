@@ -112,7 +112,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         num_samples: args.num_samples,
         hyperparameters,
     };
-    let mut answers = asset_trees.fetch();
+    let mut answers = asset_trees.fetch().load_all().unwrap();
     answers.sort_by_key(|answer| answer.id);
     let (per_tree_em_fit, _meta) = asset_em_fit.fetch();
     let per_tree_advantage = asset_advantage.fetch();

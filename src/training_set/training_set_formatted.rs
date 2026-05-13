@@ -149,7 +149,7 @@ impl AssetFile for AssetFileTrainingFormatted {
                     || tracking.advantage_hash != advantage_hash
                     || tracking.formatted_schema_version != Self::FORMATTED_SCHEMA_VERSION
                 {
-                    let trees = asset_file_trees.fetch();
+                    let trees = asset_file_trees.fetch().load_all().unwrap();
                     let advantage_per_tree = asset_file_advantage.fetch();
                     let samples = self.generate_formatted_samples(&trees, &advantage_per_tree);
                     write_jsonl_file(self.file_path(), &samples).unwrap_or_else(|err| {
@@ -166,7 +166,7 @@ impl AssetFile for AssetFileTrainingFormatted {
                 tracking
             }
             Err(_) => {
-                let trees = asset_file_trees.fetch();
+                let trees = asset_file_trees.fetch().load_all().unwrap();
                 let advantage_per_tree = asset_file_advantage.fetch();
                 let samples = self.generate_formatted_samples(&trees, &advantage_per_tree);
                 write_jsonl_file(self.file_path(), &samples).unwrap_or_else(|err| {

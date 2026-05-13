@@ -248,7 +248,7 @@ impl AssetFile for AssetFileEmFit {
                         self.num_samples,
                         self.hyperparameters
                     );
-                    let completed_trees = asset_file_trees.fetch();
+                    let completed_trees = asset_file_trees.fetch().load_all().unwrap();
                     let (per_tree, meta) =
                         run_em_fit(&completed_trees, self.hyperparameters.clone());
                     self.store_em_fit_results(&per_tree, &meta);
@@ -264,7 +264,7 @@ impl AssetFile for AssetFileEmFit {
                     self.num_samples,
                     self.hyperparameters
                 );
-                let completed_trees = asset_file_trees.fetch();
+                let completed_trees = asset_file_trees.fetch().load_all().unwrap();
                 let (per_tree, meta) = run_em_fit(&completed_trees, self.hyperparameters.clone());
                 self.store_em_fit_results(&per_tree, &meta);
                 AssetFileEmFitTracking {
