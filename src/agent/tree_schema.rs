@@ -95,6 +95,12 @@ pub struct CompletedTreeStore {
 
 impl CompletedTreeStore {
     const DEFAULT_PAGE_SIZE: usize = 256;
+    const CREATE_COMPLETED_TREES_TABLE_SQL: &str = "
+        CREATE TABLE IF NOT EXISTS completed_trees (
+            id INTEGER PRIMARY KEY,
+            payload_json TEXT NOT NULL
+        );
+    ";
 
     pub fn new(db_path: impl Into<PathBuf>) -> Self {
         Self {
@@ -112,6 +118,15 @@ impl CompletedTreeStore {
     }
 
     pub fn initialize_schema(&self) -> Result<(), String> {
+        if let Some(parent) = self.db_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "Failed to create parent directory for trees sqlite database {}: {}",
+                    self.db_path.display(),
+                    e
+                )
+            })?;
+        }
         let conn = Connection::open(&self.db_path).map_err(|e| {
             format!(
                 "Failed to open trees sqlite database {}: {}",
@@ -119,17 +134,46 @@ impl CompletedTreeStore {
                 e
             )
         })?;
-        conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS completed_trees (
-                id INTEGER PRIMARY KEY,
-                payload_json TEXT NOT NULL
-            );
-            ",
-        )
+        conn.execute_batch(Self::CREATE_COMPLETED_TREES_TABLE_SQL)
         .map_err(|e| {
             format!(
                 "Failed to initialize schema for trees sqlite database {}: {}",
+                self.db_path.display(),
+                e
+            )
+        })?;
+        Ok(())
+    }
+
+    pub fn upsert(&self, tree: &CompletedTree) -> Result<(), String> {
+        self.initialize_schema()?;
+        let id_i64 = i64::try_from(tree.id).map_err(|_| format!("id out of i64 range: {}", tree.id))?;
+        let payload_json = serde_json::to_string(tree).map_err(|e| {
+            format!(
+                "Failed to serialize completed tree for id={} before sqlite upsert: {}",
+                tree.id,
+                e
+            )
+        })?;
+        let conn = Connection::open(&self.db_path).map_err(|e| {
+            format!(
+                "Failed to open trees sqlite database {}: {}",
+                self.db_path.display(),
+                e
+            )
+        })?;
+        conn.execute(
+            "
+            INSERT INTO completed_trees (id, payload_json)
+            VALUES (?1, ?2)
+            ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json
+            ",
+            params![id_i64, payload_json],
+        )
+        .map_err(|e| {
+            format!(
+                "Failed to upsert completed tree id={} into sqlite database {}: {}",
+                tree.id,
                 self.db_path.display(),
                 e
             )
@@ -208,14 +252,7 @@ impl CompletedTreeIter {
                 e
             )
         })?;
-        conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS completed_trees (
-                id INTEGER PRIMARY KEY,
-                payload_json TEXT NOT NULL
-            );
-            ",
-        )
+        conn.execute_batch(CompletedTreeStore::CREATE_COMPLETED_TREES_TABLE_SQL)
         .map_err(|e| {
             format!(
                 "Failed to initialize schema for trees sqlite database {}: {}",

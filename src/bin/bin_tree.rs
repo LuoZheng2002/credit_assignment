@@ -19,9 +19,7 @@ use credit_assignment::{
     call_llm::set_vllm_port,
     datasets::{AssetFileDataset, DeepMathQuestion},
     direct_answer::generate_raw_answers::LlmModel,
-    parallel_process_jsonl::{
-        read_json_lines, read_json_lines_indexed, write_json, write_jsonl_file,
-    },
+    parallel_process_jsonl::{read_json_lines, write_json, write_jsonl_file},
     version_tracking::AssetFile,
 };
 use futures::future::join_all;
@@ -98,11 +96,12 @@ async fn main() {
         dataset: dataset_name.clone(),
         num_samples,
     };
-    let trees_path = asset_file_trees.file_path();
-
-    let tree_items: IndexMap<usize, CompletedTree> =
-        read_json_lines_indexed(&trees_path).unwrap_or_default();
-    let tree_completed_ids: HashSet<usize> = tree_items.keys().cloned().collect();
+    let trees_store = asset_file_trees.fetch();
+    let mut tree_completed_ids: HashSet<usize> = HashSet::new();
+    for tree_result in trees_store.iter() {
+        let tree = tree_result.unwrap();
+        tree_completed_ids.insert(tree.id);
+    }
     // delete parts in log file that is already finished and write back
     rollout_log_items.retain(|item| !tree_completed_ids.contains(&item.question_id()));
     write_jsonl_file(&rollout_log_path, &rollout_log_items).unwrap();
@@ -150,20 +149,16 @@ async fn main() {
         .append(true)
         .open(&rollout_log_path)
         .unwrap();
-    let mut trees_file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true) // truncate and rewrite history to let the items flow through the channel
-        .open(&trees_path)
-        .unwrap();
     // write the tracking file directly to mark the existence of the tree file.
     let tracking_content = AssetFileTreesTracking { dataset_hash };
     write_json(asset_file_trees.version_tracking_path(), &tracking_content).unwrap();
-    for trajectory in tree_items.into_values() {
+    for trajectory_result in trees_store.iter() {
+        let trajectory = trajectory_result.unwrap();
         trajectory_tx.send(trajectory).unwrap();
     }
     let action_tx_for_submit = action_tx.clone();
     let trajectory_tx_for_submit = trajectory_tx.clone();
+    let trees_store_for_writer = trees_store.clone();
     let submit_trajectory_task_handle = tokio::spawn({
         let sem = sem.clone();
         let client = client.clone();
@@ -229,8 +224,7 @@ async fn main() {
             if SHUTDOWN.load(Ordering::SeqCst) {
                 break;
             }
-            let json_line = serde_json::to_string(&trajectory).unwrap();
-            writeln!(trees_file, "{}", json_line).unwrap();
+            trees_store_for_writer.upsert(&trajectory).unwrap();
             total_correct += trajectory.trajectory.correctness_ratio.numerator;
             total_judged += trajectory.trajectory.correctness_ratio.denominator;
             let running_accuracy = if total_judged == 0 {
@@ -256,15 +250,10 @@ async fn main() {
         receive_trajectory_handle,
     ])
     .await;
-    // read trajectory file and sort by id
-    let mut trajectories: Vec<CompletedTree> = read_json_lines(&trees_path).unwrap_or_default();
-    trajectories.sort_by_key(|t| t.id);
-    // write back sorted trajectories
-    write_jsonl_file(&trees_path, &trajectories).unwrap();
-
     let mut overall_correct = 0usize;
     let mut overall_denominator = 0usize;
-    for trajectory in &trajectories {
+    for trajectory_result in trees_store.iter() {
+        let trajectory = trajectory_result.unwrap();
         overall_correct += trajectory.trajectory.correctness_ratio.numerator;
         overall_denominator += trajectory.trajectory.correctness_ratio.denominator;
     }
