@@ -4,28 +4,31 @@ use std::{marker::PhantomData, path::PathBuf};
 
 const SQLITE_STORE_TABLE_NAME: &str = "store_entries";
 
-pub trait SqliteStoreKey: Copy {
-    fn to_i64(self) -> i64;
-    fn from_i64(value: i64) -> Self;
+pub trait SqliteStoreKey {
+    fn to_key_text(&self) -> String;
 }
 
 impl SqliteStoreKey for usize {
-    fn to_i64(self) -> i64 {
-        i64::try_from(self).expect("usize key must fit into i64")
-    }
-
-    fn from_i64(value: i64) -> Self {
-        usize::try_from(value).expect("sqlite INTEGER key must fit into usize")
+    fn to_key_text(&self) -> String {
+        self.to_string()
     }
 }
 
 impl SqliteStoreKey for i64 {
-    fn to_i64(self) -> i64 {
-        self
+    fn to_key_text(&self) -> String {
+        self.to_string()
     }
+}
 
-    fn from_i64(value: i64) -> Self {
-        value
+impl SqliteStoreKey for String {
+    fn to_key_text(&self) -> String {
+        self.clone()
+    }
+}
+
+impl SqliteStoreKey for &str {
+    fn to_key_text(&self) -> String {
+        self.to_string()
     }
 }
 
@@ -76,7 +79,7 @@ where
             .execute_batch(&format!(
                 "
                 CREATE TABLE IF NOT EXISTS {} (
-                    id INTEGER PRIMARY KEY,
+                    id TEXT PRIMARY KEY,
                     payload_json TEXT NOT NULL
                 );
                 ",
@@ -110,6 +113,7 @@ where
 
     pub fn upsert(&self, key: K, value: &V) -> Result<(), String> {
         self.initialize_schema()?;
+        let key_text = key.to_key_text();
         let payload_json = serde_json::to_string(value).map_err(|e| {
             format!(
                 "Failed to serialize sqlite payload for table {} in {}: {}",
@@ -128,12 +132,12 @@ where
                     ",
                     SQLITE_STORE_TABLE_NAME
                 ),
-                params![key.to_i64(), payload_json],
+                params![key_text, payload_json],
             )
             .map_err(|e| {
                 format!(
                     "Failed to upsert sqlite payload for key {} in table {} at {}: {}",
-                    key.to_i64(),
+                    key.to_key_text(),
                     SQLITE_STORE_TABLE_NAME,
                     self.db_path.display(),
                     e
@@ -144,6 +148,7 @@ where
 
     pub fn get(&self, key: K) -> Result<Option<V>, String> {
         self.initialize_schema()?;
+        let key_text = key.to_key_text();
         let payload: Option<String> = self
             .connection
             .query_row(
@@ -151,14 +156,14 @@ where
                     "SELECT payload_json FROM {} WHERE id = ?1",
                     SQLITE_STORE_TABLE_NAME
                 ),
-                params![key.to_i64()],
+                params![key_text],
                 |row| row.get(0),
             )
             .optional()
             .map_err(|e| {
                 format!(
                     "Failed to query key {} from table {} at {}: {}",
-                    key.to_i64(),
+                    key.to_key_text(),
                     SQLITE_STORE_TABLE_NAME,
                     self.db_path.display(),
                     e
@@ -169,7 +174,7 @@ where
                 serde_json::from_str::<V>(&json).map_err(|e| {
                     format!(
                         "Failed to deserialize sqlite payload for key {} from table {} at {}: {}",
-                        key.to_i64(),
+                        key.to_key_text(),
                         SQLITE_STORE_TABLE_NAME,
                         self.db_path.display(),
                         e

@@ -3,10 +3,11 @@ use tokenizers::Tokenizer;
 
 use crate::{
     direct_answer::generate_raw_answers::LlmModel,
-    em::em_schema::short_hyperparameter_hash,
-    em::em_types::EmHyperparameters,
+    em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
     parallel_process_jsonl::{read_json, read_json_lines, write_json, write_jsonl_file},
-    training_set::training_set_formatted::{AssetFileTrainingFormatted, TrainingSampleFormatted},
+    training_set::training_set_formatted::{
+        AssetFileTrainingFormatted, QuestionNodeId, TrainingSampleFormatted,
+    },
     version_tracking::{AssetFile, Base64Hash, hash_file},
 };
 // The tokenization should follow the following rules:
@@ -26,8 +27,9 @@ use crate::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainingSampleTokenized {
-    pub question_id: usize,
-    pub node_id: usize,
+    // pub question_id: usize,
+    // pub node_id: usize,
+    pub id: QuestionNodeId,
     pub input_ids: Vec<i32>,
     pub labels: Vec<i32>,
     pub reconstructed: String,
@@ -87,7 +89,10 @@ impl AssetFileTrainingTokenized {
         let model = if self.model.is_qwen() {
             self.model
         } else {
-            println!("Warning: Training tokenization currently supports Qwen models only, but received {}", self.model.cli_name());
+            println!(
+                "Warning: Training tokenization currently supports Qwen models only, but received {}",
+                self.model.cli_name()
+            );
             LlmModel::Qwen25_7b
         };
         Tokenizer::from_pretrained(model.api_name(), None).unwrap()
@@ -162,21 +167,19 @@ impl AssetFileTrainingTokenized {
             if tag == Self::START_MASK_TAG {
                 assert!(
                     !in_mask,
-                    "Unexpected nested {} in formatted sample (question_id={}, node_id={})",
+                    "Unexpected nested {} in formatted sample (id: {:?})",
                     Self::START_MASK_TAG,
-                    formatted_sample.question_id,
-                    formatted_sample.node_id
+                    formatted_sample.id
                 );
                 in_mask = true;
             } else {
                 assert_eq!(tag, Self::END_MASK_WITH_EOS_TAG, "Unexpected tag in parser");
                 assert!(
                     in_mask,
-                    "Missing {} before {} in formatted sample (question_id={}, node_id={})",
+                    "Missing {} before {} in formatted sample (id: {:?})",
                     Self::START_MASK_TAG,
                     Self::END_MASK_WITH_EOS_TAG,
-                    formatted_sample.question_id,
-                    formatted_sample.node_id
+                    formatted_sample.id
                 );
                 in_mask = false;
             }
@@ -186,21 +189,20 @@ impl AssetFileTrainingTokenized {
 
         assert!(
             !in_mask,
-            "Formatted sample must close {} (question_id={}, node_id={})",
+            "Formatted sample must close {} (id: {:?})",
             Self::END_MASK_WITH_EOS_TAG,
-            formatted_sample.question_id,
-            formatted_sample.node_id
+            formatted_sample.id
         );
         assert!(
             original.ends_with(Self::END_MASK_WITH_EOS_TAG),
-            "Formatted sample must end with {} (question_id={}, node_id={})",
+            "Formatted sample must end with {} (id: {:?})",
             Self::END_MASK_WITH_EOS_TAG,
-            formatted_sample.question_id,
-            formatted_sample.node_id
+            formatted_sample.id
         );
         assert!(
             original.contains(Self::START_MASK_TAG),
-            "Formatted sample must contain at least one mask segment"
+            "Formatted sample must contain at least one mask segment (id: {:?})",
+            formatted_sample.id
         );
         assert!(
             !segments.is_empty(),
@@ -280,8 +282,7 @@ impl AssetFileTrainingTokenized {
         let input_length = input_ids.len();
 
         TrainingSampleTokenized {
-            question_id: formatted_sample.question_id,
-            node_id: formatted_sample.node_id,
+            id: formatted_sample.id,
             input_ids,
             labels,
             reconstructed,

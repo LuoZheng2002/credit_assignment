@@ -3,19 +3,23 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    advantage_composition::{AdvantageCompositionPerTree, AssetFileAdvantageComposition},
-    agent::tree_schema::AssetFileTrees,
-    direct_answer::generate_raw_answers::LlmModel,
-    em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
-    parallel_process_jsonl::{read_json, read_json_lines, write_json, write_jsonl_file},
-    training_set::training_set_generation::generate_sample_formatted_from_tree_node,
-    version_tracking::{AssetFile, Base64Hash, hash_file},
+    advantage_composition::{AdvantageCompositionPerTree, AssetFileAdvantageComposition}, agent::tree_schema::AssetFileTrees, direct_answer::generate_raw_answers::LlmModel, em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters}, parallel_process_jsonl::{read_json, read_json_lines, write_json, write_jsonl_file}, sqlite_store::SqliteStoreKey, training_set::training_set_generation::generate_sample_formatted_from_tree_node, version_tracking::{AssetFile, Base64Hash, hash_file}
 };
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QuestionNodeId{
+    pub question_id: usize,
+    pub node_id: usize,
+}
+impl SqliteStoreKey for QuestionNodeId {
+    fn to_key_text(&self) -> String {
+        format!("q{}_n{}", self.question_id, self.node_id)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainingSampleFormatted {
-    pub question_id: usize,
-    pub node_id: usize,
+    pub id: QuestionNodeId,
     // content_formatted uses mask delimiters:
     // <__start_mask__> ... <__end_mask_with_eos__>
     // and always ends with <__end_mask_with_eos__>.

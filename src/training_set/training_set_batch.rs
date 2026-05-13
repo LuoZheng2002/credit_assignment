@@ -6,14 +6,15 @@ use crate::{
     direct_answer::generate_raw_answers::LlmModel,
     em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
     parallel_process_jsonl::{read_json, read_json_lines, write_json, write_jsonl_file},
-    training_set::training_set_tokenized::{AssetFileTrainingTokenized, TrainingSampleTokenized},
+    training_set::{training_set_formatted::QuestionNodeId, training_set_tokenized::{AssetFileTrainingTokenized, TrainingSampleTokenized}},
     version_tracking::{AssetFile, Base64Hash, hash_file},
 };
 
 #[derive(Debug, Clone)]
 pub struct TrainingSampleMeta {
-    pub question_id: usize,
-    pub node_id: usize,
+    // pub question_id: usize,
+    // pub node_id: usize,
+    pub id: QuestionNodeId,
     pub input_length: usize,
     pub advantage: f64,
     pub input_length_normalized: f64,
@@ -131,8 +132,7 @@ impl AssetFileTrainingBatch {
             .iter()
             .enumerate()
             .map(|(index, sample)| TrainingSampleMeta {
-                question_id: sample.question_id,
-                node_id: sample.node_id,
+                id: sample.id,
                 input_length: sample.input_length,
                 advantage: sample.advantage,
                 input_length_normalized: input_lengths_normalized[index],

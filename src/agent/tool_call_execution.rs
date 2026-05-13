@@ -31,4 +31,4 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
     execute_python_code(code.to_string()).await
 }
 
-pub const MAX_NUM_TRAJECTORIES: usize = 16;
+pub const MAX_NUM_TRAJECTORIES: usize = 8;

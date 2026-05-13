@@ -14,7 +14,7 @@ use crate::{
     },
     direct_answer::generate_raw_answers::LlmModel,
     status_prompts::universal_prompt::get_prompt_according_to_session_status,
-    training_set::training_set_formatted::TrainingSampleFormatted,
+    training_set::training_set_formatted::{QuestionNodeId, TrainingSampleFormatted},
 };
 
 // The prompt is collected when the TrajectoryStatus enters "PlannerWorkingOnStep" (after the action TrajectoryAction::PlannerMakeOrChangePlan)
@@ -173,8 +173,12 @@ pub fn generate_sample_formatted_from_tree_node(
         + step_quality_sum * FIXED_ADVANTAGE_WEIGHT_STEP_QUALITY;
 
     TrainingSampleFormatted {
-        question_id: tree.id,
-        node_id,
+        // question_id: tree.id,
+        // node_id,
+        id: QuestionNodeId {
+            question_id: tree.id,
+            node_id,
+        },
         content_formatted: format!("{}{}", planner_chat_template_prompt, response_content),
         advantage: per_step_advantage,
     }
