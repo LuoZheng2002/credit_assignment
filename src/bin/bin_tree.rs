@@ -1,4 +1,5 @@
 use std::{
+    backtrace::Backtrace,
     collections::HashSet,
     sync::{
         Arc,
@@ -60,6 +61,11 @@ async fn main() {
     println!("Starting rollout evaluation pipeline...");
     std::panic::set_hook(Box::new(|info| {
         eprintln!("panic occurred: {}", info);
+        let rust_backtrace = std::env::var("RUST_BACKTRACE").ok();
+        if matches!(rust_backtrace.as_deref(), Some("1") | Some("full")) {
+            let backtrace = Backtrace::force_capture();
+            eprintln!("backtrace:\n{}", backtrace);
+        }
         std::process::abort();
     }));
     dotenvy::dotenv().ok();
