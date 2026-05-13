@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::borrow::Borrow;
 
 use crate::agent::tree::Tree;
 
@@ -23,13 +24,36 @@ impl EmDatasetBuilder {
     where
         I: IntoIterator<Item = &'a Tree>,
     {
+        self.build_from_tree_like_iter(trees)
+    }
+
+    pub fn build_from_owned_tree_iter<I>(&self, trees: I) -> EmFitDataset
+    where
+        I: IntoIterator<Item = Tree>,
+    {
+        self.build_from_tree_like_iter(trees)
+    }
+
+    pub fn build_from_tree_fn<F>(&self, mut next_tree: F) -> EmFitDataset
+    where
+        F: FnMut() -> Option<Tree>,
+    {
+        self.build_from_tree_like_iter(std::iter::from_fn(move || next_tree()))
+    }
+
+    fn build_from_tree_like_iter<I, T>(&self, trees: I) -> EmFitDataset
+    where
+        I: IntoIterator<Item = T>,
+        T: Borrow<Tree>,
+    {
         let mut seen_tree_count = 0usize;
 
         let mut node_bindings: Vec<EmNodeBinding> = Vec::new();
         let mut leaf_bindings: Vec<EmLeafBinding> = Vec::new();
         let mut leaf_paths: Vec<EmLeafPath> = Vec::new();
 
-        for tree in trees {
+        for tree_like in trees {
+            let tree = tree_like.borrow();
             seen_tree_count += 1;
             assert!(
                 tree.root_node_id.is_some(),

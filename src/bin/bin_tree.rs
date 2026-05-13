@@ -13,7 +13,8 @@ use credit_assignment::{
         rollout_loop::rollout,
         tree_action::TreeAction,
         tree_schema::{
-            AssetFileTrees, AssetFileTreesTracking, CompletedTree, get_rollout_log_path,
+            AssetFileTrees, AssetFileTreesTracking, CompletedTree, CompletedTreeStore,
+            get_rollout_log_path,
         },
     },
     call_llm::set_vllm_port,
@@ -98,8 +99,10 @@ async fn main() {
     };
     let trees_store = asset_file_trees.fetch();
     let mut tree_completed_ids: HashSet<usize> = HashSet::new();
-    for tree_result in trees_store.iter() {
-        let tree = tree_result.unwrap();
+    let mut tree_scan_statement = trees_store.statement().unwrap();
+    let rows = tree_scan_statement.try_iter().unwrap();
+    for row in rows {
+        let tree = row.unwrap();
         tree_completed_ids.insert(tree.id);
     }
     // delete parts in log file that is already finished and write back
@@ -152,13 +155,15 @@ async fn main() {
     // write the tracking file directly to mark the existence of the tree file.
     let tracking_content = AssetFileTreesTracking { dataset_hash };
     write_json(asset_file_trees.version_tracking_path(), &tracking_content).unwrap();
-    for trajectory_result in trees_store.iter() {
-        let trajectory = trajectory_result.unwrap();
+    let mut tree_scan_statement = trees_store.statement().unwrap();
+    let rows = tree_scan_statement.try_iter().unwrap();
+    for row in rows {
+        let trajectory = row.unwrap();
         trajectory_tx.send(trajectory).unwrap();
     }
     let action_tx_for_submit = action_tx.clone();
     let trajectory_tx_for_submit = trajectory_tx.clone();
-    let trees_store_for_writer = trees_store.clone();
+    let trees_store_for_writer = CompletedTreeStore::new(asset_file_trees.file_path()).unwrap();
     let submit_trajectory_task_handle = tokio::spawn({
         let sem = sem.clone();
         let client = client.clone();
@@ -252,8 +257,10 @@ async fn main() {
     .await;
     let mut overall_correct = 0usize;
     let mut overall_denominator = 0usize;
-    for trajectory_result in trees_store.iter() {
-        let trajectory = trajectory_result.unwrap();
+    let mut tree_scan_statement = trees_store.statement().unwrap();
+    let rows = tree_scan_statement.try_iter().unwrap();
+    for row in rows {
+        let trajectory = row.unwrap();
         overall_correct += trajectory.trajectory.correctness_ratio.numerator;
         overall_denominator += trajectory.trajectory.correctness_ratio.denominator;
     }

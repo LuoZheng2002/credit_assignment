@@ -243,13 +243,7 @@ impl AssetFile for AssetFileTrainingBatch {
                     if tracking.tokenized_hash != tokenized_hash {
                         let tokenized_samples = tokenized_asset.fetch();
                         let batches = self.generate_batches_from_tokenized_samples(&tokenized_samples);
-                        write_jsonl_file(self.file_path(), &batches).unwrap_or_else(|err| {
-                            panic!(
-                                "Failed to write training batches output to {}: {}",
-                                self.file_path(),
-                                err
-                            )
-                        });
+                        write_jsonl_file(self.file_path(), &batches).unwrap();
                         tracking.tokenized_hash = tokenized_hash.clone();
                     }
                     tracking
@@ -257,13 +251,7 @@ impl AssetFile for AssetFileTrainingBatch {
                 Err(_) => {
                     let tokenized_samples = tokenized_asset.fetch();
                     let batches = self.generate_batches_from_tokenized_samples(&tokenized_samples);
-                    write_jsonl_file(self.file_path(), &batches).unwrap_or_else(|err| {
-                        panic!(
-                            "Failed to write training batches output to {}: {}",
-                            self.file_path(),
-                            err
-                        )
-                    });
+                    write_jsonl_file(self.file_path(), &batches).unwrap();
                     AssetFileTrainingBatchTracking { tokenized_hash }
                 }
             };

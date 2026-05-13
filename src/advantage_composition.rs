@@ -183,10 +183,10 @@ impl AssetFileAdvantageComposition {
         let mut tree_length_factor_raw_by_tree_id: BTreeMap<usize, f64> = BTreeMap::new();
         let mut win_loss_ratio_factor_by_tree_id: BTreeMap<usize, f64> = BTreeMap::new();
 
-        for tree_result in trees.iter() {
-            let tree = tree_result.unwrap_or_else(|err| {
-                panic!("Failed to iterate completed trees for advantage composition: {}", err)
-            });
+        let mut tree_scan_statement = trees.statement().unwrap();
+        let rows = tree_scan_statement.try_iter().unwrap();
+        for row in rows {
+            let tree = row.unwrap();
             assert_eq!(
                 tree.id, tree.trajectory.question_id,
                 "CompletedTree.id must equal Tree.question_id"
@@ -262,10 +262,10 @@ impl AssetFileAdvantageComposition {
         let mut focused_values_raw: Vec<f64> = Vec::new();
         let mut node_positions: Vec<(usize, usize)> = Vec::new();
 
-        for tree_result in trees.iter() {
-            let tree = tree_result.unwrap_or_else(|err| {
-                panic!("Failed to iterate completed trees for advantage composition: {}", err)
-            });
+        let mut tree_scan_statement = trees.statement().unwrap();
+        let rows = tree_scan_statement.try_iter().unwrap();
+        for row in rows {
+            let tree = row.unwrap();
             let tree_id = tree.id;
             let tree_fit = em_by_tree_id
                 .get(&tree_id)
@@ -434,13 +434,7 @@ impl AssetFile for AssetFileAdvantageComposition {
                     let trees = asset_file_trees.fetch();
                     let (em_fit_per_tree, _meta) = asset_file_em_fit.fetch();
                     let advantage = Self::compose_advantage(&trees, &em_fit_per_tree);
-                    write_json(self.file_path(), &advantage).unwrap_or_else(|err| {
-                        panic!(
-                            "Failed to write advantage composition output to {}: {}",
-                            self.file_path(),
-                            err
-                        )
-                    });
+                    write_json(self.file_path(), &advantage).unwrap();
                     tracking.trees_hash = trees_hash.clone();
                     tracking.em_fit_hash = em_fit_hash.clone();
                 }
@@ -457,13 +451,7 @@ impl AssetFile for AssetFileAdvantageComposition {
                 let trees = asset_file_trees.fetch();
                 let (em_fit_per_tree, _meta) = asset_file_em_fit.fetch();
                 let advantage = Self::compose_advantage(&trees, &em_fit_per_tree);
-                write_json(self.file_path(), &advantage).unwrap_or_else(|err| {
-                    panic!(
-                        "Failed to write advantage composition output to {}: {}",
-                        self.file_path(),
-                        err
-                    )
-                });
+                write_json(self.file_path(), &advantage).unwrap();
                 AssetFileAdvantageCompositionTracking {
                     trees_hash,
                     em_fit_hash,

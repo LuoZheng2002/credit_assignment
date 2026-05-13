@@ -5,9 +5,9 @@ use crate::{
     parallel_process_jsonl::{HasId, read_json},
     version_tracking::{AssetFile, Base64Hash, hash_file},
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Row, Statement, params};
 use serde::{Deserialize, Serialize};
-use std::{collections::VecDeque, path::PathBuf};
+use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StepQualityRatio {
@@ -87,14 +87,13 @@ impl AssetFileTrees {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CompletedTreeStore {
     db_path: PathBuf,
-    page_size: usize,
+    connection: Connection,
 }
 
 impl CompletedTreeStore {
-    const DEFAULT_PAGE_SIZE: usize = 256;
     const CREATE_COMPLETED_TREES_TABLE_SQL: &str = "
         CREATE TABLE IF NOT EXISTS completed_trees (
             id INTEGER PRIMARY KEY,
@@ -102,39 +101,35 @@ impl CompletedTreeStore {
         );
     ";
 
-    pub fn new(db_path: impl Into<PathBuf>) -> Self {
-        Self {
-            db_path: db_path.into(),
-            page_size: Self::DEFAULT_PAGE_SIZE,
-        }
-    }
-
-    pub fn with_page_size(db_path: impl Into<PathBuf>, page_size: usize) -> Self {
-        assert!(page_size > 0, "page_size must be greater than zero");
-        Self {
-            db_path: db_path.into(),
-            page_size,
-        }
-    }
-
-    pub fn initialize_schema(&self) -> Result<(), String> {
-        if let Some(parent) = self.db_path.parent() {
+    pub fn new(db_path: impl Into<PathBuf>) -> Result<Self, String> {
+        let db_path = db_path.into();
+        if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 format!(
                     "Failed to create parent directory for trees sqlite database {}: {}",
-                    self.db_path.display(),
+                    db_path.display(),
                     e
                 )
             })?;
         }
-        let conn = Connection::open(&self.db_path).map_err(|e| {
+        let connection = Connection::open(&db_path).map_err(|e| {
             format!(
                 "Failed to open trees sqlite database {}: {}",
-                self.db_path.display(),
+                db_path.display(),
                 e
             )
         })?;
-        conn.execute_batch(Self::CREATE_COMPLETED_TREES_TABLE_SQL)
+        let store = Self {
+            db_path,
+            connection,
+        };
+        store.initialize_schema()?;
+        Ok(store)
+    }
+
+    pub fn initialize_schema(&self) -> Result<(), String> {
+        self.connection
+            .execute_batch(Self::CREATE_COMPLETED_TREES_TABLE_SQL)
         .map_err(|e| {
             format!(
                 "Failed to initialize schema for trees sqlite database {}: {}",
@@ -155,14 +150,7 @@ impl CompletedTreeStore {
                 e
             )
         })?;
-        let conn = Connection::open(&self.db_path).map_err(|e| {
-            format!(
-                "Failed to open trees sqlite database {}: {}",
-                self.db_path.display(),
-                e
-            )
-        })?;
-        conn.execute(
+        self.connection.execute(
             "
             INSERT INTO completed_trees (id, payload_json)
             VALUES (?1, ?2)
@@ -184,14 +172,8 @@ impl CompletedTreeStore {
     pub fn get(&self, id: usize) -> Result<Option<CompletedTree>, String> {
         self.initialize_schema()?;
         let id_i64 = i64::try_from(id).map_err(|_| format!("id out of i64 range: {}", id))?;
-        let conn = Connection::open(&self.db_path).map_err(|e| {
-            format!(
-                "Failed to open trees sqlite database {}: {}",
-                self.db_path.display(),
-                e
-            )
-        })?;
-        let payload: Option<String> = conn
+        let payload: Option<String> = self
+            .connection
             .query_row(
                 "SELECT payload_json FROM completed_trees WHERE id = ?1",
                 params![id_i64],
@@ -220,121 +202,98 @@ impl CompletedTreeStore {
             .transpose()
     }
 
-    pub fn iter(&self) -> CompletedTreeIter {
-        CompletedTreeIter {
-            db_path: self.db_path.clone(),
-            page_size: self.page_size,
-            current_offset: 0,
-            buffered_items: VecDeque::new(),
-            exhausted: false,
+    #[deprecated(note = "Use two-hop iteration: store.statement()?.try_iter()? instead")]
+    pub fn for_each_tree<F>(&self, mut on_tree: F) -> Result<(), String>
+    where
+        F: FnMut(CompletedTree) -> Result<(), String>,
+    {
+        let mut tree_scan_statement = self.statement()?;
+        let rows = tree_scan_statement.try_iter()?;
+        for row in rows {
+            let tree = row.map_err(|e| {
+                format!(
+                    "Failed to read tree row from sqlite database {}: {}",
+                    self.db_path.display(),
+                    e
+                )
+            })?;
+            on_tree(tree)?;
         }
+        Ok(())
     }
 
     pub fn load_all(&self) -> Result<Vec<CompletedTree>, String> {
-        self.iter().collect()
+        let mut tree_scan_statement = self.statement()?;
+        let rows = tree_scan_statement.try_iter()?;
+        let mut trees: Vec<CompletedTree> = Vec::new();
+        for row in rows {
+            let tree = row.map_err(|e| {
+                format!(
+                    "Failed to read tree row from sqlite database {}: {}",
+                    self.db_path.display(),
+                    e
+                )
+            })?;
+            trees.push(tree);
+        }
+        Ok(trees)
     }
-}
 
-pub struct CompletedTreeIter {
-    db_path: PathBuf,
-    page_size: usize,
-    current_offset: usize,
-    buffered_items: VecDeque<CompletedTree>,
-    exhausted: bool,
-}
-
-impl CompletedTreeIter {
-    fn load_next_page(&mut self) -> Result<(), String> {
-        let conn = Connection::open(&self.db_path).map_err(|e| {
-            format!(
-                "Failed to open trees sqlite database {}: {}",
-                self.db_path.display(),
-                e
-            )
-        })?;
-        conn.execute_batch(CompletedTreeStore::CREATE_COMPLETED_TREES_TABLE_SQL)
-        .map_err(|e| {
-            format!(
-                "Failed to initialize schema for trees sqlite database {}: {}",
-                self.db_path.display(),
-                e
-            )
-        })?;
-        let limit_i64 = i64::try_from(self.page_size)
-            .map_err(|_| format!("page_size out of i64 range: {}", self.page_size))?;
-        let offset_i64 = i64::try_from(self.current_offset)
-            .map_err(|_| format!("offset out of i64 range: {}", self.current_offset))?;
-        let mut stmt = conn
+    pub fn statement(&self) -> Result<CompletedTreeScanStatement<'_>, String> {
+        self.initialize_schema()?;
+        let statement = self
+            .connection
             .prepare(
                 "
                 SELECT payload_json
                 FROM completed_trees
                 ORDER BY id ASC
-                LIMIT ?1 OFFSET ?2
                 ",
             )
             .map_err(|e| {
                 format!(
-                    "Failed to prepare paged query for trees sqlite database {}: {}",
+                    "Failed to prepare query for trees sqlite database {}: {}",
                     self.db_path.display(),
                     e
                 )
             })?;
-        let rows = stmt
-            .query_map(params![limit_i64, offset_i64], |row| row.get::<_, String>(0))
-            .map_err(|e| {
-                format!(
-                    "Failed to execute paged query for trees sqlite database {}: {}",
-                    self.db_path.display(),
-                    e
-                )
-            })?;
-        let mut loaded = VecDeque::new();
-        for row in rows {
-            let payload = row.map_err(|e| {
-                format!(
-                    "Failed to read row payload from trees sqlite database {}: {}",
-                    self.db_path.display(),
-                    e
-                )
-            })?;
-            let tree: CompletedTree = serde_json::from_str(&payload).map_err(|e| {
-                format!(
-                    "Failed to deserialize row payload from trees sqlite database {}: {}",
-                    self.db_path.display(),
-                    e
-                )
-            })?;
-            loaded.push_back(tree);
-        }
-        if loaded.is_empty() {
-            self.exhausted = true;
-            return Ok(());
-        }
-        self.current_offset += loaded.len();
-        self.buffered_items = loaded;
-        Ok(())
+        Ok(CompletedTreeScanStatement {
+            statement,
+            db_path: self.db_path.clone(),
+        })
     }
 }
 
-impl Iterator for CompletedTreeIter {
-    type Item = Result<CompletedTree, String>;
+pub struct CompletedTreeScanStatement<'conn> {
+    statement: Statement<'conn>,
+    db_path: PathBuf,
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(item) = self.buffered_items.pop_front() {
-            return Some(Ok(item));
-        }
-        if self.exhausted {
-            return None;
-        }
-        match self.load_next_page() {
-            Ok(()) => self.buffered_items.pop_front().map(Ok),
-            Err(err) => {
-                self.exhausted = true;
-                Some(Err(err))
-            }
-        }
+impl CompletedTreeScanStatement<'_> {
+    pub fn try_iter(
+        &mut self,
+    ) -> Result<rusqlite::MappedRows<'_, fn(&Row<'_>) -> rusqlite::Result<CompletedTree>>, String>
+    {
+        self.statement
+            .query_map(
+                [],
+                decode_completed_tree_row as fn(&Row<'_>) -> rusqlite::Result<CompletedTree>,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to execute query for trees sqlite database {}: {}",
+                    self.db_path.display(),
+                    e
+                )
+            })
     }
+}
+
+fn decode_completed_tree_row(row: &Row<'_>) -> rusqlite::Result<CompletedTree> {
+    let payload_json: String = row.get(0)?;
+    serde_json::from_str(&payload_json).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -380,8 +339,6 @@ impl AssetFile for AssetFileTrees {
     }
     fn fetch(&self) -> Self::FileModel {
         self.synchronize();
-        let store = CompletedTreeStore::new(self.file_path());
-        store.initialize_schema().unwrap();
-        store
+        CompletedTreeStore::new(self.file_path()).unwrap()
     }
 }

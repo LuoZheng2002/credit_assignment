@@ -80,14 +80,7 @@ impl AssetFileTrainingTokenized {
 
     fn load_tokenizer(&self) -> Tokenizer {
         assert!(self.model.is_qwen(), "Training tokenization currently supports Qwen models only");
-        Tokenizer::from_pretrained(self.model.api_name(), None).unwrap_or_else(|err| {
-            panic!(
-                "Failed to load tokenizer for model {} from {}: {}",
-                self.model.cli_name(),
-                self.model.api_name(),
-                err
-            )
-        })
+        Tokenizer::from_pretrained(self.model.api_name(), None).unwrap()
     }
 
     fn formatted_to_tokenized_with_tokenizer(
@@ -108,13 +101,7 @@ impl AssetFileTrainingTokenized {
 
         let end_of_conversation_id_u32 = tokenizer
             .token_to_id(Self::END_OF_CONVERSATION_TOKEN)
-            .unwrap_or_else(|| {
-                panic!(
-                    "Tokenizer for model {} must contain {} token",
-                    self.model.cli_name(),
-                    Self::END_OF_CONVERSATION_TOKEN
-                )
-            });
+            .unwrap();
         assert!(
             end_of_conversation_id_u32 <= i32::MAX as u32,
             "End-of-conversation token id must fit in i32"
@@ -217,12 +204,7 @@ impl AssetFileTrainingTokenized {
             }
             let segment_encoding = tokenizer
                 .encode(segment.text.clone(), false)
-                .unwrap_or_else(|err| {
-                    panic!(
-                        "Failed to tokenize segment (question_id={}, node_id={}): {}",
-                        formatted_sample.question_id, formatted_sample.node_id, err
-                    )
-                });
+                .unwrap();
             let segment_ids: Vec<i32> = segment_encoding
                 .get_ids()
                 .iter()
@@ -341,13 +323,7 @@ impl AssetFile for AssetFileTrainingTokenized {
                 {
                     let formatted_samples = asset_file_training_formatted.fetch();
                     let tokenized_samples = self.generate_tokenized_samples(&formatted_samples);
-                    write_jsonl_file(self.file_path(), &tokenized_samples).unwrap_or_else(|err| {
-                        panic!(
-                            "Failed to write tokenized training set output to {}: {}",
-                            self.file_path(),
-                            err
-                        )
-                    });
+                    write_jsonl_file(self.file_path(), &tokenized_samples).unwrap();
                     tracking.formatted_hash = formatted_hash.clone();
                     tracking.tokenized_schema_version = Self::TOKENIZED_SCHEMA_VERSION;
                 }
@@ -356,13 +332,7 @@ impl AssetFile for AssetFileTrainingTokenized {
             Err(_) => {
                 let formatted_samples = asset_file_training_formatted.fetch();
                 let tokenized_samples = self.generate_tokenized_samples(&formatted_samples);
-                write_jsonl_file(self.file_path(), &tokenized_samples).unwrap_or_else(|err| {
-                    panic!(
-                        "Failed to write tokenized training set output to {}: {}",
-                        self.file_path(),
-                        err
-                    )
-                });
+                write_jsonl_file(self.file_path(), &tokenized_samples).unwrap();
                 AssetFileTrainingTokenizedTracking {
                     formatted_hash,
                     tokenized_schema_version: Self::TOKENIZED_SCHEMA_VERSION,

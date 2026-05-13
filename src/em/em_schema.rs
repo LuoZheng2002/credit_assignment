@@ -2,9 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::tree_schema::AssetFileTrees;
+use crate::agent::tree_schema::{AssetFileTrees, CompletedTreeStore};
 use crate::{
-    agent::tree_schema::CompletedTree,
     direct_answer::generate_raw_answers::LlmModel,
     em::em_dataset_builder::EmDatasetBuilder,
     em::em_fitting::EmFitter,
@@ -108,16 +107,21 @@ pub fn short_hyperparameter_hash(hyperparameters: &EmHyperparameters) -> String 
 }
 
 pub fn run_em_fit(
-    completed_trees: &[CompletedTree],
+    completed_trees: &CompletedTreeStore,
     hyperparameters: EmHyperparameters,
 ) -> (Vec<EmFitPerTree>, EmFitMeta) {
-    assert!(
-        !completed_trees.is_empty(),
-        "Input trees file must contain at least one CompletedTree entry"
-    );
-
     let mut expected_tree_ids: BTreeSet<usize> = BTreeSet::new();
-    for completed_tree in completed_trees {
+    let mut seen_tree_count = 0usize;
+    let mut tree_scan_statement = completed_trees.statement().unwrap();
+    let mut rows = tree_scan_statement.try_iter().unwrap();
+    let dataset = EmDatasetBuilder::new().build_from_tree_fn(|| {
+        let completed_tree = match rows.next() {
+            Some(Ok(tree)) => tree,
+            Some(Err(err)) => {
+                panic!("Failed to read completed tree row during EM dataset build: {}", err)
+            }
+            None => return None,
+        };
         assert_eq!(
             completed_tree.id, completed_tree.trajectory.question_id,
             "CompletedTree.id must equal Tree.question_id"
@@ -127,17 +131,20 @@ pub fn run_em_fit(
             "Duplicate CompletedTree.id found in input: {}",
             completed_tree.id
         );
-    }
-
-    let dataset = EmDatasetBuilder::new()
-        .build_from_tree_iter(completed_trees.iter().map(|tree| &tree.trajectory));
+        seen_tree_count += 1;
+        Some(completed_tree.trajectory)
+    });
+    assert!(
+        seen_tree_count > 0,
+        "Input trees file must contain at least one CompletedTree entry"
+    );
     let fitter = EmFitter::new(hyperparameters);
     let fit_result = fitter.fit(&dataset);
     let per_tree = split_em_fit_result_per_tree(&fit_result);
 
     assert_eq!(
         per_tree.len(),
-        completed_trees.len(),
+        seen_tree_count,
         "Output EmFitPerTree entries must match input CompletedTree count"
     );
     let actual_tree_ids: BTreeSet<usize> = per_tree
@@ -210,18 +217,8 @@ impl AssetFileEmFit {
     pub fn store_em_fit_results(&self, per_tree: &[EmFitPerTree], meta: &EmFitMeta) {
         let per_tree_path = self.per_tree_file_path();
         let meta_path = self.meta_file_path();
-        write_jsonl_file(&per_tree_path, per_tree).unwrap_or_else(|err| {
-            panic!(
-                "Failed to write EmFitPerTree output to {}: {}",
-                per_tree_path, err
-            )
-        });
-        write_json(&meta_path, meta).unwrap_or_else(|err| {
-            panic!(
-                "Failed to write EM fit metadata output to {}: {}",
-                meta_path, err
-            )
-        });
+        write_jsonl_file(&per_tree_path, per_tree).unwrap();
+        write_json(&meta_path, meta).unwrap();
     }
 }
 
@@ -247,9 +244,8 @@ impl AssetFile for AssetFileEmFit {
                         self.num_samples,
                         self.hyperparameters
                     );
-                    let completed_trees = asset_file_trees.fetch().load_all().unwrap();
-                    let (per_tree, meta) =
-                        run_em_fit(&completed_trees, self.hyperparameters.clone());
+                    let tree_store = asset_file_trees.fetch();
+                    let (per_tree, meta) = run_em_fit(&tree_store, self.hyperparameters.clone());
                     self.store_em_fit_results(&per_tree, &meta);
                     tracking.trees_hash = trees_hash.clone();
                 }
@@ -263,8 +259,8 @@ impl AssetFile for AssetFileEmFit {
                     self.num_samples,
                     self.hyperparameters
                 );
-                let completed_trees = asset_file_trees.fetch().load_all().unwrap();
-                let (per_tree, meta) = run_em_fit(&completed_trees, self.hyperparameters.clone());
+                let tree_store = asset_file_trees.fetch();
+                let (per_tree, meta) = run_em_fit(&tree_store, self.hyperparameters.clone());
                 self.store_em_fit_results(&per_tree, &meta);
                 AssetFileEmFitTracking {
                     trees_hash,
