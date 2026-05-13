@@ -16,16 +16,21 @@ impl EmDatasetBuilder {
     }
 
     pub fn build_from_trees(&self, trees: &[Tree]) -> EmFitDataset {
-        assert!(
-            !trees.is_empty(),
-            "EM dataset build requires at least one tree"
-        );
+        self.build_from_tree_iter(trees.iter())
+    }
+
+    pub fn build_from_tree_iter<'a, I>(&self, trees: I) -> EmFitDataset
+    where
+        I: IntoIterator<Item = &'a Tree>,
+    {
+        let mut seen_tree_count = 0usize;
 
         let mut node_bindings: Vec<EmNodeBinding> = Vec::new();
         let mut leaf_bindings: Vec<EmLeafBinding> = Vec::new();
         let mut leaf_paths: Vec<EmLeafPath> = Vec::new();
 
         for tree in trees {
+            seen_tree_count += 1;
             assert!(
                 tree.root_node_id.is_some(),
                 "Tree {} must have a root node",
@@ -171,6 +176,11 @@ impl EmDatasetBuilder {
                 });
             }
         }
+
+        assert!(
+            seen_tree_count > 0,
+            "EM dataset build requires at least one tree"
+        );
 
         assert!(
             !leaf_bindings.is_empty(),

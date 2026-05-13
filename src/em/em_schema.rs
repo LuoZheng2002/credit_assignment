@@ -117,7 +117,6 @@ pub fn run_em_fit(
     );
 
     let mut expected_tree_ids: BTreeSet<usize> = BTreeSet::new();
-    let mut fit_trees = Vec::with_capacity(completed_trees.len());
     for completed_tree in completed_trees {
         assert_eq!(
             completed_tree.id, completed_tree.trajectory.question_id,
@@ -128,10 +127,10 @@ pub fn run_em_fit(
             "Duplicate CompletedTree.id found in input: {}",
             completed_tree.id
         );
-        fit_trees.push(completed_tree.trajectory.clone());
     }
 
-    let dataset = EmDatasetBuilder::new().build_from_trees(&fit_trees);
+    let dataset = EmDatasetBuilder::new()
+        .build_from_tree_iter(completed_trees.iter().map(|tree| &tree.trajectory));
     let fitter = EmFitter::new(hyperparameters);
     let fit_result = fitter.fit(&dataset);
     let per_tree = split_em_fit_result_per_tree(&fit_result);

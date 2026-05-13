@@ -162,32 +162,9 @@ impl AssetFileAdvantageComposition {
     }
 
     pub fn compose_advantage(
-        trees: &[CompletedTree],
+        trees: &crate::agent::tree_schema::CompletedTreeStore,
         em_fit_per_tree: &[EmFitPerTree],
     ) -> Vec<AdvantageCompositionPerTree> {
-        assert!(
-            !trees.is_empty(),
-            "Advantage composition requires at least one tree"
-        );
-        assert_eq!(
-            trees.len(),
-            em_fit_per_tree.len(),
-            "Tree count and EM fit tree count must match"
-        );
-
-        let mut trees_by_id: BTreeMap<usize, &CompletedTree> = BTreeMap::new();
-        for tree in trees {
-            assert_eq!(
-                tree.id, tree.trajectory.question_id,
-                "CompletedTree.id must equal Tree.question_id"
-            );
-            assert!(
-                trees_by_id.insert(tree.id, tree).is_none(),
-                "Duplicate tree id in trees input: {}",
-                tree.id
-            );
-        }
-
         let mut em_by_tree_id: BTreeMap<usize, &EmFitPerTree> = BTreeMap::new();
         for tree_fit in em_fit_per_tree {
             assert!(
@@ -198,47 +175,68 @@ impl AssetFileAdvantageComposition {
                 tree_fit.tree_question_id
             );
         }
+        assert!(!em_by_tree_id.is_empty(), "Advantage composition requires at least one tree");
 
-        let tree_ids: BTreeSet<usize> = trees_by_id.keys().copied().collect();
         let em_tree_ids: BTreeSet<usize> = em_by_tree_id.keys().copied().collect();
-        assert_eq!(
-            tree_ids, em_tree_ids,
-            "Tree id set must match EM fit tree id set"
-        );
 
+        let mut tree_ids: BTreeSet<usize> = BTreeSet::new();
         let mut tree_length_factor_raw_by_tree_id: BTreeMap<usize, f64> = BTreeMap::new();
         let mut win_loss_ratio_factor_by_tree_id: BTreeMap<usize, f64> = BTreeMap::new();
-        for (&tree_id, tree) in &trees_by_id {
-            let average_trajectory_length = Self::average_leaf_path_length(tree);
+
+        for tree_result in trees.iter() {
+            let tree = tree_result.unwrap_or_else(|err| {
+                panic!("Failed to iterate completed trees for advantage composition: {}", err)
+            });
+            assert_eq!(
+                tree.id, tree.trajectory.question_id,
+                "CompletedTree.id must equal Tree.question_id"
+            );
+            assert!(
+                tree_ids.insert(tree.id),
+                "Duplicate tree id in trees input: {}",
+                tree.id
+            );
+            assert!(
+                em_by_tree_id.contains_key(&tree.id),
+                "Tree id {} from input trees missing in EM fit input",
+                tree.id
+            );
+
+            let average_trajectory_length = Self::average_leaf_path_length(&tree);
             let factor = Self::trajectory_length_factor(average_trajectory_length);
             assert!(
                 factor.is_finite(),
                 "Trajectory length factor must be finite for tree {}",
-                tree_id
+                tree.id
             );
-            tree_length_factor_raw_by_tree_id.insert(tree_id, factor);
+            tree_length_factor_raw_by_tree_id.insert(tree.id, factor);
 
             let correctness_ratio = &tree.trajectory.correctness_ratio;
             assert!(
                 correctness_ratio.denominator > 0,
                 "Tree {} correctness_ratio denominator must be > 0",
-                tree_id
+                tree.id
             );
             assert!(
                 correctness_ratio.numerator <= correctness_ratio.denominator,
                 "Tree {} correctness_ratio numerator must be <= denominator",
-                tree_id
+                tree.id
             );
-            let tree_accuracy =
-                correctness_ratio.numerator as f64 / correctness_ratio.denominator as f64;
+            let tree_accuracy = correctness_ratio.numerator as f64 / correctness_ratio.denominator as f64;
             let win_loss_ratio_factor = Self::win_loss_ratio_factor(tree_accuracy);
             assert!(
                 win_loss_ratio_factor.is_finite(),
                 "win_loss_ratio_factor must be finite for tree {}",
-                tree_id
+                tree.id
             );
-            win_loss_ratio_factor_by_tree_id.insert(tree_id, win_loss_ratio_factor);
+            win_loss_ratio_factor_by_tree_id.insert(tree.id, win_loss_ratio_factor);
         }
+        assert!(!tree_ids.is_empty(), "Advantage composition requires at least one tree");
+
+        assert_eq!(
+            tree_ids, em_tree_ids,
+            "Tree id set must match EM fit tree id set"
+        );
 
         let tree_length_factors_raw: Vec<f64> = tree_length_factor_raw_by_tree_id
             .values()
@@ -258,14 +256,18 @@ impl AssetFileAdvantageComposition {
                 .insert(tree_id, tree_length_factors_normalized[index]);
         }
 
-        let mut output: Vec<AdvantageCompositionPerTree> = Vec::with_capacity(trees.len());
+        let mut output: Vec<AdvantageCompositionPerTree> = Vec::with_capacity(tree_ids.len());
         let mut tool_values_raw: Vec<f64> = Vec::new();
         let mut complete_values_raw: Vec<f64> = Vec::new();
         let mut focused_values_raw: Vec<f64> = Vec::new();
         let mut node_positions: Vec<(usize, usize)> = Vec::new();
 
-        for (&tree_id, tree_fit) in &em_by_tree_id {
-            let tree = trees_by_id
+        for tree_result in trees.iter() {
+            let tree = tree_result.unwrap_or_else(|err| {
+                panic!("Failed to iterate completed trees for advantage composition: {}", err)
+            });
+            let tree_id = tree.id;
+            let tree_fit = em_by_tree_id
                 .get(&tree_id)
                 .expect("Tree id existence already validated");
             let trajectory = &tree.trajectory;
@@ -429,7 +431,7 @@ impl AssetFile for AssetFileAdvantageComposition {
                         self.num_samples,
                         self.hyperparameters
                     );
-                    let trees = asset_file_trees.fetch().load_all().unwrap();
+                    let trees = asset_file_trees.fetch();
                     let (em_fit_per_tree, _meta) = asset_file_em_fit.fetch();
                     let advantage = Self::compose_advantage(&trees, &em_fit_per_tree);
                     write_json(self.file_path(), &advantage).unwrap_or_else(|err| {
@@ -452,7 +454,7 @@ impl AssetFile for AssetFileAdvantageComposition {
                     self.num_samples,
                     self.hyperparameters
                 );
-                let trees = asset_file_trees.fetch().load_all().unwrap();
+                let trees = asset_file_trees.fetch();
                 let (em_fit_per_tree, _meta) = asset_file_em_fit.fetch();
                 let advantage = Self::compose_advantage(&trees, &em_fit_per_tree);
                 write_json(self.file_path(), &advantage).unwrap_or_else(|err| {
