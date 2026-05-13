@@ -229,7 +229,7 @@ async fn main() {
             if SHUTDOWN.load(Ordering::SeqCst) {
                 break;
             }
-            trees_store_for_writer.upsert(&trajectory).unwrap();
+            trees_store_for_writer.upsert(trajectory.id, &trajectory).unwrap();
             total_correct += trajectory.trajectory.correctness_ratio.numerator;
             total_judged += trajectory.trajectory.correctness_ratio.denominator;
             let running_accuracy = if total_judged == 0 {

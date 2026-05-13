@@ -3,11 +3,10 @@ use crate::{
     datasets::AssetFileDataset,
     direct_answer::generate_raw_answers::LlmModel,
     parallel_process_jsonl::{HasId, read_json},
+    sqlite_store::SqliteStore,
     version_tracking::{AssetFile, Base64Hash, hash_file},
 };
-use rusqlite::{Connection, OptionalExtension, Row, Statement, params};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StepQualityRatio {
@@ -40,17 +39,6 @@ impl HasId for CompletedTree {
         self.id
     }
 }
-
-// pub fn get_rollout_trees_path(model: LlmModel, dataset_name: &str, num_samples: usize) -> String {
-//     format!(
-//         "results/{}/agent/{}_trees_{}.jsonl",
-//         model.cli_name(),
-//         dataset_name,
-//         num_samples
-//     )
-// }
-
-// // trees and logs should be generated manually instead of from AssetFile
 
 pub fn get_rollout_log_path(model: LlmModel, dataset_name: &str, num_samples: usize) -> String {
     format!(
@@ -87,214 +75,8 @@ impl AssetFileTrees {
     }
 }
 
-#[derive(Debug)]
-pub struct CompletedTreeStore {
-    db_path: PathBuf,
-    connection: Connection,
-}
-
-impl CompletedTreeStore {
-    const CREATE_COMPLETED_TREES_TABLE_SQL: &str = "
-        CREATE TABLE IF NOT EXISTS completed_trees (
-            id INTEGER PRIMARY KEY,
-            payload_json TEXT NOT NULL
-        );
-    ";
-
-    pub fn new(db_path: impl Into<PathBuf>) -> Result<Self, String> {
-        let db_path = db_path.into();
-        if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                format!(
-                    "Failed to create parent directory for trees sqlite database {}: {}",
-                    db_path.display(),
-                    e
-                )
-            })?;
-        }
-        let connection = Connection::open(&db_path).map_err(|e| {
-            format!(
-                "Failed to open trees sqlite database {}: {}",
-                db_path.display(),
-                e
-            )
-        })?;
-        let store = Self {
-            db_path,
-            connection,
-        };
-        store.initialize_schema()?;
-        Ok(store)
-    }
-
-    pub fn initialize_schema(&self) -> Result<(), String> {
-        self.connection
-            .execute_batch(Self::CREATE_COMPLETED_TREES_TABLE_SQL)
-        .map_err(|e| {
-            format!(
-                "Failed to initialize schema for trees sqlite database {}: {}",
-                self.db_path.display(),
-                e
-            )
-        })?;
-        Ok(())
-    }
-
-    pub fn upsert(&self, tree: &CompletedTree) -> Result<(), String> {
-        self.initialize_schema()?;
-        let id_i64 = i64::try_from(tree.id).map_err(|_| format!("id out of i64 range: {}", tree.id))?;
-        let payload_json = serde_json::to_string(tree).map_err(|e| {
-            format!(
-                "Failed to serialize completed tree for id={} before sqlite upsert: {}",
-                tree.id,
-                e
-            )
-        })?;
-        self.connection.execute(
-            "
-            INSERT INTO completed_trees (id, payload_json)
-            VALUES (?1, ?2)
-            ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json
-            ",
-            params![id_i64, payload_json],
-        )
-        .map_err(|e| {
-            format!(
-                "Failed to upsert completed tree id={} into sqlite database {}: {}",
-                tree.id,
-                self.db_path.display(),
-                e
-            )
-        })?;
-        Ok(())
-    }
-
-    pub fn get(&self, id: usize) -> Result<Option<CompletedTree>, String> {
-        self.initialize_schema()?;
-        let id_i64 = i64::try_from(id).map_err(|_| format!("id out of i64 range: {}", id))?;
-        let payload: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT payload_json FROM completed_trees WHERE id = ?1",
-                params![id_i64],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| {
-                format!(
-                    "Failed to query completed_trees for id={} from {}: {}",
-                    id,
-                    self.db_path.display(),
-                    e
-                )
-            })?;
-        payload
-            .map(|json| {
-                serde_json::from_str::<CompletedTree>(&json).map_err(|e| {
-                    format!(
-                        "Failed to deserialize completed tree payload for id={} from {}: {}",
-                        id,
-                        self.db_path.display(),
-                        e
-                    )
-                })
-            })
-            .transpose()
-    }
-
-    #[deprecated(note = "Use two-hop iteration: store.statement()?.try_iter()? instead")]
-    pub fn for_each_tree<F>(&self, mut on_tree: F) -> Result<(), String>
-    where
-        F: FnMut(CompletedTree) -> Result<(), String>,
-    {
-        let mut tree_scan_statement = self.statement()?;
-        let rows = tree_scan_statement.try_iter()?;
-        for row in rows {
-            let tree = row.map_err(|e| {
-                format!(
-                    "Failed to read tree row from sqlite database {}: {}",
-                    self.db_path.display(),
-                    e
-                )
-            })?;
-            on_tree(tree)?;
-        }
-        Ok(())
-    }
-
-    pub fn load_all(&self) -> Result<Vec<CompletedTree>, String> {
-        let mut tree_scan_statement = self.statement()?;
-        let rows = tree_scan_statement.try_iter()?;
-        let mut trees: Vec<CompletedTree> = Vec::new();
-        for row in rows {
-            let tree = row.map_err(|e| {
-                format!(
-                    "Failed to read tree row from sqlite database {}: {}",
-                    self.db_path.display(),
-                    e
-                )
-            })?;
-            trees.push(tree);
-        }
-        Ok(trees)
-    }
-
-    pub fn statement(&self) -> Result<CompletedTreeScanStatement<'_>, String> {
-        self.initialize_schema()?;
-        let statement = self
-            .connection
-            .prepare(
-                "
-                SELECT payload_json
-                FROM completed_trees
-                ORDER BY id ASC
-                ",
-            )
-            .map_err(|e| {
-                format!(
-                    "Failed to prepare query for trees sqlite database {}: {}",
-                    self.db_path.display(),
-                    e
-                )
-            })?;
-        Ok(CompletedTreeScanStatement {
-            statement,
-            db_path: self.db_path.clone(),
-        })
-    }
-}
-
-pub struct CompletedTreeScanStatement<'conn> {
-    statement: Statement<'conn>,
-    db_path: PathBuf,
-}
-
-impl CompletedTreeScanStatement<'_> {
-    pub fn try_iter(
-        &mut self,
-    ) -> Result<rusqlite::MappedRows<'_, fn(&Row<'_>) -> rusqlite::Result<CompletedTree>>, String>
-    {
-        self.statement
-            .query_map(
-                [],
-                decode_completed_tree_row as fn(&Row<'_>) -> rusqlite::Result<CompletedTree>,
-            )
-            .map_err(|e| {
-                format!(
-                    "Failed to execute query for trees sqlite database {}: {}",
-                    self.db_path.display(),
-                    e
-                )
-            })
-    }
-}
-
-fn decode_completed_tree_row(row: &Row<'_>) -> rusqlite::Result<CompletedTree> {
-    let payload_json: String = row.get(0)?;
-    serde_json::from_str(&payload_json).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-    })
-}
+// Kept as a type alias for compatibility at call sites.
+pub type CompletedTreeStore = SqliteStore<usize, CompletedTree>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetFileTreesTracking {

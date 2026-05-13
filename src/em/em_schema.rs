@@ -11,7 +11,8 @@ use crate::{
     em::em_types::{
         EmFitDiagnostics, EmGlobalConfigSnapshot, EmHyperparameters, EmNodeTypePosterior,
     },
-    parallel_process_jsonl::{read_json, read_json_lines, write_json, write_jsonl_file},
+    parallel_process_jsonl::{read_json, write_json},
+    sqlite_store::SqliteStore,
     version_tracking::{AssetFile, Base64Hash, hash_file},
 };
 
@@ -187,7 +188,7 @@ impl AssetFileEmFit {
 
     pub fn per_tree_file_path(&self) -> String {
         format!(
-            "results/{}/agent/{}_em_fit_per_tree_{}_{}.jsonl",
+            "results/{}/agent/{}_em_fit_per_tree_{}_{}.sqlite",
             self.model.cli_name(),
             self.dataset,
             self.num_samples,
@@ -214,10 +215,26 @@ impl AssetFileEmFit {
             self.hyperparameter_hash(),
         )
     }
+
+    pub fn per_tree_store(&self) -> SqliteStore<usize, EmFitPerTree> {
+        SqliteStore::new(self.per_tree_file_path()).unwrap()
+    }
+
     pub fn store_em_fit_results(&self, per_tree: &[EmFitPerTree], meta: &EmFitMeta) {
-        let per_tree_path = self.per_tree_file_path();
+        let per_tree_store = self.per_tree_store();
+        per_tree_store.clear().unwrap();
+        let mut seen_tree_ids: BTreeSet<usize> = BTreeSet::new();
+        for tree_fit in per_tree {
+            assert!(
+                seen_tree_ids.insert(tree_fit.tree_question_id),
+                "Duplicate tree_question_id found in EmFitPerTree output: {}",
+                tree_fit.tree_question_id
+            );
+            per_tree_store
+                .upsert(tree_fit.tree_question_id, tree_fit)
+                .unwrap();
+        }
         let meta_path = self.meta_file_path();
-        write_jsonl_file(&per_tree_path, per_tree).unwrap();
         write_json(&meta_path, meta).unwrap();
     }
 }
@@ -275,7 +292,7 @@ impl AssetFile for AssetFileEmFit {
 
     fn fetch(&self) -> Self::FileModel {
         self.synchronize();
-        let per_tree = read_json_lines(self.per_tree_file_path()).unwrap();
+        let per_tree = self.per_tree_store().load_all().unwrap();
         let meta = read_json(self.meta_file_path()).unwrap();
         (per_tree, meta)
     }

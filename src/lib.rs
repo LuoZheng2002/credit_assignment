@@ -7,6 +7,7 @@ pub mod datasets;
 pub mod direct_answer;
 pub mod em;
 pub mod parallel_process_jsonl;
+pub mod sqlite_store;
 pub mod status_prompts;
 pub mod version_tracking;
 pub mod training_set;
