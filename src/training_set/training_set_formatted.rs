@@ -3,7 +3,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    advantage_composition::{AdvantageCompositionPerTree, AssetFileAdvantageComposition}, agent::tree_schema::AssetFileTrees, direct_answer::generate_raw_answers::LlmModel, em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters}, parallel_process_jsonl::{read_json, read_json_lines, write_json, write_jsonl_file}, sqlite_store::SqliteStoreKey, training_set::training_set_generation::generate_sample_formatted_from_tree_node, version_tracking::{AssetFile, Base64Hash, hash_file}
+    advantage_composition::{AdvantageCompositionPerTree, AssetFileAdvantageComposition},
+    agent::tree_schema::AssetFileTrees,
+    direct_answer::generate_raw_answers::LlmModel,
+    em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
+    parallel_process_jsonl::{read_json, write_json},
+    sqlite_store::{SqliteStore, SqliteStoreKey},
+    training_set::training_set_generation::generate_sample_formatted_from_tree_node,
+    version_tracking::{AssetFile, Base64Hash, hash_file},
 };
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -34,6 +41,8 @@ pub struct AssetFileTrainingFormatted {
     pub hyperparameters: EmHyperparameters,
 }
 
+pub type TrainingSampleFormattedStore = SqliteStore<QuestionNodeId, TrainingSampleFormatted>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetFileTrainingFormattedTracking {
     pub trees_hash: Base64Hash,
@@ -42,7 +51,7 @@ pub struct AssetFileTrainingFormattedTracking {
 }
 
 impl AssetFileTrainingFormatted {
-    const FORMATTED_SCHEMA_VERSION: usize = 3;
+    const FORMATTED_SCHEMA_VERSION: usize = 4;
 
     pub fn hyperparameter_hash(&self) -> String {
         short_hyperparameter_hash(&self.hyperparameters)
@@ -50,7 +59,7 @@ impl AssetFileTrainingFormatted {
 
     pub fn file_path(&self) -> String {
         format!(
-            "results/{}/agent/{}_training_formatted_{}_{}.jsonl",
+            "results/{}/agent/{}_training_formatted_{}_{}.sqlite",
             self.model.cli_name(),
             self.dataset,
             self.num_samples,
@@ -66,6 +75,24 @@ impl AssetFileTrainingFormatted {
             self.num_samples,
             self.hyperparameter_hash(),
         )
+    }
+
+    pub fn sample_store(&self) -> TrainingSampleFormattedStore {
+        TrainingSampleFormattedStore::new(self.file_path()).unwrap()
+    }
+
+    pub fn store_formatted_samples(&self, samples: &[TrainingSampleFormatted]) {
+        let store = self.sample_store();
+        store.clear().unwrap();
+        let mut seen_ids: BTreeSet<QuestionNodeId> = BTreeSet::new();
+        for sample in samples {
+            assert!(
+                seen_ids.insert(sample.id),
+                "Duplicate QuestionNodeId found in formatted samples: {:?}",
+                sample.id
+            );
+            store.upsert(sample.id, sample).unwrap();
+        }
     }
 
     fn generate_formatted_samples(
@@ -115,11 +142,11 @@ impl AssetFileTrainingFormatted {
 
 // use the same style as AssetFileAdvantageComposition
 impl AssetFile for AssetFileTrainingFormatted {
-    type FileModel = Vec<TrainingSampleFormatted>;
+    type FileModel = TrainingSampleFormattedStore;
 
     fn fetch(&self) -> Self::FileModel {
         self.synchronize();
-        read_json_lines(self.file_path()).unwrap()
+        self.sample_store()
     }
 
     fn synchronize(&self) -> crate::version_tracking::Base64Hash {
@@ -148,7 +175,7 @@ impl AssetFile for AssetFileTrainingFormatted {
                         let trees = asset_file_trees.fetch();
                         let advantage_per_tree = asset_file_advantage.fetch();
                         let samples = self.generate_formatted_samples(&trees, &advantage_per_tree);
-                        write_jsonl_file(self.file_path(), &samples).unwrap();
+                        self.store_formatted_samples(&samples);
                         tracking.trees_hash = trees_hash.clone();
                         tracking.advantage_hash = advantage_hash.clone();
                         tracking.formatted_schema_version = Self::FORMATTED_SCHEMA_VERSION;
@@ -159,7 +186,7 @@ impl AssetFile for AssetFileTrainingFormatted {
                     let trees = asset_file_trees.fetch();
                     let advantage_per_tree = asset_file_advantage.fetch();
                     let samples = self.generate_formatted_samples(&trees, &advantage_per_tree);
-                    write_jsonl_file(self.file_path(), &samples).unwrap();
+                    self.store_formatted_samples(&samples);
                     AssetFileTrainingFormattedTracking {
                         trees_hash,
                         advantage_hash,

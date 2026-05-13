@@ -5,8 +5,12 @@ use std::collections::HashSet;
 use crate::{
     direct_answer::generate_raw_answers::LlmModel,
     em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
-    parallel_process_jsonl::{read_json, read_json_lines, write_json, write_jsonl_file},
-    training_set::{training_set_formatted::QuestionNodeId, training_set_tokenized::{AssetFileTrainingTokenized, TrainingSampleTokenized}},
+    parallel_process_jsonl::{read_json, write_json},
+    sqlite_store::SqliteStore,
+    training_set::{
+        training_set_formatted::QuestionNodeId,
+        training_set_tokenized::{AssetFileTrainingTokenized, TrainingSampleTokenized},
+    },
     version_tracking::{AssetFile, Base64Hash, hash_file},
 };
 
@@ -22,12 +26,15 @@ pub struct TrainingSampleMeta {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct TrainingBatch(Vec<TrainingSampleTokenized>);
+pub struct TrainingBatch(pub Vec<QuestionNodeId>);
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AssetFileTrainingBatchTracking {
     pub tokenized_hash: Base64Hash,
+    pub batch_schema_version: usize,
 }
+
+pub type TrainingBatchStore = SqliteStore<usize, TrainingBatch>;
 
 pub struct AssetFileTrainingBatch {
     pub model: LlmModel,
@@ -38,13 +45,15 @@ pub struct AssetFileTrainingBatch {
 }
 
 impl AssetFileTrainingBatch {
+    const BATCH_SCHEMA_VERSION: usize = 1;
+
     pub fn hyperparameter_hash(&self) -> String {
         short_hyperparameter_hash(&self.hyperparameters)
     }
 
     pub fn file_path(&self) -> String {
         format!(
-            "results/{}/agent/{}_training_batch_{}_{}_bs{}.jsonl",
+            "results/{}/agent/{}_training_batch_{}_{}_bs{}.sqlite",
             self.model.cli_name(),
             self.dataset,
             self.num_samples,
@@ -62,6 +71,18 @@ impl AssetFileTrainingBatch {
             self.hyperparameter_hash(),
             self.batch_size,
         )
+    }
+
+    pub fn batch_store(&self) -> TrainingBatchStore {
+        TrainingBatchStore::new(self.file_path()).unwrap()
+    }
+
+    pub fn store_batches(&self, batches: &[TrainingBatch]) {
+        let store = self.batch_store();
+        store.clear().unwrap();
+        for (batch_index, batch) in batches.iter().enumerate() {
+            store.upsert(batch_index, batch).unwrap();
+        }
     }
 
     fn normalize(values: &[f64]) -> Vec<f64> {
@@ -211,11 +232,11 @@ impl AssetFileTrainingBatch {
                 cumulative_advantage += tokenized_samples[chosen_candidate].advantage;
             }
 
-            let batch_samples: Vec<TrainingSampleTokenized> = current_batch_indices
+            let batch_ids: Vec<QuestionNodeId> = current_batch_indices
                 .iter()
-                .map(|index| tokenized_samples[*index].clone())
+                .map(|index| tokenized_samples[*index].id)
                 .collect();
-            output_batches.push(TrainingBatch(batch_samples));
+            output_batches.push(TrainingBatch(batch_ids));
         }
 
         output_batches
@@ -224,11 +245,11 @@ impl AssetFileTrainingBatch {
 
 // use the same style as AssetFileAdvantageComposition
 impl AssetFile for AssetFileTrainingBatch {
-    type FileModel = Vec<TrainingBatch>;
+    type FileModel = TrainingBatchStore;
 
     fn fetch(&self) -> Self::FileModel {
         self.synchronize();
-        read_json_lines(self.file_path()).unwrap()
+        self.batch_store()
     }
 
     fn synchronize(&self) -> crate::version_tracking::Base64Hash {
@@ -243,20 +264,28 @@ impl AssetFile for AssetFileTrainingBatch {
         let tracking_content =
             match read_json::<AssetFileTrainingBatchTracking>(self.version_tracking_path()) {
                 Ok(mut tracking) => {
-                    if tracking.tokenized_hash != tokenized_hash {
-                        let tokenized_samples = tokenized_asset.fetch();
+                    if tracking.tokenized_hash != tokenized_hash
+                        || tracking.batch_schema_version != Self::BATCH_SCHEMA_VERSION
+                    {
+                        let tokenized_store = tokenized_asset.fetch();
+                        let tokenized_samples = tokenized_store.load_all().unwrap();
                         let batches =
                             self.generate_batches_from_tokenized_samples(&tokenized_samples);
-                        write_jsonl_file(self.file_path(), &batches).unwrap();
+                        self.store_batches(&batches);
                         tracking.tokenized_hash = tokenized_hash.clone();
+                        tracking.batch_schema_version = Self::BATCH_SCHEMA_VERSION;
                     }
                     tracking
                 }
                 Err(_) => {
-                    let tokenized_samples = tokenized_asset.fetch();
+                    let tokenized_store = tokenized_asset.fetch();
+                    let tokenized_samples = tokenized_store.load_all().unwrap();
                     let batches = self.generate_batches_from_tokenized_samples(&tokenized_samples);
-                    write_jsonl_file(self.file_path(), &batches).unwrap();
-                    AssetFileTrainingBatchTracking { tokenized_hash }
+                    self.store_batches(&batches);
+                    AssetFileTrainingBatchTracking {
+                        tokenized_hash,
+                        batch_schema_version: Self::BATCH_SCHEMA_VERSION,
+                    }
                 }
             };
 

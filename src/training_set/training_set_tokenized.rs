@@ -4,7 +4,8 @@ use tokenizers::Tokenizer;
 use crate::{
     direct_answer::generate_raw_answers::LlmModel,
     em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
-    parallel_process_jsonl::{read_json, read_json_lines, write_json, write_jsonl_file},
+    parallel_process_jsonl::{read_json, write_json},
+    sqlite_store::SqliteStore,
     training_set::training_set_formatted::{
         AssetFileTrainingFormatted, QuestionNodeId, TrainingSampleFormatted,
     },
@@ -50,12 +51,14 @@ pub struct AssetFileTrainingTokenizedTracking {
     pub tokenized_schema_version: usize,
 }
 
+pub type TrainingSampleTokenizedStore = SqliteStore<QuestionNodeId, TrainingSampleTokenized>;
+
 impl AssetFileTrainingTokenized {
     const START_MASK_TAG: &'static str = "<__start_mask__>";
     const END_MASK_WITH_EOS_TAG: &'static str = "<__end_mask_with_eos__>";
     const END_OF_CONVERSATION_TOKEN: &'static str = "<|im_end|>";
     const IGNORE_LABEL: i32 = -100;
-    const TOKENIZED_SCHEMA_VERSION: usize = 6;
+    const TOKENIZED_SCHEMA_VERSION: usize = 7;
 
     pub fn hyperparameter_hash(&self) -> String {
         short_hyperparameter_hash(&self.hyperparameters)
@@ -63,7 +66,7 @@ impl AssetFileTrainingTokenized {
 
     pub fn file_path(&self) -> String {
         format!(
-            "results/{}/agent/{}_training_tokenized_{}_{}.jsonl",
+            "results/{}/agent/{}_training_tokenized_{}_{}.sqlite",
             self.model.cli_name(),
             self.dataset,
             self.num_samples,
@@ -79,6 +82,18 @@ impl AssetFileTrainingTokenized {
             self.num_samples,
             self.hyperparameter_hash(),
         )
+    }
+
+    pub fn sample_store(&self) -> TrainingSampleTokenizedStore {
+        TrainingSampleTokenizedStore::new(self.file_path()).unwrap()
+    }
+
+    pub fn store_tokenized_samples(&self, samples: &[TrainingSampleTokenized]) {
+        let store = self.sample_store();
+        store.clear().unwrap();
+        for sample in samples {
+            store.upsert(sample.id, sample).unwrap();
+        }
     }
 
     fn load_tokenizer(&self) -> Tokenizer {
@@ -313,11 +328,11 @@ impl AssetFileTrainingTokenized {
 
 // use the same style as AssetFileAdvantageComposition
 impl AssetFile for AssetFileTrainingTokenized {
-    type FileModel = Vec<TrainingSampleTokenized>;
+    type FileModel = TrainingSampleTokenizedStore;
 
     fn fetch(&self) -> Self::FileModel {
         self.synchronize();
-        read_json_lines(self.file_path()).unwrap()
+        self.sample_store()
     }
 
     fn synchronize(&self) -> crate::version_tracking::Base64Hash {
@@ -335,18 +350,20 @@ impl AssetFile for AssetFileTrainingTokenized {
                     if tracking.formatted_hash != formatted_hash
                         || tracking.tokenized_schema_version != Self::TOKENIZED_SCHEMA_VERSION
                     {
-                        let formatted_samples = asset_file_training_formatted.fetch();
+                        let formatted_store = asset_file_training_formatted.fetch();
+                        let formatted_samples = formatted_store.load_all().unwrap();
                         let tokenized_samples = self.generate_tokenized_samples(&formatted_samples);
-                        write_jsonl_file(self.file_path(), &tokenized_samples).unwrap();
+                        self.store_tokenized_samples(&tokenized_samples);
                         tracking.formatted_hash = formatted_hash.clone();
                         tracking.tokenized_schema_version = Self::TOKENIZED_SCHEMA_VERSION;
                     }
                     tracking
                 }
                 Err(_) => {
-                    let formatted_samples = asset_file_training_formatted.fetch();
+                    let formatted_store = asset_file_training_formatted.fetch();
+                    let formatted_samples = formatted_store.load_all().unwrap();
                     let tokenized_samples = self.generate_tokenized_samples(&formatted_samples);
-                    write_jsonl_file(self.file_path(), &tokenized_samples).unwrap();
+                    self.store_tokenized_samples(&tokenized_samples);
                     AssetFileTrainingTokenizedTracking {
                         formatted_hash,
                         tokenized_schema_version: Self::TOKENIZED_SCHEMA_VERSION,
