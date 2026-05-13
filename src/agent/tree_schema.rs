@@ -40,14 +40,7 @@ impl HasId for CompletedTree {
     }
 }
 
-pub fn get_rollout_log_path(model: LlmModel, dataset_name: &str, num_samples: usize) -> String {
-    format!(
-        "results/{}/agent/{}_rollout_log_{}.sqlite",
-        model.cli_name(),
-        dataset_name,
-        num_samples
-    )
-}
+
 
 pub struct AssetFileTrees {
     pub model: LlmModel,
@@ -107,7 +100,7 @@ impl AssetFile for AssetFileTrees {
             }
             Err(_) => {
                 panic!(
-                    "Tracking file for trees file {} does not exist.",
+                    "Tracking file for trees file {} does not exist. Please first generate the trees file",
                     self.file_path()
                 );
             }

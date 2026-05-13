@@ -6,8 +6,8 @@ use crate::agent::context_length_exceeded::{
     context_length_exceeded_result, is_context_length_exceeded_response,
 };
 use crate::agent::response_processing::{
-    ChosenModeDecision, determine_chosen_mode, parse_compactor_response,
-    parse_verifier_comment_response, split_reasoning_and_tool_call,
+    determine_chosen_mode, parse_compactor_response, parse_verifier_comment_response,
+    split_reasoning_and_tool_call,
 };
 use crate::agent::tool_call_execution::{MAX_NUM_TRAJECTORIES, execute_planner_tool_call};
 use crate::agent::trajectory_action_types::{
@@ -82,7 +82,6 @@ pub async fn produce_actions_from_state(
     tree: &Tree,
     client: Client,
     model: LlmModel,
-    take_over_mode_decision: bool,
     rng: &mut impl rand::Rng,
 ) -> Vec<TreeAction> {
     let session_state = TrajectoryState::from_tree(tree);
@@ -247,26 +246,7 @@ pub async fn produce_actions_from_state(
         }
         TrajectoryStatus::PlannerChoosingMode {
             verifier_comment: _,
-        } => {
-            match determine_chosen_mode(
-                &session_state,
-                client.clone(),
-                model,
-                take_over_mode_decision,
-                rng,
-            )
-            .await
-            {
-                ChosenModeDecision::ContextLengthExceeded => context_length_exceeded_result(
-                    question_id,
-                    session_state.final_answer.is_some(),
-                ),
-                ChosenModeDecision::Chosen(chosen_mode) => vec![TreeAction::AddTrajectoryAction {
-                    question_id,
-                    action: TrajectoryAction::PlannerDecideNextStep(chosen_mode),
-                }],
-            }
-        }
+        } => vec![determine_chosen_mode(&session_state, client.clone(), model, rng).await],
         TrajectoryStatus::PlannerWorkingOnStep {
             planner_chosen_mode: _,
             verifier_comment: _,

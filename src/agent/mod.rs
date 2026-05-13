@@ -13,3 +13,5 @@ pub mod trajectory_status;
 pub mod tree;
 pub mod tree_action;
 pub mod tree_schema;
+pub mod sqlite_rollout_log;
+pub mod rollout_batch;

@@ -10,18 +10,14 @@ use std::{
 use clap::Parser;
 use credit_assignment::{
     agent::{
-        rollout_loop::rollout,
-        tree_action::TreeAction,
-        tree_schema::{
+        rollout_loop::rollout, sqlite_rollout_log::{SqliteSessionLogStore, get_rollout_log_path}, tree_action::TreeAction, tree_schema::{
             AssetFileTrees, AssetFileTreesTracking, CompletedTree, CompletedTreeStore,
-            get_rollout_log_path,
-        },
+        }
     },
     call_llm::set_vllm_port,
     datasets::{AssetFileDataset, DeepMathQuestion},
     direct_answer::generate_raw_answers::LlmModel,
     parallel_process_jsonl::write_json,
-    sqlite_session_log::SqliteSessionLogStore,
     version_tracking::AssetFile,
 };
 use futures::future::join_all;
@@ -42,8 +38,6 @@ struct Args {
     model: LlmModel,
     #[arg(long)]
     vllm_port: u16,
-    #[arg(long, action = clap::ArgAction::Set)]
-    take_over_mode_decision: bool,
 }
 
 // we want to log each action
@@ -79,7 +73,6 @@ async fn main() {
         model,
         num_samples,
         vllm_port,
-        take_over_mode_decision,
     } = Args::parse();
     assert!(vllm_port > 0, "--vllm-port must be greater than 0");
     set_vllm_port(vllm_port);
@@ -88,7 +81,6 @@ async fn main() {
         "Evaluating model {} on {} dataset with {} samples (vLLM port: {})",
         model_name, dataset_name, num_samples, vllm_port
     );
-    println!("take_over_mode_decision: {}", take_over_mode_decision);
     let client = Client::new();
     let mut rng = StdRng::seed_from_u64(42);
     // read log file
@@ -195,7 +187,6 @@ async fn main() {
                         loaded_session_log,
                         client,
                         model,
-                        take_over_mode_decision,
                         &mut task_rng,
                         action_tx,
                         trajectory_tx,

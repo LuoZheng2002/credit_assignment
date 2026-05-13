@@ -3,15 +3,14 @@ use reqwest::Client;
 
 use crate::{
     agent::{
-        context_length_exceeded::is_context_length_exceeded_response,
+        trajectory_action::TrajectoryAction,
         tool_call_parser::{MarkdownPythonParser, ToolCallParser},
         trajectory_action_types::{NextStepDecision, StepQuality, VerifierComment},
         trajectory_state::TrajectoryState,
         trajectory_status::TrajectoryStatus,
+        tree_action::TreeAction,
     },
-    call_llm::call_llm_with_prefix,
     direct_answer::generate_raw_answers::LlmModel,
-    status_prompts::universal_prompt::get_prompt_according_to_session_status,
 };
 
 // (Option<String>, Option<String>) means (reasoning, tool_call)
@@ -251,111 +250,50 @@ pub fn parse_next_step_choice(choice: &str) -> Option<&'static str> {
     Some("overwrite_last_step")
 }
 
-pub enum ChosenModeDecision {
-    ContextLengthExceeded,
-    Chosen(NextStepDecision),
+fn determine_chosen_mode_with_take_over(
+    session_state: &TrajectoryState<'_>,
+    verifier_comment: &Option<VerifierComment>,
+    rng: &mut impl rand::Rng,
+) -> NextStepDecision {
+    match verifier_comment {
+        None => NextStepDecision::Continue,
+        Some(comment) => {
+            if comment.change_plan {
+                if session_state.can_change_plan() && rng.random::<f32>() < 0.5 {
+                    NextStepDecision::ChangePlan("Please refer to the verifier's comment.".to_string())
+                } else {
+                    println!("[Warning] Change plan is capped or not chosen by RNG.");
+                    NextStepDecision::Continue
+                }
+            } else if comment.overwrite {
+                if session_state.can_overwrite_step() && rng.random::<f32>() < 0.5 {
+                    NextStepDecision::OverwriteLastStep(
+                        "Please refer to the verifier's comment.".to_string(),
+                    )
+                } else {
+                    println!("[Warning] Overwrite last step is capped or not chosen by RNG.");
+                    NextStepDecision::Continue
+                }
+            } else {
+                NextStepDecision::Continue
+            }
+        }
+    }
 }
 
 pub async fn determine_chosen_mode(
     session_state: &TrajectoryState<'_>,
     client: Client,
     model: LlmModel,
-    take_over_mode_decision: bool,
     rng: &mut impl rand::Rng,
-) -> ChosenModeDecision {
+) -> TreeAction {
     let TrajectoryStatus::PlannerChoosingMode { verifier_comment } = &session_state.status else {
         panic!("determine_chosen_mode should only be called in PlannerChoosingMode status");
     };
-    if take_over_mode_decision {
-        let chosen_mode = match verifier_comment {
-            None => NextStepDecision::Continue,
-            Some(comment) => {
-                if comment.change_plan {
-                    if session_state.can_change_plan() && rng.random::<f32>() < 0.5 {
-                        NextStepDecision::ChangePlan(
-                            "Please refer to the verifier's comment.".to_string(),
-                        )
-                    } else {
-                        println!("[Warning] Change plan is capped or not chosen by RNG.");
-                        NextStepDecision::Continue
-                    }
-                } else if comment.overwrite {
-                    if session_state.can_overwrite_step() && rng.random::<f32>() < 0.5 {
-                        NextStepDecision::OverwriteLastStep(
-                            "Please refer to the verifier's comment.".to_string(),
-                        )
-                    } else {
-                        println!("[Warning] Overwrite last step is capped or not chosen by RNG.");
-                        NextStepDecision::Continue
-                    }
-                } else {
-                    NextStepDecision::Continue
-                }
-            }
-        };
-        return ChosenModeDecision::Chosen(chosen_mode);
+    let _ = (client, model); // currently unused because mode decision is takeover-only
+    let chosen_mode = determine_chosen_mode_with_take_over(session_state, verifier_comment, rng);
+    TreeAction::AddTrajectoryAction {
+        question_id: session_state.source_tree.question_id,
+        action: TrajectoryAction::PlannerDecideNextStep(chosen_mode),
     }
-
-    let (prompt_before_assistant, prompt_after_assistant) =
-        get_prompt_according_to_session_status(session_state);
-    assert_eq!(
-        prompt_after_assistant,
-        String::new(),
-        "Planner deciding next step should not have prompt after assistant"
-    );
-    let response = call_llm_with_prefix(
-        client,
-        prompt_before_assistant,
-        prompt_after_assistant,
-        model,
-    )
-    .await;
-    if is_context_length_exceeded_response(&response) {
-        return ChosenModeDecision::ContextLengthExceeded;
-    }
-
-    let trimmed_response = response.trim();
-    let raw_choice = get_protocol_value(trimmed_response, "choice").expect(&format!(
-        "Planner choosing mode response does not contain 'choice: ...' line. Response: {}",
-        trimmed_response
-    ));
-    let choice = parse_next_step_choice(raw_choice).expect(&format!(
-        "Invalid or ambiguous choice field in planner choosing mode response. Choice must contain exactly one distinct keyword among continue/change/overwrite/rewrite (case-insensitive). choice: {}. Response: {}",
-        raw_choice,
-        trimmed_response
-    ));
-    let chosen_mode = match choice {
-        "continue" => NextStepDecision::Continue,
-        "overwrite_last_step" => {
-            if session_state.can_overwrite_step() {
-                let reason = get_protocol_value(trimmed_response, "reason").expect(
-                    &format!(
-                        "Planner choosing mode response with 'overwrite_last_step' choice does not contain 'reason: ...' line. Response: {}",
-                        trimmed_response
-                    ),
-                );
-                NextStepDecision::OverwriteLastStep(reason.to_string())
-            } else {
-                println!("[Warning] Overwrite last step is capped.");
-                NextStepDecision::Continue
-            }
-        }
-        "change_plan" => {
-            if session_state.can_change_plan() {
-                let reason = get_protocol_value(trimmed_response, "reason").expect(&format!(
-                    "Planner choosing mode response with 'change_plan' choice does not contain 'reason: ...' line. Response: {}",
-                    trimmed_response
-                ));
-                NextStepDecision::ChangePlan(reason.to_string())
-            } else {
-                println!("[Warning] Change plan is capped.");
-                NextStepDecision::Continue
-            }
-        }
-        _ => panic!(
-            "Invalid choice field in planner choosing mode response JSON: {}",
-            choice
-        ),
-    };
-    ChosenModeDecision::Chosen(chosen_mode)
 }

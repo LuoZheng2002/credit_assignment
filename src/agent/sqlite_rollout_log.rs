@@ -1,4 +1,4 @@
-use crate::agent::tree_action::TreeAction;
+use crate::{agent::tree_action::TreeAction, direct_answer::generate_raw_answers::LlmModel};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use std::path::PathBuf;
 
@@ -195,4 +195,13 @@ fn decode_payload_row(row: &Row<'_>) -> rusqlite::Result<TreeAction> {
     serde_json::from_str(&payload_json).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
     })
+}
+
+pub fn get_rollout_log_path(model: LlmModel, dataset_name: &str, num_samples: usize) -> String {
+    format!(
+        "results/{}/agent/{}_rollout_log_{}.sqlite",
+        model.cli_name(),
+        dataset_name,
+        num_samples
+    )
 }

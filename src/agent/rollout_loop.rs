@@ -15,7 +15,6 @@ pub async fn rollout(
     loaded_events: Vec<TreeAction>,
     client: Client,
     model: LlmModel,
-    take_over_mode_decision: bool,
     rng: &mut impl rand::Rng,
     action_tx: tokio::sync::mpsc::UnboundedSender<TreeAction>,
     trajectory_tx: tokio::sync::mpsc::UnboundedSender<CompletedTree>,
@@ -35,7 +34,7 @@ pub async fn rollout(
             break;
         }
         let new_actions =
-            produce_actions_from_state(&tree, client.clone(), model, take_over_mode_decision, rng)
+            produce_actions_from_state(&tree, client.clone(), model, rng)
                 .await;
         for action in new_actions {
             tree.apply_action(action.clone());
