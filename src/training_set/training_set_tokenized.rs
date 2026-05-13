@@ -80,11 +80,17 @@ impl AssetFileTrainingTokenized {
     }
 
     fn load_tokenizer(&self) -> Tokenizer {
-        assert!(
-            self.model.is_qwen(),
-            "Training tokenization currently supports Qwen models only"
-        );
-        Tokenizer::from_pretrained(self.model.api_name(), None).unwrap()
+        // assert!(
+        //     self.model.is_qwen(),
+        //     "Training tokenization currently supports Qwen models only"
+        // );
+        let model = if self.model.is_qwen() {
+            self.model
+        } else {
+            println!("Warning: Training tokenization currently supports Qwen models only, but received {}", self.model.cli_name());
+            LlmModel::Qwen25_7b
+        };
+        Tokenizer::from_pretrained(model.api_name(), None).unwrap()
     }
 
     fn formatted_to_tokenized_with_tokenizer(

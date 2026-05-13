@@ -2,7 +2,7 @@ use rusqlite::{Connection, OptionalExtension, Row, Statement, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{marker::PhantomData, path::PathBuf};
 
-const SQLITE_STORE_TABLE_NAME: &str = "table";
+const SQLITE_STORE_TABLE_NAME: &str = "store_entries";
 
 pub trait SqliteStoreKey: Copy {
     fn to_i64(self) -> i64;
