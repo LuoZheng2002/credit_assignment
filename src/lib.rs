@@ -11,3 +11,6 @@ pub mod sqlite_store;
 pub mod status_prompts;
 pub mod training_set;
 pub mod version_tracking;
+pub mod progress_screen;
+pub mod worker_message_tx;
+pub mod message;
