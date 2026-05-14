@@ -59,7 +59,7 @@ impl AssetFileTrainingTokenized {
     const END_MASK_WITH_EOS_TAG: &'static str = "<__end_mask_with_eos__>";
     const END_OF_CONVERSATION_TOKEN: &'static str = "<|im_end|>";
     const IGNORE_LABEL: i32 = -100;
-    const TOKENIZED_SCHEMA_VERSION: usize = 7;
+    const TOKENIZED_SCHEMA_VERSION: usize = 8;
 
     pub fn hyperparameter_hash(&self) -> String {
         short_hyperparameter_hash(&self.hyperparameters)

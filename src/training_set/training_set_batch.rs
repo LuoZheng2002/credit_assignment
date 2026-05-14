@@ -52,7 +52,7 @@ pub struct AssetFileTrainingBatch {
 }
 
 impl AssetFileTrainingBatch {
-    const BATCH_SCHEMA_VERSION: usize = 2;
+    const BATCH_SCHEMA_VERSION: usize = 3;
 
     pub fn hyperparameter_hash(&self) -> String {
         short_hyperparameter_hash(&self.hyperparameters)

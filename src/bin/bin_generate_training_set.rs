@@ -4,7 +4,7 @@ use credit_assignment::em::em_types::{EmHyperparameters, LogStdClamp};
 use credit_assignment::training_set::training_set_batch::AssetFileTrainingBatch;
 use credit_assignment::version_tracking::AssetFile;
 
-const DEFAULT_BATCH_SIZE: usize = 64;
+const DEFAULT_BATCH_SIZE: usize = 4;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Generate tokenized training batches")]
