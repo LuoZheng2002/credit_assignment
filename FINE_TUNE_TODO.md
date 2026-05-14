@@ -4,6 +4,7 @@
 - Build a Python fine-tuning framework in `src_py/` for 7B/4B models on `4 x A100`.
 - Train from tokenized samples with fields matching `TrainingSampleTokenized` (`input_ids`, `labels`, `advantage`).
 - Use DeepSpeed ZeRO-3 with stable, reproducible training and resumable checkpoints.
+- Current target model family: Qwen (`qwen2.5-7b`, `qwen3-4b`, `qwen3.5-4b`); account for potential tokenizer differences across these models.
 
 ## Best-Practice Decisions
 - Keep tokenizer/model identity strict so pre-tokenized IDs stay valid.
@@ -25,14 +26,14 @@
 ## Implementation Plan
 
 ### 1) Project scaffolding
-- [ ] Create `src_py/train/` package and module layout.
-- [ ] Add a CLI entrypoint in `src_py/train/main.py`.
-- [ ] Add launcher script `src_py/scripts/launch_4gpu.sh`.
+- [x] Create `src_py/train/` package and module layout.
+- [x] Add a CLI entrypoint in `src_py/train/main.py`.
+- [x] Add launcher script `src_py/scripts/launch_4gpu.sh`.
 
 ### 2) DeepSpeed configs
-- [ ] Add `src_py/configs/ds_zero3_7b.json`.
-- [ ] Add `src_py/configs/ds_zero3_4b.json`.
-- [ ] Configure ZeRO stage 3, bf16, grad clipping, optimizer/scheduler defaults.
+- [x] Add `src_py/configs/ds_zero3_7b.json`.
+- [x] Add `src_py/configs/ds_zero3_4b.json`.
+- [x] Configure ZeRO stage 3, bf16, grad clipping, optimizer/scheduler defaults.
 
 ### 3) Data ingestion from sqlite
 - [x] Implement `src_py/train/data_sqlite.py` to read `store_entries.payload_json`.
@@ -40,10 +41,10 @@
 - [ ] Add deterministic train/val split and shuffle with fixed seed.
 
 ### 4) Batching and collation
-- [ ] Implement `src_py/train/collator.py`.
-- [ ] Pad `input_ids` with `pad_token_id`.
-- [ ] Pad `labels` with `-100`.
-- [ ] Build `attention_mask` and include `advantages` tensor.
+- [x] Implement `src_py/train/collator.py`.
+- [x] Pad `input_ids` with `pad_token_id`.
+- [x] Pad `labels` with `-100`.
+- [x] Build `attention_mask` and include `advantages` tensor.
 
 ### 5) Loss and weighting
 - [x] Implement `src_py/train/losses.py` for masked per-sample CE.
@@ -51,9 +52,9 @@
 - [x] Compute weighted batch loss and assert finite loss.
 
 ### 6) Training engine
-- [ ] Implement `src_py/train/engine.py` with DeepSpeed initialize.
-- [ ] Load HF causal LM + tokenizer revision compatible with Rust tokenization.
-- [ ] Enable gradient checkpointing.
+- [x] Implement `src_py/train/engine.py` with DeepSpeed initialize.
+- [x] Load HF causal LM + tokenizer and assert `model_official_name` match with sqlite data.
+- [x] Enable gradient checkpointing.
 - [ ] Implement train/eval loops with distributed metric reduction.
 
 ### 7) Checkpointing and resume
@@ -67,9 +68,14 @@
 - [ ] Add eval metrics (e.g., perplexity on masked labels).
 
 ### 9) Validation and tests
-- [ ] Add unit tests for sqlite parsing and schema validation.
-- [ ] Add unit tests for collator masks/padding behavior.
+- [x] Add unit tests for sqlite parsing and schema validation.
+- [x] Add unit tests for collator masks/padding behavior.
 - [x] Add toy tests for loss weighting correctness.
+
+### 11) Batch-linked loading
+- [x] Implement batch-to-tokenized ID resolution for predetermined sqlite batches.
+- [x] Validate all batch IDs resolve to tokenized samples.
+- [x] Validate `model_official_name` consistency between tokenized samples and training batches.
 
 ### 10) Initial hyperparameter baseline
 - [ ] 7B: micro-batch/GPU = 1; 4B: micro-batch/GPU = 2.

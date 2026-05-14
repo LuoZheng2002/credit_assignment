@@ -36,6 +36,7 @@ pub struct TrainingSampleTokenized {
     pub reconstructed: String,
     pub input_length: usize,
     pub advantage: f64,
+    pub model_official_name: String,
 }
 
 pub struct AssetFileTrainingTokenized {
@@ -303,6 +304,7 @@ impl AssetFileTrainingTokenized {
             reconstructed,
             input_length,
             advantage: formatted_sample.advantage,
+            model_official_name: self.model.api_name().to_string(),
         }
     }
 

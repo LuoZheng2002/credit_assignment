@@ -25,6 +25,7 @@ class TrainingSampleTokenized:
     reconstructed: str
     input_length: int
     advantage: float
+    model_official_name: str
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class TrainingBatch:
     min_advantage: float
     max_length: int
     min_length: int
+    model_official_name: str
 
 
 def _open_connection(sqlite_path: str) -> sqlite3.Connection:
@@ -90,6 +92,9 @@ def _parse_tokenized_payload(payload_json: str) -> TrainingSampleTokenized:
     assert "reconstructed" in payload_obj, "tokenized payload must contain reconstructed"
     assert "input_length" in payload_obj, "tokenized payload must contain input_length"
     assert "advantage" in payload_obj, "tokenized payload must contain advantage"
+    assert (
+        "model_official_name" in payload_obj
+    ), "tokenized payload must contain model_official_name"
 
     sample_id = _parse_question_node_id(payload_obj["id"])
     input_ids = _parse_int_list(payload_obj["input_ids"], "input_ids")
@@ -98,6 +103,9 @@ def _parse_tokenized_payload(payload_json: str) -> TrainingSampleTokenized:
     assert isinstance(reconstructed_obj, str), "reconstructed must be string"
     input_length = _parse_positive_int(payload_obj["input_length"], "input_length")
     advantage = _parse_finite_float(payload_obj["advantage"], "advantage")
+    model_official_name_obj = payload_obj["model_official_name"]
+    assert isinstance(model_official_name_obj, str), "model_official_name must be string"
+    assert len(model_official_name_obj) > 0, "model_official_name cannot be empty"
 
     assert len(input_ids) > 0, "input_ids cannot be empty"
     assert len(labels) == len(input_ids), "labels and input_ids lengths must match"
@@ -110,6 +118,7 @@ def _parse_tokenized_payload(payload_json: str) -> TrainingSampleTokenized:
         reconstructed=reconstructed_obj,
         input_length=input_length,
         advantage=advantage,
+        model_official_name=model_official_name_obj,
     )
 
 
@@ -121,6 +130,7 @@ def _parse_batch_payload(batch_index: int, payload_json: str) -> TrainingBatch:
     assert "min_advantage" in payload_obj, "batch payload must contain min_advantage"
     assert "max_length" in payload_obj, "batch payload must contain max_length"
     assert "min_length" in payload_obj, "batch payload must contain min_length"
+    assert "model_official_name" in payload_obj, "batch payload must contain model_official_name"
 
     ids_obj = payload_obj["ids"]
     assert isinstance(ids_obj, list), "ids must be a JSON array"
@@ -134,6 +144,9 @@ def _parse_batch_payload(batch_index: int, payload_json: str) -> TrainingBatch:
     min_advantage = _parse_finite_float(payload_obj["min_advantage"], "min_advantage")
     max_length = _parse_positive_int(payload_obj["max_length"], "max_length")
     min_length = _parse_positive_int(payload_obj["min_length"], "min_length")
+    model_official_name_obj = payload_obj["model_official_name"]
+    assert isinstance(model_official_name_obj, str), "model_official_name must be string"
+    assert len(model_official_name_obj) > 0, "model_official_name cannot be empty"
 
     assert max_length >= min_length, "max_length must be >= min_length"
     assert max_advantage >= min_advantage, "max_advantage must be >= min_advantage"
@@ -145,6 +158,7 @@ def _parse_batch_payload(batch_index: int, payload_json: str) -> TrainingBatch:
         min_advantage=min_advantage,
         max_length=max_length,
         min_length=min_length,
+        model_official_name=model_official_name_obj,
     )
 
 

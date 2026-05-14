@@ -32,6 +32,7 @@ pub struct TrainingBatch {
     pub min_advantage: f64,
     pub max_length: usize,
     pub min_length: usize,
+    pub model_official_name: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -259,6 +260,7 @@ impl AssetFileTrainingBatch {
                 min_advantage,
                 max_length,
                 min_length,
+                model_official_name: self.model.api_name().to_string(),
             });
         }
 
