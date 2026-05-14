@@ -15,8 +15,8 @@ struct Args {
     num_samples: usize,
     #[arg(value_enum, short, long)]
     model: LlmModel,
-    #[arg(long)]
-    vllm_port: u16,
+    #[arg(long, value_delimiter = ',', num_args = 1..)]
+    vllm_ports: Vec<u16>,
 }
 
 // we want to log each action
@@ -42,7 +42,7 @@ async fn main() {
         dataset_name,
         model,
         num_samples,
-        vllm_port,
+        vllm_ports,
     } = Args::parse();
-    rollout_batch(model, dataset_name, num_samples, vllm_port).await;
+    rollout_batch(model, dataset_name, num_samples, vllm_ports).await;
 }

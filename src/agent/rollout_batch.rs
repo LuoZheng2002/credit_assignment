@@ -6,12 +6,15 @@ use std::{
     },
 };
 
-use futures::future::join_all;
+use futures::{
+    future::join_all,
+    stream::{FuturesUnordered, StreamExt},
+};
 use indexmap::IndexMap;
 use pyo3::Python;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use reqwest::Client;
-use tokio::sync::Semaphore;
+use tokio::sync::OwnedSemaphorePermit;
 
 use crate::{
     agent::{
@@ -20,7 +23,7 @@ use crate::{
         tree_action::TreeAction,
         tree_schema::{AssetFileTrees, AssetFileTreesTracking, CompletedTree, CompletedTreeStore},
     },
-    call_llm::set_vllm_port,
+    call_llm::LlmEndpoint,
     datasets::{AssetFileDataset, DeepMathQuestion},
     direct_answer::generate_raw_answers::LlmModel,
     parallel_process_jsonl::write_json,
@@ -28,7 +31,47 @@ use crate::{
 };
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
-const MAX_CONCURRENT_ROLLOUT_JOBS: usize = 10;
+const MAX_CONCURRENT_REQUESTS_PER_ENDPOINT: usize = 100;
+
+async fn choose_endpoint_for_question(
+    llm_endpoints: &[Arc<LlmEndpoint>],
+) -> (Arc<LlmEndpoint>, OwnedSemaphorePermit) {
+    assert!(!llm_endpoints.is_empty(), "llm_endpoints must not be empty");
+
+    let (most_available_endpoint_idx, max_available_slots) = llm_endpoints
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, endpoint)| endpoint.question_slot_semaphore.available_permits())
+        .expect("llm_endpoints must not be empty");
+
+    if max_available_slots.question_slot_semaphore.available_permits() > 0 {
+        let endpoint = llm_endpoints[most_available_endpoint_idx].clone();
+        let permit = endpoint
+            .question_slot_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        return (endpoint, permit);
+    }
+
+    let mut acquire_futures = FuturesUnordered::new();
+    for endpoint in llm_endpoints.iter().cloned() {
+        acquire_futures.push(async move {
+            let permit = endpoint
+                .question_slot_semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .unwrap();
+            (endpoint, permit)
+        });
+    }
+    acquire_futures
+        .next()
+        .await
+        .expect("llm_endpoints must not be empty")
+}
 
 // this function is responsible for loading the dataset, running rollouts and then storing the trajectories.
 // It is also responsible for creating the version tracking file and output file if they do not exist
@@ -36,15 +79,37 @@ pub async fn rollout_batch(
     model: LlmModel,
     dataset_name: String,
     num_samples: usize,
-    vllm_port: u16,
+    vllm_ports: Vec<u16>,
 ) {
-    assert!(vllm_port > 0, "--vllm-port must be greater than 0");
-    set_vllm_port(vllm_port);
+    assert!(!vllm_ports.is_empty(), "--vllm-ports must not be empty");
+    assert!(
+        vllm_ports.iter().all(|port| *port > 0),
+        "all --vllm-ports must be greater than 0"
+    );
+
+    let llm_endpoints: Vec<Arc<LlmEndpoint>> = vllm_ports
+        .iter()
+        .enumerate()
+        .map(|(id, port)| {
+            Arc::new(LlmEndpoint::new(
+                id,
+                *port,
+                MAX_CONCURRENT_REQUESTS_PER_ENDPOINT,
+            ))
+        })
+        .collect();
+
     let model_name = model.cli_name();
     println!(
-        "Evaluating model {} on {} dataset with {} samples (vLLM port: {})",
-        model_name, dataset_name, num_samples, vllm_port
+        "Evaluating model {} on {} dataset with {} samples (vLLM ports: {:?})",
+        model_name, dataset_name, num_samples, vllm_ports
     );
+    for endpoint in &llm_endpoints {
+        println!(
+            "Configured endpoint {} on port {} with max {} concurrent requests",
+            endpoint.id, endpoint.vllm_port, MAX_CONCURRENT_REQUESTS_PER_ENDPOINT
+        );
+    }
     assert!(
         std::env::var("PYTHONPATH").is_ok(),
         "PYTHONPATH environment variable is not set"
@@ -106,9 +171,6 @@ pub async fn rollout_batch(
         loaded_session_logs.insert(*unfinished_tree_id, loaded_actions);
     }
 
-    let rollout_concurrency = MAX_CONCURRENT_ROLLOUT_JOBS;
-    println!("rollout concurrency limit: {}", rollout_concurrency);
-    let sem = Arc::new(Semaphore::new(rollout_concurrency));
     SHUTDOWN.store(false, Ordering::SeqCst);
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.unwrap();
@@ -134,10 +196,10 @@ pub async fn rollout_batch(
     let trajectory_tx_for_submit = trajectory_tx.clone();
     let trees_store_for_writer = CompletedTreeStore::new(asset_file_trees.file_path()).unwrap();
     let submit_trajectory_task_handle = tokio::spawn({
-        let sem = sem.clone();
         let client = client.clone();
         let action_tx = action_tx_for_submit;
         let trajectory_tx = trajectory_tx_for_submit;
+        let llm_endpoints = llm_endpoints.clone();
         async move {
             let finished_count = Arc::new(AtomicUsize::new(0));
             let total_count = unfinished_tree_ids.len();
@@ -145,7 +207,8 @@ pub async fn rollout_batch(
                 if SHUTDOWN.load(Ordering::SeqCst) {
                     break;
                 }
-                let permit = sem.clone().acquire_owned().await.unwrap();
+                let (llm_endpoint, question_slot_permit) =
+                    choose_endpoint_for_question(&llm_endpoints).await;
                 let unfinished_question = questions.get(&id).unwrap();
                 let question = unfinished_question.question.clone();
                 let reference_answer = unfinished_question.final_answer.clone();
@@ -155,12 +218,18 @@ pub async fn rollout_batch(
                 let loaded_session_log = loaded_session_logs.swap_remove(&id).unwrap_or_default();
                 let mut task_rng = StdRng::seed_from_u64(submit_task_rng.next_u64());
                 let finished_count = finished_count.clone();
+                println!(
+                    "Question {} assigned to endpoint {} (port {})",
+                    id, llm_endpoint.id, llm_endpoint.vllm_port
+                );
                 tokio::spawn(async move {
+                    let _question_slot_permit = question_slot_permit;
                     rollout(
                         id,
                         question,
                         reference_answer,
                         loaded_session_log,
+                        llm_endpoint,
                         client,
                         model,
                         &mut task_rng,
@@ -168,7 +237,6 @@ pub async fn rollout_batch(
                         trajectory_tx,
                     )
                     .await;
-                    drop(permit);
                     finished_count.fetch_add(1, Ordering::SeqCst);
                     println!(
                         "Trajectory {}/{} finished",

@@ -1,5 +1,6 @@
 use rand::RngExt;
 use reqwest::Client;
+use std::sync::Arc;
 
 use crate::agent::branching_node_selection::determine_branching_node;
 use crate::agent::context_length_exceeded::{
@@ -21,7 +22,7 @@ use crate::direct_answer::parse_answers::extract_boxed_content;
 use crate::status_prompts::universal_prompt::get_prompt_according_to_session_status;
 use crate::{
     agent::trajectory_action::TrajectoryAction,
-    call_llm::call_llm_with_prefix,
+    call_llm::{LlmEndpoint, call_llm_with_prefix_on_endpoint},
     constants::{IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE, REPETITION_ABORT_MESSAGE},
     direct_answer::{generate_raw_answers::LlmModel, judge_answers::judge_answer_task},
 };
@@ -80,6 +81,7 @@ pub fn detect_repetition_five_times(response: &str) -> bool {
 pub async fn produce_actions_from_state(
     // session_state: &TrajectoryState<'_>,
     tree: &Tree,
+    llm_endpoint: Arc<LlmEndpoint>,
     client: Client,
     model: LlmModel,
     rng: &mut impl rand::Rng,
@@ -160,11 +162,12 @@ pub async fn produce_actions_from_state(
                     String::new(),
                     "Verifier commenting should not have prompt after assistant"
                 );
-                let response = call_llm_with_prefix(
+                let response = call_llm_with_prefix_on_endpoint(
                     client.clone(),
                     prompt_before_assistant,
                     prompt_after_assistant,
                     model,
+                    llm_endpoint.clone(),
                 )
                 .await;
                 if is_context_length_exceeded_response(&response) {
@@ -209,11 +212,12 @@ pub async fn produce_actions_from_state(
             if needs_to_make_or_change_plan {
                 let (prompt_before_assistant, prompt_after_assistant) =
                     get_prompt_according_to_session_status(&session_state);
-                let response = call_llm_with_prefix(
+                let response = call_llm_with_prefix_on_endpoint(
                     client.clone(),
                     prompt_before_assistant,
                     prompt_after_assistant,
                     model,
+                    llm_endpoint.clone(),
                 )
                 .await;
                 if is_context_length_exceeded_response(&response) {
@@ -254,11 +258,12 @@ pub async fn produce_actions_from_state(
         } => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(&session_state);
-            let mut response = call_llm_with_prefix(
+            let mut response = call_llm_with_prefix_on_endpoint(
                 client.clone(),
                 prompt_before_assistant,
                 prompt_after_assistant,
                 model,
+                llm_endpoint.clone(),
             )
             .await;
             if is_context_length_exceeded_response(&response) {
@@ -410,11 +415,12 @@ pub async fn produce_actions_from_state(
         } => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(&session_state);
-            let response = call_llm_with_prefix(
+            let response = call_llm_with_prefix_on_endpoint(
                 client.clone(),
                 prompt_before_assistant,
                 prompt_after_assistant,
                 model,
+                llm_endpoint.clone(),
             )
             .await;
             if is_context_length_exceeded_response(&response) {
@@ -450,11 +456,12 @@ pub async fn produce_actions_from_state(
             if session_state.final_answer.is_none() {
                 let (prompt_before_assistant, prompt_after_assistant) =
                     get_prompt_according_to_session_status(&session_state);
-                let response = call_llm_with_prefix(
+                let response = call_llm_with_prefix_on_endpoint(
                     client.clone(),
                     prompt_before_assistant,
                     prompt_after_assistant,
                     model,
+                    llm_endpoint.clone(),
                 )
                 .await;
                 if is_context_length_exceeded_response(&response) {

@@ -1,8 +1,10 @@
 use reqwest::Client;
+use std::sync::Arc;
 
 use crate::{
     agent::tree_schema::CompletedTree,
     agent::{state_to_actions::produce_actions_from_state, tree::Tree, tree_action::TreeAction},
+    call_llm::LlmEndpoint,
     direct_answer::generate_raw_answers::LlmModel,
 };
 
@@ -13,6 +15,7 @@ pub async fn rollout(
     question: String,
     reference_answer: String,
     loaded_events: Vec<TreeAction>,
+    llm_endpoint: Arc<LlmEndpoint>,
     client: Client,
     model: LlmModel,
     rng: &mut impl rand::Rng,
@@ -34,7 +37,7 @@ pub async fn rollout(
             break;
         }
         let new_actions =
-            produce_actions_from_state(&tree, client.clone(), model, rng)
+            produce_actions_from_state(&tree, llm_endpoint.clone(), client.clone(), model, rng)
                 .await;
         for action in new_actions {
             tree.apply_action(action.clone());
