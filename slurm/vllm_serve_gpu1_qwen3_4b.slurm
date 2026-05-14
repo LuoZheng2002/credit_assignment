@@ -8,7 +8,7 @@
 #SBATCH --ntasks=1
 #SBATCH --mem=32G
 #SBATCH --account=bfdz-delta-gpu
-#SBATCH --time=00:45:00
+#SBATCH --time=03:00:00
 
 source activate_environment.sh
 
