@@ -19,7 +19,7 @@ rich
 sympy
 tabulate
 tiktoken
-torch==2.12.0
+torch
 transformers
 typer
 uvicorn

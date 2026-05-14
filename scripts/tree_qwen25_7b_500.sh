@@ -3,5 +3,4 @@ cargo run --bin bin_tree -- \
     --dataset-name "deepmath" \
  --num-samples 500 \
  --model qwen2.5-7b \
- --vllm-port 8000 \
- --take-over-mode-decision true
+ --vllm-ports 8000 
