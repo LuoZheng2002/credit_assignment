@@ -35,7 +35,7 @@ impl HasId for DeepMathQuestionReasoning {
 // legacy non-agent helper function
 pub fn get_questions_with_reasoning_path(dataset_name: &str, num_samples: usize) -> String {
     format!(
-        "datasets/{}_samples_{}_reasoning.jsonl",
+        "datasets/{}_ordered_{}_reasoning.jsonl",
         dataset_name, num_samples
     )
 }
@@ -48,7 +48,7 @@ pub struct AssetFileDataset {
 impl AssetFileDataset {
     pub fn file_path(&self) -> String {
         format!(
-            "datasets/{}_samples_{}.jsonl",
+            "datasets/{}_ordered_{}.jsonl",
             self.dataset, self.num_samples
         )
     }

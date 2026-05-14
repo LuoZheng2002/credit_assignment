@@ -44,7 +44,7 @@ Question: {}\nFinal Answer: {}\nReasoning: {}\nConcise Reasoning:",
 
 pub fn get_concise_reasoning_path(dataset_name: &str, num_samples: usize) -> String {
     format!(
-        "datasets/{}_samples_{}_concise_reasoning.jsonl",
+        "datasets/{}_ordered_{}_concise_reasoning.jsonl",
         dataset_name, num_samples
     )
 }
