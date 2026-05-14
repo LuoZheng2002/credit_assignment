@@ -12,6 +12,7 @@ pwd.txt
 examine.json
 activate_environment.sh
 results_version_tracking
+__pycache__
 # Added by cargo
 
 /target

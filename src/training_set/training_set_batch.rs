@@ -26,7 +26,13 @@ pub struct TrainingSampleMeta {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct TrainingBatch(pub Vec<QuestionNodeId>);
+pub struct TrainingBatch {
+    pub ids: Vec<QuestionNodeId>,
+    pub max_advantage: f64,
+    pub min_advantage: f64,
+    pub max_length: usize,
+    pub min_length: usize,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AssetFileTrainingBatchTracking {
@@ -45,7 +51,7 @@ pub struct AssetFileTrainingBatch {
 }
 
 impl AssetFileTrainingBatch {
-    const BATCH_SCHEMA_VERSION: usize = 1;
+    const BATCH_SCHEMA_VERSION: usize = 2;
 
     pub fn hyperparameter_hash(&self) -> String {
         short_hyperparameter_hash(&self.hyperparameters)
@@ -232,11 +238,28 @@ impl AssetFileTrainingBatch {
                 cumulative_advantage += tokenized_samples[chosen_candidate].advantage;
             }
 
-            let batch_ids: Vec<QuestionNodeId> = current_batch_indices
-                .iter()
-                .map(|index| tokenized_samples[*index].id)
-                .collect();
-            output_batches.push(TrainingBatch(batch_ids));
+            let mut max_advantage = f64::NEG_INFINITY;
+            let mut min_advantage = f64::INFINITY;
+            let mut max_length = 0;
+            let mut min_length = usize::MAX;
+            let mut batch_ids: Vec<QuestionNodeId> = Vec::new();
+            for index in &current_batch_indices {
+                let sample = &tokenized_samples[*index];
+                max_advantage = max_advantage.max(sample.advantage);
+                min_advantage = min_advantage.min(sample.advantage);
+                max_length = max_length.max(sample.input_length);
+                min_length = min_length.min(sample.input_length);
+                batch_ids.push(sample.id);
+            }
+            assert!(!batch_ids.is_empty(), "Each generated training batch must be non-empty");
+
+            output_batches.push(TrainingBatch {
+                ids: batch_ids,
+                max_advantage,
+                min_advantage,
+                max_length,
+                min_length,
+            });
         }
 
         output_batches
