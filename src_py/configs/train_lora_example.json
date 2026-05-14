@@ -1,0 +1,20 @@
+{
+  "training_plan": "lora_current",
+  "model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
+  "tokenized_sqlite_path": "/path/to/tokenized.sqlite",
+  "batch_sqlite_path": "/path/to/batches.sqlite",
+  "output_dir": "/path/to/output_run",
+  "advantage_clip": 3.0,
+  "learning_rate": 1e-05,
+  "weight_decay": 0.01,
+  "num_epochs": 3,
+  "grad_accum_steps": 4,
+  "log_interval_steps": 10,
+  "save_interval_steps": 100,
+  "lora_rank": 64,
+  "lora_alpha": 128,
+  "lora_dropout": 0.05,
+  "lora_target_modules_csv": "q_proj,k_proj,v_proj,o_proj",
+  "resume_checkpoint_tag": "auto",
+  "seed": 42
+}

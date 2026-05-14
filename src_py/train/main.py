@@ -12,7 +12,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tokenized-sqlite-path", type=str, required=True)
     parser.add_argument("--batch-sqlite-path", type=str, required=True)
     parser.add_argument("--output-dir", type=str, required=True)
-    parser.add_argument("--pad-token-id", type=int, required=True)
     parser.add_argument("--advantage-clip", type=float, required=True)
     parser.add_argument("--learning-rate", type=float, required=True)
     parser.add_argument("--weight-decay", type=float, required=True)
@@ -39,7 +38,6 @@ def main() -> None:
         tokenized_sqlite_path=args.tokenized_sqlite_path,
         batch_sqlite_path=args.batch_sqlite_path,
         output_dir=args.output_dir,
-        pad_token_id=args.pad_token_id,
         advantage_clip=args.advantage_clip,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,

@@ -22,7 +22,6 @@ class TrainConfig:
     tokenized_sqlite_path: str
     batch_sqlite_path: str
     output_dir: str
-    pad_token_id: int
     advantage_clip: float
     learning_rate: float
     weight_decay: float
@@ -279,6 +278,19 @@ def _compute_next_position(
     return next_epoch_index, next_batch_cursor
 
 
+def _resolve_pad_token_id(tokenizer_pad_token_id: int | None) -> int:
+    assert tokenizer_pad_token_id is not None, "tokenizer.pad_token_id must be defined for training"
+    assert tokenizer_pad_token_id >= 0, "tokenizer.pad_token_id must be non-negative"
+    return int(tokenizer_pad_token_id)
+
+
+def _normalize_optional_token_id(token_id: int | None) -> int:
+    if token_id is None:
+        return -1
+    assert token_id >= 0, "token id must be non-negative when defined"
+    return int(token_id)
+
+
 def _verify_tokenizer_model_match(
     model_name_or_path: str,
     tokenizer_name_or_path: str,
@@ -392,7 +404,6 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         "lora_current",
         "full_fsdp_backup",
     }, "training_plan must be one of: lora_current, full_fsdp_backup"
-    assert config.pad_token_id >= 0, "pad_token_id must be non-negative"
     assert config.advantage_clip > 0.0, "advantage_clip must be positive"
     assert config.learning_rate > 0.0, "learning_rate must be positive"
     assert config.weight_decay >= 0.0, "weight_decay must be non-negative"
@@ -415,6 +426,9 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     local_batches = _shard_batches_for_rank(ordered_batches=ordered_batches, rank=rank, world_size=world_size)
 
     tokenizer = AutoTokenizer.from_pretrained(config.model_name_or_path)
+    pad_token_id = _resolve_pad_token_id(tokenizer.pad_token_id)
+    eos_token_id = _normalize_optional_token_id(tokenizer.eos_token_id)
+    bos_token_id = _normalize_optional_token_id(tokenizer.bos_token_id)
 
     if config.training_plan == "lora_current":
         model = _build_lora_model(
@@ -458,6 +472,10 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     logs_path = output_dir / "train_metrics.jsonl"
 
     if _is_primary_rank():
+        print(
+            "[startup] tokenizer special tokens "
+            f"pad_token_id={pad_token_id} eos_token_id={eos_token_id} bos_token_id={bos_token_id}"
+        )
         _log_json_line(
             logs_path,
             {
@@ -467,6 +485,9 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                 "model_vocab_size": int(verification["model_vocab_size"]),
                 "max_input_token_id": int(verification["max_input_token_id"]),
                 "max_label_token_id": int(verification["max_label_token_id"]),
+                "pad_token_id": pad_token_id,
+                "eos_token_id": eos_token_id,
+                "bos_token_id": bos_token_id,
                 "rank": rank,
                 "world_size": world_size,
                 "local_batch_count": len(local_batches),
@@ -512,7 +533,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
             resolved_batch = local_batches[local_batch_cursor]
             collated = collate_training_samples(
                 samples=resolved_batch.samples,
-                pad_token_id=config.pad_token_id,
+                pad_token_id=pad_token_id,
             )
 
             input_ids = collated.input_ids.to(device=device, non_blocking=True)
