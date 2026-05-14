@@ -7,10 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures::{
-    future::join_all,
-    stream::{FuturesUnordered, StreamExt},
-};
+use futures::stream::{FuturesUnordered, StreamExt};
 use indexmap::IndexMap;
 use pyo3::Python;
 use rand::{Rng, SeedableRng, rngs::StdRng};
@@ -34,6 +31,11 @@ use crate::{
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 const MAX_CONCURRENT_REQUESTS_PER_ENDPOINT: usize = 100;
+
+pub enum LogOrTree {
+    Action(TreeAction),
+    Tree(CompletedTree),
+}
 
 async fn choose_endpoint_for_question(
     llm_endpoints: &[Arc<LlmEndpoint>],
@@ -216,12 +218,9 @@ pub async fn rollout_batch(
         SHUTDOWN.store(true, Ordering::SeqCst);
     });
 
-    let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<TreeAction>();
-    let (trajectory_tx, mut trajectory_rx) =
-        tokio::sync::mpsc::unbounded_channel::<CompletedTree>();
+    let (log_or_tree_tx, mut log_or_tree_rx) = tokio::sync::mpsc::unbounded_channel::<LogOrTree>();
     let mut submit_task_rng = StdRng::seed_from_u64(rng.next_u64());
     let rollout_log_store_for_writer = SqliteSessionLogStore::new(&rollout_log_path).unwrap();
-    let rollout_log_store_for_cleanup = SqliteSessionLogStore::new(&rollout_log_path).unwrap();
     let processed_question_count = Arc::new(AtomicUsize::new(tree_completed_ids.len()));
     publish_master_progress(tree_completed_ids.len(), total_questions);
 
@@ -297,16 +296,14 @@ pub async fn rollout_batch(
     let rows = tree_scan_statement.try_iter().unwrap();
     for row in rows {
         let trajectory = row.unwrap();
-        trajectory_tx.send(trajectory).unwrap();
+        log_or_tree_tx.send(LogOrTree::Tree(trajectory)).unwrap();
     }
 
-    let action_tx_for_submit = action_tx.clone();
-    let trajectory_tx_for_submit = trajectory_tx.clone();
+    let log_or_tree_tx_for_submit = log_or_tree_tx.clone();
     let trees_store_for_writer = CompletedTreeStore::new(asset_file_trees.file_path()).unwrap();
     let submit_trajectory_task_handle = tokio::spawn({
         let client = client.clone();
-        let action_tx = action_tx_for_submit;
-        let trajectory_tx = trajectory_tx_for_submit;
+        let log_or_tree_tx = log_or_tree_tx_for_submit;
         let llm_endpoints = llm_endpoints.clone();
         async move {
             let finished_count = Arc::new(AtomicUsize::new(0));
@@ -320,8 +317,7 @@ pub async fn rollout_batch(
                 let unfinished_question = questions.get(&id).unwrap();
                 let question = unfinished_question.question.clone();
                 let reference_answer = unfinished_question.final_answer.clone();
-                let action_tx = action_tx.clone();
-                let trajectory_tx = trajectory_tx.clone();
+                let log_or_tree_tx = log_or_tree_tx.clone();
                 let client = client.clone();
                 let loaded_session_log = loaded_session_logs.swap_remove(&id).unwrap_or_default();
                 let mut task_rng = StdRng::seed_from_u64(submit_task_rng.next_u64());
@@ -344,78 +340,69 @@ pub async fn rollout_batch(
                         client,
                         model,
                         &mut task_rng,
-                        action_tx,
-                        trajectory_tx,
+                        log_or_tree_tx,
                     )
                     .await;
                     finished_count.fetch_add(1, Ordering::SeqCst);
                 });
             }
-            drop(action_tx);
-            drop(trajectory_tx);
+            drop(log_or_tree_tx);
         }
     });
 
-    let receive_action_handle = tokio::spawn(async move {
-        while let Some(action_log_item) = action_rx.recv().await {
-            if SHUTDOWN.load(Ordering::SeqCst) {
-                break;
-            }
-            let question_id = action_log_item.question_id();
-            rollout_log_store_for_writer
-                .append_action(question_id, &action_log_item)
-                .unwrap();
-        }
-    });
-
-    let receive_trajectory_handle = tokio::spawn(async move {
+    let receive_log_or_tree_handle = tokio::spawn(async move {
         let mut total_correct = 0usize;
         let mut total_judged = 0usize;
         let existing_completed_ids = tree_completed_ids;
         let processed_question_count = processed_question_count;
-        while let Some(trajectory) = trajectory_rx.recv().await {
+        while let Some(log_or_tree_item) = log_or_tree_rx.recv().await {
             if SHUTDOWN.load(Ordering::SeqCst) {
                 break;
             }
-            trees_store_for_writer
-                .upsert(trajectory.id, &trajectory)
-                .unwrap();
-            rollout_log_store_for_cleanup
-                .drop_question_table(trajectory.id)
-                .unwrap();
-            total_correct += trajectory.trajectory.correctness_ratio.numerator;
-            total_judged += trajectory.trajectory.correctness_ratio.denominator;
-            let running_accuracy = if total_judged == 0 {
-                0.0
-            } else {
-                total_correct as f64 / total_judged as f64
-            };
-            log_key_value_pair(
-                "running_accuracy".to_string(),
-                format!(
-                    "{}/{} ({:.2}%)",
-                    total_correct,
-                    total_judged,
-                    running_accuracy * 100.0
-                ),
-            );
+            match log_or_tree_item {
+                LogOrTree::Action(action_log_item) => {
+                    let question_id = action_log_item.question_id();
+                    rollout_log_store_for_writer
+                        .append_action(question_id, &action_log_item)
+                        .unwrap();
+                }
+                LogOrTree::Tree(trajectory) => {
+                    trees_store_for_writer
+                        .upsert(trajectory.id, &trajectory)
+                        .unwrap();
+                    rollout_log_store_for_writer
+                        .drop_question_table(trajectory.id)
+                        .unwrap();
+                    total_correct += trajectory.trajectory.correctness_ratio.numerator;
+                    total_judged += trajectory.trajectory.correctness_ratio.denominator;
+                    let running_accuracy = if total_judged == 0 {
+                        0.0
+                    } else {
+                        total_correct as f64 / total_judged as f64
+                    };
+                    log_key_value_pair(
+                        "running_accuracy".to_string(),
+                        format!(
+                            "{}/{} ({:.2}%)",
+                            total_correct,
+                            total_judged,
+                            running_accuracy * 100.0
+                        ),
+                    );
 
-            if !existing_completed_ids.contains(&trajectory.id) {
-                let processed = processed_question_count.fetch_add(1, Ordering::SeqCst) + 1;
-                publish_master_progress(processed, total_questions);
+                    if !existing_completed_ids.contains(&trajectory.id) {
+                        let processed = processed_question_count.fetch_add(1, Ordering::SeqCst) + 1;
+                        publish_master_progress(processed, total_questions);
+                    }
+                }
             }
         }
     });
 
-    drop(action_tx);
-    drop(trajectory_tx);
+    drop(log_or_tree_tx);
 
-    join_all([
-        submit_trajectory_task_handle,
-        receive_action_handle,
-        receive_trajectory_handle,
-    ])
-    .await;
+    submit_trajectory_task_handle.await.unwrap();
+    receive_log_or_tree_handle.await.unwrap();
 
     endpoint_stats_shutdown.store(true, Ordering::SeqCst);
     endpoint_stats_handle.await.unwrap();

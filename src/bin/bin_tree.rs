@@ -1,13 +1,18 @@
-use std::backtrace::Backtrace;
+use std::{
+    backtrace::Backtrace,
+    sync::Arc,
+};
 
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use credit_assignment::{
     agent::rollout_batch::rollout_batch,
     direct_answer::generate_raw_answers::LlmModel,
+    message::WorkerMessage,
     progress_screen::ProgressScreenConfig,
     progress_screen::ProgressScreen,
-    worker_message_tx::{clear_worker_message_tx, set_worker_message_tx},
+    worker_message_tx::WORKER_MESSAGE_TX,
 };
+use tokio::sync::mpsc;
 
 #[derive(Parser, Debug)]
 #[command(name = "Evaluate DeepMath Model")]
@@ -20,6 +25,8 @@ struct Args {
     model: LlmModel,
     #[arg(long, value_delimiter = ',', num_args = 1..)]
     vllm_ports: Vec<u16>,
+    #[arg(long, action = ArgAction::Set)]
+    ui: bool,
 }
 
 // we want to log each action
@@ -46,25 +53,59 @@ async fn main() {
         model,
         num_samples,
         vllm_ports,
+        ui,
     } = Args::parse();
 
-    let mut progress_screen_config = ProgressScreenConfig::from_defaults(vllm_ports.len(), 1);
-    progress_screen_config.window_title = "Bin Tree Rollout Progress".to_string();
-    progress_screen_config.key_order = vec![
-        "status".to_string(),
-        "model".to_string(),
-        "dataset".to_string(),
-        "num_samples".to_string(),
-        "endpoints".to_string(),
-        "running_accuracy".to_string(),
-    ];
-    progress_screen_config.persist_after_channel_close = false;
+    let (worker_message_tx, mut worker_message_rx) = mpsc::unbounded_channel();
+    WORKER_MESSAGE_TX.store(Some(Arc::new(worker_message_tx)));
 
-    let progress_screen = ProgressScreen::new(progress_screen_config);
-    set_worker_message_tx(progress_screen.clone_message_tx());
+    let progress_screen = if ui {
+        let mut progress_screen_config = ProgressScreenConfig::from_defaults(vllm_ports.len(), 1);
+        progress_screen_config.window_title = "Bin Tree Rollout Progress".to_string();
+        progress_screen_config.key_order = vec![
+            "status".to_string(),
+            "model".to_string(),
+            "dataset".to_string(),
+            "num_samples".to_string(),
+            "endpoints".to_string(),
+            "running_accuracy".to_string(),
+        ];
+        progress_screen_config.persist_after_channel_close = false;
+
+        let progress_screen = ProgressScreen::new(progress_screen_config);
+        Some(progress_screen)
+    } else {
+        None
+    };
+
+    let worker_message_listener = tokio::spawn(async move {
+        while let Some(message) = worker_message_rx.recv().await {
+            if let Some(progress_screen) = &progress_screen {
+                progress_screen.receive_message(message);
+            } else {
+                match message {
+                    WorkerMessage::KeyValuePair { key, value } => {
+                        println!("{key}: {value}");
+                    }
+                    WorkerMessage::WorkerProgress {
+                        worker_id,
+                        progress,
+                        label,
+                    } => {
+                        println!("worker {worker_id} progress {progress:.3}: {label}");
+                    }
+                    WorkerMessage::MasterProgress { progress, label } => {
+                        println!("master progress {progress:.3}: {label}");
+                    }
+                }
+            }
+        }
+    });
 
     rollout_batch(model, dataset_name, num_samples, vllm_ports).await;
 
-    clear_worker_message_tx();
-    drop(progress_screen);
+    WORKER_MESSAGE_TX.store(None);
+    worker_message_listener
+        .await
+        .expect("worker message listener should complete without panic");
 }

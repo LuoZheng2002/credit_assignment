@@ -2,7 +2,13 @@ use reqwest::Client;
 use std::sync::Arc;
 
 use crate::{
-    agent::{state_to_actions::produce_actions_from_state, tree::Tree, tree_action::TreeAction, tree_schema::CompletedTree},
+    agent::{
+        rollout_batch::LogOrTree,
+        state_to_actions::produce_actions_from_state,
+        tree::Tree,
+        tree_action::TreeAction,
+        tree_schema::CompletedTree,
+    },
     call_llm::LlmEndpoint,
     direct_answer::generate_raw_answers::LlmModel, worker_message_tx::log_key_value_pair,
 };
@@ -18,8 +24,7 @@ pub async fn rollout(
     client: Client,
     model: LlmModel,
     rng: &mut impl rand::Rng,
-    action_tx: tokio::sync::mpsc::UnboundedSender<TreeAction>,
-    trajectory_tx: tokio::sync::mpsc::UnboundedSender<CompletedTree>,
+    log_or_tree_tx: tokio::sync::mpsc::UnboundedSender<LogOrTree>,
 ) {
     // create a state machine
     let mut tree = Tree::new(question_id, question.clone(), reference_answer.clone());
@@ -43,7 +48,7 @@ pub async fn rollout(
                 .await;
         for action in new_actions {
             tree.apply_action(action.clone());
-            action_tx.send(action).unwrap();
+            log_or_tree_tx.send(LogOrTree::Action(action)).unwrap();
         }
     }
     let step_quality_ratio = tree.get_step_quality_ratio();
@@ -57,5 +62,7 @@ pub async fn rollout(
         failed_and_aborted_ratio,
         trajectory: trajectory_tree,
     };
-    trajectory_tx.send(rollout_trajectory).unwrap();
+    log_or_tree_tx
+        .send(LogOrTree::Tree(rollout_trajectory))
+        .unwrap();
 }
