@@ -24,15 +24,14 @@ Example setup:
 
 Only JSON-config launch is supported now.
 
-Use either wrapper below; both take exactly one argument:
+Use this wrapper; it takes exactly one argument:
 
-- `scripts/launch_4gpu.sh <config_json_path>`
-- `src_py/scripts/launch_4gpu.sh <config_json_path>`
+- `scripts/train/launch_4gpu.sh <config_json_path>`
 
 Example:
 
 ```bash
-bash scripts/launch_4gpu.sh src_py/configs/train_lora_example.json
+bash scripts/train/launch_4gpu.sh train_config/lora_qwen25.json
 ```
 
 Master port:
@@ -43,7 +42,7 @@ Master port:
 Example with custom port:
 
 ```bash
-MASTER_PORT=29502 bash scripts/launch_4gpu.sh src_py/configs/train_lora_example.json
+MASTER_PORT=29502 bash scripts/train/launch_4gpu.sh train_config/lora_qwen25.json
 ```
 
 ## 3) Resume Behavior
@@ -72,7 +71,7 @@ Resume examples:
 #    auto | latest | none | global_step_100
 
 # 2) Launch using config-path-only entry
-bash scripts/launch_4gpu.sh src_py/configs/train_lora_example.json
+bash scripts/train/launch_4gpu.sh train_config/lora_qwen25.json
 ```
 
 ## 4) JSON Config Entry details
@@ -81,19 +80,19 @@ You can keep all training fields in a JSON file and launch with a minimal comman
 
 Example config file:
 
-- `src_py/configs/train_lora_example.json`
+- `train_config/lora_qwen25.json`
 
 Launch with JSON script:
 
 ```bash
-bash src_py/scripts/launch_4gpu.sh src_py/configs/train_lora_example.json
+bash scripts/train/launch_4gpu.sh train_config/lora_qwen25.json
 ```
 
 Direct `torchrun` with JSON:
 
 ```bash
 MASTER_PORT=29501 torchrun --nproc_per_node 4 --master_port "${MASTER_PORT}" src_py/train/main_from_config.py \
-  --config-json-path src_py/configs/train_lora_example.json
+  --config-json-path train_config/lora_qwen25.json
 ```
 
 JSON schema rule:

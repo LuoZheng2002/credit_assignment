@@ -33,11 +33,11 @@
 ### 1) Project scaffolding
 - [x] Create `src_py/train/` package and module layout.
 - [x] Add a CLI entrypoint in `src_py/train/main.py`.
-- [x] Add launcher script `src_py/scripts/launch_4gpu.sh`.
+- [x] Add launcher script `scripts/train/launch_4gpu.sh`.
 
 ### 2) DeepSpeed configs
-- [x] Add `src_py/configs/ds_zero3_7b.json`.
-- [x] Add `src_py/configs/ds_zero3_4b.json`.
+- [x] Add `train_config/ds_zero3_7b.json`.
+- [x] Add `train_config/ds_zero3_4b.json`.
 - [x] Configure ZeRO stage 3, bf16, grad clipping, optimizer/scheduler defaults.
 
 ### 3) Data ingestion from sqlite

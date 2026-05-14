@@ -9,6 +9,6 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "${SCRIPT_DIR}")"
 
-CONFIG_JSON_PATH="${REPO_ROOT}/src_py/configs/train_lora_example.json"
+CONFIG_JSON_PATH="${REPO_ROOT}/train_config/smoke_test_lora_qwen25.json"
 
-bash "${REPO_ROOT}/src_py/scripts/launch_4gpu.sh" "${CONFIG_JSON_PATH}"
+bash "${REPO_ROOT}/scripts/train/launch_4gpu.sh" "${CONFIG_JSON_PATH}"
