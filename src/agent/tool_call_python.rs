@@ -2,7 +2,7 @@ use std::{ffi::CString, time::Duration};
 
 use pyo3::{prelude::*, types::PyDict};
 
-use crate::agent::trajectory_action_types::ToolResponse;
+use crate::{agent::trajectory_action_types::ToolResponse, worker_message_tx::log_key_value_pair};
 
 fn blocking_python_code_task(code: String) -> PyResult<String> {
     Python::attach(|py| -> PyResult<String> {
@@ -70,10 +70,12 @@ fn format_limited_output(output: String, max_chars: usize) -> String {
     if output_len <= max_chars {
         return output;
     }
-
-    println!(
-        "[Warning]: python output length limit exceeded, truncated to {} characters.",
-        max_chars
+    log_key_value_pair(
+        "warning".into(),
+        format!(
+            "Python output length limit exceeded, truncated to {} characters.",
+            max_chars
+        ),
     );
 
     let truncated: String = output.chars().take(max_chars).collect();
@@ -91,8 +93,10 @@ pub async fn execute_python_code(code: String) -> ToolResponse {
         Ok(join_result) => match join_result {
             Ok(Ok(output)) => {
                 if output.trim().is_empty() {
-                    // panic!("Python interpreter did not return any output. Please use print statements to retrieve results.");
-                    println!("[Warning]: Python interpreter did not return any output.");
+                    log_key_value_pair(
+                        "warning".into(),
+                        "Python interpreter did not return any output. Please use print statements to retrieve results.".into(),
+                    );
                     return ToolResponse::PythonSuccess(
                         "Python interpreter did not return any output. Please use print statements to retrieve results.".to_string(),
                     );

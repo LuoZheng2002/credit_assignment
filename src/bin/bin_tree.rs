@@ -4,6 +4,9 @@ use clap::Parser;
 use credit_assignment::{
     agent::rollout_batch::rollout_batch,
     direct_answer::generate_raw_answers::LlmModel,
+    progress_screen::ProgressScreenConfig,
+    progress_screen::ProgressScreen,
+    worker_message_tx::{clear_worker_message_tx, set_worker_message_tx},
 };
 
 #[derive(Parser, Debug)]
@@ -44,5 +47,24 @@ async fn main() {
         num_samples,
         vllm_ports,
     } = Args::parse();
+
+    let mut progress_screen_config = ProgressScreenConfig::from_defaults(vllm_ports.len(), 1);
+    progress_screen_config.window_title = "Bin Tree Rollout Progress".to_string();
+    progress_screen_config.key_order = vec![
+        "status".to_string(),
+        "model".to_string(),
+        "dataset".to_string(),
+        "num_samples".to_string(),
+        "endpoints".to_string(),
+        "running_accuracy".to_string(),
+    ];
+    progress_screen_config.persist_after_channel_close = false;
+
+    let progress_screen = ProgressScreen::new(progress_screen_config);
+    set_worker_message_tx(progress_screen.clone_message_tx());
+
     rollout_batch(model, dataset_name, num_samples, vllm_ports).await;
+
+    clear_worker_message_tx();
+    drop(progress_screen);
 }

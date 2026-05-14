@@ -10,7 +10,7 @@ use crate::agent::response_processing::{
     determine_chosen_mode, parse_compactor_response, parse_verifier_comment_response,
     split_reasoning_and_tool_call,
 };
-use crate::agent::tool_call_execution::{MAX_NUM_TRAJECTORIES, execute_planner_tool_call};
+use crate::agent::tool_call_execution::execute_planner_tool_call;
 use crate::agent::trajectory_action_types::{
     FinalAnswer, MakeOrChangePlan, NextStepDecision, NodeType, ToolResponse,
 };
@@ -20,6 +20,7 @@ use crate::agent::tree::{CorrectnessJudgment, Tree};
 use crate::agent::tree_action::TreeAction;
 use crate::direct_answer::parse_answers::extract_boxed_content;
 use crate::status_prompts::universal_prompt::get_prompt_according_to_session_status;
+use crate::worker_message_tx::log_key_value_pair;
 use crate::{
     agent::trajectory_action::TrajectoryAction,
     call_llm::{LlmEndpoint, call_llm_with_prefix_on_endpoint},
@@ -286,8 +287,10 @@ pub async fn produce_actions_from_state(
                 let response_is_empty =
                     response.trim() == "<end_step>" && step_content_raw.trim().is_empty();
                 if response_is_empty {
-                    println!(
-                        "[Warning]: model tries to end the step without providing any content for the step."
+                    log_key_value_pair(
+                        "warning".into(),
+                        "Model tries to end the step without providing any content for the step."
+                            .into(),
                     );
                 }
                 let (reasoning, tool_call, tool_wait_violation) =
@@ -319,8 +322,10 @@ pub async fn produce_actions_from_state(
                         if previous_python_error.is_some()
                             && Some(current_python_error.clone()) == previous_python_error
                         {
-                            println!(
-                                "[Warning]: Identical python tool error detected. Aborting current step."
+                            log_key_value_pair(
+                                "warning".into(),
+                                "Identical python tool error detected. Aborting current step."
+                                    .into(),
                             );
                             actions.push(TreeAction::AddTrajectoryAction {
                                 question_id,
@@ -369,21 +374,24 @@ pub async fn produce_actions_from_state(
                 let num_additional_actions_allowed =
                     session_state.num_additional_actions_allowed_in_current_step();
                 if actions.len() > num_additional_actions_allowed {
-                    println!(
-                        "[Warning] Number of actions in the current step {} exceeds the limit {}. Only the first {} actions will be applied.",
-                        actions.len(),
-                        num_additional_actions_allowed,
-                        num_additional_actions_allowed
+                    log_key_value_pair(
+                        "warning".into(),
+                        format!(
+                            "Number of actions in the current step {} exceeds the limit {}. Only the first {} actions will be applied.",
+                            actions.len(),
+                            num_additional_actions_allowed,
+                            num_additional_actions_allowed
+                        ),
                     );
                     actions.truncate(num_additional_actions_allowed);
                 }
                 // detect repetition
                 let found_repetition_three_times = detect_repetition_five_times(&response);
                 if found_repetition_three_times {
-                    println!(
-                        "[Warning] Detected repetition of the same response at least three times. This may indicate that the model is stuck in a loop. Response: {}",
-                        response
-                    );
+                    log_key_value_pair(
+                            "warning".into(),
+                            "Detected repetition of the same response at least five times. This may indicate that the model is stuck in a loop.".into(),
+                        );
                     actions.push(TreeAction::AddTrajectoryAction {
                         question_id,
                         action: TrajectoryAction::SystemInterrupt(
@@ -471,7 +479,6 @@ pub async fn produce_actions_from_state(
                     )
                 } else {
                     let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
-                    // println!("Updated plan content: {}", updated_plan_content);
                     vec![TreeAction::AddTrajectoryAction {
                         question_id,
                         action: TrajectoryAction::PlannerUpdatePlan(Some(updated_plan_content)),
@@ -487,17 +494,10 @@ pub async fn produce_actions_from_state(
         }
         TrajectoryStatus::TrajectoryEnded { final_answer } => {
             let mut actions = Vec::new();
-            let display_final_answer = match final_answer {
-                FinalAnswer::ModelProvided(ans) => ans.clone(),
-                FinalAnswer::Failure(reason) => format!("Failure: {}", reason),
-            };
-            println!(
-                "[rollout finished] question index: {}, total actual rounds: {}, final answer: {}, correct answer: {}",
-                tree.question_id,
-                session_state.total_actions,
-                display_final_answer,
-                tree.reference_answer,
-            );
+            // let display_final_answer = match final_answer {
+            //     FinalAnswer::ModelProvided(ans) => ans.clone(),
+            //     FinalAnswer::Failure(reason) => format!("Failure: {}", reason),
+            // };
             let leaf_node_id = tree
                 .current_node_id
                 .expect("WorkingOnTrajectory should always have current_node_id when ending");
@@ -530,15 +530,6 @@ pub async fn produce_actions_from_state(
                     is_correct,
                 },
             };
-            println!(
-                "[judgment] question id: {}, trajectory: {}/{}, model answer: {}, reference answer: {}, is correct: {}",
-                tree.question_id,
-                tree.leaf_node_ids.len(),
-                MAX_NUM_TRAJECTORIES,
-                display_final_answer,
-                tree.reference_answer,
-                is_correct
-            );
             assert!(
                 !tree.leaf_node_ids.contains(&leaf_node_id),
                 "The leaf node for the trajectory should not have been registered yet"
@@ -559,15 +550,11 @@ pub async fn produce_actions_from_state(
             let mut actions = Vec::new();
             let branching_node = determine_branching_node(tree, rng);
             match branching_node {
-                Some(branching_node) => {
-                    println!("A branching node found, branching from the node.");
-                    actions.push(TreeAction::CreateAndMoveToNode {
-                        question_id,
-                        parent_id: Some(branching_node),
-                    })
-                }
+                Some(branching_node) => actions.push(TreeAction::CreateAndMoveToNode {
+                    question_id,
+                    parent_id: Some(branching_node),
+                }),
                 None => {
-                    println!("No branching node found, finalizing the tree.");
                     actions.push(TreeAction::TreeComplete { question_id });
                 }
             }

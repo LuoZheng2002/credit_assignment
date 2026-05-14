@@ -55,6 +55,10 @@ impl ProgressScreen {
     pub fn receive_message(&self, message: WorkerMessage) {
         self.message_tx.send(message).expect("Failed to send message to ProgressScreen");
     }
+
+    pub fn clone_message_tx(&self) -> mpsc::UnboundedSender<WorkerMessage> {
+        self.message_tx.clone()
+    }
     pub async fn run(
         config: ProgressScreenConfig,
         mut worker_message_rx: mpsc::UnboundedReceiver<WorkerMessage>,
@@ -230,7 +234,7 @@ fn draw(
             .wrap(Wrap { trim: false });
         frame.render_widget(window, main_layout[0]);
 
-        let workers_block = Block::default().borders(Borders::ALL).title("Workers");
+        let workers_block = Block::default().borders(Borders::ALL).title("Endpoints");
         let workers_inner = workers_block.inner(main_layout[1]);
         frame.render_widget(workers_block, main_layout[1]);
 
@@ -246,7 +250,7 @@ fn draw(
             let ratio = state.worker_progress[worker_id] as f64;
             let gauge = Gauge::default()
                 .label(format!(
-                    "Worker {}: {}",
+                    "Endpoint {}: {}",
                     worker_id + 1,
                     state.worker_labels[worker_id]
                 ))

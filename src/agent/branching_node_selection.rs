@@ -14,10 +14,6 @@ pub enum BranchingNodeStatus {
 
 pub fn determine_branching_node(tree: &Tree, rng: &mut impl rand::Rng) -> Option<usize> {
     if tree.leaf_node_ids.len() >= MAX_NUM_TRAJECTORIES {
-        println!(
-            "Max num trajectories {} reached, finalizing rollout.",
-            MAX_NUM_TRAJECTORIES
-        );
         return None;
     }
 
@@ -41,10 +37,6 @@ pub fn determine_branching_node(tree: &Tree, rng: &mut impl rand::Rng) -> Option
         trajectory_node_ids_from_leaf_to_root.reverse();
         trajectory_lengths.push(trajectory_node_ids_from_leaf_to_root.len());
         if trajectory_node_ids_from_leaf_to_root.len() < 2 {
-            println!(
-                "Trajectory with leaf node id {} has length less than 2, skipping it for branching node selection.",
-                trajectory_leaf_node_id
-            );
             continue;
         }
         let per_node_weight = 1.0 / (trajectory_node_ids_from_leaf_to_root.len() - 1) as f64;
@@ -69,11 +61,6 @@ pub fn determine_branching_node(tree: &Tree, rng: &mut impl rand::Rng) -> Option
             candidate_weights.push(weight);
         }
     }
-    // println!(
-    //     "Found {} candidate branching nodes with weights: {:?}",
-    //     candidate_node_ids.len(),
-    //     candidate_weights
-    // );
     while !candidate_node_ids.is_empty() {
         let weighted_index = WeightedIndex::new(&candidate_weights)
             .expect("WeightedIndex construction should succeed with positive candidate weights");
@@ -145,6 +132,5 @@ pub fn determine_branching_node(tree: &Tree, rng: &mut impl rand::Rng) -> Option
             }
         }
     }
-    println!("No valid branching node found, finalizing rollout.");
     None
 }

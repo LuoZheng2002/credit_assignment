@@ -2,10 +2,9 @@ use reqwest::Client;
 use std::sync::Arc;
 
 use crate::{
-    agent::tree_schema::CompletedTree,
-    agent::{state_to_actions::produce_actions_from_state, tree::Tree, tree_action::TreeAction},
+    agent::{state_to_actions::produce_actions_from_state, tree::Tree, tree_action::TreeAction, tree_schema::CompletedTree},
     call_llm::LlmEndpoint,
-    direct_answer::generate_raw_answers::LlmModel,
+    direct_answer::generate_raw_answers::LlmModel, worker_message_tx::log_key_value_pair,
 };
 
 // it will output action logs and final trajectory
@@ -24,10 +23,13 @@ pub async fn rollout(
 ) {
     // create a state machine
     let mut tree = Tree::new(question_id, question.clone(), reference_answer.clone());
-    println!(
-        "Loading {} existing events for question id {}...",
-        loaded_events.len(),
-        question_id
+    log_key_value_pair(
+        "status".to_string(),
+        format!(
+            "Loading {} existing events for question id {}...",
+            loaded_events.len(),
+            question_id
+        ),
     );
     for event in loaded_events {
         tree.apply_action(event);

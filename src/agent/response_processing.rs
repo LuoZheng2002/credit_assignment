@@ -3,14 +3,9 @@ use reqwest::Client;
 
 use crate::{
     agent::{
-        trajectory_action::TrajectoryAction,
-        tool_call_parser::{MarkdownPythonParser, ToolCallParser},
-        trajectory_action_types::{NextStepDecision, StepQuality, VerifierComment},
-        trajectory_state::TrajectoryState,
-        trajectory_status::TrajectoryStatus,
-        tree_action::TreeAction,
+        tool_call_parser::{MarkdownPythonParser, ToolCallParser}, trajectory_action::TrajectoryAction, trajectory_action_types::{NextStepDecision, StepQuality, VerifierComment}, trajectory_state::TrajectoryState, trajectory_status::TrajectoryStatus, tree_action::TreeAction
     },
-    direct_answer::generate_raw_answers::LlmModel,
+    direct_answer::generate_raw_answers::LlmModel, worker_message_tx::log_key_value_pair,
 };
 
 // (Option<String>, Option<String>) means (reasoning, tool_call)
@@ -49,18 +44,14 @@ pub fn split_reasoning_and_tool_call(response: String) -> (Option<String>, Optio
             .strip_prefix("</tool_wait>")
             .expect("suffix should start with </tool_wait>");
         if !suffix_after_tag.trim().is_empty() {
-            println!(
-                "Warning: model outputs non-empty trailing content after </tool_wait>: {}",
-                suffix_after_tag.trim()
-            );
+            log_key_value_pair("warning".into(), format!("Model outputs non-empty trailing content after </tool_wait>."));
             tool_wait_violation = true;
         }
         tool_call.push_str("</tool_wait>");
     } else {
         tool_wait_violation = true;
 
-        println!("Warning: tool call does not end with </tool_wait> tag.");
-
+        log_key_value_pair("warning".into(), "Model's tool call does not end with </tool_wait> tag.".into());
         tool_call.push_str("</tool_wait>"); // if there is no </tool_wait> tag, we also add it and trim all the content after the tool call
     }
     let reasoning = if !response[..start_position].trim().is_empty() {
@@ -134,7 +125,7 @@ pub fn parse_compactor_response(response: String) -> (String, Option<StepQuality
             );
         }
     }
-    println!("[Warning] Failed to parse step quality from compactor response.",);
+    log_key_value_pair("warning".into(), "Failed to parse step quality from compactor response.".into());
     (response, None)
 }
 
@@ -199,7 +190,7 @@ pub fn parse_verifier_comment_response(response: String) -> VerifierComment {
         }
     }
 
-    println!("[Warning] Failed to parse verifier decision JSON from verifier response.");
+    log_key_value_pair("warning".into(), "Failed to parse verifier decision JSON from verifier response.".into());
     VerifierComment {
         comment: response.trim().to_string(),
         overwrite: false,
@@ -262,7 +253,7 @@ fn determine_chosen_mode_with_take_over(
                 if session_state.can_change_plan() && rng.random::<f32>() < 0.5 {
                     NextStepDecision::ChangePlan("Please refer to the verifier's comment.".to_string())
                 } else {
-                    println!("[Warning] Change plan is capped or not chosen by RNG.");
+                    log_key_value_pair("warning".into(), "Change plan is capped or not chosen by RNG.".into());
                     NextStepDecision::Continue
                 }
             } else if comment.overwrite {
@@ -271,7 +262,7 @@ fn determine_chosen_mode_with_take_over(
                         "Please refer to the verifier's comment.".to_string(),
                     )
                 } else {
-                    println!("[Warning] Overwrite last step is capped or not chosen by RNG.");
+                    log_key_value_pair("warning".into(), "Overwrite last step is capped or not chosen by RNG.".into());
                     NextStepDecision::Continue
                 }
             } else {

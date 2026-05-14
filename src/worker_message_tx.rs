@@ -1,9 +1,19 @@
+use std::sync::Arc;
+
 use arc_swap::ArcSwapOption;
 use tokio::sync::mpsc;
 
 use crate::message::WorkerMessage;
 
 pub static WORKER_MESSAGE_TX: ArcSwapOption<mpsc::UnboundedSender<WorkerMessage>> = ArcSwapOption::const_empty();
+
+pub fn set_worker_message_tx(worker_message_tx: mpsc::UnboundedSender<WorkerMessage>) {
+    WORKER_MESSAGE_TX.store(Some(Arc::new(worker_message_tx)));
+}
+
+pub fn clear_worker_message_tx() {
+    WORKER_MESSAGE_TX.store(None);
+}
 
 pub fn log_worker_message(message: WorkerMessage) {
     if let Some(worker_message_tx) = WORKER_MESSAGE_TX.load_full() {

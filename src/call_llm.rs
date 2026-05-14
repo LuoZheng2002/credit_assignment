@@ -1,5 +1,8 @@
 use reqwest::Client;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use tokio::sync::Semaphore;
 
 use crate::apply_vllm_model_chat_template::apply_vllm_model_chat_template;
@@ -12,8 +15,10 @@ pub const CONTEXT_LENGTH_EXCEEDED_RESPONSE: &str = "<error>QWEN_CONTEXT_LENGTH_E
 pub struct LlmEndpoint {
     pub id: usize,
     pub vllm_port: u16,
+    pub max_concurrent_requests: usize,
     pub question_slot_semaphore: Arc<Semaphore>,
     pub request_semaphore: Arc<Semaphore>,
+    pub completed_requests: Arc<AtomicUsize>,
 }
 
 impl LlmEndpoint {
@@ -26,8 +31,10 @@ impl LlmEndpoint {
         Self {
             id,
             vllm_port,
+            max_concurrent_requests,
             question_slot_semaphore: Arc::new(Semaphore::new(max_concurrent_requests)),
             request_semaphore: Arc::new(Semaphore::new(max_concurrent_requests)),
+            completed_requests: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -172,13 +179,15 @@ pub async fn call_llm_chat_completions_on_endpoint(
             String::from_utf8_lossy(&body)
         );
     };
-    json["choices"][0]["message"]["content"]
+    let content = json["choices"][0]["message"]["content"]
         .as_str()
         .expect(&format!(
             "LLM response is invalid on endpoint {} (port {}): {:?}",
             endpoint.id, endpoint.vllm_port, json
         ))
-        .to_string()
+        .to_string();
+    endpoint.completed_requests.fetch_add(1, Ordering::SeqCst);
+    content
 }
 
 pub async fn call_qwen_raw_completions_on_endpoint(
@@ -210,13 +219,15 @@ pub async fn call_qwen_raw_completions_on_endpoint(
             return CONTEXT_LENGTH_EXCEEDED_RESPONSE.to_string();
         }
     }
-    json["choices"][0]["text"]
+    let content = json["choices"][0]["text"]
         .as_str()
         .expect(&format!(
             "Qwen completions response is invalid on endpoint {} (port {}): {:?}",
             endpoint.id, endpoint.vllm_port, json
         ))
-        .to_string()
+        .to_string();
+    endpoint.completed_requests.fetch_add(1, Ordering::SeqCst);
+    content
 }
 
 pub async fn call_llm_with_prefix_on_endpoint(
