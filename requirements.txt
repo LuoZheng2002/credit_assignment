@@ -9,6 +9,7 @@ numpy
 openai
 pandas
 deepspeed
+peft
 pydantic
 pydantic-settings
 python-dotenv

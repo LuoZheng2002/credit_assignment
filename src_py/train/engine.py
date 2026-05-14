@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from contextlib import nullcontext
 import json
+import os
 import random
 
 import numpy as np
@@ -15,10 +17,10 @@ from .losses import compute_advantage_weighted_causal_lm_loss
 
 @dataclass(frozen=True)
 class TrainConfig:
+    training_plan: str
     model_name_or_path: str
     tokenized_sqlite_path: str
     batch_sqlite_path: str
-    deepspeed_config_path: str
     output_dir: str
     pad_token_id: int
     advantage_clip: float
@@ -28,7 +30,20 @@ class TrainConfig:
     grad_accum_steps: int
     log_interval_steps: int
     save_interval_steps: int
+    lora_rank: int
+    lora_alpha: int
+    lora_dropout: float
+    lora_target_modules_csv: str
+    resume_checkpoint_tag: str
     seed: int
+
+
+@dataclass(frozen=True)
+class ResumeState:
+    global_step: int
+    next_epoch_index: int
+    next_batch_cursor: int
+    accumulation_step: int
 
 
 def _set_seed(seed: int) -> None:
@@ -58,6 +73,210 @@ def _forward_logits(model_engine: torch.nn.Module, input_ids: torch.Tensor, atte
     logits = outputs.logits
     assert isinstance(logits, torch.Tensor), "logits must be a tensor"
     return logits
+
+
+def _get_rank_world_size() -> tuple[int, int]:
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        return torch.distributed.get_rank(), torch.distributed.get_world_size()
+    return 0, 1
+
+
+def _init_distributed_device() -> torch.device:
+    local_rank_env = os.environ.get("LOCAL_RANK")
+    if local_rank_env is None:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    local_rank = int(local_rank_env)
+    assert torch.cuda.is_available(), "LOCAL_RANK is set but CUDA is unavailable"
+    assert local_rank >= 0, "LOCAL_RANK must be non-negative"
+    torch.cuda.set_device(local_rank)
+
+    if not torch.distributed.is_initialized():
+        torch.distributed.init_process_group(backend="nccl")
+
+    return torch.device("cuda", local_rank)
+
+
+def _shard_batches_for_rank(
+    ordered_batches: list[ResolvedTrainingBatch],
+    rank: int,
+    world_size: int,
+) -> list[ResolvedTrainingBatch]:
+    assert len(ordered_batches) > 0, "ordered_batches must be non-empty"
+    assert rank >= 0, "rank must be non-negative"
+    assert world_size > 0, "world_size must be positive"
+    assert rank < world_size, "rank must be < world_size"
+
+    local_batches = [batch for index, batch in enumerate(ordered_batches) if index % world_size == rank]
+    assert len(local_batches) > 0, "each rank must receive at least one batch"
+    return local_batches
+
+
+def _save_checkpoint(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    output_dir: Path,
+    checkpoint_tag: str,
+    training_plan: str,
+    global_step: int,
+    next_epoch_index: int,
+    next_batch_cursor: int,
+    accumulation_step: int,
+) -> None:
+    assert global_step >= 0, "global_step must be non-negative"
+    assert next_epoch_index >= 0, "next_epoch_index must be non-negative"
+    assert next_batch_cursor >= 0, "next_batch_cursor must be non-negative"
+    assert accumulation_step == 0, "checkpointing with partial gradient accumulation is not supported"
+
+    rank, _ = _get_rank_world_size()
+    checkpoint_dir = output_dir / checkpoint_tag
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    metadata_payload = {
+        "global_step": global_step,
+        "next_epoch_index": next_epoch_index,
+        "next_batch_cursor": next_batch_cursor,
+        "accumulation_step": accumulation_step,
+        "training_plan": training_plan,
+        "rank": rank,
+    }
+    torch.save(metadata_payload, checkpoint_dir / f"training_state.rank{rank}.pt")
+    torch.save(optimizer.state_dict(), checkpoint_dir / f"optimizer_state.rank{rank}.pt")
+
+    if training_plan == "lora_current":
+        if rank == 0:
+            unwrapped = model.module if hasattr(model, "module") else model
+            torch.save(unwrapped.state_dict(), checkpoint_dir / "model_state.pt")
+            _write_latest_checkpoint_pointer(output_dir=output_dir, checkpoint_tag=checkpoint_tag)
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+        return
+
+    assert training_plan == "full_fsdp_backup", "unknown training plan for checkpointing"
+    from torch.distributed.fsdp import (
+        FullyShardedDataParallel as FSDP,
+        FullStateDictConfig,
+        StateDictType,
+    )
+
+    assert isinstance(model, FSDP), "full_fsdp_backup checkpoint expects FSDP model"
+    save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
+        state_dict = model.state_dict()
+    if rank == 0:
+        torch.save(state_dict, checkpoint_dir / "model_state.pt")
+        _write_latest_checkpoint_pointer(output_dir=output_dir, checkpoint_tag=checkpoint_tag)
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.barrier()
+
+
+def _write_latest_checkpoint_pointer(output_dir: Path, checkpoint_tag: str) -> None:
+    assert output_dir.exists(), f"output_dir must exist: {output_dir}"
+    assert len(checkpoint_tag.strip()) > 0, "checkpoint_tag cannot be empty"
+    latest_path = output_dir / "latest_checkpoint.txt"
+    latest_path.write_text(checkpoint_tag.strip() + "\n", encoding="utf-8")
+
+
+def _read_latest_checkpoint_pointer(output_dir: Path) -> str:
+    latest_path = output_dir / "latest_checkpoint.txt"
+    assert latest_path.exists(), f"latest checkpoint pointer not found: {latest_path}"
+    checkpoint_tag = latest_path.read_text(encoding="utf-8").strip()
+    assert len(checkpoint_tag) > 0, f"latest checkpoint pointer is empty: {latest_path}"
+    return checkpoint_tag
+
+
+def _resolve_resume_checkpoint_tag(output_dir: Path, resume_checkpoint_tag: str) -> str:
+    normalized_tag = resume_checkpoint_tag.strip()
+    assert len(normalized_tag) > 0, "resume_checkpoint_tag cannot be empty"
+    if normalized_tag == "none":
+        return ""
+    if normalized_tag in {"latest", "auto"}:
+        latest_path = output_dir / "latest_checkpoint.txt"
+        if not latest_path.exists():
+            if normalized_tag == "auto":
+                return ""
+            assert latest_path.exists(), f"latest checkpoint pointer not found: {latest_path}"
+        return _read_latest_checkpoint_pointer(output_dir=output_dir)
+    return normalized_tag
+
+
+def _load_checkpoint(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    output_dir: Path,
+    checkpoint_tag: str,
+    training_plan: str,
+) -> ResumeState:
+    assert len(checkpoint_tag.strip()) > 0, "checkpoint_tag cannot be empty"
+
+    rank, _ = _get_rank_world_size()
+    checkpoint_dir = output_dir / checkpoint_tag
+    assert checkpoint_dir.exists(), f"checkpoint directory not found: {checkpoint_dir}"
+    model_state_path = checkpoint_dir / "model_state.pt"
+    optimizer_state_path = checkpoint_dir / f"optimizer_state.rank{rank}.pt"
+    training_state_path = checkpoint_dir / f"training_state.rank{rank}.pt"
+
+    assert model_state_path.exists(), f"missing model state: {model_state_path}"
+    assert optimizer_state_path.exists(), f"missing optimizer state: {optimizer_state_path}"
+    assert training_state_path.exists(), f"missing training state: {training_state_path}"
+
+    model_state_dict = torch.load(model_state_path, map_location="cpu")
+    if training_plan == "lora_current":
+        unwrapped = model.module if hasattr(model, "module") else model
+        incompatible = unwrapped.load_state_dict(model_state_dict, strict=True)
+    else:
+        assert training_plan == "full_fsdp_backup", "unknown training plan for checkpoint loading"
+        from torch.distributed.fsdp import (
+            FullyShardedDataParallel as FSDP,
+            FullStateDictConfig,
+            StateDictType,
+        )
+
+        assert isinstance(model, FSDP), "full_fsdp_backup loading expects FSDP model"
+        load_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=False)
+        with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, load_policy):
+            incompatible = model.load_state_dict(model_state_dict, strict=True)
+
+    assert len(incompatible.missing_keys) == 0, "checkpoint model state is missing keys"
+    assert len(incompatible.unexpected_keys) == 0, "checkpoint model state has unexpected keys"
+
+    optimizer_state = torch.load(optimizer_state_path, map_location="cpu")
+    optimizer.load_state_dict(optimizer_state)
+
+    training_state = torch.load(training_state_path, map_location="cpu")
+    assert training_state["training_plan"] == training_plan, "checkpoint training plan mismatch"
+    resume_state = ResumeState(
+        global_step=int(training_state["global_step"]),
+        next_epoch_index=int(training_state["next_epoch_index"]),
+        next_batch_cursor=int(training_state["next_batch_cursor"]),
+        accumulation_step=int(training_state["accumulation_step"]),
+    )
+    assert resume_state.global_step >= 0, "resume global_step must be non-negative"
+    assert resume_state.next_epoch_index >= 0, "resume epoch index must be non-negative"
+    assert resume_state.next_batch_cursor >= 0, "resume batch cursor must be non-negative"
+    assert (
+        resume_state.accumulation_step == 0
+    ), "resuming from partial gradient accumulation is not supported"
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.barrier()
+    return resume_state
+
+
+def _compute_next_position(
+    epoch_index: int,
+    local_batch_cursor: int,
+    local_batch_count: int,
+) -> tuple[int, int]:
+    assert epoch_index >= 0, "epoch_index must be non-negative"
+    assert local_batch_cursor >= 0, "local_batch_cursor must be non-negative"
+    assert local_batch_count > 0, "local_batch_count must be positive"
+    assert local_batch_cursor < local_batch_count, "local_batch_cursor must be in range"
+
+    next_epoch_index = epoch_index
+    next_batch_cursor = local_batch_cursor + 1
+    if next_batch_cursor == local_batch_count:
+        next_epoch_index += 1
+        next_batch_cursor = 0
+    return next_epoch_index, next_batch_cursor
 
 
 def _verify_tokenizer_model_match(
@@ -112,7 +331,67 @@ def _verify_tokenizer_model_match(
     }
 
 
+def _build_lora_model(
+    model_name_or_path: str,
+    lora_rank: int,
+    lora_alpha: int,
+    lora_dropout: float,
+    lora_target_modules_csv: str,
+    device: torch.device,
+) -> torch.nn.Module:
+    assert lora_rank > 0, "lora_rank must be positive"
+    assert lora_alpha > 0, "lora_alpha must be positive"
+    assert lora_dropout >= 0.0 and lora_dropout < 1.0, "lora_dropout must be in [0, 1)"
+    targets = [value.strip() for value in lora_target_modules_csv.split(",") if value.strip()]
+    assert len(targets) > 0, "lora_target_modules_csv must contain at least one module"
+
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForCausalLM
+
+    base_model = AutoModelForCausalLM.from_pretrained(
+        model_name_or_path,
+        torch_dtype=torch.bfloat16,
+    ).to(device)
+    base_model.gradient_checkpointing_enable()
+
+    lora_config = LoraConfig(
+        r=lora_rank,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        target_modules=targets,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    model = get_peft_model(base_model, lora_config)
+    trainable_count = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    assert trainable_count > 0, "LoRA model must expose trainable parameters"
+    return model
+
+
+def _build_fsdp_model(model_name_or_path: str, device: torch.device) -> torch.nn.Module:
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    from torch.distributed.fsdp import MixedPrecision
+    from transformers import AutoModelForCausalLM
+
+    base_model = AutoModelForCausalLM.from_pretrained(
+        model_name_or_path,
+        torch_dtype=torch.bfloat16,
+    ).to(device)
+    base_model.gradient_checkpointing_enable()
+
+    mixed_precision = MixedPrecision(
+        param_dtype=torch.bfloat16,
+        reduce_dtype=torch.bfloat16,
+        buffer_dtype=torch.bfloat16,
+    )
+    return FSDP(base_model, device_id=device, mixed_precision=mixed_precision)
+
+
 def train_with_deepspeed(config: TrainConfig) -> None:
+    assert config.training_plan in {
+        "lora_current",
+        "full_fsdp_backup",
+    }, "training_plan must be one of: lora_current, full_fsdp_backup"
     assert config.pad_token_id >= 0, "pad_token_id must be non-negative"
     assert config.advantage_clip > 0.0, "advantage_clip must be positive"
     assert config.learning_rate > 0.0, "learning_rate must be positive"
@@ -121,25 +400,33 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     assert config.grad_accum_steps > 0, "grad_accum_steps must be positive"
     assert config.log_interval_steps > 0, "log_interval_steps must be positive"
     assert config.save_interval_steps > 0, "save_interval_steps must be positive"
+    assert len(config.resume_checkpoint_tag.strip()) > 0, "resume_checkpoint_tag cannot be empty"
 
-    import deepspeed
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoTokenizer
 
     _set_seed(config.seed)
-    deepspeed.init_distributed()
+    device = _init_distributed_device()
+    rank, world_size = _get_rank_world_size()
 
     ordered_batches: list[ResolvedTrainingBatch] = load_resolved_training_batches(
         tokenized_sqlite_path=config.tokenized_sqlite_path,
         batch_sqlite_path=config.batch_sqlite_path,
     )
+    local_batches = _shard_batches_for_rank(ordered_batches=ordered_batches, rank=rank, world_size=world_size)
 
     tokenizer = AutoTokenizer.from_pretrained(config.model_name_or_path)
 
-    model = AutoModelForCausalLM.from_pretrained(
-        config.model_name_or_path,
-        torch_dtype=torch.bfloat16,
-    )
-    model.gradient_checkpointing_enable()
+    if config.training_plan == "lora_current":
+        model = _build_lora_model(
+            model_name_or_path=config.model_name_or_path,
+            lora_rank=config.lora_rank,
+            lora_alpha=config.lora_alpha,
+            lora_dropout=config.lora_dropout,
+            lora_target_modules_csv=config.lora_target_modules_csv,
+            device=device,
+        )
+    else:
+        model = _build_fsdp_model(model_name_or_path=config.model_name_or_path, device=device)
 
     input_embeddings = model.get_input_embeddings()
     assert input_embeddings is not None, "model must expose input embeddings"
@@ -152,19 +439,19 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     )
 
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        [parameter for parameter in model.parameters() if parameter.requires_grad],
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
         betas=(0.9, 0.95),
     )
 
-    model_engine, optimizer, _, _ = deepspeed.initialize(
-        model=model,
-        model_parameters=model.parameters(),
-        optimizer=optimizer,
-        config=config.deepspeed_config_path,
-    )
-    assert optimizer is not None, "deepspeed must return an optimizer"
+    if config.training_plan == "lora_current" and world_size > 1:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[device.index],
+            output_device=device.index,
+            find_unused_parameters=False,
+        )
 
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -180,39 +467,86 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                 "model_vocab_size": int(verification["model_vocab_size"]),
                 "max_input_token_id": int(verification["max_input_token_id"]),
                 "max_label_token_id": int(verification["max_label_token_id"]),
+                "rank": rank,
+                "world_size": world_size,
+                "local_batch_count": len(local_batches),
             },
         )
 
-    global_step = 0
-    accumulation_step = 0
+    resolved_resume_tag = _resolve_resume_checkpoint_tag(
+        output_dir=output_dir,
+        resume_checkpoint_tag=config.resume_checkpoint_tag,
+    )
 
-    for epoch_index in range(config.num_epochs):
-        for resolved_batch in ordered_batches:
+    resume_state = ResumeState(
+        global_step=0,
+        next_epoch_index=0,
+        next_batch_cursor=0,
+        accumulation_step=0,
+    )
+    if len(resolved_resume_tag) > 0:
+        resume_state = _load_checkpoint(
+            model=model,
+            optimizer=optimizer,
+            output_dir=output_dir,
+            checkpoint_tag=resolved_resume_tag,
+            training_plan=config.training_plan,
+        )
+
+    assert resume_state.next_batch_cursor < len(local_batches) or (
+        resume_state.next_epoch_index >= config.num_epochs and resume_state.next_batch_cursor == 0
+    ), "resume batch cursor is out of local batch range"
+
+    global_step = resume_state.global_step
+    accumulation_step = resume_state.accumulation_step
+    optimizer.zero_grad(set_to_none=True)
+
+    if resume_state.next_epoch_index >= config.num_epochs:
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+        return
+
+    for epoch_index in range(resume_state.next_epoch_index, config.num_epochs):
+        batch_start_cursor = resume_state.next_batch_cursor if epoch_index == resume_state.next_epoch_index else 0
+        for local_batch_cursor in range(batch_start_cursor, len(local_batches)):
+            resolved_batch = local_batches[local_batch_cursor]
             collated = collate_training_samples(
                 samples=resolved_batch.samples,
                 pad_token_id=config.pad_token_id,
             )
 
-            device = model_engine.device
             input_ids = collated.input_ids.to(device=device, non_blocking=True)
             labels = collated.labels.to(device=device, non_blocking=True)
             attention_mask = collated.attention_mask.to(device=device, non_blocking=True)
             advantages = collated.advantages.to(device=device, non_blocking=True)
 
-            logits = _forward_logits(model_engine, input_ids=input_ids, attention_mask=attention_mask)
-            loss_output = compute_advantage_weighted_causal_lm_loss(
-                logits=logits,
-                labels=labels,
-                advantages=advantages,
-                advantage_clip=config.advantage_clip,
-            )
+            should_sync = (accumulation_step + 1) == config.grad_accum_steps
+            sync_context = nullcontext()
+            if (
+                config.training_plan == "lora_current"
+                and world_size > 1
+                and hasattr(model, "no_sync")
+                and not should_sync
+            ):
+                sync_context = model.no_sync()
 
-            loss = loss_output.loss / config.grad_accum_steps
-            model_engine.backward(loss)
+            with sync_context:
+                logits = _forward_logits(model, input_ids=input_ids, attention_mask=attention_mask)
+                loss_output = compute_advantage_weighted_causal_lm_loss(
+                    logits=logits,
+                    labels=labels,
+                    advantages=advantages,
+                    advantage_clip=config.advantage_clip,
+                )
+
+                loss = loss_output.loss / config.grad_accum_steps
+                loss.backward()
+
             accumulation_step += 1
 
             if accumulation_step == config.grad_accum_steps:
-                model_engine.step()
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
                 accumulation_step = 0
                 global_step += 1
 
@@ -227,11 +561,41 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                     _log_json_line(logs_path, log_payload)
 
                 if global_step % config.save_interval_steps == 0:
+                    next_epoch_index, next_batch_cursor = _compute_next_position(
+                        epoch_index=epoch_index,
+                        local_batch_cursor=local_batch_cursor,
+                        local_batch_count=len(local_batches),
+                    )
                     checkpoint_tag = f"global_step_{global_step}"
-                    model_engine.save_checkpoint(config.output_dir, tag=checkpoint_tag)
+                    _save_checkpoint(
+                        model=model,
+                        optimizer=optimizer,
+                        output_dir=output_dir,
+                        checkpoint_tag=checkpoint_tag,
+                        training_plan=config.training_plan,
+                        global_step=global_step,
+                        next_epoch_index=next_epoch_index,
+                        next_batch_cursor=next_batch_cursor,
+                        accumulation_step=accumulation_step,
+                    )
 
     if accumulation_step > 0:
-        model_engine.step()
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
         global_step += 1
+        accumulation_step = 0
 
-    model_engine.save_checkpoint(config.output_dir, tag="final")
+    _save_checkpoint(
+        model=model,
+        optimizer=optimizer,
+        output_dir=output_dir,
+        checkpoint_tag="final",
+        training_plan=config.training_plan,
+        global_step=global_step,
+        next_epoch_index=config.num_epochs,
+        next_batch_cursor=0,
+        accumulation_step=accumulation_step,
+    )
+
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.barrier()

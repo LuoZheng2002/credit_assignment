@@ -2,7 +2,7 @@ import unittest
 
 from src_py.train.batch_dataset import ResolvedTrainingBatch
 from src_py.train.data_sqlite import QuestionNodeId, TrainingSampleTokenized
-from src_py.train.engine import _verify_tokenizer_model_match
+from src_py.train.engine import _shard_batches_for_rank, _verify_tokenizer_model_match
 
 
 def _build_sample(
@@ -24,6 +24,34 @@ def _build_sample(
 
 
 class TestEngineTokenizerVerification(unittest.TestCase):
+    def test_shard_batches_for_rank_disjoint_and_complete(self) -> None:
+        model_name = "Qwen/Qwen2.5-7B-Instruct"
+        batches: list[ResolvedTrainingBatch] = []
+        for batch_index in range(7):
+            sample = _build_sample(batch_index, 0, [1, 2], [-100, 2], model_name)
+            batches.append(
+                ResolvedTrainingBatch(
+                    batch_index=batch_index,
+                    ids=[sample.id],
+                    samples=[sample],
+                    model_official_name=model_name,
+                )
+            )
+
+        rank0 = _shard_batches_for_rank(batches, rank=0, world_size=3)
+        rank1 = _shard_batches_for_rank(batches, rank=1, world_size=3)
+        rank2 = _shard_batches_for_rank(batches, rank=2, world_size=3)
+
+        ids0 = {batch.batch_index for batch in rank0}
+        ids1 = {batch.batch_index for batch in rank1}
+        ids2 = {batch.batch_index for batch in rank2}
+        all_ids = ids0 | ids1 | ids2
+
+        self.assertEqual({0, 1, 2, 3, 4, 5, 6}, all_ids)
+        self.assertEqual(set(), ids0 & ids1)
+        self.assertEqual(set(), ids0 & ids2)
+        self.assertEqual(set(), ids1 & ids2)
+
     def test_verify_tokenizer_model_match_success(self) -> None:
         model_name = "Qwen/Qwen2.5-7B-Instruct"
         sample_a = _build_sample(1, 1, [1, 2, 3], [-100, 2, 3], model_name)

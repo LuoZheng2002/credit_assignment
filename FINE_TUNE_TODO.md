@@ -6,6 +6,11 @@
 - Use DeepSpeed ZeRO-3 with stable, reproducible training and resumable checkpoints.
 - Current target model family: Qwen (`qwen2.5-7b`, `qwen3-4b`, `qwen3.5-4b`); account for potential tokenizer differences across these models.
 
+## GPU Utilization Plan
+- Current plan: LoRA adapter training (`lora_current`) so each rank can hold model + gradients + optimizer state on a single A100 and consume different data shards.
+- Backup plan: full-model training with FSDP (`full_fsdp_backup`) when LoRA quality is insufficient.
+- Codebase requirement: keep shared data/loss/tokenizer-verification path and isolate plan-specific wrapping/checkpoint behavior for quick switching.
+
 ## Best-Practice Decisions
 - Keep tokenizer/model identity strict so pre-tokenized IDs stay valid.
 - Use per-sample weighted loss (masked CE per sample, then multiply by normalized/clipped advantage).
@@ -56,6 +61,13 @@
 - [x] Load HF causal LM + tokenizer and assert `model_official_name` match with sqlite data.
 - [x] Enable gradient checkpointing.
 - [ ] Implement train/eval loops with distributed metric reduction.
+
+### 12) Plan switching architecture
+- [x] Add explicit training plan switch: `lora_current` and `full_fsdp_backup`.
+- [x] Keep shared pipeline for sqlite loading, collator, loss, and tokenizer verification.
+- [x] Implement LoRA path with distributed batch sharding across ranks.
+- [x] Implement backup FSDP path with full-model wrapping.
+- [x] Keep checkpoint API compatible across both plans via a shared save helper.
 
 ### 7) Checkpointing and resume
 - [ ] Save periodic DeepSpeed checkpoints.
