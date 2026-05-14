@@ -1,0 +1,105 @@
+# Fine-Tune Framework TODO (DeepSpeed ZeRO-3)
+
+## Scope
+- Build a Python fine-tuning framework in `src_py/` for 7B/4B models on `4 x A100`.
+- Train from tokenized samples with fields matching `TrainingSampleTokenized` (`input_ids`, `labels`, `advantage`).
+- Use DeepSpeed ZeRO-3 with stable, reproducible training and resumable checkpoints.
+
+## Best-Practice Decisions
+- Keep tokenizer/model identity strict so pre-tokenized IDs stay valid.
+- Use per-sample weighted loss (masked CE per sample, then multiply by normalized/clipped advantage).
+- Normalize and clip advantages for stability; log both raw and normalized advantage statistics.
+- Prefer BF16 + ZeRO-3 + gradient checkpointing; avoid CPU offload unless memory forces it.
+- Start with dynamic per-batch padding (no sequence packing in v1).
+- Save resumable checkpoints (model/optimizer/scheduler/RNG/dataloader state).
+
+## Objective (v1)
+- For each sample `i`, compute:
+  - `L_i = mean_t CE(logits_i,t, labels_i,t)` over tokens where `labels_i,t != -100`.
+- Normalize/clip advantage:
+  - `a_i' = clip((a_i - mu) / sigma, -c, c)`.
+- Batch loss:
+  - `L = mean_i (a_i' * L_i)`.
+- Also log unweighted CE `mean_i(L_i)` for sanity.
+
+## Implementation Plan
+
+### 1) Project scaffolding
+- [ ] Create `src_py/train/` package and module layout.
+- [ ] Add a CLI entrypoint in `src_py/train/main.py`.
+- [ ] Add launcher script `src_py/scripts/launch_4gpu.sh`.
+
+### 2) DeepSpeed configs
+- [ ] Add `src_py/configs/ds_zero3_7b.json`.
+- [ ] Add `src_py/configs/ds_zero3_4b.json`.
+- [ ] Configure ZeRO stage 3, bf16, grad clipping, optimizer/scheduler defaults.
+
+### 3) Data ingestion from sqlite
+- [x] Implement `src_py/train/data_sqlite.py` to read `store_entries.payload_json`.
+- [x] Parse to a strict sample schema (`id`, `input_ids`, `labels`, `advantage`).
+- [ ] Add deterministic train/val split and shuffle with fixed seed.
+
+### 4) Batching and collation
+- [ ] Implement `src_py/train/collator.py`.
+- [ ] Pad `input_ids` with `pad_token_id`.
+- [ ] Pad `labels` with `-100`.
+- [ ] Build `attention_mask` and include `advantages` tensor.
+
+### 5) Loss and weighting
+- [x] Implement `src_py/train/losses.py` for masked per-sample CE.
+- [x] Add advantage normalization + clipping.
+- [x] Compute weighted batch loss and assert finite loss.
+
+### 6) Training engine
+- [ ] Implement `src_py/train/engine.py` with DeepSpeed initialize.
+- [ ] Load HF causal LM + tokenizer revision compatible with Rust tokenization.
+- [ ] Enable gradient checkpointing.
+- [ ] Implement train/eval loops with distributed metric reduction.
+
+### 7) Checkpointing and resume
+- [ ] Save periodic DeepSpeed checkpoints.
+- [ ] Support full resume (optimizer/scheduler/RNG/dataloader progression).
+- [ ] Optionally export merged HF checkpoint for inference.
+
+### 8) Metrics and logging
+- [ ] Implement `src_py/train/metrics.py`.
+- [ ] Log: weighted loss, unweighted CE, grad norm, tokens/sec, advantage stats.
+- [ ] Add eval metrics (e.g., perplexity on masked labels).
+
+### 9) Validation and tests
+- [ ] Add unit tests for sqlite parsing and schema validation.
+- [ ] Add unit tests for collator masks/padding behavior.
+- [x] Add toy tests for loss weighting correctness.
+
+### 10) Initial hyperparameter baseline
+- [ ] 7B: micro-batch/GPU = 1; 4B: micro-batch/GPU = 2.
+- [ ] Set grad accumulation to reach stable global supervised-token batch.
+- [ ] Start with LR `1e-5`, weight decay `0.1`, betas `(0.9, 0.95)`, warmup `3%`, grad clip `1.0`.
+- [ ] Start with advantage clip `3.0`.
+
+## Risks to monitor
+- Advantage scale drift causing unstable updates.
+- Mismatch between tokenizer IDs and model vocabulary/revision.
+- Throughput collapse from aggressive ZeRO/offload settings.
+- Negative-advantage dominance early in training.
+
+## SQLite Interaction Notes (from Rust source)
+- `SqliteStore` uses table `store_entries` with schema: `id TEXT PRIMARY KEY`, `payload_json TEXT NOT NULL`.
+- Tokenized sample DB file path pattern: `results/{model}/agent/{dataset}_training_tokenized_{num_samples}_{hyper_hash}.sqlite`.
+- Tokenized payload schema (`TrainingSampleTokenized`): `id`, `input_ids`, `labels`, `reconstructed`, `input_length`, `advantage`.
+- Batch DB file path pattern: `results/{model}/agent/{dataset}_training_batch_{num_samples}_{hyper_hash}_bs{batch_size}.sqlite`.
+- Batch payload schema (`TrainingBatch`): `ids` (`QuestionNodeId[]`), `max_advantage`, `min_advantage`, `max_length`, `min_length`.
+- Batch IDs are written as incremental numeric keys (`0..N-1`) via `store.upsert(batch_index, batch)`.
+- Rust store scan query reads linearly with `ORDER BY id ASC`; Python reader must also read with `ORDER BY` before line-by-line iteration.
+- Because `id` is TEXT, batch scanning should order numerically using `ORDER BY CAST(id AS INTEGER) ASC` for deterministic true batch order.
+
+## SQLite Reader Tasks
+- [x] Implement tokenized sample reader: `SELECT payload_json FROM store_entries ORDER BY id ASC`.
+- [x] Implement batch reader: `SELECT id, payload_json FROM store_entries ORDER BY CAST(id AS INTEGER) ASC`.
+- [x] Validate monotonic batch index sequence and fail fast on gaps/non-numeric IDs.
+
+## Deliverable checklist
+- [ ] End-to-end 4-GPU DeepSpeed run completes and checkpoints.
+- [ ] Loss curves and advantage stats are logged and interpretable.
+- [ ] Resume from checkpoint reproduces continued training behavior.
+- [ ] A merged inference checkpoint can be exported.
