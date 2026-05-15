@@ -1,2 +1,0 @@
-source activate_environment.sh
-cargo build
