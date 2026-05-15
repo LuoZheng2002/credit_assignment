@@ -1,0 +1,405 @@
+Toggle navigation*OpenReview*.net <https://openreview.net/>
+
+  * Login <https://openreview.net/login>
+
+×
+
+
+      BibTeX Record
+
+/Click anywhere on the box above to highlight complete record/
+Done
+back arrowGo to *ICLR 2026 Conference* homepage <https://openreview.net/
+group?id=ICLR.cc/2026/Conference>
+2 Versions
+
+  * CoRR 2025 (December 30, 2025) <https://openreview.net/forum?
+    id=S0sIVfp65g>
+  * ICLR 2026 Conference Withdrawn Submission (September 17, 2025)
+    <https://openreview.net/forum?id=H6m5TIKl2W>
+
+
+    TreeRPO: Tree Relative Policy Optimization
+
+Download PDF <https://openreview.net/pdf?id=H6m5TIKl2W>
+
+
+      Zhicheng Yang <https://openreview.net/profile?id=~Zhicheng_Yang4>,
+      Zhijiang Guo <https://openreview.net/profile?id=~Zhijiang_Guo2>,
+      Yinya Huang <https://openreview.net/profile?id=~Yinya_Huang1>,
+      Yongxin Wang <https://openreview.net/profile?id=~Yongxin_Wang4>,
+      Yiwei Wang <https://openreview.net/profile?id=~Yiwei_Wang2>,
+      Xiaodan Liang <https://openreview.net/profile?id=~Xiaodan_Liang2>,
+      Jing Tang <https://openreview.net/profile?id=~Jing_Tang5>
+
+17 Sept 2025 (modified: 20 Nov 2025)ICLR 2026 Conference Withdrawn
+SubmissionEveryoneRevisions <https://openreview.net/revisions?
+id=H6m5TIKl2W>BibTeX <#>CC BY 4.0 <https://creativecommons.org/licenses/
+by/4.0/>
+*Keywords:* RLVR, Reasoning with LLMs
+*TL;DR:* We propose TreeRPO, a GRPO variants to training LLMs with dense process reward without using PRMs.
+*Abstract:*
+
+Large Language Models (LLMs) have shown remarkable reasoning
+capabilities through Reinforcement Learning with Verifiable Rewards
+(RLVR) methods. However, a key limitation of existing approaches is that
+rewards defined at the full trajectory level provide insufficient
+guidance for optimizing the intermediate steps of a reasoning process.
+To address this, we introduce TreeRPO, a novel method that estimates the
+mathematical expectations of rewards at various reasoning steps using
+tree sampling. Unlike prior methods that rely on a separate step reward
+model, TreeRPO directly estimates these rewards through this sampling
+process. Building on the group-relative reward training mechanism of
+GRPO, TreeRPO innovatively computes rewards based on step-level groups
+generated during tree sampling. This advancement allows TreeRPO to
+produce fine-grained and dense reward signals, significantly enhancing
+the learning process and overall performance of LLMs. Experimental
+results demonstrate that our TreeRPO algorithm substantially improves
+the average Pass@1 accuracy of Qwen-2.5-Math on test benchmarks,
+increasing it from 19.0% to 35.5%. Furthermore, TreeRPO significantly
+outperforms GRPO by 2.9% in performance while simultaneously reducing
+the average response length by 18.1%, showcasing its effectiveness and
+efficiency.
+
+*Supplementary Material:*  zip <https://openreview.net/attachment?id=H6m5TIKl2W&name=supplementary_material>
+*Primary Area:* foundation or frontier models, including LLMs
+*Submission Number:* 9473
+Filter by reply type...
+
+Filter by author...
+
+back arrowLinear
+
+back arrowThreaded
+
+back arrowNested
+
+−Collapsed
+
+＝Default
+
+≡Expanded
+
+Copy link
+
+Everyone
+
+Reset
+
+/4 / 4 replies shown/
+
+−
+
+＝
+
+≡
+
+
+        Withdrawal by Authors
+
+Copy URL of note JtTsIOjtiV
+
+Withdrawalby Authors20 Nov 2025, 22:08Everyone
+*Withdrawal Confirmation:* I have read and agree with the venue's withdrawal policy on behalf of myself and my co-authors.
+−
+
+＝
+
+≡
+
+
+        Official Review of Submission9473 by Reviewer vCgU
+
+Copy URL of note ZFAg3VWY7A
+
+Official Reviewby Reviewer vCgU01 Nov 2025, 13:02 (modified: 11 Nov
+2025, 20:17)EveryoneRevisions <https://openreview.net/revisions?
+id=ZFAg3VWY7A>
+*Summary:*
+
+TreeRPO introduces a reinforcement-learning algorithm that supplies
+dense, step-level reward signals for fine-tuning LLMs on mathematical
+reasoning tasks without requiring a learned process-reward model. The
+key technical idea is to (i) sample an N-ary tree of reasoning
+continuations up to a fixed depth, (ii) label every leaf with a
+verifiable outcome reward, and (iii) back-propagate expected returns
+bottom-up to obtain a pseudo-reward for every intermediate node. These
+per-step returns are then used inside a GRPO-style group-relative policy
+objective. On Qwen2.5-Math-1.5B the method improves Pass@1 from 19.0% →
+35.5% on a 4-bench suite (MATH-500, OlympiadBench, Minerva, AIME24)
+while shortening average outputs by 18.1% relative to the GRPO baseline.
+
+*Soundness:* 2: fair
+*Presentation:* 3: good
+*Contribution:* 2: fair
+*Strengths:*
+
+  * Originality: First reward-model-free RL approach that delivers per-
+    step (process-style) supervision via tree sampling rather than
+    learned PRMs or Monte-Carlo roll-outs
+  * Empirical gains: Consistent +2–3% absolute accuracy improvements
+    over a strong GRPO baseline on four maths benchmarks, with lower
+    token cost
+  * Clarity of method: The recursive reward back-propagation and group-
+    level filtering are easy to implement and clearly described.
+  * Well-scoped: Stays within verifiable-reward domains (math with known
+    answers), avoiding annotation bottlenecks that plague PRM training.
+
+*Weaknesses:*
+
+Missing baselines
+
+  * No comparison with any PRM-based method (e.g., Math-Shepherd, Wang
+    et al. 2024) or step-level RL (Step-DPO, Lai et al. 2024). Hence the
+    claim “first to provide dense signals without a reward model” is not
+    sufficient to establish superiority over existing PRM pipelines.
+
+Statistical rigor
+
+  * Results are reported as single-run curves (Fig. 3) without standard
+    deviations or confidence intervals. With only 500–1k test questions,
+    variance can be high.
+
+Ablations incomplete
+
+  * Tree depth D=3, branching N=8, and pruning τ=0.1 are fixed without
+    ablation.
+  * Advantage re-normalisation is motivated with a toy example but not
+    ablated; it is unclear how much it contributes.
+
+Limited scale and scope of experiments
+
+  * Main claims rely mostly on Qwen2.5-Math-1.5B; 7B results are limited
+    and not systematically analyzed (sec. 4.1 mentions 7B but claims
+    limited gains). The benefit may not hold at larger scales.
+
+Step segmentation heuristic
+
+  * Steps are split by token length L_step=384 (sec. 3.1) which may
+    break semantic boundaries and bias the per-step rewards.
+
+*Questions:*
+
+  * What is the compute overhead (GPU-hours) of tree sampling relative
+    to GRPO under the same sample budget?
+  * Did you try D=1 (i.e., GRPO with N roll-outs) and N=1 while keeping
+    total samples fixed? This would isolate the tree back-prop
+    contribution from mere sample diversity.
+  * Why were PRM-based baselines not included in the experiments?
+  * How sensitive are results to the pruning threshold τ? A quick sweep
+    plot would suffice.
+  * Do gains persist when response length is forced to be identical
+    (e.g., via length penalty)? This checks whether accuracy lift is
+    partly due to shorter, less noisy outputs.
+  * What is the exact verification function implementation (rationale
+    and code) used to evaluate leaf nodes? Is it identical for TreeRPO
+    and GRPO?
+  * Does TreeRPO still outperform GRPO on larger models (7B, 32B) or
+    broader reasoning tasks beyond math? If not tested, can you provide
+    preliminary results to underdstand the generality of the approach?
+
+*Flag For Ethics Review:* No ethics review needed.
+*Rating:* 2: reject, not good enough
+*Confidence:* 4: You are confident in your assessment, but not absolutely certain. It is unlikely, but not impossible, that you did not understand some parts of the submission or that you are unfamiliar with some pieces of related work.
+*Code Of Conduct:* Yes
+−
+
+＝
+
+≡
+
+
+        Official Review of Submission9473 by Reviewer 1JLT
+
+Copy URL of note SQCu6qoW2z
+
+Official Reviewby Reviewer 1JLT30 Oct 2025, 16:31 (modified: 11 Nov
+2025, 20:17)EveryoneRevisions <https://openreview.net/revisions?
+id=SQCu6qoW2z>
+*Summary:*
+
+This paper introduces TreeRPO, which uses tree-based sampling to
+estimate step-level rewards without requiring an explicit reward model
+e.g. PRM. The method is an extension of GRPO, generating a tree at each
+decoding step to construct step-level groups. The contributions are as
+follows: introducing the first reward model-free method that provides
+dense reward signals through tree sampling, demonstrating significant
+performance improvements over GRPO, and showing improved token efficiency.
+
+The strengths of the work are as follows. First, the paper touches on an
+important subject in which GRPO is a critical part of training today's
+LLMs. Second, the technical approach is generally sound, and the
+sampling approach is well-motivated. Finally, the paper is empirically
+strong and shows a large performance improvement on Qwen-2.5-Math-1.5B
+and outperforms GRPO.
+
+The weaknesses are as follows. First, the sampling approach is quite
+computationally expensive. Although the approach is model free, it still
+requires a large cost for sampling. Second, the ablation studies could
+be improved e.g. with additional analysis on the branching factor or the
+depth of the tree. Finally, the model size tested is a bit small, and
+it's curious about how the method would do on larger model families.
+
+*Soundness:* 3: good
+*Presentation:* 3: good
+*Contribution:* 3: good
+*Strengths:*
+
+The strengths of the work are as follows.
+
+  * First, the paper touches on an important subject in which GRPO is a
+    critical part of training today's LLMs. - Second, the technical
+    approach is generally sound, and the sampling approach is well-
+    motivated.
+  * Finally, the paper is empirically strong and shows a large
+    performance improvement on Qwen-2.5-Math-1.5B and outperforms GRPO.
+
+*Weaknesses:*
+
+The weaknesses are as follows.
+
+  * First, the sampling approach is quite computationally expensive.
+    Although the approach is model free, it still requires a large cost
+    for sampling.
+  * Second, the ablation studies could be improved e.g. with additional
+    analysis on the branching factor or the depth of the tree.
+  * Finally, the model sizes (1.5B, 7B) tested is a bit small, and it's
+    curious about how the method would do on larger model families.
+    Additionally, the performance gain is not as great with the 7B
+    model, which is a potential concern.
+
+*Questions:*
+
+Has TreeRPO been tested on non-math tasks?
+
+*Flag For Ethics Review:* No ethics review needed.
+*Rating:* 4: marginally below the acceptance threshold. But would not mind if paper is accepted
+*Confidence:* 3: You are fairly confident in your assessment. It is possible that you did not understand some parts of the submission or that you are unfamiliar with some pieces of related work. Math/other details were not carefully checked.
+*Code Of Conduct:* Yes
+−
+
+＝
+
+≡
+
+
+        Official Review of Submission9473 by Reviewer g2qw
+
+Copy URL of note mWRWzr1iQE
+
+Official Reviewby Reviewer g2qw29 Oct 2025, 12:53 (modified: 11 Nov
+2025, 20:17)EveryoneRevisions <https://openreview.net/revisions?
+id=mWRWzr1iQE>
+*Summary:*
+
+TREERPO addresses the crucial limitation of trajectory-level model-free
+RL methods like GRPO: dence rewards. It introduces a novel approach for
+fine-grained intermediate step reward estimations for training LLM in
+deterministic settings. It leverages tree sampling to construct step-
+level groups for estimation of step-level rewards, extending the group-
+relative policy optimization (GRPO) framework. The method improves
+reasoning accuracy on mathematical benchmarks, outperforming GRPO.
+
+*Soundness:* 2: fair
+*Presentation:* 3: good
+*Contribution:* 2: fair
+*Strengths:*
+
+ 1.
+
+    Reward model-free step-level reward estimation: TREERPO addresses
+    the crucial limitation of trajectory-level RL: dense rewards.
+
+ 2.
+
+    Efficiency and performance gains: experimental results demonstrate
+    that TREERPO significantly boosts Pass@1 accuracy by 2.9% over GRPO
+    on multiple mathematics benchmarks and provide improved
+    computational efficiency
+
+*Weaknesses:*
+
+ 1.
+
+    There is no theoretical grounding provided for the proposed method:
+    does it yield more effective estimates for the loss? Can we compare
+    the variance of these estimates with those of GRPO? There should at
+    least be some intuition, examples, formulas, or simulation studies.
+    Since GRPO can be seen as a special case of the TreeRPO
+    algorithmically (when the branching factor is 1), why does a greater
+    branching factor lead to better results? To me, there is no clear
+    intuition supporting this.
+
+ 2.
+
+    In addition to the tree sampling approach used to estimate rewards,
+    the authors introduce a KL divergence term in the objective function
+    (Section 3.4). Without ablation studies, it is unclear which of
+    these two factors contributes most to the model improvements
+    observed in experiments. Could you provide such details?
+
+ 3.
+
+    TREERPO does not appear to be the first method for dense step-level
+    rewards in the model-free deterministic setting. What about
+    "Exploiting Tree Structure for Credit Assignment in RL Training of
+    LLMs" by Tran et al.? This paper was published two days before the
+    ICLR deadline. Given the conference's high standards, a comparison
+    between this submission and that paper is requested.
+
+ 4.
+
+    The empirical evidence seems unconvincing: there is evaluation on
+    only one architecture, Qwen2.5-Math (with two model sizes), and
+    improvements are smaller for the larger model. Why does the
+    improvement diminish with the larger model? The explanation at lines
+    317-318 states: "the MATH training data for Qwen2.5-Math-7B is too
+    simple." This sounds vague and unconvincing because (1) no
+    references are provided, (2) how does this correspond with the
+    larger Pass@1 for the 7B model? (3) More importantly, how is this
+    expected to influence the difference in effectiveness between GRPO
+    and TreeRPO in theory — or is it an orthogonal factor?
+
+*Questions:*
+
+See Weaknesses for explicit questions
+
+*Flag For Ethics Review:* No ethics review needed.
+*Rating:* 2: reject, not good enough
+*Confidence:* 3: You are fairly confident in your assessment. It is possible that you did not understand some parts of the submission or that you are unfamiliar with some pieces of related work. Math/other details were not carefully checked.
+*Code Of Conduct:* Yes
+
+  * About OpenReview <https://openreview.net/about>
+  * Hosting a Venue <https://openreview.net/group?id=OpenReview.net/Support>
+  * All Venues <https://openreview.net/venues>
+
+  * Contact <https://openreview.net/contact>
+  * Sponsors <https://openreview.net/sponsors>
+  * *Donate* <https://openreview.net/donate>
+
+  * FAQ <https://docs.openreview.net/getting-started/frequently-asked-
+    questions>
+  * Terms of Use <https://openreview.net/legal/terms> / Privacy Policy
+    <https://openreview.net/legal/privacy>
+  * News <https://openreview.net/group?id=OpenReview.net/
+    News&referrer=[Homepage](/)>
+
+  * About OpenReview <https://openreview.net/about>
+  * Hosting a Venue <https://openreview.net/group?id=OpenReview.net/Support>
+  * All Venues <https://openreview.net/venues>
+  * Sponsors <https://openreview.net/sponsors>
+  * News <https://openreview.net/group?id=OpenReview.net/
+    News&referrer=[Homepage](/)>
+
+  * FAQ <https://docs.openreview.net/getting-started/frequently-asked-
+    questions>
+  * Contact <https://openreview.net/contact>
+  * *Donate* <https://openreview.net/donate>
+  * Terms of Use <https://openreview.net/legal/terms>
+  * Privacy Policy <https://openreview.net/legal/privacy>
+
+OpenReview <https://openreview.net/about> is a long-term project to
+advance science through improved peer review with legal nonprofit
+status. We gratefully acknowledge the support of the OpenReview Sponsors
+<https://openreview.net/sponsors>. © 2026 OpenReview
+
