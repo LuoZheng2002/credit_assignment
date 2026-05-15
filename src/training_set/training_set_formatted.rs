@@ -10,7 +10,7 @@ use crate::{
     parallel_process_jsonl::{read_json, write_json},
     sqlite_store::{SqliteStore, SqliteStoreKey},
     training_set::training_set_generation::generate_sample_formatted_from_tree_node,
-    version_tracking::{AssetFile, Base64Hash, hash_file},
+    asset_file::{AssetFile, Base64Hash, hash_file},
 };
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -149,7 +149,7 @@ impl AssetFile for AssetFileTrainingFormatted {
         self.sample_store()
     }
 
-    fn synchronize(&self) -> crate::version_tracking::Base64Hash {
+    fn synchronize(&self) -> crate::asset_file::Base64Hash {
         let asset_file_trees = AssetFileTrees {
             model: self.model,
             dataset: self.dataset.clone(),

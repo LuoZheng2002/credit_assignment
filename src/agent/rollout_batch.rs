@@ -25,7 +25,7 @@ use crate::{
     datasets::{AssetFileDataset, DeepMathQuestion},
     direct_answer::generate_raw_answers::LlmModel,
     parallel_process_jsonl::write_json,
-    version_tracking::AssetFile,
+    asset_file::AssetFile,
     worker_message_tx::{log_key_value_pair, log_master_progress, log_worker_progress},
 };
 
@@ -183,7 +183,7 @@ pub async fn rollout_batch(
 
     for tree_id in &tree_completed_ids {
         rollout_log_store_for_loading
-            .drop_question_table(*tree_id)
+            .drop_table(*tree_id)
             .unwrap();
     }
 
@@ -199,7 +199,7 @@ pub async fn rollout_batch(
     let mut loaded_session_logs: IndexMap<usize, Vec<TreeAction>> = IndexMap::new();
     for unfinished_tree_id in &unfinished_tree_ids {
         let loaded_actions = rollout_log_store_for_loading
-            .load_question_actions(*unfinished_tree_id)
+            .load_table(*unfinished_tree_id)
             .unwrap();
         loaded_session_logs.insert(*unfinished_tree_id, loaded_actions);
     }
@@ -363,7 +363,7 @@ pub async fn rollout_batch(
                 LogOrTree::Action(action_log_item) => {
                     let question_id = action_log_item.question_id();
                     rollout_log_store_for_writer
-                        .append_action(question_id, &action_log_item)
+                        .append(question_id, &action_log_item)
                         .unwrap();
                 }
                 LogOrTree::Tree(trajectory) => {
@@ -371,7 +371,7 @@ pub async fn rollout_batch(
                         .upsert(trajectory.id, &trajectory)
                         .unwrap();
                     rollout_log_store_for_writer
-                        .drop_question_table(trajectory.id)
+                        .drop_table(trajectory.id)
                         .unwrap();
                     total_correct += trajectory.trajectory.correctness_ratio.numerator;
                     total_judged += trajectory.trajectory.correctness_ratio.denominator;

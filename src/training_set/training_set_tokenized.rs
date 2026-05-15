@@ -9,7 +9,7 @@ use crate::{
     training_set::training_set_formatted::{
         AssetFileTrainingFormatted, QuestionNodeId, TrainingSampleFormatted,
     },
-    version_tracking::{AssetFile, Base64Hash, hash_file},
+    asset_file::{AssetFile, Base64Hash, hash_file},
 };
 // The tokenization should follow the following rules:
 // 1. The control tags are <__start_mask__> and <__end_mask_with_eos__>, and tags are removed before tokenization.
@@ -337,7 +337,7 @@ impl AssetFile for AssetFileTrainingTokenized {
         self.sample_store()
     }
 
-    fn synchronize(&self) -> crate::version_tracking::Base64Hash {
+    fn synchronize(&self) -> crate::asset_file::Base64Hash {
         let asset_file_training_formatted = AssetFileTrainingFormatted {
             model: self.model,
             dataset: self.dataset.clone(),

@@ -12,7 +12,7 @@ use crate::{
         em_types::EmHyperparameters,
     },
     parallel_process_jsonl::{read_json, write_json},
-    version_tracking::{AssetFile, Base64Hash, hash_file},
+    asset_file::{AssetFile, Base64Hash, hash_file},
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

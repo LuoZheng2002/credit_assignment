@@ -4,7 +4,7 @@ use crate::{
     direct_answer::generate_raw_answers::LlmModel,
     parallel_process_jsonl::{HasId, read_json},
     sqlite_store::SqliteStore,
-    version_tracking::{AssetFile, Base64Hash, hash_file},
+    asset_file::{AssetFile, Base64Hash, hash_file},
 };
 use serde::{Deserialize, Serialize};
 

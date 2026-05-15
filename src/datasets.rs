@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     parallel_process_jsonl::{HasId, read_json_lines},
-    version_tracking::{AssetFile, Base64Hash, hash_file},
+    asset_file::{AssetFile, Base64Hash, hash_file},
 };
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

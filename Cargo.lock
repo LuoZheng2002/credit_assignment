@@ -533,6 +533,7 @@ dependencies = [
  "ratatui-core",
  "regex",
  "reqwest",
+ "research-utility",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2611,6 +2612,21 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "research-utility"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "base64 0.22.1",
+ "blake3",
+ "crossterm",
+ "ratatui",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

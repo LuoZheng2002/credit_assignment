@@ -2,7 +2,7 @@ use clap::Parser;
 use credit_assignment::direct_answer::generate_raw_answers::LlmModel;
 use credit_assignment::em::em_types::{EmHyperparameters, LogStdClamp};
 use credit_assignment::training_set::training_set_batch::AssetFileTrainingBatch;
-use credit_assignment::version_tracking::AssetFile;
+use credit_assignment::asset_file::AssetFile;
 
 const DEFAULT_BATCH_SIZE: usize = 4;
 

@@ -13,7 +13,7 @@ use crate::{
     },
     parallel_process_jsonl::{read_json, write_json},
     sqlite_store::SqliteStore,
-    version_tracking::{AssetFile, Base64Hash, hash_file},
+    asset_file::{AssetFile, Base64Hash, hash_file},
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

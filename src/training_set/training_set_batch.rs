@@ -11,7 +11,7 @@ use crate::{
         training_set_formatted::QuestionNodeId,
         training_set_tokenized::{AssetFileTrainingTokenized, TrainingSampleTokenized},
     },
-    version_tracking::{AssetFile, Base64Hash, hash_file},
+    asset_file::{AssetFile, Base64Hash, hash_file},
 };
 
 #[derive(Debug, Clone)]
@@ -277,7 +277,7 @@ impl AssetFile for AssetFileTrainingBatch {
         self.batch_store()
     }
 
-    fn synchronize(&self) -> crate::version_tracking::Base64Hash {
+    fn synchronize(&self) -> crate::asset_file::Base64Hash {
         let tokenized_asset = AssetFileTrainingTokenized {
             model: self.model,
             dataset: self.dataset.clone(),

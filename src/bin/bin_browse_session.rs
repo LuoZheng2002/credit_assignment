@@ -15,7 +15,7 @@ use credit_assignment::direct_answer::generate_raw_answers::LlmModel;
 use credit_assignment::em::em_schema::{AssetFileEmFit, EmFitPerTree};
 use credit_assignment::em::em_types::{EmHyperparameters, LogStdClamp};
 use credit_assignment::status_prompts::universal_prompt::get_prompt_according_to_session_status;
-use credit_assignment::version_tracking::AssetFile;
+use credit_assignment::asset_file::AssetFile;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseButton,
     MouseEvent, MouseEventKind,
