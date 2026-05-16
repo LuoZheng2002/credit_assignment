@@ -83,7 +83,6 @@ GSM8K
 ## Out of distribution
 AIME25
 AMC23
-Math500
 
 # Experiments
 ## Main experiment
@@ -98,13 +97,33 @@ Do not use explicit branching guidance but wait for the trajectory to naturally 
 ## Ablation on the maximum-a-posterioi method: compare with TreeRPO
 The most prominent characteristic of TreeRPO is that the leaf advantage is either +1.0 or +0.0. It disregards the fact that the leaf node may not be the determining factor for the whole trajectory's accuracy. The modeling is mostly heuristic-based without statistical grounding. We argue that our maximum-a-posterioi method is better at estimating each segment's real contribution.
 
-I think that's it. We cannot afford doing more experiments.
+## Optional: Ablation on TreePO
+The advantage in TreePO is determined by group relative among segments that share the same prefix.
 
 # Innovation and Openreview insights
 ## Compare with TEMPO
 Our method solves reviewer's concern about the "limited branch overlap" by explicitly guide the branching point.
 
 ## Compare with TreeRPO
-The reviewers say that the training is inefficient because of high sampling cost. We // todo
+The reviewers say that the training is inefficient because of high sampling cost. We do not have this problem because every segment in the tree has its advantage label and can be trained on. Although in practice we do not train on all of them due to the inefficiency of the flattening method, it is theoretically possible to utilize all segments efficiently by reusing the gradients before the branching point.
+
+Reviewers asked for comparisons against PRM-based and step-level methods (e.g., Math-Shepherd, Step-DPO), not only GRPO. I guess we also will not do PRM-based method due to workload. For step-level methods, our approach can work on token-level, so it's more flexible.
+
+## Compare with TreeOPO
+This paper uses a stronger teacher model to generate reference trajectories, while ours do not rely on stronger model or referece trajectory.
+
+## Compare with TreePO
+TreePO computes the advantage of a segment by comparing it with other segments at the same subgroup level. This is less flexible than our method, and does not explore parent-child advantage relationship.
+
+## Contribution Draft
+Our contribution is as follows:
+1. We propose TreeMAPPO (Tree-based Maximum-A-Posteriori Policy Optimization), a reference-free RL training algorithm that facilitates fine-grained credit assignment through trajectory branching.
+2. Our credit assignment algorithm uses formal probabilistic modeling that tackles not only sibling-wise (horizontal) relative advantage but also parent-child (vertical) relative advantage, that avoids common credit biases towards start or end of the trajectory.
+3. Our branch guiding algorithm dynamically adjusts the branching strategy based on existing segments' advantage estimates, producing more information gain compared with fixed-rule branching or relying on spontaneous reponse divergence.
+4. Our algorithm is fully compatible with tool-calling features, making it possible to train complex problem solving strategies involving tool-calling.
+5. We achieve ?% of trajectory segment utilization rate during training, making it cost efficient in branch sampling.
+6. Our algorithm achieves ?% pass @1 accuracy gain compared with GRPO and ?% compared with [TEMPO, TreeRPO, or TreePO].
+
+
 
 
