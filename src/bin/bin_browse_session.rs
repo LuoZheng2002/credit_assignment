@@ -3,7 +3,7 @@ use std::error::Error;
 use std::io::{self, Stdout};
 
 use clap::Parser;
-use credit_assignment::advantage_composition::{
+use credit_assignment::agent::advantage_composition::{
     AdvantageCompositionPerTree, AssetFileAdvantageComposition,
 };
 use credit_assignment::agent::tree_schema::AssetFileTrees;

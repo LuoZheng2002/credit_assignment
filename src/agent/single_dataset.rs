@@ -2,51 +2,29 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     asset_file::{AssetFile, Base64Hash, hash_file},
-    parallel_process_jsonl::{HasId, read_json_lines},
+    json_line_util::{HasId, read_json_lines},
 };
 
 // this is legacy and used for heavily agent implementation in src/agent folder
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct DeepMathQuestion {
+pub struct SingleDatasetQuestion {
     pub id: usize,
     pub question: String,
     pub final_answer: String,
 }
 
-impl HasId for DeepMathQuestion {
+impl HasId for SingleDatasetQuestion {
     fn id(&self) -> usize {
         self.id
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct DeepMathQuestionReasoning {
-    pub id: usize,
-    pub reasoning: String,
-    pub final_answer: String,
-    pub question: String,
-}
-
-impl HasId for DeepMathQuestionReasoning {
-    fn id(&self) -> usize {
-        self.id
-    }
-}
-
-// legacy non-agent helper function
-pub fn get_questions_with_reasoning_path(dataset_name: &str, num_samples: usize) -> String {
-    format!(
-        "datasets/{}_ordered_{}_reasoning.jsonl",
-        dataset_name, num_samples
-    )
-}
-
-pub struct AssetFileDataset {
+pub struct AssetFileSingleDataset {
     pub dataset: String,
     pub num_samples: usize,
 }
 
-impl AssetFileDataset {
+impl AssetFileSingleDataset {
     pub fn file_path(&self) -> String {
         format!(
             "datasets/{}_ordered_{}.jsonl",
@@ -59,8 +37,8 @@ impl AssetFileDataset {
     }
 }
 
-impl AssetFile for AssetFileDataset {
-    type FileModel = Vec<DeepMathQuestion>;
+impl AssetFile for AssetFileSingleDataset {
+    type FileModel = Vec<SingleDatasetQuestion>;
 
     fn synchronize(&self) -> Base64Hash {
         hash_file(self.file_path()).unwrap()

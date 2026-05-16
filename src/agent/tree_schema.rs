@@ -1,9 +1,9 @@
 use crate::{
+    agent::single_dataset::AssetFileSingleDataset,
     agent::tree::Tree,
     asset_file::{AssetFile, Base64Hash, hash_file},
-    datasets::AssetFileDataset,
+    json_line_util::{HasId, read_json},
     llm_model::LlmModel,
-    parallel_process_jsonl::{HasId, read_json},
     sqlite_store::SqliteStore,
 };
 use serde::{Deserialize, Serialize};
@@ -76,7 +76,7 @@ pub struct AssetFileTreesTracking {
 impl AssetFile for AssetFileTrees {
     type FileModel = CompletedTreeStore;
     fn synchronize(&self) -> Base64Hash {
-        let dataset = AssetFileDataset {
+        let dataset = AssetFileSingleDataset {
             dataset: self.dataset.clone(),
             num_samples: self.num_samples,
         };

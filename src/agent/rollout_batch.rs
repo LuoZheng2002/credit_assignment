@@ -17,15 +17,15 @@ use tokio::sync::OwnedSemaphorePermit;
 use crate::{
     agent::{
         rollout_loop::rollout,
+        single_dataset::{AssetFileSingleDataset, SingleDatasetQuestion},
         sqlite_rollout_log::{SqliteSessionLogStore, get_rollout_log_path},
         tree_action::TreeAction,
         tree_schema::{AssetFileTrees, AssetFileTreesTracking, CompletedTree, CompletedTreeStore},
     },
     asset_file::AssetFile,
     call_llm::LlmEndpoint,
-    datasets::{AssetFileDataset, DeepMathQuestion},
+    json_line_util::write_json,
     llm_model::LlmModel,
-    parallel_process_jsonl::write_json,
     worker_message_tx::{log_key_value_pair, log_master_progress, log_worker_progress},
 };
 
@@ -157,7 +157,7 @@ pub async fn rollout_batch(
         dataset: dataset_name.clone(),
         num_samples,
     };
-    let asset_file_dataset = AssetFileDataset {
+    let asset_file_dataset = AssetFileSingleDataset {
         dataset: dataset_name.clone(),
         num_samples,
     };
@@ -188,7 +188,7 @@ pub async fn rollout_batch(
     let questions = dataset
         .into_iter()
         .map(|q| (q.id, q))
-        .collect::<IndexMap<usize, DeepMathQuestion>>();
+        .collect::<IndexMap<usize, SingleDatasetQuestion>>();
     let total_questions = questions.len();
 
     let mut unfinished_tree_ids: HashSet<usize> = questions.keys().cloned().collect();

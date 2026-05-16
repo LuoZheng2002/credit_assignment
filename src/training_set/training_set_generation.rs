@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    advantage_composition::AdvantageCompositionPerTree,
+    agent::advantage_composition::AdvantageCompositionPerTree,
     agent::{
         trajectory_action::{TrajectoryAction, TrajectoryActionLog},
         trajectory_state::TrajectoryState,

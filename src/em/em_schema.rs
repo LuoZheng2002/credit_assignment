@@ -11,8 +11,8 @@ use crate::{
     em::em_types::{
         EmFitDiagnostics, EmGlobalConfigSnapshot, EmHyperparameters, EmNodeTypePosterior,
     },
+    json_line_util::{read_json, write_json},
     llm_model::LlmModel,
-    parallel_process_jsonl::{read_json, write_json},
     sqlite_store::SqliteStore,
 };
 

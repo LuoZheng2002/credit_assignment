@@ -1,12 +1,10 @@
-pub mod advantage_composition;
 pub mod agent;
 pub mod apply_vllm_model_chat_template;
 pub mod call_llm;
 pub mod constants;
-pub mod datasets;
 pub mod em;
+pub mod json_line_util;
 pub mod llm_model;
-pub mod parallel_process_jsonl;
 pub mod status_prompts;
 pub mod training_set;
 pub mod util;
