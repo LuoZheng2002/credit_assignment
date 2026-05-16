@@ -1,15 +1,9 @@
-use std::{
-    backtrace::Backtrace,
-    sync::Arc,
-};
+use std::{backtrace::Backtrace, sync::Arc};
 
 use clap::{ArgAction, Parser};
 use credit_assignment::{
-    agent::rollout_batch::rollout_batch,
-    llm_model::LlmModel,
-    message::WorkerMessage,
-    progress_screen::ProgressScreenConfig,
-    progress_screen::ProgressScreen,
+    agent::rollout_batch::rollout_batch, llm_model::LlmModel, message::WorkerMessage,
+    progress_screen::ProgressScreen, progress_screen::ProgressScreenConfig,
     worker_message_tx::WORKER_MESSAGE_TX,
 };
 use tokio::sync::mpsc;

@@ -166,7 +166,12 @@ pub async fn call_llm_chat_completions_on_endpoint(
     passes_in_stop: bool,
     endpoint: Arc<LlmEndpoint>,
 ) -> String {
-    let _permit = endpoint.request_semaphore.clone().acquire_owned().await.unwrap();
+    let _permit = endpoint
+        .request_semaphore
+        .clone()
+        .acquire_owned()
+        .await
+        .unwrap();
     let url = get_chat_completions_url_for_endpoint(model, &endpoint);
     let body = build_chat_completions_body(prompt, model, passes_in_stop);
     let response = post_json(client, &url, body, model).await;
@@ -200,7 +205,12 @@ pub async fn call_qwen_raw_completions_on_endpoint(
         model.is_qwen(),
         "call_qwen_raw_completions_on_endpoint only supports Qwen-family models",
     );
-    let _permit = endpoint.request_semaphore.clone().acquire_owned().await.unwrap();
+    let _permit = endpoint
+        .request_semaphore
+        .clone()
+        .acquire_owned()
+        .await
+        .unwrap();
     let body = serde_json::json!({
         "model": model.api_name(),
         "prompt": chat_template_prompt,

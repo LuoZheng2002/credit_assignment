@@ -1,10 +1,10 @@
 use crate::{
     agent::tree::Tree,
+    asset_file::{AssetFile, Base64Hash, hash_file},
     datasets::AssetFileDataset,
     llm_model::LlmModel,
     parallel_process_jsonl::{HasId, read_json},
     sqlite_store::SqliteStore,
-    asset_file::{AssetFile, Base64Hash, hash_file},
 };
 use serde::{Deserialize, Serialize};
 
@@ -39,8 +39,6 @@ impl HasId for CompletedTree {
         self.id
     }
 }
-
-
 
 pub struct AssetFileTrees {
     pub model: LlmModel,

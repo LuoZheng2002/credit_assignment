@@ -21,11 +21,11 @@ use crate::{
         tree_action::TreeAction,
         tree_schema::{AssetFileTrees, AssetFileTreesTracking, CompletedTree, CompletedTreeStore},
     },
+    asset_file::AssetFile,
     call_llm::LlmEndpoint,
     datasets::{AssetFileDataset, DeepMathQuestion},
     llm_model::LlmModel,
     parallel_process_jsonl::write_json,
-    asset_file::AssetFile,
     worker_message_tx::{log_key_value_pair, log_master_progress, log_worker_progress},
 };
 
@@ -182,9 +182,7 @@ pub async fn rollout_batch(
     }
 
     for tree_id in &tree_completed_ids {
-        rollout_log_store_for_loading
-            .drop_table(*tree_id)
-            .unwrap();
+        rollout_log_store_for_loading.drop_table(*tree_id).unwrap();
     }
 
     let questions = dataset

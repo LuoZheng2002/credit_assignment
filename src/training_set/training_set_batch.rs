@@ -3,15 +3,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use crate::{
-    llm_model::LlmModel,
+    asset_file::{AssetFile, Base64Hash, hash_file},
     em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
+    llm_model::LlmModel,
     parallel_process_jsonl::{read_json, write_json},
     sqlite_store::SqliteStore,
     training_set::{
         training_set_formatted::QuestionNodeId,
         training_set_tokenized::{AssetFileTrainingTokenized, TrainingSampleTokenized},
     },
-    asset_file::{AssetFile, Base64Hash, hash_file},
 };
 
 #[derive(Debug, Clone)]
@@ -252,7 +252,10 @@ impl AssetFileTrainingBatch {
                 min_length = min_length.min(sample.input_length);
                 batch_ids.push(sample.id);
             }
-            assert!(!batch_ids.is_empty(), "Each generated training batch must be non-empty");
+            assert!(
+                !batch_ids.is_empty(),
+                "Each generated training batch must be non-empty"
+            );
 
             output_batches.push(TrainingBatch {
                 ids: batch_ids,

@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-// use crate::direct_answer::generate_rollout_answers::{CountRatio, StepQualityRatio};
 use crate::agent::trajectory_action_types::FinalAnswer;
 use crate::agent::tree_action::TreeAction;
 use crate::agent::tree_schema::{CountRatio, StepQualityRatio};

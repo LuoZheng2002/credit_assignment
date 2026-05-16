@@ -5,16 +5,16 @@ use serde::{Deserialize, Serialize};
 use crate::{
     advantage_composition::{AdvantageCompositionPerTree, AssetFileAdvantageComposition},
     agent::tree_schema::AssetFileTrees,
+    asset_file::{AssetFile, Base64Hash, hash_file},
     em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
     llm_model::LlmModel,
     parallel_process_jsonl::{read_json, write_json},
     sqlite_store::{SqliteStore, SqliteStoreKey},
     training_set::training_set_generation::generate_sample_formatted_from_tree_node,
-    asset_file::{AssetFile, Base64Hash, hash_file},
 };
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-pub struct QuestionNodeId{
+pub struct QuestionNodeId {
     pub question_id: usize,
     pub node_id: usize,
 }

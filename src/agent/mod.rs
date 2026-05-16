@@ -1,7 +1,9 @@
 pub mod branching_node_selection;
 pub mod context_length_exceeded;
 pub mod response_processing;
+pub mod rollout_batch;
 pub mod rollout_loop;
+pub mod sqlite_rollout_log;
 pub mod state_to_actions;
 pub mod tool_call_execution;
 pub mod tool_call_parser;
@@ -13,5 +15,3 @@ pub mod trajectory_status;
 pub mod tree;
 pub mod tree_action;
 pub mod tree_schema;
-pub mod sqlite_rollout_log;
-pub mod rollout_batch;

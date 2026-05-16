@@ -18,16 +18,44 @@ use crate::agent::trajectory_state::TrajectoryState;
 use crate::agent::trajectory_status::TrajectoryStatus;
 use crate::agent::tree::{CorrectnessJudgment, Tree};
 use crate::agent::tree_action::TreeAction;
-use crate::direct_answer::parse_answers::extract_boxed_content;
+use crate::call_llm::call_llm_chat_completions;
 use crate::status_prompts::universal_prompt::get_prompt_according_to_session_status;
+use crate::util::extract_boxed_content;
 use crate::worker_message_tx::log_key_value_pair;
 use crate::{
     agent::trajectory_action::TrajectoryAction,
     call_llm::{LlmEndpoint, call_llm_with_prefix_on_endpoint},
     constants::{IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE, REPETITION_ABORT_MESSAGE},
-    direct_answer::judge_answers::judge_answer_task,
     llm_model::LlmModel,
 };
+
+pub async fn judge_answer_task(
+    question_id: usize,
+    model_answer: String,
+    correct_answer: String,
+    question: String,
+    client: Client,
+) -> bool {
+    let prompt = format!(
+        "You are an answer checker that checks a model's answer against the reference answer. Judge if the model's answer is equivalent to the reference answer. \
+If the model's answer contains units but the reference answer does not, treat them as equivalent if the numerical values are the same. \n\
+The question is: \"{}\". \
+The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
+        question, model_answer, correct_answer
+    );
+    let evaluation = call_llm_chat_completions(client, prompt, LlmModel::Gpt4o, false)
+        .await
+        .trim()
+        .to_lowercase();
+    match evaluation.as_str() {
+        "correct" => true,
+        "incorrect" => false,
+        _ => panic!(
+            "Unexpected evaluation result for question {}: {}",
+            question_id, evaluation
+        ),
+    }
+}
 
 // we increased the repetition times to 5, there might be code that hasn't reflected this change.
 pub fn detect_repetition_five_times(response: &str) -> bool {

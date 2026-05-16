@@ -38,7 +38,10 @@ pub fn generate_sample_formatted_from_tree_node(
     //     model.is_qwen(),
     //     "Training sample formatting currently requires a Qwen model"
     // );
-    println!("Warning: Training sample formatting currently requires a Qwen model, but received {}", model.cli_name());
+    println!(
+        "Warning: Training sample formatting currently requires a Qwen model, but received {}",
+        model.cli_name()
+    );
     assert_eq!(
         tree.id, tree.trajectory.question_id,
         "CompletedTree.id must equal Tree.question_id"

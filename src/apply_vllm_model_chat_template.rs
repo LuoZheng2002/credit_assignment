@@ -36,7 +36,10 @@ pub fn apply_vllm_model_chat_template(
     let model = if model.is_qwen() {
         model
     } else {
-        println!("Warning: vLLM chat template only supports Qwen models, but received {}", model.cli_name());
+        println!(
+            "Warning: vLLM chat template only supports Qwen models, but received {}",
+            model.cli_name()
+        );
         LlmModel::Qwen25_7b
     };
 

@@ -3,7 +3,12 @@ use reqwest::Client;
 
 use crate::{
     agent::{
-        tool_call_parser::{MarkdownPythonParser, ToolCallParser}, trajectory_action::TrajectoryAction, trajectory_action_types::{NextStepDecision, StepQuality, VerifierComment}, trajectory_state::TrajectoryState, trajectory_status::TrajectoryStatus, tree_action::TreeAction
+        tool_call_parser::{MarkdownPythonParser, ToolCallParser},
+        trajectory_action::TrajectoryAction,
+        trajectory_action_types::{NextStepDecision, StepQuality, VerifierComment},
+        trajectory_state::TrajectoryState,
+        trajectory_status::TrajectoryStatus,
+        tree_action::TreeAction,
     },
     llm_model::LlmModel,
     worker_message_tx::log_key_value_pair,
@@ -45,14 +50,20 @@ pub fn split_reasoning_and_tool_call(response: String) -> (Option<String>, Optio
             .strip_prefix("</tool_wait>")
             .expect("suffix should start with </tool_wait>");
         if !suffix_after_tag.trim().is_empty() {
-            log_key_value_pair("warning".into(), format!("Model outputs non-empty trailing content after </tool_wait>."));
+            log_key_value_pair(
+                "warning".into(),
+                format!("Model outputs non-empty trailing content after </tool_wait>."),
+            );
             tool_wait_violation = true;
         }
         tool_call.push_str("</tool_wait>");
     } else {
         tool_wait_violation = true;
 
-        log_key_value_pair("warning".into(), "Model's tool call does not end with </tool_wait> tag.".into());
+        log_key_value_pair(
+            "warning".into(),
+            "Model's tool call does not end with </tool_wait> tag.".into(),
+        );
         tool_call.push_str("</tool_wait>"); // if there is no </tool_wait> tag, we also add it and trim all the content after the tool call
     }
     let reasoning = if !response[..start_position].trim().is_empty() {
@@ -126,7 +137,10 @@ pub fn parse_compactor_response(response: String) -> (String, Option<StepQuality
             );
         }
     }
-    log_key_value_pair("warning".into(), "Failed to parse step quality from compactor response.".into());
+    log_key_value_pair(
+        "warning".into(),
+        "Failed to parse step quality from compactor response.".into(),
+    );
     (response, None)
 }
 
@@ -191,7 +205,10 @@ pub fn parse_verifier_comment_response(response: String) -> VerifierComment {
         }
     }
 
-    log_key_value_pair("warning".into(), "Failed to parse verifier decision JSON from verifier response.".into());
+    log_key_value_pair(
+        "warning".into(),
+        "Failed to parse verifier decision JSON from verifier response.".into(),
+    );
     VerifierComment {
         comment: response.trim().to_string(),
         overwrite: false,
@@ -252,9 +269,14 @@ fn determine_chosen_mode_with_take_over(
         Some(comment) => {
             if comment.change_plan {
                 if session_state.can_change_plan() && rng.random::<f32>() < 0.5 {
-                    NextStepDecision::ChangePlan("Please refer to the verifier's comment.".to_string())
+                    NextStepDecision::ChangePlan(
+                        "Please refer to the verifier's comment.".to_string(),
+                    )
                 } else {
-                    log_key_value_pair("warning".into(), "Change plan is capped or not chosen by RNG.".into());
+                    log_key_value_pair(
+                        "warning".into(),
+                        "Change plan is capped or not chosen by RNG.".into(),
+                    );
                     NextStepDecision::Continue
                 }
             } else if comment.overwrite {
@@ -263,7 +285,10 @@ fn determine_chosen_mode_with_take_over(
                         "Please refer to the verifier's comment.".to_string(),
                     )
                 } else {
-                    log_key_value_pair("warning".into(), "Overwrite last step is capped or not chosen by RNG.".into());
+                    log_key_value_pair(
+                        "warning".into(),
+                        "Overwrite last step is capped or not chosen by RNG.".into(),
+                    );
                     NextStepDecision::Continue
                 }
             } else {

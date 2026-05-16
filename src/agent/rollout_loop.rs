@@ -3,11 +3,8 @@ use std::sync::Arc;
 
 use crate::{
     agent::{
-        rollout_batch::LogOrTree,
-        state_to_actions::produce_actions_from_state,
-        tree::Tree,
-        tree_action::TreeAction,
-        tree_schema::CompletedTree,
+        rollout_batch::LogOrTree, state_to_actions::produce_actions_from_state, tree::Tree,
+        tree_action::TreeAction, tree_schema::CompletedTree,
     },
     call_llm::LlmEndpoint,
     llm_model::LlmModel,
