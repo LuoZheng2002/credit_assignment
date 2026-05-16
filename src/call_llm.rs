@@ -6,7 +6,7 @@ use std::sync::{
 use tokio::sync::Semaphore;
 
 use crate::apply_vllm_model_chat_template::apply_vllm_model_chat_template;
-use crate::direct_answer::generate_raw_answers::LlmModel;
+use crate::llm_model::LlmModel;
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
 pub const CONTEXT_LENGTH_EXCEEDED_RESPONSE: &str = "<error>QWEN_CONTEXT_LENGTH_EXCEEDED</error>";

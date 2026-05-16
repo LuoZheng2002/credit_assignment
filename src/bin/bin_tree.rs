@@ -6,7 +6,7 @@ use std::{
 use clap::{ArgAction, Parser};
 use credit_assignment::{
     agent::rollout_batch::rollout_batch,
-    direct_answer::generate_raw_answers::LlmModel,
+    llm_model::LlmModel,
     message::WorkerMessage,
     progress_screen::ProgressScreenConfig,
     progress_screen::ProgressScreen,

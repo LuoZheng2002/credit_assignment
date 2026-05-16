@@ -23,7 +23,7 @@ use crate::{
     },
     call_llm::LlmEndpoint,
     datasets::{AssetFileDataset, DeepMathQuestion},
-    direct_answer::generate_raw_answers::LlmModel,
+    llm_model::LlmModel,
     parallel_process_jsonl::write_json,
     asset_file::AssetFile,
     worker_message_tx::{log_key_value_pair, log_master_progress, log_worker_progress},

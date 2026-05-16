@@ -5,6 +5,7 @@ use crate::{
     asset_file::{AssetFile, Base64Hash, hash_file},
 };
 
+// this is legacy and used for heavily agent implementation in src/agent folder
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DeepMathQuestion {
     pub id: usize,

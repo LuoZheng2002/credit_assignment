@@ -5,9 +5,10 @@ use crate::{
     call_llm::call_llm_chat_completions,
     direct_answer::{
         generate_concise_reasoning::{DeepMathConciseReasoning, get_concise_reasoning_path},
-        generate_raw_answers::{AnswerRaw, LlmModel, get_raw_answer_path},
+        generate_raw_answers::{AnswerRaw, get_raw_answer_path},
         judge_answers::{DeepMathCorrectness, get_correctness_path},
     },
+    llm_model::LlmModel,
     parallel_process_jsonl::{HasId, parallel_process_jsonl},
 };
 

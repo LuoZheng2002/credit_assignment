@@ -12,7 +12,7 @@ use crate::{
         FIXED_ADVANTAGE_WEIGHT_CONTRIBUTION, FIXED_ADVANTAGE_WEIGHT_STEP_QUALITY,
         FIXED_ADVANTAGE_WEIGHT_TRAJECTORY,
     },
-    direct_answer::generate_raw_answers::LlmModel,
+    llm_model::LlmModel,
     status_prompts::universal_prompt::get_prompt_according_to_session_status,
     training_set::training_set_formatted::{QuestionNodeId, TrainingSampleFormatted},
 };

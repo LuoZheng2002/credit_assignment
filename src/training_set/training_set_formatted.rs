@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     advantage_composition::{AdvantageCompositionPerTree, AssetFileAdvantageComposition},
     agent::tree_schema::AssetFileTrees,
-    direct_answer::generate_raw_answers::LlmModel,
     em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
+    llm_model::LlmModel,
     parallel_process_jsonl::{read_json, write_json},
     sqlite_store::{SqliteStore, SqliteStoreKey},
     training_set::training_set_generation::generate_sample_formatted_from_tree_node,

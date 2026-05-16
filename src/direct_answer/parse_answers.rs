@@ -1,4 +1,5 @@
-use crate::direct_answer::generate_raw_answers::{AnswerRaw, LlmModel, get_raw_answer_path};
+use crate::direct_answer::generate_raw_answers::{AnswerRaw, get_raw_answer_path};
+use crate::llm_model::LlmModel;
 use crate::parallel_process_jsonl::{HasId, parallel_process_jsonl};
 use serde::{Deserialize, Serialize};
 

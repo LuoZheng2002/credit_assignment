@@ -1,10 +1,11 @@
 use clap::Parser;
 use credit_assignment::direct_answer::{
     generate_error_causes::generate_error_causes,
-    generate_raw_answers::{LlmModel, generate_raw_answers},
+    generate_raw_answers::generate_raw_answers,
     judge_answers::judge_answers,
     parse_answers::parse_answers,
 };
+use credit_assignment::llm_model::LlmModel;
 use reqwest::Client;
 
 #[derive(Parser, Debug)]

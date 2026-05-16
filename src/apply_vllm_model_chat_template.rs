@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use serde::Serialize;
 
-use crate::direct_answer::generate_raw_answers::LlmModel;
+use crate::llm_model::LlmModel;
 
 static QWEN25_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment> = LazyLock::new(|| {
     let mut env = minijinja::Environment::new();

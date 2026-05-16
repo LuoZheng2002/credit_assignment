@@ -1,7 +1,7 @@
 use crate::{
     agent::tree::Tree,
     datasets::AssetFileDataset,
-    direct_answer::generate_raw_answers::LlmModel,
+    llm_model::LlmModel,
     parallel_process_jsonl::{HasId, read_json},
     sqlite_store::SqliteStore,
     asset_file::{AssetFile, Base64Hash, hash_file},

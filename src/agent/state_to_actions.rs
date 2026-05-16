@@ -25,7 +25,8 @@ use crate::{
     agent::trajectory_action::TrajectoryAction,
     call_llm::{LlmEndpoint, call_llm_with_prefix_on_endpoint},
     constants::{IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE, REPETITION_ABORT_MESSAGE},
-    direct_answer::{generate_raw_answers::LlmModel, judge_answers::judge_answer_task},
+    direct_answer::judge_answers::judge_answer_task,
+    llm_model::LlmModel,
 };
 
 // we increased the repetition times to 5, there might be code that hasn't reflected this change.

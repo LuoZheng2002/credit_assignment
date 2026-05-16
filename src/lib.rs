@@ -9,6 +9,7 @@ pub mod em;
 pub mod parallel_process_jsonl;
 pub mod status_prompts;
 pub mod training_set;
+pub mod llm_model;
 
 pub use research_utility::{
     asset_file,

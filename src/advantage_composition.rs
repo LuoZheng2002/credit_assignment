@@ -6,11 +6,11 @@ use crate::{
     agent::trajectory_action_types::StepQuality,
     agent::tree_schema::AssetFileTrees,
     agent::tree_schema::CompletedTree,
-    direct_answer::generate_raw_answers::LlmModel,
     em::{
         em_schema::{AssetFileEmFit, EmFitPerTree, short_hyperparameter_hash},
         em_types::EmHyperparameters,
     },
+    llm_model::LlmModel,
     parallel_process_jsonl::{read_json, write_json},
     asset_file::{AssetFile, Base64Hash, hash_file},
 };

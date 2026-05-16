@@ -4,13 +4,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::tree_schema::{AssetFileTrees, CompletedTreeStore};
 use crate::{
-    direct_answer::generate_raw_answers::LlmModel,
     em::em_dataset_builder::EmDatasetBuilder,
     em::em_fitting::EmFitter,
     em::em_types::EmFitResult,
     em::em_types::{
         EmFitDiagnostics, EmGlobalConfigSnapshot, EmHyperparameters, EmNodeTypePosterior,
     },
+    llm_model::LlmModel,
     parallel_process_jsonl::{read_json, write_json},
     sqlite_store::SqliteStore,
     asset_file::{AssetFile, Base64Hash, hash_file},

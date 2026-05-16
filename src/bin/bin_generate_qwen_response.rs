@@ -1,7 +1,7 @@
 use clap::Parser;
 use credit_assignment::apply_vllm_model_chat_template::apply_vllm_model_chat_template;
 use credit_assignment::call_llm::{LlmEndpoint, call_qwen_raw_completions_on_endpoint};
-use credit_assignment::direct_answer::generate_raw_answers::LlmModel;
+use credit_assignment::llm_model::LlmModel;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

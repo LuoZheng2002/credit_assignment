@@ -3,7 +3,7 @@ use reqwest::Client;
 use crate::{
     call_llm::call_llm_chat_completions,
     datasets::{DeepMathQuestionReasoning, get_questions_with_reasoning_path},
-    direct_answer::generate_raw_answers::LlmModel,
+    llm_model::LlmModel,
     parallel_process_jsonl::{HasId, parallel_process_jsonl},
 };
 use serde::{Deserialize, Serialize};

@@ -10,7 +10,8 @@ use crate::{
         tree_schema::CompletedTree,
     },
     call_llm::LlmEndpoint,
-    direct_answer::generate_raw_answers::LlmModel, worker_message_tx::log_key_value_pair,
+    llm_model::LlmModel,
+    worker_message_tx::log_key_value_pair,
 };
 
 // it will output action logs and final trajectory

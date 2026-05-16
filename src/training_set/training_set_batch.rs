@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use crate::{
-    direct_answer::generate_raw_answers::LlmModel,
+    llm_model::LlmModel,
     em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
     parallel_process_jsonl::{read_json, write_json},
     sqlite_store::SqliteStore,
