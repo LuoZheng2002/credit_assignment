@@ -9,7 +9,7 @@ use tokio::sync::Semaphore;
 
 use crate::llm_model_name::LlmModelName;
 use crate::llm_models::{
-    LlmModelMarker, Qwen3_4B, Qwen3_8B, Qwen3TokenArray, Qwen25, Qwen25TokenArray, Qwen35_4B,
+    LlmModelMarker, Qwen3_4B, Qwen3TokenArray, Qwen25, Qwen25TokenArray, Qwen35_4B,
     Qwen35TokenArray,
 };
 
@@ -223,15 +223,6 @@ impl Qwen3LlmCallable {
 
 #[async_trait]
 impl LlmCallable<Qwen3_4B> for Qwen3LlmCallable {
-    async fn generate(&self, prompt_or_tokens: Qwen3TokenArray, passes_in_stop: bool) -> String {
-        self.shared
-            .generate_from_tokens(prompt_or_tokens.tokens, passes_in_stop)
-            .await
-    }
-}
-
-#[async_trait]
-impl LlmCallable<Qwen3_8B> for Qwen3LlmCallable {
     async fn generate(&self, prompt_or_tokens: Qwen3TokenArray, passes_in_stop: bool) -> String {
         self.shared
             .generate_from_tokens(prompt_or_tokens.tokens, passes_in_stop)

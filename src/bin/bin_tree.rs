@@ -5,7 +5,7 @@ use credit_assignment::{
     agent::rollout_batch::rollout_batch,
     llm_model_name::LlmModelName,
     llm_models::{
-        Gpt4o, Gpt5Mini, LlmCliArgs, LlmModelMarker, Qwen3_4B, Qwen3_8B, Qwen25, Qwen35_4B,
+        Gpt4o, Gpt5Mini, LlmCliArgs, LlmModelMarker, Qwen3_4B, Qwen25, Qwen35_4B,
     },
     message::WorkerMessage,
     progress_screen::ProgressScreen, progress_screen::ProgressScreenConfig,
@@ -124,10 +124,6 @@ async fn main() {
         }
         LlmModelName::Qwen3_4b => {
             run_rollout_for_marker::<Qwen3_4B>(model, dataset_name, num_samples, &llm_cli_args)
-                .await
-        }
-        LlmModelName::Qwen3_8b => {
-            run_rollout_for_marker::<Qwen3_8B>(model, dataset_name, num_samples, &llm_cli_args)
                 .await
         }
         LlmModelName::Qwen35_4b => {

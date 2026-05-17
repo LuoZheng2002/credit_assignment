@@ -7,7 +7,6 @@ pub enum LlmModelName {
     Gpt5Mini,
     Qwen25_7b,
     Qwen3_4b,
-    Qwen3_8b,
     Qwen35_4b,
 }
 
@@ -18,7 +17,6 @@ impl ValueEnum for LlmModelName {
             Self::Gpt5Mini,
             Self::Qwen25_7b,
             Self::Qwen3_4b,
-            Self::Qwen3_8b,
             Self::Qwen35_4b,
         ]
     }
@@ -57,7 +55,6 @@ impl LlmModelName {
             LlmModelName::Gpt5Mini => "gpt-5-mini",
             LlmModelName::Qwen25_7b => "qwen2.5-7b",
             LlmModelName::Qwen3_4b => "qwen3-4b",
-            LlmModelName::Qwen3_8b => "qwen3-8b",
             LlmModelName::Qwen35_4b => "qwen3.5-4b",
         }
     }
@@ -68,17 +65,13 @@ impl LlmModelName {
             LlmModelName::Gpt5Mini => "gpt-5-mini",
             LlmModelName::Qwen25_7b => "Qwen/Qwen2.5-7B-Instruct",
             LlmModelName::Qwen3_4b => "Qwen/Qwen3-4B",
-            LlmModelName::Qwen3_8b => "Qwen/Qwen3-8B",
             LlmModelName::Qwen35_4b => "Qwen/Qwen3.5-4B",
         }
     }
 
     pub fn is_qwen(&self) -> bool {
         match self {
-            LlmModelName::Qwen25_7b
-            | LlmModelName::Qwen3_4b
-            | LlmModelName::Qwen3_8b
-            | LlmModelName::Qwen35_4b => true,
+            LlmModelName::Qwen25_7b | LlmModelName::Qwen3_4b | LlmModelName::Qwen35_4b => true,
             LlmModelName::Gpt4o | LlmModelName::Gpt5Mini => false,
         }
     }
@@ -86,10 +79,7 @@ impl LlmModelName {
     pub fn is_gpt(&self) -> bool {
         match self {
             LlmModelName::Gpt4o | LlmModelName::Gpt5Mini => true,
-            LlmModelName::Qwen25_7b
-            | LlmModelName::Qwen3_4b
-            | LlmModelName::Qwen3_8b
-            | LlmModelName::Qwen35_4b => false,
+            LlmModelName::Qwen25_7b | LlmModelName::Qwen3_4b | LlmModelName::Qwen35_4b => false,
         }
     }
 }

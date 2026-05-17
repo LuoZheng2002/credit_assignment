@@ -1,5 +1,4 @@
 pub mod agent;
-pub mod apply_vllm_model_chat_template;
 pub mod call_llm;
 pub mod constants;
 pub mod direct_tool;

@@ -1,10 +1,10 @@
 use clap::Args;
+use minijinja::context;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
-use crate::apply_vllm_model_chat_template::apply_vllm_model_chat_template;
 use crate::call_llm::{
     GptLlmCallable, LlmCallable, Qwen25LlmCallable, Qwen35LlmCallable, Qwen3LlmCallable,
 };
@@ -16,9 +16,14 @@ pub enum LlmFamily {
     Qwen,
 }
 
+pub trait MyTokenizer<M: LlmModelMarker>: Send + Sync + 'static {
+    fn tokenize(prompt: String) -> M::StringOrTokenArray;
+}
+
 pub trait LlmModelMarker: Sized + Send + Sync + 'static {
     type StringOrTokenArray:
         Serialize + for<'de> Deserialize<'de> + Clone + std::fmt::Debug + Send + Sync + 'static;
+    type Tokenizer: MyTokenizer<Self>;
     type Callable: LlmCallable<Self> + Send + Sync + 'static;
 
     const CLI_NAME: &'static str;
@@ -40,7 +45,9 @@ pub trait LlmModelMarker: Sized + Send + Sync + 'static {
 
     fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String;
 
-    fn tokenize(prompt: String) -> Self::StringOrTokenArray;
+    fn tokenize(prompt: String) -> Self::StringOrTokenArray {
+        <Self::Tokenizer as MyTokenizer<Self>>::tokenize(prompt)
+    }
 
     fn callable_from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self::Callable;
 }
@@ -72,16 +79,53 @@ static QWEN25_TOKENIZER: LazyLock<Tokenizer> =
     LazyLock::new(|| Tokenizer::from_pretrained(Qwen25::API_NAME, None).unwrap());
 static QWEN3_4B_TOKENIZER: LazyLock<Tokenizer> =
     LazyLock::new(|| Tokenizer::from_pretrained(Qwen3_4B::API_NAME, None).unwrap());
-static QWEN3_8B_TOKENIZER: LazyLock<Tokenizer> =
-    LazyLock::new(|| Tokenizer::from_pretrained(Qwen3_8B::API_NAME, None).unwrap());
 static QWEN35_4B_TOKENIZER: LazyLock<Tokenizer> =
     LazyLock::new(|| Tokenizer::from_pretrained(Qwen35_4B::API_NAME, None).unwrap());
+static QWEN25_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment> = LazyLock::new(|| {
+    let mut env = minijinja::Environment::new();
+    let template_src = std::fs::read_to_string("tokenizers/qwen25/chat_template.jinja").unwrap();
+    env.add_template_owned("chat", template_src).unwrap();
+    env
+});
+
+#[derive(Serialize)]
+struct ChatMessage {
+    role: String,
+    content: String,
+}
+
+fn build_simple_qwen_chatml_prefix(user_prompt: &str, enable_thinking: bool) -> String {
+    if enable_thinking {
+        format!(
+            "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+            user_prompt
+        )
+    } else {
+        format!(
+            "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+            user_prompt
+        )
+    }
+}
+
+fn build_qwen25_prefix(user_prompt: &str, enable_thinking: bool) -> String {
+    let tmpl = QWEN25_TEMPLATE_ENVIRONMENT.get_template("chat").unwrap();
+    let messages = vec![ChatMessage {
+        role: "user".into(),
+        content: user_prompt.into(),
+    }];
+    tmpl.render(context! {
+        messages => messages,
+        add_generation_prompt => true,
+        enable_thinking => enable_thinking,
+    })
+    .unwrap()
+}
 
 fn tokenize_prompt_for_qwen_model<M: LlmModelMarker>(prompt: &str) -> Vec<i32> {
     let tokenizer = match M::CLI_NAME {
         Qwen25::CLI_NAME => &*QWEN25_TOKENIZER,
         Qwen3_4B::CLI_NAME => &*QWEN3_4B_TOKENIZER,
-        Qwen3_8B::CLI_NAME => &*QWEN3_8B_TOKENIZER,
         Qwen35_4B::CLI_NAME => &*QWEN35_4B_TOKENIZER,
         _ => panic!(
             "tokenize_prompt_for_qwen_model called for non-Qwen marker {}",
@@ -96,6 +140,50 @@ fn tokenize_prompt_for_qwen_model<M: LlmModelMarker>(prompt: &str) -> Vec<i32> {
         .map(|token| i32::try_from(*token).expect("token id must fit in i32"))
         .collect()
 }
+
+pub struct PassthroughTokenizer;
+impl<M> MyTokenizer<M> for PassthroughTokenizer
+where
+    M: LlmModelMarker<StringOrTokenArray = String>,
+{
+    fn tokenize(prompt: String) -> M::StringOrTokenArray {
+        prompt
+    }
+}
+
+pub struct Qwen25Tokenizer;
+impl MyTokenizer<Qwen25> for Qwen25Tokenizer {
+    fn tokenize(prompt: String) -> Qwen25TokenArray {
+        let tokens = tokenize_prompt_for_qwen_model::<Qwen25>(&prompt);
+        Qwen25TokenArray {
+            tokens,
+            decoded_string: prompt,
+        }
+    }
+}
+
+pub struct Qwen3_4BTokenizer;
+impl MyTokenizer<Qwen3_4B> for Qwen3_4BTokenizer {
+    fn tokenize(prompt: String) -> Qwen3TokenArray {
+        let tokens = tokenize_prompt_for_qwen_model::<Qwen3_4B>(&prompt);
+        Qwen3TokenArray {
+            tokens,
+            decoded_string: prompt,
+        }
+    }
+}
+
+pub struct Qwen35_4BTokenizer;
+impl MyTokenizer<Qwen35_4B> for Qwen35_4BTokenizer {
+    fn tokenize(prompt: String) -> Qwen35TokenArray {
+        let tokens = tokenize_prompt_for_qwen_model::<Qwen35_4B>(&prompt);
+        Qwen35TokenArray {
+            tokens,
+            decoded_string: prompt,
+        }
+    }
+}
+
 pub struct Qwen25;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Qwen25TokenArray {
@@ -114,6 +202,7 @@ pub struct Qwen35TokenArray {
 }
 impl LlmModelMarker for Qwen25 {
     type StringOrTokenArray = Qwen25TokenArray;
+    type Tokenizer = Qwen25Tokenizer;
     type Callable = Qwen25LlmCallable;
 
     const CLI_NAME: &'static str = "qwen2.5-7b";
@@ -124,22 +213,13 @@ impl LlmModelMarker for Qwen25 {
         prompt_before_assistant: &str,
         prompt_after_assistant: &str,
     ) -> String {
-        let mut full_prompt =
-            apply_vllm_model_chat_template(LlmModelName::Qwen25_7b, prompt_before_assistant, false);
+        let mut full_prompt = build_qwen25_prefix(prompt_before_assistant, false);
         full_prompt += prompt_after_assistant;
         full_prompt
     }
 
     fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String {
-        apply_vllm_model_chat_template(LlmModelName::Qwen25_7b, prompt_before_assistant, true)
-    }
-
-    fn tokenize(prompt: String) -> Self::StringOrTokenArray {
-        let tokens = tokenize_prompt_for_qwen_model::<Self>(&prompt);
-        Qwen25TokenArray {
-            tokens,
-            decoded_string: prompt,
-        }
+        build_qwen25_prefix(prompt_before_assistant, true)
     }
 
     fn callable_from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self::Callable {
@@ -153,6 +233,7 @@ impl LlmModelMarker for Qwen25 {
 pub struct Qwen3_4B;
 impl LlmModelMarker for Qwen3_4B {
     type StringOrTokenArray = Qwen3TokenArray;
+    type Tokenizer = Qwen3_4BTokenizer;
     type Callable = Qwen3LlmCallable;
 
     const CLI_NAME: &'static str = "qwen3-4b";
@@ -163,62 +244,13 @@ impl LlmModelMarker for Qwen3_4B {
         prompt_before_assistant: &str,
         prompt_after_assistant: &str,
     ) -> String {
-        let mut full_prompt =
-            apply_vllm_model_chat_template(LlmModelName::Qwen3_4b, prompt_before_assistant, false);
+        let mut full_prompt = build_simple_qwen_chatml_prefix(prompt_before_assistant, false);
         full_prompt += prompt_after_assistant;
         full_prompt
     }
 
     fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String {
-        apply_vllm_model_chat_template(LlmModelName::Qwen3_4b, prompt_before_assistant, true)
-    }
-
-    fn tokenize(prompt: String) -> Self::StringOrTokenArray {
-        let tokens = tokenize_prompt_for_qwen_model::<Self>(&prompt);
-        Qwen3TokenArray {
-            tokens,
-            decoded_string: prompt,
-        }
-    }
-
-    fn callable_from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self::Callable {
-        Qwen3LlmCallable::new(
-            client,
-            Self::API_NAME,
-            llm_cli_args.single_port_for_qwen(),
-            llm_cli_args.max_concurrent_requests,
-        )
-    }
-}
-pub struct Qwen3_8B;
-impl LlmModelMarker for Qwen3_8B {
-    type StringOrTokenArray = Qwen3TokenArray;
-    type Callable = Qwen3LlmCallable;
-
-    const CLI_NAME: &'static str = "qwen3-8b";
-    const API_NAME: &'static str = "Qwen/Qwen3-8B";
-    const FAMILY: LlmFamily = LlmFamily::Qwen;
-
-    fn build_prefix_thinking_disabled(
-        prompt_before_assistant: &str,
-        prompt_after_assistant: &str,
-    ) -> String {
-        let mut full_prompt =
-            apply_vllm_model_chat_template(LlmModelName::Qwen3_8b, prompt_before_assistant, false);
-        full_prompt += prompt_after_assistant;
-        full_prompt
-    }
-
-    fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String {
-        apply_vllm_model_chat_template(LlmModelName::Qwen3_8b, prompt_before_assistant, true)
-    }
-
-    fn tokenize(prompt: String) -> Self::StringOrTokenArray {
-        let tokens = tokenize_prompt_for_qwen_model::<Self>(&prompt);
-        Qwen3TokenArray {
-            tokens,
-            decoded_string: prompt,
-        }
+        build_simple_qwen_chatml_prefix(prompt_before_assistant, true)
     }
 
     fn callable_from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self::Callable {
@@ -233,6 +265,7 @@ impl LlmModelMarker for Qwen3_8B {
 pub struct Qwen35_4B;
 impl LlmModelMarker for Qwen35_4B {
     type StringOrTokenArray = Qwen35TokenArray;
+    type Tokenizer = Qwen35_4BTokenizer;
     type Callable = Qwen35LlmCallable;
 
     const CLI_NAME: &'static str = "qwen3.5-4b";
@@ -243,22 +276,13 @@ impl LlmModelMarker for Qwen35_4B {
         prompt_before_assistant: &str,
         prompt_after_assistant: &str,
     ) -> String {
-        let mut full_prompt =
-            apply_vllm_model_chat_template(LlmModelName::Qwen35_4b, prompt_before_assistant, false);
+        let mut full_prompt = build_simple_qwen_chatml_prefix(prompt_before_assistant, false);
         full_prompt += prompt_after_assistant;
         full_prompt
     }
 
     fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String {
-        apply_vllm_model_chat_template(LlmModelName::Qwen35_4b, prompt_before_assistant, true)
-    }
-
-    fn tokenize(prompt: String) -> Self::StringOrTokenArray {
-        let tokens = tokenize_prompt_for_qwen_model::<Self>(&prompt);
-        Qwen35TokenArray {
-            tokens,
-            decoded_string: prompt,
-        }
+        build_simple_qwen_chatml_prefix(prompt_before_assistant, true)
     }
 
     fn callable_from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self::Callable {
@@ -272,6 +296,7 @@ impl LlmModelMarker for Qwen35_4B {
 pub struct Gpt4o;
 impl LlmModelMarker for Gpt4o {
     type StringOrTokenArray = String;
+    type Tokenizer = PassthroughTokenizer;
     type Callable = GptLlmCallable<Self>;
 
     const CLI_NAME: &'static str = "gpt-4o";
@@ -289,10 +314,6 @@ impl LlmModelMarker for Gpt4o {
         prompt_before_assistant.to_string()
     }
 
-    fn tokenize(prompt: String) -> Self::StringOrTokenArray {
-        prompt
-    }
-
     fn callable_from_cli_args(client: Client, _llm_cli_args: &LlmCliArgs) -> Self::Callable {
         GptLlmCallable::new(client)
     }
@@ -301,6 +322,7 @@ impl LlmModelMarker for Gpt4o {
 pub struct Gpt5Mini;
 impl LlmModelMarker for Gpt5Mini {
     type StringOrTokenArray = String;
+    type Tokenizer = PassthroughTokenizer;
     type Callable = GptLlmCallable<Self>;
 
     const CLI_NAME: &'static str = "gpt-5-mini";
@@ -316,10 +338,6 @@ impl LlmModelMarker for Gpt5Mini {
 
     fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String {
         prompt_before_assistant.to_string()
-    }
-
-    fn tokenize(prompt: String) -> Self::StringOrTokenArray {
-        prompt
     }
 
     fn callable_from_cli_args(client: Client, _llm_cli_args: &LlmCliArgs) -> Self::Callable {
@@ -341,9 +359,6 @@ pub fn build_prefix_thinking_disabled_by_model(
         }
         LlmModelName::Qwen3_4b => {
             Qwen3_4B::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
-        }
-        LlmModelName::Qwen3_8b => {
-            Qwen3_8B::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
         }
         LlmModelName::Qwen35_4b => {
             Qwen35_4B::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
