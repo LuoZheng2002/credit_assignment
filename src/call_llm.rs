@@ -7,10 +7,10 @@ use std::sync::{
 };
 use tokio::sync::Semaphore;
 
-use crate::llm_model::LlmModel;
+use crate::llm_model_name::LlmModelName;
 use crate::llm_models::{
-    LlmModelMarker, Qwen25, Qwen25TokenArray, Qwen35_4B, Qwen35TokenArray, Qwen3TokenArray,
-    Qwen3_4B, Qwen3_8B,
+    LlmModelMarker, Qwen3_4B, Qwen3_8B, Qwen3TokenArray, Qwen25, Qwen25TokenArray, Qwen35_4B,
+    Qwen35TokenArray,
 };
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
@@ -30,7 +30,8 @@ pub async fn call_llm_with_prefix<M: LlmModelMarker, C: LlmCallable<M>>(
     prompt_before_assistant: String,
     prompt_after_assistant: String,
 ) -> String {
-    let prompt = M::build_prefix_thinking_disabled(&prompt_before_assistant, &prompt_after_assistant);
+    let prompt =
+        M::build_prefix_thinking_disabled(&prompt_before_assistant, &prompt_after_assistant);
     let input = M::tokenize(prompt);
     llm_callable.generate(input, true).await
 }
@@ -190,11 +191,7 @@ impl Qwen25LlmCallable {
 
 #[async_trait]
 impl LlmCallable<Qwen25> for Qwen25LlmCallable {
-    async fn generate(
-        &self,
-        prompt_or_tokens: Qwen25TokenArray,
-        passes_in_stop: bool,
-    ) -> String {
+    async fn generate(&self, prompt_or_tokens: Qwen25TokenArray, passes_in_stop: bool) -> String {
         self.shared
             .generate_from_tokens(prompt_or_tokens.tokens, passes_in_stop)
             .await
@@ -207,20 +204,26 @@ pub struct Qwen3LlmCallable {
 }
 
 impl Qwen3LlmCallable {
-    pub fn new(client: Client, api_name: &'static str, vllm_port: u16, max_concurrent_requests: usize) -> Self {
+    pub fn new(
+        client: Client,
+        api_name: &'static str,
+        vllm_port: u16,
+        max_concurrent_requests: usize,
+    ) -> Self {
         Self {
-            shared: SharedQwenLlmCallable::new(client, api_name, vllm_port, max_concurrent_requests),
+            shared: SharedQwenLlmCallable::new(
+                client,
+                api_name,
+                vllm_port,
+                max_concurrent_requests,
+            ),
         }
     }
 }
 
 #[async_trait]
 impl LlmCallable<Qwen3_4B> for Qwen3LlmCallable {
-    async fn generate(
-        &self,
-        prompt_or_tokens: Qwen3TokenArray,
-        passes_in_stop: bool,
-    ) -> String {
+    async fn generate(&self, prompt_or_tokens: Qwen3TokenArray, passes_in_stop: bool) -> String {
         self.shared
             .generate_from_tokens(prompt_or_tokens.tokens, passes_in_stop)
             .await
@@ -229,11 +232,7 @@ impl LlmCallable<Qwen3_4B> for Qwen3LlmCallable {
 
 #[async_trait]
 impl LlmCallable<Qwen3_8B> for Qwen3LlmCallable {
-    async fn generate(
-        &self,
-        prompt_or_tokens: Qwen3TokenArray,
-        passes_in_stop: bool,
-    ) -> String {
+    async fn generate(&self, prompt_or_tokens: Qwen3TokenArray, passes_in_stop: bool) -> String {
         self.shared
             .generate_from_tokens(prompt_or_tokens.tokens, passes_in_stop)
             .await
@@ -260,11 +259,7 @@ impl Qwen35LlmCallable {
 
 #[async_trait]
 impl LlmCallable<Qwen35_4B> for Qwen35LlmCallable {
-    async fn generate(
-        &self,
-        prompt_or_tokens: Qwen35TokenArray,
-        passes_in_stop: bool,
-    ) -> String {
+    async fn generate(&self, prompt_or_tokens: Qwen35TokenArray, passes_in_stop: bool) -> String {
         self.shared
             .generate_from_tokens(prompt_or_tokens.tokens, passes_in_stop)
             .await
@@ -321,7 +316,7 @@ impl LlmEndpoint {
     }
 }
 
-fn get_chat_completions_url(model: LlmModel) -> String {
+fn get_chat_completions_url(model: LlmModelName) -> String {
     if model.is_gpt() {
         OPENAI_CHAT_COMPLETIONS_URL.to_string()
     } else if model.is_qwen() {
@@ -333,7 +328,7 @@ fn get_chat_completions_url(model: LlmModel) -> String {
     }
 }
 
-fn get_chat_completions_url_for_endpoint(model: LlmModel, endpoint: &LlmEndpoint) -> String {
+fn get_chat_completions_url_for_endpoint(model: LlmModelName, endpoint: &LlmEndpoint) -> String {
     if model.is_gpt() {
         OPENAI_CHAT_COMPLETIONS_URL.to_string()
     } else if model.is_qwen() {
@@ -345,7 +340,7 @@ fn get_chat_completions_url_for_endpoint(model: LlmModel, endpoint: &LlmEndpoint
 
 fn build_chat_completions_body(
     prompt: String,
-    model: LlmModel,
+    model: LlmModelName,
     passes_in_stop: bool,
 ) -> serde_json::Value {
     if model.is_qwen() {
@@ -394,7 +389,7 @@ async fn post_json(
     client: Client,
     url: &str,
     body: serde_json::Value,
-    model: LlmModel,
+    model: LlmModelName,
 ) -> reqwest::Response {
     if model.is_gpt() {
         let api_key =
@@ -414,7 +409,7 @@ async fn post_json(
 pub async fn call_llm_chat_completions(
     client: Client,
     prompt: String,
-    model: LlmModel,
+    model: LlmModelName,
     passes_in_stop: bool,
 ) -> String {
     let url = get_chat_completions_url(model);
@@ -436,7 +431,7 @@ pub async fn call_llm_chat_completions(
 pub async fn call_llm_chat_completions_on_endpoint(
     client: Client,
     prompt: String,
-    model: LlmModel,
+    model: LlmModelName,
     passes_in_stop: bool,
     endpoint: Arc<LlmEndpoint>,
 ) -> String {
@@ -472,7 +467,7 @@ pub async fn call_llm_chat_completions_on_endpoint(
 pub async fn call_qwen_raw_completions_on_endpoint(
     client: Client,
     chat_template_prompt: String,
-    model: LlmModel,
+    model: LlmModelName,
     endpoint: Arc<LlmEndpoint>,
 ) -> String {
     assert!(

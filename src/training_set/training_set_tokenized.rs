@@ -5,7 +5,7 @@ use crate::{
     asset_file::{AssetFile, Base64Hash, hash_file},
     em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
     json_line_util::{read_json, write_json},
-    llm_model::LlmModel,
+    llm_model_name::LlmModelName,
     sqlite_store::SqliteStore,
     training_set::training_set_formatted::{
         AssetFileTrainingFormatted, QuestionNodeId, TrainingSampleFormatted,
@@ -40,7 +40,7 @@ pub struct TrainingSampleTokenized {
 }
 
 pub struct AssetFileTrainingTokenized {
-    pub model: LlmModel,
+    pub model: LlmModelName,
     pub dataset: String,
     pub num_samples: usize,
     pub hyperparameters: EmHyperparameters,
@@ -109,7 +109,7 @@ impl AssetFileTrainingTokenized {
                 "Warning: Training tokenization currently supports Qwen models only, but received {}",
                 self.model.cli_name()
             );
-            LlmModel::Qwen25_7b
+            LlmModelName::Qwen25_7b
         };
         Tokenizer::from_pretrained(model.api_name(), None).unwrap()
     }

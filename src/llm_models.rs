@@ -8,7 +8,7 @@ use crate::apply_vllm_model_chat_template::apply_vllm_model_chat_template;
 use crate::call_llm::{
     GptLlmCallable, LlmCallable, Qwen25LlmCallable, Qwen35LlmCallable, Qwen3LlmCallable,
 };
-use crate::llm_model::LlmModel;
+use crate::llm_model_name::LlmModelName;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmFamily {
@@ -125,13 +125,13 @@ impl LlmModelMarker for Qwen25 {
         prompt_after_assistant: &str,
     ) -> String {
         let mut full_prompt =
-            apply_vllm_model_chat_template(LlmModel::Qwen25_7b, prompt_before_assistant, false);
+            apply_vllm_model_chat_template(LlmModelName::Qwen25_7b, prompt_before_assistant, false);
         full_prompt += prompt_after_assistant;
         full_prompt
     }
 
     fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String {
-        apply_vllm_model_chat_template(LlmModel::Qwen25_7b, prompt_before_assistant, true)
+        apply_vllm_model_chat_template(LlmModelName::Qwen25_7b, prompt_before_assistant, true)
     }
 
     fn tokenize(prompt: String) -> Self::StringOrTokenArray {
@@ -164,13 +164,13 @@ impl LlmModelMarker for Qwen3_4B {
         prompt_after_assistant: &str,
     ) -> String {
         let mut full_prompt =
-            apply_vllm_model_chat_template(LlmModel::Qwen3_4b, prompt_before_assistant, false);
+            apply_vllm_model_chat_template(LlmModelName::Qwen3_4b, prompt_before_assistant, false);
         full_prompt += prompt_after_assistant;
         full_prompt
     }
 
     fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String {
-        apply_vllm_model_chat_template(LlmModel::Qwen3_4b, prompt_before_assistant, true)
+        apply_vllm_model_chat_template(LlmModelName::Qwen3_4b, prompt_before_assistant, true)
     }
 
     fn tokenize(prompt: String) -> Self::StringOrTokenArray {
@@ -204,13 +204,13 @@ impl LlmModelMarker for Qwen3_8B {
         prompt_after_assistant: &str,
     ) -> String {
         let mut full_prompt =
-            apply_vllm_model_chat_template(LlmModel::Qwen3_8b, prompt_before_assistant, false);
+            apply_vllm_model_chat_template(LlmModelName::Qwen3_8b, prompt_before_assistant, false);
         full_prompt += prompt_after_assistant;
         full_prompt
     }
 
     fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String {
-        apply_vllm_model_chat_template(LlmModel::Qwen3_8b, prompt_before_assistant, true)
+        apply_vllm_model_chat_template(LlmModelName::Qwen3_8b, prompt_before_assistant, true)
     }
 
     fn tokenize(prompt: String) -> Self::StringOrTokenArray {
@@ -244,13 +244,13 @@ impl LlmModelMarker for Qwen35_4B {
         prompt_after_assistant: &str,
     ) -> String {
         let mut full_prompt =
-            apply_vllm_model_chat_template(LlmModel::Qwen35_4b, prompt_before_assistant, false);
+            apply_vllm_model_chat_template(LlmModelName::Qwen35_4b, prompt_before_assistant, false);
         full_prompt += prompt_after_assistant;
         full_prompt
     }
 
     fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String {
-        apply_vllm_model_chat_template(LlmModel::Qwen35_4b, prompt_before_assistant, true)
+        apply_vllm_model_chat_template(LlmModelName::Qwen35_4b, prompt_before_assistant, true)
     }
 
     fn tokenize(prompt: String) -> Self::StringOrTokenArray {
@@ -331,27 +331,27 @@ pub type Qwen3 = Qwen3_4B;
 pub type Qwen35 = Qwen35_4B;
 
 pub fn build_prefix_thinking_disabled_by_model(
-    model: LlmModel,
+    model: LlmModelName,
     prompt_before_assistant: &str,
     prompt_after_assistant: &str,
 ) -> String {
     match model {
-        LlmModel::Qwen25_7b => {
+        LlmModelName::Qwen25_7b => {
             Qwen25::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
         }
-        LlmModel::Qwen3_4b => {
+        LlmModelName::Qwen3_4b => {
             Qwen3_4B::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
         }
-        LlmModel::Qwen3_8b => {
+        LlmModelName::Qwen3_8b => {
             Qwen3_8B::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
         }
-        LlmModel::Qwen35_4b => {
+        LlmModelName::Qwen35_4b => {
             Qwen35_4B::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
         }
-        LlmModel::Gpt4o => {
+        LlmModelName::Gpt4o => {
             Gpt4o::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
         }
-        LlmModel::Gpt5Mini => {
+        LlmModelName::Gpt5Mini => {
             Gpt5Mini::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
         }
     }

@@ -12,7 +12,7 @@ use crate::{
         em_types::EmHyperparameters,
     },
     json_line_util::{read_json, write_json},
-    llm_model::LlmModel,
+    llm_model_name::LlmModelName,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -35,7 +35,7 @@ pub struct AdvantageCompositionPerNode {
 }
 
 pub struct AssetFileAdvantageComposition {
-    pub model: LlmModel,
+    pub model: LlmModelName,
     pub dataset: String,
     pub num_samples: usize,
     pub hyperparameters: EmHyperparameters,

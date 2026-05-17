@@ -25,7 +25,7 @@ use crate::worker_message_tx::log_key_value_pair;
 use crate::{
     agent::trajectory_action::TrajectoryAction,
     constants::{IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE, REPETITION_ABORT_MESSAGE},
-    llm_model::LlmModel,
+    llm_model_name::LlmModelName,
 };
 
 pub async fn judge_answer_task(
@@ -42,7 +42,7 @@ The question is: \"{}\". \
 The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
         question, model_answer, correct_answer
     );
-    let evaluation = call_llm_chat_completions(client, prompt, LlmModel::Gpt4o, false)
+    let evaluation = call_llm_chat_completions(client, prompt, LlmModelName::Gpt4o, false)
         .await
         .trim()
         .to_lowercase();

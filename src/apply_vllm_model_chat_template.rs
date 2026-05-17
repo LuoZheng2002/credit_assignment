@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use serde::Serialize;
 
-use crate::llm_model::LlmModel;
+use crate::llm_model_name::LlmModelName;
 
 static QWEN25_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment> = LazyLock::new(|| {
     let mut env = minijinja::Environment::new();
@@ -32,7 +32,7 @@ fn apply_simple_qwen_chatml_template(user_prompt: &str, enable_thinking: bool) -
 }
 
 pub fn apply_vllm_model_chat_template(
-    model: LlmModel,
+    model: LlmModelName,
     user_prompt: &str,
     enable_thinking: bool,
 ) -> String {
@@ -47,11 +47,11 @@ pub fn apply_vllm_model_chat_template(
             "Warning: vLLM chat template only supports Qwen models, but received {}",
             model.cli_name()
         );
-        LlmModel::Qwen25_7b
+        LlmModelName::Qwen25_7b
     };
 
     match model {
-        LlmModel::Qwen25_7b => {
+        LlmModelName::Qwen25_7b => {
             let tmpl = QWEN25_TEMPLATE_ENVIRONMENT.get_template("chat").unwrap();
             let messages = vec![ChatMessage {
                 role: "user".into(),
@@ -66,9 +66,9 @@ pub fn apply_vllm_model_chat_template(
         }
         // NOTE: Official Qwen3 templates use Python-style string methods (e.g. startswith)
         // that MiniJinja does not support. Use a minimal ChatML template for prefix mode.
-        LlmModel::Qwen3_4b | LlmModel::Qwen3_8b | LlmModel::Qwen35_4b => {
+        LlmModelName::Qwen3_4b | LlmModelName::Qwen3_8b | LlmModelName::Qwen35_4b => {
             apply_simple_qwen_chatml_template(user_prompt, enable_thinking)
         }
-        LlmModel::Gpt4o | LlmModel::Gpt5Mini => unreachable!(),
+        LlmModelName::Gpt4o | LlmModelName::Gpt5Mini => unreachable!(),
     }
 }

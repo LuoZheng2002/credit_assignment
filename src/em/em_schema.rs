@@ -12,7 +12,7 @@ use crate::{
         EmFitDiagnostics, EmGlobalConfigSnapshot, EmHyperparameters, EmNodeTypePosterior,
     },
     json_line_util::{read_json, write_json},
-    llm_model::LlmModel,
+    llm_model_name::LlmModelName,
     sqlite_store::SqliteStore,
 };
 
@@ -178,7 +178,7 @@ pub struct AssetFileEmFitTracking {
 }
 
 pub struct AssetFileEmFit {
-    pub model: LlmModel,
+    pub model: LlmModelName,
     pub dataset: String,
     pub num_samples: usize,
     pub hyperparameters: EmHyperparameters,

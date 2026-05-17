@@ -23,7 +23,7 @@ use crate::{
     call_llm::LlmCallable,
     json_line_util::write_json,
     llm_models::LlmModelMarker,
-    llm_model::LlmModel,
+    llm_model_name::LlmModelName,
     worker_message_tx::{log_key_value_pair, log_master_progress},
 };
 
@@ -52,7 +52,7 @@ fn publish_master_progress(processed_questions: usize, total_questions: usize) {
 // this function is responsible for loading the dataset, running rollouts and then storing the trajectories.
 // It is also responsible for creating the version tracking file and output file if they do not exist
 pub async fn rollout_batch<M: LlmModelMarker + 'static, C: LlmCallable<M> + Send + Sync + 'static>(
-    model: LlmModel,
+    model: LlmModelName,
     dataset_name: String,
     num_samples: usize,
     llm_callable: C,

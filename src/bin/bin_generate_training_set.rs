@@ -1,7 +1,7 @@
 use clap::Parser;
 use credit_assignment::asset_file::AssetFile;
 use credit_assignment::em::em_types::{EmHyperparameters, LogStdClamp};
-use credit_assignment::llm_model::LlmModel;
+use credit_assignment::llm_model_name::LlmModelName;
 use credit_assignment::training_set::training_set_batch::AssetFileTrainingBatch;
 
 const DEFAULT_BATCH_SIZE: usize = 4;
@@ -10,7 +10,7 @@ const DEFAULT_BATCH_SIZE: usize = 4;
 #[command(author, version, about = "Generate tokenized training batches")]
 struct Args {
     #[arg(value_enum, short, long)]
-    model: LlmModel,
+    model: LlmModelName,
 
     #[arg(short, long)]
     dataset_name: String,

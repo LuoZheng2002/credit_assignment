@@ -6,7 +6,7 @@ use crate::{
     asset_file::{AssetFile, Base64Hash, hash_file},
     em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
     json_line_util::{read_json, write_json},
-    llm_model::LlmModel,
+    llm_model_name::LlmModelName,
     sqlite_store::SqliteStore,
     training_set::{
         training_set_formatted::QuestionNodeId,
@@ -44,7 +44,7 @@ pub struct AssetFileTrainingBatchTracking {
 pub type TrainingBatchStore = SqliteStore<usize, TrainingBatch>;
 
 pub struct AssetFileTrainingBatch {
-    pub model: LlmModel,
+    pub model: LlmModelName,
     pub dataset: String,
     pub num_samples: usize,
     pub hyperparameters: EmHyperparameters,

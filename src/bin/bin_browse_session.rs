@@ -14,7 +14,7 @@ use credit_assignment::constants::{
 };
 use credit_assignment::em::em_schema::{AssetFileEmFit, EmFitPerTree};
 use credit_assignment::em::em_types::{EmHyperparameters, LogStdClamp};
-use credit_assignment::llm_model::LlmModel;
+use credit_assignment::llm_model_name::LlmModelName;
 use credit_assignment::status_prompts::universal_prompt::get_prompt_according_to_session_status;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseButton,
@@ -48,7 +48,7 @@ use credit_assignment::agent::tree_schema::CompletedTree;
 #[command(author, version, about = "Interactively browse rollout session logs")]
 struct Args {
     #[arg(value_enum, short, long)]
-    model: LlmModel,
+    model: LlmModelName,
 
     #[arg(short, long)]
     dataset_name: String,

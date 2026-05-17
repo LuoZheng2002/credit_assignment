@@ -3,7 +3,7 @@ use crate::{
     agent::tree::Tree,
     asset_file::{AssetFile, Base64Hash, hash_file},
     json_line_util::{HasId, read_json},
-    llm_model::LlmModel,
+    llm_model_name::LlmModelName,
     sqlite_store::SqliteStore,
 };
 use serde::{Deserialize, Serialize};
@@ -41,7 +41,7 @@ impl HasId for CompletedTree {
 }
 
 pub struct AssetFileTrees {
-    pub model: LlmModel,
+    pub model: LlmModelName,
     pub dataset: String,
     pub num_samples: usize,
 }
