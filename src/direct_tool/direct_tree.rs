@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::tree::CorrectnessJudgment;
+use crate::{agent::tree::CorrectnessJudgment, llm_models::LlmModelMarker};
 
 // this tree is similar to the completed tree in src/agent folder, but now it runs on a lightweight tool-calling context instead of a heavy agent framework
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct DirectTree<M: ModelMarker> {
+pub struct DirectTree<M: LlmModelMarker> {
     pub flat_id: usize, // the same flat id as the one in the hybrid dataset
     pub dataset_name: String,
     pub question_id: usize,
@@ -26,32 +26,20 @@ pub struct DirectTree<M: ModelMarker> {
 // we can branch on the reasoning part, but not on the tool response part
 // tool response should not be counted towards the segment length
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Segment<M: ModelMarker> {
+pub struct Segment<M: LlmModelMarker> {
     pub segment_id: usize,
     pub content: Vec<SegmentContent<M>>,
     pub child_ids: Vec<usize>,
     pub parent_id: Option<usize>,
 }
 
-pub trait ModelMarker {}
-pub struct Qwe25;
-impl ModelMarker for Qwe25 {}
-pub struct Qwen3;
-impl ModelMarker for Qwen3 {}
-pub struct Qwen35;
-impl ModelMarker for Qwen35 {}
+
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Token<M: ModelMarker> {
-    pub value: i32,
-    _marker: std::marker::PhantomData<M>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum SegmentContent<M: ModelMarker> {
-    Prompt(Vec<Token<M>>),
-    ReasoningOrToolCall(Vec<Token<M>>),
-    ToolResponse(Vec<Token<M>>),
+pub enum SegmentContent<M: LlmModelMarker> {
+    Prompt(M::StringOrTokenArray),
+    ReasoningOrToolCall(M::StringOrTokenArray),
+    ToolResponse(M::StringOrTokenArray),
 }
 
 // initially we need to finish 4 full trajectory rollouts.
@@ -64,7 +52,7 @@ pub struct BranchPosition {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum DirectTreeAction<M: ModelMarker> {
+pub enum DirectTreeAction<M: LlmModelMarker> {
     CreateTrunkTrajectory {
         content: Vec<SegmentContent<M>>,
     },
@@ -85,7 +73,7 @@ pub enum DirectTreeAction<M: ModelMarker> {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct DirectTreeActionEntry<M: ModelMarker> {
+pub struct DirectTreeActionEntry<M: LlmModelMarker> {
     pub flat_id: usize,
     pub dataset_name: String,
     pub question_id: usize,
