@@ -1,5 +1,4 @@
 use rand::RngExt;
-use reqwest::Client;
 
 use crate::{
     agent::{
@@ -10,7 +9,6 @@ use crate::{
         trajectory_status::TrajectoryStatus,
         tree_action::TreeAction,
     },
-    llm_model::LlmModel,
     worker_message_tx::log_key_value_pair,
 };
 
@@ -300,14 +298,11 @@ fn determine_chosen_mode_with_take_over(
 
 pub async fn determine_chosen_mode(
     session_state: &TrajectoryState<'_>,
-    client: Client,
-    model: LlmModel,
     rng: &mut impl rand::Rng,
 ) -> TreeAction {
     let TrajectoryStatus::PlannerChoosingMode { verifier_comment } = &session_state.status else {
         panic!("determine_chosen_mode should only be called in PlannerChoosingMode status");
     };
-    let _ = (client, model); // currently unused because mode decision is takeover-only
     let chosen_mode = determine_chosen_mode_with_take_over(session_state, verifier_comment, rng);
     TreeAction::AddTrajectoryAction {
         question_id: session_state.source_tree.question_id,

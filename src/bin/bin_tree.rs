@@ -1,12 +1,28 @@
 use std::{backtrace::Backtrace, sync::Arc};
 
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
-    agent::rollout_batch::rollout_batch, llm_model::LlmModel, message::WorkerMessage,
+    agent::rollout_batch::rollout_batch,
+    llm_model::LlmModel,
+    llm_models::{
+        Gpt4o, Gpt5Mini, LlmCliArgs, LlmModelMarker, Qwen3_4B, Qwen3_8B, Qwen25, Qwen35_4B,
+    },
+    message::WorkerMessage,
     progress_screen::ProgressScreen, progress_screen::ProgressScreenConfig,
     worker_message_tx::WORKER_MESSAGE_TX,
 };
+use reqwest::Client;
 use tokio::sync::mpsc;
+
+async fn run_rollout_for_marker<M: LlmModelMarker>(
+    model: LlmModel,
+    dataset_name: String,
+    num_samples: usize,
+    llm_cli_args: &LlmCliArgs,
+) {
+    let llm_callable = M::callable_from_cli_args(Client::new(), llm_cli_args);
+    rollout_batch::<M, M::Callable>(model, dataset_name, num_samples, llm_callable).await;
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "Evaluate DeepMath Model")]
@@ -15,10 +31,8 @@ struct Args {
     dataset_name: String,
     #[arg(short, long)]
     num_samples: usize,
-    #[arg(value_enum, short, long)]
-    model: LlmModel,
-    #[arg(long, value_delimiter = ',', num_args = 1..)]
-    vllm_ports: Vec<u16>,
+    #[command(flatten)]
+    llm_cli_args: LlmCliArgs,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
 }
@@ -44,24 +58,24 @@ async fn main() {
     dotenvy::dotenv().ok();
     let Args {
         dataset_name,
-        model,
         num_samples,
-        vllm_ports,
+        llm_cli_args,
         ui,
     } = Args::parse();
 
+    let model = LlmModel::from_str(&llm_cli_args.model_cli_name, false)
+        .expect("--model-cli-name must match one of the supported model CLI names");
     let (worker_message_tx, mut worker_message_rx) = mpsc::unbounded_channel();
     WORKER_MESSAGE_TX.store(Some(Arc::new(worker_message_tx)));
 
     let progress_screen = if ui {
-        let mut progress_screen_config = ProgressScreenConfig::from_defaults(vllm_ports.len(), 1);
+        let mut progress_screen_config = ProgressScreenConfig::from_defaults(1, 1);
         progress_screen_config.window_title = "Bin Tree Rollout Progress".to_string();
         progress_screen_config.key_order = vec![
             "status".to_string(),
             "model".to_string(),
             "dataset".to_string(),
             "num_samples".to_string(),
-            "endpoints".to_string(),
             "running_accuracy".to_string(),
         ];
         progress_screen_config.persist_after_channel_close = false;
@@ -96,7 +110,31 @@ async fn main() {
         }
     });
 
-    rollout_batch(model, dataset_name, num_samples, vllm_ports).await;
+    match model {
+        LlmModel::Gpt4o => {
+            run_rollout_for_marker::<Gpt4o>(model, dataset_name, num_samples, &llm_cli_args).await
+        }
+        LlmModel::Gpt5Mini => {
+            run_rollout_for_marker::<Gpt5Mini>(model, dataset_name, num_samples, &llm_cli_args)
+                .await
+        }
+        LlmModel::Qwen25_7b => {
+            run_rollout_for_marker::<Qwen25>(model, dataset_name, num_samples, &llm_cli_args)
+                .await
+        }
+        LlmModel::Qwen3_4b => {
+            run_rollout_for_marker::<Qwen3_4B>(model, dataset_name, num_samples, &llm_cli_args)
+                .await
+        }
+        LlmModel::Qwen3_8b => {
+            run_rollout_for_marker::<Qwen3_8B>(model, dataset_name, num_samples, &llm_cli_args)
+                .await
+        }
+        LlmModel::Qwen35_4b => {
+            run_rollout_for_marker::<Qwen35_4B>(model, dataset_name, num_samples, &llm_cli_args)
+                .await
+        }
+    }
 
     WORKER_MESSAGE_TX.store(None);
     worker_message_listener

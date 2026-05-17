@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-trait = "0.1.89"
 arc-swap = "1.9.1"
 atomic_refcell = "0.1.13"
 base64 = "0.22.1"

@@ -7,12 +7,12 @@ use crate::{
         trajectory_state::TrajectoryState,
         tree_schema::CompletedTree,
     },
-    apply_vllm_model_chat_template::apply_vllm_model_chat_template,
     constants::{
         FIXED_ADVANTAGE_WEIGHT_CONTRIBUTION, FIXED_ADVANTAGE_WEIGHT_STEP_QUALITY,
         FIXED_ADVANTAGE_WEIGHT_TRAJECTORY,
     },
     llm_model::LlmModel,
+    llm_models::build_prefix_thinking_disabled_by_model,
     status_prompts::universal_prompt::get_prompt_according_to_session_status,
     training_set::training_set_formatted::{QuestionNodeId, TrainingSampleFormatted},
 };
@@ -158,9 +158,11 @@ pub fn generate_sample_formatted_from_tree_node(
         response_content.push_str("<__end_mask_with_eos__>");
     }
 
-    let mut planner_chat_template_prompt =
-        apply_vllm_model_chat_template(model, &prompt_before_assistant, false);
-    planner_chat_template_prompt.push_str(&prompt_after_assistant);
+    let planner_chat_template_prompt = build_prefix_thinking_disabled_by_model(
+        model,
+        &prompt_before_assistant,
+        &prompt_after_assistant,
+    );
 
     let node_advantage = advantage_composition
         .per_node

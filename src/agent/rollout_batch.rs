@@ -1,18 +1,15 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::HashSet,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::{Duration, Instant},
 };
 
-use futures::stream::{FuturesUnordered, StreamExt};
 use indexmap::IndexMap;
 use pyo3::Python;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use reqwest::Client;
-use tokio::sync::OwnedSemaphorePermit;
 
 use crate::{
     agent::{
@@ -23,62 +20,18 @@ use crate::{
         tree_schema::{AssetFileTrees, AssetFileTreesTracking, CompletedTree, CompletedTreeStore},
     },
     asset_file::AssetFile,
-    call_llm::LlmEndpoint,
+    call_llm::LlmCallable,
     json_line_util::write_json,
+    llm_models::LlmModelMarker,
     llm_model::LlmModel,
-    worker_message_tx::{log_key_value_pair, log_master_progress, log_worker_progress},
+    worker_message_tx::{log_key_value_pair, log_master_progress},
 };
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
-const MAX_CONCURRENT_REQUESTS_PER_ENDPOINT: usize = 100;
 
 pub enum LogOrTree {
     Action(TreeAction),
     Tree(CompletedTree),
-}
-
-async fn choose_endpoint_for_question(
-    llm_endpoints: &[Arc<LlmEndpoint>],
-) -> (Arc<LlmEndpoint>, OwnedSemaphorePermit) {
-    assert!(!llm_endpoints.is_empty(), "llm_endpoints must not be empty");
-
-    let (most_available_endpoint_idx, max_available_slots) = llm_endpoints
-        .iter()
-        .enumerate()
-        .max_by_key(|(_, endpoint)| endpoint.question_slot_semaphore.available_permits())
-        .expect("llm_endpoints must not be empty");
-
-    if max_available_slots
-        .question_slot_semaphore
-        .available_permits()
-        > 0
-    {
-        let endpoint = llm_endpoints[most_available_endpoint_idx].clone();
-        let permit = endpoint
-            .question_slot_semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .unwrap();
-        return (endpoint, permit);
-    }
-
-    let mut acquire_futures = FuturesUnordered::new();
-    for endpoint in llm_endpoints.iter().cloned() {
-        acquire_futures.push(async move {
-            let permit = endpoint
-                .question_slot_semaphore
-                .clone()
-                .acquire_owned()
-                .await
-                .unwrap();
-            (endpoint, permit)
-        });
-    }
-    acquire_futures
-        .next()
-        .await
-        .expect("llm_endpoints must not be empty")
 }
 
 fn publish_master_progress(processed_questions: usize, total_questions: usize) {
@@ -98,30 +51,12 @@ fn publish_master_progress(processed_questions: usize, total_questions: usize) {
 
 // this function is responsible for loading the dataset, running rollouts and then storing the trajectories.
 // It is also responsible for creating the version tracking file and output file if they do not exist
-pub async fn rollout_batch(
+pub async fn rollout_batch<M: LlmModelMarker + 'static, C: LlmCallable<M> + Send + Sync + 'static>(
     model: LlmModel,
     dataset_name: String,
     num_samples: usize,
-    vllm_ports: Vec<u16>,
+    llm_callable: C,
 ) {
-    assert!(!vllm_ports.is_empty(), "--vllm-ports must not be empty");
-    assert!(
-        vllm_ports.iter().all(|port| *port > 0),
-        "all --vllm-ports must be greater than 0"
-    );
-
-    let llm_endpoints: Vec<Arc<LlmEndpoint>> = vllm_ports
-        .iter()
-        .enumerate()
-        .map(|(id, port)| {
-            Arc::new(LlmEndpoint::new(
-                id,
-                *port,
-                MAX_CONCURRENT_REQUESTS_PER_ENDPOINT,
-            ))
-        })
-        .collect();
-
     let model_name = model.cli_name();
     log_key_value_pair(
         "status".to_string(),
@@ -130,17 +65,6 @@ pub async fn rollout_batch(
     log_key_value_pair("model".to_string(), model_name.to_string());
     log_key_value_pair("dataset".to_string(), dataset_name.clone());
     log_key_value_pair("num_samples".to_string(), num_samples.to_string());
-    log_key_value_pair("endpoints".to_string(), format!("{}", vllm_ports.len()));
-
-    for endpoint in &llm_endpoints {
-        log_key_value_pair(
-            "status".to_string(),
-            format!(
-                "Configured endpoint {} on port {} with max {} concurrent requests",
-                endpoint.id, endpoint.vllm_port, MAX_CONCURRENT_REQUESTS_PER_ENDPOINT
-            ),
-        );
-    }
     assert!(
         std::env::var("PYTHONPATH").is_ok(),
         "PYTHONPATH environment variable is not set"
@@ -222,74 +146,6 @@ pub async fn rollout_batch(
     let processed_question_count = Arc::new(AtomicUsize::new(tree_completed_ids.len()));
     publish_master_progress(tree_completed_ids.len(), total_questions);
 
-    let endpoint_stats_shutdown = Arc::new(AtomicBool::new(false));
-    let endpoint_stats_handle = tokio::spawn({
-        let llm_endpoints = llm_endpoints.clone();
-        let endpoint_stats_shutdown = endpoint_stats_shutdown.clone();
-        async move {
-            let mut snapshots: VecDeque<(Instant, Vec<usize>)> = VecDeque::new();
-            let mut redraw_interval = tokio::time::interval(Duration::from_secs(1));
-            loop {
-                redraw_interval.tick().await;
-                if SHUTDOWN.load(Ordering::SeqCst) || endpoint_stats_shutdown.load(Ordering::SeqCst)
-                {
-                    break;
-                }
-
-                let now = Instant::now();
-                let completed_counts: Vec<usize> = llm_endpoints
-                    .iter()
-                    .map(|endpoint| endpoint.completed_requests.load(Ordering::SeqCst))
-                    .collect();
-                snapshots.push_back((now, completed_counts.clone()));
-                while snapshots.len() > 1
-                    && now.duration_since(
-                        snapshots
-                            .front()
-                            .expect("snapshot queue must be non-empty")
-                            .0,
-                    ) > Duration::from_secs(5)
-                {
-                    snapshots.pop_front();
-                }
-
-                let (window_start_time, window_start_counts) =
-                    snapshots.front().expect("snapshot queue must be non-empty");
-                let elapsed_seconds = now
-                    .duration_since(*window_start_time)
-                    .as_secs_f64()
-                    .max(1e-6);
-
-                for endpoint in &llm_endpoints {
-                    let completed = endpoint.completed_requests.load(Ordering::SeqCst);
-                    let baseline_completed = window_start_counts
-                        .get(endpoint.id)
-                        .copied()
-                        .expect("window_start_counts must include every endpoint");
-                    let req_per_second =
-                        completed.saturating_sub(baseline_completed) as f64 / elapsed_seconds;
-
-                    let pending_requests = endpoint
-                        .max_concurrent_requests
-                        .saturating_sub(endpoint.request_semaphore.available_permits());
-                    let pending_ratio =
-                        pending_requests as f32 / endpoint.max_concurrent_requests as f32;
-                    log_worker_progress(
-                        endpoint.id,
-                        pending_ratio,
-                        format!(
-                            ":{} | {:.2} req/s (5s) | pending {}/{}",
-                            endpoint.vllm_port,
-                            req_per_second,
-                            pending_requests,
-                            endpoint.max_concurrent_requests,
-                        ),
-                    );
-                }
-            }
-        }
-    });
-
     let mut tree_scan_statement = trees_store.statement().unwrap();
     let rows = tree_scan_statement.try_iter().unwrap();
     for row in rows {
@@ -302,7 +158,7 @@ pub async fn rollout_batch(
     let submit_trajectory_task_handle = tokio::spawn({
         let client = client.clone();
         let log_or_tree_tx = log_or_tree_tx_for_submit;
-        let llm_endpoints = llm_endpoints.clone();
+        let llm_callable = llm_callable.clone();
         async move {
             let finished_count = Arc::new(AtomicUsize::new(0));
             // let total_count = unfinished_tree_ids.len();
@@ -310,33 +166,23 @@ pub async fn rollout_batch(
                 if SHUTDOWN.load(Ordering::SeqCst) {
                     break;
                 }
-                let (llm_endpoint, question_slot_permit) =
-                    choose_endpoint_for_question(&llm_endpoints).await;
                 let unfinished_question = questions.get(&id).unwrap();
                 let question = unfinished_question.question.clone();
                 let reference_answer = unfinished_question.final_answer.clone();
                 let log_or_tree_tx = log_or_tree_tx.clone();
                 let client = client.clone();
+                let llm_callable = llm_callable.clone();
                 let loaded_session_log = loaded_session_logs.swap_remove(&id).unwrap_or_default();
                 let mut task_rng = StdRng::seed_from_u64(submit_task_rng.next_u64());
                 let finished_count = finished_count.clone();
-                log_key_value_pair(
-                    "status".to_string(),
-                    format!(
-                        "Question {} assigned to endpoint {} (port {})",
-                        id, llm_endpoint.id, llm_endpoint.vllm_port
-                    ),
-                );
                 tokio::spawn(async move {
-                    let _question_slot_permit = question_slot_permit;
-                    rollout(
+                    rollout::<M, C>(
                         id,
                         question,
                         reference_answer,
                         loaded_session_log,
-                        llm_endpoint,
+                        llm_callable,
                         client,
-                        model,
                         &mut task_rng,
                         log_or_tree_tx,
                     )
@@ -402,8 +248,6 @@ pub async fn rollout_batch(
     submit_trajectory_task_handle.await.unwrap();
     receive_log_or_tree_handle.await.unwrap();
 
-    endpoint_stats_shutdown.store(true, Ordering::SeqCst);
-    endpoint_stats_handle.await.unwrap();
     log_key_value_pair("status".to_string(), "Finalizing summary".to_string());
 
     let mut overall_correct = 0usize;

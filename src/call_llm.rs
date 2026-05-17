@@ -1,15 +1,289 @@
+use async_trait::async_trait;
 use reqwest::Client;
+use std::marker::PhantomData;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 use tokio::sync::Semaphore;
 
-use crate::apply_vllm_model_chat_template::apply_vllm_model_chat_template;
 use crate::llm_model::LlmModel;
+use crate::llm_models::{
+    LlmModelMarker, Qwen25, Qwen25TokenArray, Qwen35_4B, Qwen35TokenArray, Qwen3TokenArray,
+    Qwen3_4B, Qwen3_8B,
+};
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
 pub const CONTEXT_LENGTH_EXCEEDED_RESPONSE: &str = "<error>QWEN_CONTEXT_LENGTH_EXCEEDED</error>";
+
+#[async_trait]
+pub trait LlmCallable<M: LlmModelMarker>: Clone + Send + Sync {
+    async fn generate(
+        &self,
+        prompt_or_tokens: M::StringOrTokenArray,
+        passes_in_stop: bool,
+    ) -> String;
+}
+
+pub async fn call_llm_with_prefix<M: LlmModelMarker, C: LlmCallable<M>>(
+    llm_callable: &C,
+    prompt_before_assistant: String,
+    prompt_after_assistant: String,
+) -> String {
+    let prompt = M::build_prefix_thinking_disabled(&prompt_before_assistant, &prompt_after_assistant);
+    let input = M::tokenize(prompt);
+    llm_callable.generate(input, true).await
+}
+
+pub struct GptLlmCallable<M: LlmModelMarker> {
+    client: Client,
+    _marker: PhantomData<M>,
+}
+
+impl<M: LlmModelMarker> Clone for GptLlmCallable<M> {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<M: LlmModelMarker<StringOrTokenArray = String>> GptLlmCallable<M> {
+    pub fn new(client: Client) -> Self {
+        Self {
+            client,
+            _marker: PhantomData,
+        }
+    }
+}
+
+#[async_trait]
+impl<M: LlmModelMarker<StringOrTokenArray = String>> LlmCallable<M> for GptLlmCallable<M> {
+    async fn generate(
+        &self,
+        prompt_or_tokens: M::StringOrTokenArray,
+        passes_in_stop: bool,
+    ) -> String {
+        let prompt = prompt_or_tokens;
+        let body = if passes_in_stop {
+            serde_json::json!({
+                "model": M::API_NAME,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_completion_tokens": 2048,
+                "stop": ["</tool_wait>"],
+            })
+        } else {
+            serde_json::json!({
+                "model": M::API_NAME,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_completion_tokens": 2048,
+            })
+        };
+
+        let response = self
+            .post_json(OPENAI_CHAT_COMPLETIONS_URL, body)
+            .await
+            .bytes()
+            .await
+            .unwrap();
+        let Ok(json) = serde_json::from_slice::<serde_json::Value>(&response) else {
+            panic!(
+                "Failed to parse LLM response as JSON. Response text: {:?}",
+                String::from_utf8_lossy(&response)
+            );
+        };
+        json["choices"][0]["message"]["content"]
+            .as_str()
+            .expect(&format!("LLM response is invalid: {:?}", json))
+            .to_string()
+    }
+}
+
+#[derive(Clone)]
+struct SharedQwenLlmCallable {
+    client: Client,
+    endpoint: Arc<LlmEndpoint>,
+    api_name: &'static str,
+}
+
+impl SharedQwenLlmCallable {
+    fn new(
+        client: Client,
+        api_name: &'static str,
+        vllm_port: u16,
+        max_concurrent_requests: usize,
+    ) -> Self {
+        Self {
+            client,
+            endpoint: Arc::new(LlmEndpoint::new(0, vllm_port, max_concurrent_requests)),
+            api_name,
+        }
+    }
+
+    async fn generate_from_tokens(&self, tokens: Vec<i32>, passes_in_stop: bool) -> String {
+        let endpoint = self.endpoint.clone();
+        let _permit = endpoint
+            .request_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+
+        let mut body = serde_json::json!({
+            "model": self.api_name,
+            "prompt_token_ids": tokens,
+            "max_tokens": 2048,
+            "include_stop_str_in_output": true,
+        });
+        if passes_in_stop {
+            body["stop"] = serde_json::json!(["</tool_wait>"]);
+        }
+
+        let json: serde_json::Value = self
+            .post_json(&endpoint.vllm_raw_completions_url(), body)
+            .await
+            .json()
+            .await
+            .unwrap();
+        if let Some(error_message) = json["error"]["message"].as_str() {
+            if error_message.contains("maximum context length")
+                || error_message.contains("Please reduce the length of the input prompt")
+                || error_message.contains("parameter=input_tokens")
+            {
+                return CONTEXT_LENGTH_EXCEEDED_RESPONSE.to_string();
+            }
+        }
+        let content = json["choices"][0]["text"]
+            .as_str()
+            .expect(&format!(
+                "Qwen completions response is invalid on endpoint {} (port {}): {:?}",
+                endpoint.id, endpoint.vllm_port, json
+            ))
+            .to_string();
+        endpoint.completed_requests.fetch_add(1, Ordering::SeqCst);
+        content
+    }
+
+    async fn post_json(&self, url: &str, body: serde_json::Value) -> reqwest::Response {
+        self.client.post(url).json(&body).send().await.unwrap()
+    }
+}
+
+#[derive(Clone)]
+pub struct Qwen25LlmCallable {
+    shared: SharedQwenLlmCallable,
+}
+
+impl Qwen25LlmCallable {
+    pub fn new(client: Client, vllm_port: u16, max_concurrent_requests: usize) -> Self {
+        Self {
+            shared: SharedQwenLlmCallable::new(
+                client,
+                Qwen25::API_NAME,
+                vllm_port,
+                max_concurrent_requests,
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl LlmCallable<Qwen25> for Qwen25LlmCallable {
+    async fn generate(
+        &self,
+        prompt_or_tokens: Qwen25TokenArray,
+        passes_in_stop: bool,
+    ) -> String {
+        self.shared
+            .generate_from_tokens(prompt_or_tokens.tokens, passes_in_stop)
+            .await
+    }
+}
+
+#[derive(Clone)]
+pub struct Qwen3LlmCallable {
+    shared: SharedQwenLlmCallable,
+}
+
+impl Qwen3LlmCallable {
+    pub fn new(client: Client, api_name: &'static str, vllm_port: u16, max_concurrent_requests: usize) -> Self {
+        Self {
+            shared: SharedQwenLlmCallable::new(client, api_name, vllm_port, max_concurrent_requests),
+        }
+    }
+}
+
+#[async_trait]
+impl LlmCallable<Qwen3_4B> for Qwen3LlmCallable {
+    async fn generate(
+        &self,
+        prompt_or_tokens: Qwen3TokenArray,
+        passes_in_stop: bool,
+    ) -> String {
+        self.shared
+            .generate_from_tokens(prompt_or_tokens.tokens, passes_in_stop)
+            .await
+    }
+}
+
+#[async_trait]
+impl LlmCallable<Qwen3_8B> for Qwen3LlmCallable {
+    async fn generate(
+        &self,
+        prompt_or_tokens: Qwen3TokenArray,
+        passes_in_stop: bool,
+    ) -> String {
+        self.shared
+            .generate_from_tokens(prompt_or_tokens.tokens, passes_in_stop)
+            .await
+    }
+}
+
+#[derive(Clone)]
+pub struct Qwen35LlmCallable {
+    shared: SharedQwenLlmCallable,
+}
+
+impl Qwen35LlmCallable {
+    pub fn new(client: Client, vllm_port: u16, max_concurrent_requests: usize) -> Self {
+        Self {
+            shared: SharedQwenLlmCallable::new(
+                client,
+                Qwen35_4B::API_NAME,
+                vllm_port,
+                max_concurrent_requests,
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl LlmCallable<Qwen35_4B> for Qwen35LlmCallable {
+    async fn generate(
+        &self,
+        prompt_or_tokens: Qwen35TokenArray,
+        passes_in_stop: bool,
+    ) -> String {
+        self.shared
+            .generate_from_tokens(prompt_or_tokens.tokens, passes_in_stop)
+            .await
+    }
+}
+
+impl<M: LlmModelMarker<StringOrTokenArray = String>> GptLlmCallable<M> {
+    async fn post_json(&self, url: &str, body: serde_json::Value) -> reqwest::Response {
+        let api_key =
+            std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set");
+        self.client
+            .post(url)
+            .bearer_auth(api_key)
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+    }
+}
 
 #[derive(Debug)]
 pub struct LlmEndpoint {
@@ -238,32 +512,4 @@ pub async fn call_qwen_raw_completions_on_endpoint(
         .to_string();
     endpoint.completed_requests.fetch_add(1, Ordering::SeqCst);
     content
-}
-
-pub async fn call_llm_with_prefix_on_endpoint(
-    client: Client,
-    prompt_before_assistant: String,
-    prompt_after_assistant: String,
-    model: LlmModel,
-    endpoint: Arc<LlmEndpoint>,
-) -> String {
-    if model.is_qwen() {
-        let mut planner_chat_template_prompt =
-            apply_vllm_model_chat_template(model, &prompt_before_assistant, false);
-        planner_chat_template_prompt += &prompt_after_assistant;
-        call_qwen_raw_completions_on_endpoint(
-            client.clone(),
-            planner_chat_template_prompt,
-            model,
-            endpoint,
-        )
-        .await
-    } else {
-        let full_prompt = format!(
-            "{}\nAssistant: {}",
-            prompt_before_assistant, prompt_after_assistant
-        );
-        call_llm_chat_completions_on_endpoint(client.clone(), full_prompt, model, true, endpoint)
-            .await
-    }
 }

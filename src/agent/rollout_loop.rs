@@ -1,26 +1,24 @@
 use reqwest::Client;
-use std::sync::Arc;
 
 use crate::{
     agent::{
         rollout_batch::LogOrTree, state_to_actions::produce_actions_from_state, tree::Tree,
         tree_action::TreeAction, tree_schema::CompletedTree,
     },
-    call_llm::LlmEndpoint,
-    llm_model::LlmModel,
+    call_llm::LlmCallable,
+    llm_models::LlmModelMarker,
     worker_message_tx::log_key_value_pair,
 };
 
 // it will output action logs and final trajectory
 // it will also load existing logs
-pub async fn rollout(
+pub async fn rollout<M: LlmModelMarker, C: LlmCallable<M>>(
     question_id: usize,
     question: String,
     reference_answer: String,
     loaded_events: Vec<TreeAction>,
-    llm_endpoint: Arc<LlmEndpoint>,
+    llm_callable: C,
     client: Client,
-    model: LlmModel,
     rng: &mut impl rand::Rng,
     log_or_tree_tx: tokio::sync::mpsc::UnboundedSender<LogOrTree>,
 ) {
@@ -41,9 +39,13 @@ pub async fn rollout(
         if tree.completed {
             break;
         }
-        let new_actions =
-            produce_actions_from_state(&tree, llm_endpoint.clone(), client.clone(), model, rng)
-                .await;
+        let new_actions = produce_actions_from_state::<M, C>(
+            &tree,
+            &llm_callable,
+            client.clone(),
+            rng,
+        )
+        .await;
         for action in new_actions {
             tree.apply_action(action.clone());
             log_or_tree_tx.send(LogOrTree::Action(action)).unwrap();

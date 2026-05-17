@@ -17,11 +17,18 @@ pub struct ChatMessage {
     pub content: String,
 }
 
-fn apply_simple_qwen_chatml_template(user_prompt: &str) -> String {
-    format!(
-        "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
-        user_prompt
-    )
+fn apply_simple_qwen_chatml_template(user_prompt: &str, enable_thinking: bool) -> String {
+    if enable_thinking {
+        format!(
+            "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+            user_prompt
+        )
+    } else {
+        format!(
+            "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+            user_prompt
+        )
+    }
 }
 
 pub fn apply_vllm_model_chat_template(
@@ -60,11 +67,7 @@ pub fn apply_vllm_model_chat_template(
         // NOTE: Official Qwen3 templates use Python-style string methods (e.g. startswith)
         // that MiniJinja does not support. Use a minimal ChatML template for prefix mode.
         LlmModel::Qwen3_4b | LlmModel::Qwen3_8b | LlmModel::Qwen35_4b => {
-            assert!(
-                !enable_thinking,
-                "Qwen3 prefix template path assumes thinking is disabled"
-            );
-            apply_simple_qwen_chatml_template(user_prompt)
+            apply_simple_qwen_chatml_template(user_prompt, enable_thinking)
         }
         LlmModel::Gpt4o | LlmModel::Gpt5Mini => unreachable!(),
     }

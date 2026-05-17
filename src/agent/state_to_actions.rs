@@ -1,6 +1,5 @@
 use rand::RngExt;
 use reqwest::Client;
-use std::sync::Arc;
 
 use crate::agent::branching_node_selection::determine_branching_node;
 use crate::agent::context_length_exceeded::{
@@ -18,13 +17,13 @@ use crate::agent::trajectory_state::TrajectoryState;
 use crate::agent::trajectory_status::TrajectoryStatus;
 use crate::agent::tree::{CorrectnessJudgment, Tree};
 use crate::agent::tree_action::TreeAction;
-use crate::call_llm::call_llm_chat_completions;
+use crate::call_llm::{LlmCallable, call_llm_chat_completions, call_llm_with_prefix};
+use crate::llm_models::LlmModelMarker;
 use crate::status_prompts::universal_prompt::get_prompt_according_to_session_status;
 use crate::util::extract_boxed_content;
 use crate::worker_message_tx::log_key_value_pair;
 use crate::{
     agent::trajectory_action::TrajectoryAction,
-    call_llm::{LlmEndpoint, call_llm_with_prefix_on_endpoint},
     constants::{IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE, REPETITION_ABORT_MESSAGE},
     llm_model::LlmModel,
 };
@@ -108,12 +107,11 @@ pub fn detect_repetition_five_times(response: &str) -> bool {
     false
 }
 
-pub async fn produce_actions_from_state(
+pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
     // session_state: &TrajectoryState<'_>,
     tree: &Tree,
-    llm_endpoint: Arc<LlmEndpoint>,
+    llm_callable: &C,
     client: Client,
-    model: LlmModel,
     rng: &mut impl rand::Rng,
 ) -> Vec<TreeAction> {
     let session_state = TrajectoryState::from_tree(tree);
@@ -192,12 +190,10 @@ pub async fn produce_actions_from_state(
                     String::new(),
                     "Verifier commenting should not have prompt after assistant"
                 );
-                let response = call_llm_with_prefix_on_endpoint(
-                    client.clone(),
+                let response = call_llm_with_prefix::<M, C>(
+                    llm_callable,
                     prompt_before_assistant,
                     prompt_after_assistant,
-                    model,
-                    llm_endpoint.clone(),
                 )
                 .await;
                 if is_context_length_exceeded_response(&response) {
@@ -242,12 +238,10 @@ pub async fn produce_actions_from_state(
             if needs_to_make_or_change_plan {
                 let (prompt_before_assistant, prompt_after_assistant) =
                     get_prompt_according_to_session_status(&session_state);
-                let response = call_llm_with_prefix_on_endpoint(
-                    client.clone(),
+                let response = call_llm_with_prefix::<M, C>(
+                    llm_callable,
                     prompt_before_assistant,
                     prompt_after_assistant,
-                    model,
-                    llm_endpoint.clone(),
                 )
                 .await;
                 if is_context_length_exceeded_response(&response) {
@@ -280,7 +274,7 @@ pub async fn produce_actions_from_state(
         }
         TrajectoryStatus::PlannerChoosingMode {
             verifier_comment: _,
-        } => vec![determine_chosen_mode(&session_state, client.clone(), model, rng).await],
+        } => vec![determine_chosen_mode(&session_state, rng).await],
         TrajectoryStatus::PlannerWorkingOnStep {
             planner_chosen_mode: _,
             verifier_comment: _,
@@ -288,12 +282,10 @@ pub async fn produce_actions_from_state(
         } => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(&session_state);
-            let mut response = call_llm_with_prefix_on_endpoint(
-                client.clone(),
+            let mut response = call_llm_with_prefix::<M, C>(
+                llm_callable,
                 prompt_before_assistant,
                 prompt_after_assistant,
-                model,
-                llm_endpoint.clone(),
             )
             .await;
             if is_context_length_exceeded_response(&response) {
@@ -452,12 +444,10 @@ pub async fn produce_actions_from_state(
         } => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(&session_state);
-            let response = call_llm_with_prefix_on_endpoint(
-                client.clone(),
+            let response = call_llm_with_prefix::<M, C>(
+                llm_callable,
                 prompt_before_assistant,
                 prompt_after_assistant,
-                model,
-                llm_endpoint.clone(),
             )
             .await;
             if is_context_length_exceeded_response(&response) {
@@ -493,12 +483,10 @@ pub async fn produce_actions_from_state(
             if session_state.final_answer.is_none() {
                 let (prompt_before_assistant, prompt_after_assistant) =
                     get_prompt_according_to_session_status(&session_state);
-                let response = call_llm_with_prefix_on_endpoint(
-                    client.clone(),
+                let response = call_llm_with_prefix::<M, C>(
+                    llm_callable,
                     prompt_before_assistant,
                     prompt_after_assistant,
-                    model,
-                    llm_endpoint.clone(),
                 )
                 .await;
                 if is_context_length_exceeded_response(&response) {
