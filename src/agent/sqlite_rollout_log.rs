@@ -1,4 +1,4 @@
-use crate::{agent::tree_action::TreeAction, llm_model_name::LlmModelName};
+use crate::{agent::tree_action::TreeAction, llm_model::LlmModelName};
 
 pub type SqliteSessionLogStore =
     research_utility::sqlite_table_array_store::SqliteTableArrayStore<usize, TreeAction>;

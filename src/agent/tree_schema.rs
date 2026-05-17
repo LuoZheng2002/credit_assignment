@@ -3,7 +3,7 @@ use crate::{
     agent::tree::Tree,
     asset_file::{AssetFile, Base64Hash, hash_file},
     json_line_util::{HasId, read_json},
-    llm_model_name::LlmModelName,
+    llm_model::LlmModelName,
     sqlite_store::SqliteStore,
 };
 use serde::{Deserialize, Serialize};

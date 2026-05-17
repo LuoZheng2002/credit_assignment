@@ -1,7 +1,9 @@
+use std::marker::PhantomData;
+
 use clap::Parser;
 use credit_assignment::asset_file::AssetFile;
 use credit_assignment::em::em_types::{EmHyperparameters, LogStdClamp};
-use credit_assignment::llm_model_name::LlmModelName;
+use credit_assignment::llm_model::{Gpt4o, Gpt5Mini, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B};
 use credit_assignment::training_set::training_set_batch::AssetFileTrainingBatch;
 
 const DEFAULT_BATCH_SIZE: usize = 4;
@@ -58,12 +60,25 @@ fn main() {
         },
     };
 
-    let training_batch_asset = AssetFileTrainingBatch {
-        model: args.model,
+    match args.model {
+        LlmModelName::Gpt4o => generate_for_model::<Gpt4o>(args, hyperparameters),
+        LlmModelName::Gpt5Mini => generate_for_model::<Gpt5Mini>(args, hyperparameters),
+        LlmModelName::Qwen25_7b => generate_for_model::<Qwen25>(args, hyperparameters),
+        LlmModelName::Qwen3_4b => generate_for_model::<Qwen3_4B>(args, hyperparameters),
+        LlmModelName::Qwen35_4b => generate_for_model::<Qwen35_4B>(args, hyperparameters),
+    }
+}
+
+fn generate_for_model<M: credit_assignment::llm_model::LlmModelMarker>(
+    args: Args,
+    hyperparameters: EmHyperparameters,
+) {
+    let training_batch_asset = AssetFileTrainingBatch::<M> {
         dataset: args.dataset_name,
         num_samples: args.num_samples,
         hyperparameters,
         batch_size: DEFAULT_BATCH_SIZE,
+        _marker: PhantomData,
     };
     training_batch_asset.synchronize();
     println!(

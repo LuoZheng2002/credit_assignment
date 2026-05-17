@@ -5,19 +5,18 @@ use crate::{
         rollout_batch::LogOrTree, state_to_actions::produce_actions_from_state, tree::Tree,
         tree_action::TreeAction, tree_schema::CompletedTree,
     },
-    call_llm::LlmCallable,
-    llm_models::LlmModelMarker,
+    llm_model::LlmModelMarker,
     worker_message_tx::log_key_value_pair,
 };
 
 // it will output action logs and final trajectory
 // it will also load existing logs
-pub async fn rollout<M: LlmModelMarker, C: LlmCallable<M>>(
+pub async fn rollout<M: LlmModelMarker>(
     question_id: usize,
     question: String,
     reference_answer: String,
     loaded_events: Vec<TreeAction>,
-    llm_callable: C,
+    llm_callable: M::Callable,
     client: Client,
     rng: &mut impl rand::Rng,
     log_or_tree_tx: tokio::sync::mpsc::UnboundedSender<LogOrTree>,
@@ -39,7 +38,7 @@ pub async fn rollout<M: LlmModelMarker, C: LlmCallable<M>>(
         if tree.completed {
             break;
         }
-        let new_actions = produce_actions_from_state::<M, C>(
+        let new_actions = produce_actions_from_state::<M, M::Callable>(
             &tree,
             &llm_callable,
             client.clone(),

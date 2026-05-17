@@ -12,7 +12,7 @@ use crate::{
         em_types::EmHyperparameters,
     },
     json_line_util::{read_json, write_json},
-    llm_model_name::LlmModelName,
+    llm_model::LlmModelName,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

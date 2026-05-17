@@ -2,7 +2,7 @@ use clap::Parser;
 use credit_assignment::asset_file::AssetFile;
 use credit_assignment::em::em_schema::AssetFileEmFit;
 use credit_assignment::em::em_types::{EmHyperparameters, LogStdClamp};
-use credit_assignment::llm_model_name::LlmModelName;
+use credit_assignment::llm_model::LlmModelName;
 
 #[derive(Parser, Debug)]
 #[command(name = "Fit EM over trees")]

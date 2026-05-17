@@ -8,7 +8,7 @@ use crate::{
     asset_file::{AssetFile, Base64Hash, hash_file},
     em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
     json_line_util::{read_json, write_json},
-    llm_model_name::LlmModelName,
+    llm_model::LlmModelName,
     sqlite_store::{SqliteStore, SqliteStoreKey},
     training_set::training_set_generation::generate_sample_formatted_from_tree_node,
 };

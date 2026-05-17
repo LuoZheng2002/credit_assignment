@@ -3,9 +3,8 @@ use std::{backtrace::Backtrace, sync::Arc};
 use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
     agent::rollout_batch::rollout_batch,
-    llm_model_name::LlmModelName,
-    llm_models::{
-        Gpt4o, Gpt5Mini, LlmCliArgs, LlmModelMarker, Qwen3_4B, Qwen25, Qwen35_4B,
+    llm_model::{
+        Gpt4o, Gpt5Mini, LlmCliArgs, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B,
     },
     message::WorkerMessage,
     progress_screen::ProgressScreen, progress_screen::ProgressScreenConfig,
@@ -21,7 +20,7 @@ async fn run_rollout_for_marker<M: LlmModelMarker>(
     llm_cli_args: &LlmCliArgs,
 ) {
     let llm_callable = M::callable_from_cli_args(Client::new(), llm_cli_args);
-    rollout_batch::<M, M::Callable>(model, dataset_name, num_samples, llm_callable).await;
+    rollout_batch::<M>(model, dataset_name, num_samples, llm_callable).await;
 }
 
 #[derive(Parser, Debug)]

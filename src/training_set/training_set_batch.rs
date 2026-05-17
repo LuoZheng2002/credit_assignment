@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use kdtree::{KdTree, distance::squared_euclidean};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -6,7 +8,7 @@ use crate::{
     asset_file::{AssetFile, Base64Hash, hash_file},
     em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
     json_line_util::{read_json, write_json},
-    llm_model_name::LlmModelName,
+    llm_model::LlmModelMarker,
     sqlite_store::SqliteStore,
     training_set::{
         training_set_formatted::QuestionNodeId,
@@ -43,15 +45,15 @@ pub struct AssetFileTrainingBatchTracking {
 
 pub type TrainingBatchStore = SqliteStore<usize, TrainingBatch>;
 
-pub struct AssetFileTrainingBatch {
-    pub model: LlmModelName,
+pub struct AssetFileTrainingBatch<M: LlmModelMarker> {
     pub dataset: String,
     pub num_samples: usize,
     pub hyperparameters: EmHyperparameters,
     pub batch_size: usize,
+    pub _marker: PhantomData<M>,
 }
 
-impl AssetFileTrainingBatch {
+impl<M: LlmModelMarker> AssetFileTrainingBatch<M> {
     const BATCH_SCHEMA_VERSION: usize = 3;
 
     pub fn hyperparameter_hash(&self) -> String {
@@ -61,7 +63,7 @@ impl AssetFileTrainingBatch {
     pub fn file_path(&self) -> String {
         format!(
             "results/{}/agent/{}_training_batch_{}_{}_bs{}.sqlite",
-            self.model.cli_name(),
+            M::CLI_NAME,
             self.dataset,
             self.num_samples,
             self.hyperparameter_hash(),
@@ -72,7 +74,7 @@ impl AssetFileTrainingBatch {
     pub fn version_tracking_path(&self) -> String {
         format!(
             "results_version_tracking/{}/agent/{}_training_batch_{}_{}_bs{}.version.json",
-            self.model.cli_name(),
+            M::CLI_NAME,
             self.dataset,
             self.num_samples,
             self.hyperparameter_hash(),
@@ -133,7 +135,7 @@ impl AssetFileTrainingBatch {
 
     pub fn generate_batches_from_tokenized_samples(
         &self,
-        tokenized_samples: &[TrainingSampleTokenized],
+        tokenized_samples: &[TrainingSampleTokenized<M>],
     ) -> Vec<TrainingBatch> {
         assert!(self.batch_size > 0, "batch_size must be greater than 0");
         if tokenized_samples.is_empty() {
@@ -263,7 +265,7 @@ impl AssetFileTrainingBatch {
                 min_advantage,
                 max_length,
                 min_length,
-                model_official_name: self.model.api_name().to_string(),
+                model_official_name: M::API_NAME.to_string(),
             });
         }
 
@@ -272,7 +274,7 @@ impl AssetFileTrainingBatch {
 }
 
 // use the same style as AssetFileAdvantageComposition
-impl AssetFile for AssetFileTrainingBatch {
+impl<M: LlmModelMarker> AssetFile for AssetFileTrainingBatch<M> {
     type FileModel = TrainingBatchStore;
 
     fn fetch(&self) -> Self::FileModel {
@@ -282,10 +284,10 @@ impl AssetFile for AssetFileTrainingBatch {
 
     fn synchronize(&self) -> crate::asset_file::Base64Hash {
         let tokenized_asset = AssetFileTrainingTokenized {
-            model: self.model,
             dataset: self.dataset.clone(),
             num_samples: self.num_samples,
             hyperparameters: self.hyperparameters.clone(),
+            _marker: PhantomData::<M>,
         };
         let tokenized_hash = tokenized_asset.synchronize();
 

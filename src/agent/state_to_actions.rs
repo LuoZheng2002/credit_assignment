@@ -17,15 +17,13 @@ use crate::agent::trajectory_state::TrajectoryState;
 use crate::agent::trajectory_status::TrajectoryStatus;
 use crate::agent::tree::{CorrectnessJudgment, Tree};
 use crate::agent::tree_action::TreeAction;
-use crate::call_llm::{LlmCallable, call_llm_chat_completions, call_llm_with_prefix};
-use crate::llm_models::LlmModelMarker;
+use crate::llm_model::{Gpt4oLlmCallable, LlmCallable, LlmModelMarker};
 use crate::status_prompts::universal_prompt::get_prompt_according_to_session_status;
 use crate::util::extract_boxed_content;
 use crate::worker_message_tx::log_key_value_pair;
 use crate::{
     agent::trajectory_action::TrajectoryAction,
     constants::{IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE, REPETITION_ABORT_MESSAGE},
-    llm_model_name::LlmModelName,
 };
 
 pub async fn judge_answer_task(
@@ -42,7 +40,9 @@ The question is: \"{}\". \
 The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
         question, model_answer, correct_answer
     );
-    let evaluation = call_llm_chat_completions(client, prompt, LlmModelName::Gpt4o, false)
+    let gpt_callable = Gpt4oLlmCallable::new(client);
+    let evaluation = gpt_callable
+        .generate(prompt, false)
         .await
         .trim()
         .to_lowercase();
@@ -190,12 +190,9 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                     String::new(),
                     "Verifier commenting should not have prompt after assistant"
                 );
-                let response = call_llm_with_prefix::<M, C>(
-                    llm_callable,
-                    prompt_before_assistant,
-                    prompt_after_assistant,
-                )
-                .await;
+                let response = llm_callable
+                    .call_with_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
+                    .await;
                 if is_context_length_exceeded_response(&response) {
                     context_length_exceeded_result(
                         question_id,
@@ -238,12 +235,9 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
             if needs_to_make_or_change_plan {
                 let (prompt_before_assistant, prompt_after_assistant) =
                     get_prompt_according_to_session_status(&session_state);
-                let response = call_llm_with_prefix::<M, C>(
-                    llm_callable,
-                    prompt_before_assistant,
-                    prompt_after_assistant,
-                )
-                .await;
+                let response = llm_callable
+                    .call_with_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
+                    .await;
                 if is_context_length_exceeded_response(&response) {
                     context_length_exceeded_result(
                         question_id,
@@ -282,12 +276,9 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
         } => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(&session_state);
-            let mut response = call_llm_with_prefix::<M, C>(
-                llm_callable,
-                prompt_before_assistant,
-                prompt_after_assistant,
-            )
-            .await;
+            let mut response = llm_callable
+                .call_with_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
+                .await;
             if is_context_length_exceeded_response(&response) {
                 context_length_exceeded_result(question_id, session_state.final_answer.is_some())
             } else {
@@ -444,12 +435,9 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
         } => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(&session_state);
-            let response = call_llm_with_prefix::<M, C>(
-                llm_callable,
-                prompt_before_assistant,
-                prompt_after_assistant,
-            )
-            .await;
+            let response = llm_callable
+                .call_with_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
+                .await;
             if is_context_length_exceeded_response(&response) {
                 context_length_exceeded_result(question_id, session_state.final_answer.is_some())
             } else {
@@ -483,12 +471,9 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
             if session_state.final_answer.is_none() {
                 let (prompt_before_assistant, prompt_after_assistant) =
                     get_prompt_according_to_session_status(&session_state);
-                let response = call_llm_with_prefix::<M, C>(
-                    llm_callable,
-                    prompt_before_assistant,
-                    prompt_after_assistant,
-                )
-                .await;
+                let response = llm_callable
+                    .call_with_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
+                    .await;
                 if is_context_length_exceeded_response(&response) {
                     context_length_exceeded_result(
                         question_id,

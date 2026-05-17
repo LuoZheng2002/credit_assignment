@@ -1,11 +1,13 @@
+use std::marker::PhantomData;
+
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
-use tokenizers::Tokenizer;
 
 use crate::{
     asset_file::{AssetFile, Base64Hash, hash_file},
     em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
     json_line_util::{read_json, write_json},
-    llm_model_name::LlmModelName,
+    llm_model::{LlmModelMarker, LlmModelName, MyTokenizer},
     sqlite_store::SqliteStore,
     training_set::training_set_formatted::{
         AssetFileTrainingFormatted, QuestionNodeId, TrainingSampleFormatted,
@@ -27,7 +29,7 @@ use crate::{
 // [null, null, null, null, null, "Let", "me", "call", "the", "tool.", "<tool_call>", "What", "is", "1+1?", "</tool_call>", "<END_OF_SEQUENCE>", null, null, null, null, null, "Therefore,", "the", "answer", "is", "2.", "<END_OF_SEQUENCE>"]
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrainingSampleTokenized {
+pub struct TrainingSampleTokenized<M: LlmModelMarker> {
     // pub question_id: usize,
     // pub node_id: usize,
     pub id: QuestionNodeId,
@@ -37,13 +39,15 @@ pub struct TrainingSampleTokenized {
     pub input_length: usize,
     pub advantage: f64,
     pub model_official_name: String,
+    #[serde(skip)]
+    pub _marker: PhantomData<M>,
 }
 
-pub struct AssetFileTrainingTokenized {
-    pub model: LlmModelName,
+pub struct AssetFileTrainingTokenized<M: LlmModelMarker> {
     pub dataset: String,
     pub num_samples: usize,
     pub hyperparameters: EmHyperparameters,
+    pub _marker: PhantomData<M>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,14 +56,19 @@ pub struct AssetFileTrainingTokenizedTracking {
     pub tokenized_schema_version: usize,
 }
 
-pub type TrainingSampleTokenizedStore = SqliteStore<QuestionNodeId, TrainingSampleTokenized>;
+pub type TrainingSampleTokenizedStore<M> = SqliteStore<QuestionNodeId, TrainingSampleTokenized<M>>;
 
-impl AssetFileTrainingTokenized {
+impl<M: LlmModelMarker> AssetFileTrainingTokenized<M> {
     const START_MASK_TAG: &'static str = "<__start_mask__>";
     const END_MASK_WITH_EOS_TAG: &'static str = "<__end_mask_with_eos__>";
     const END_OF_CONVERSATION_TOKEN: &'static str = "<|im_end|>";
     const IGNORE_LABEL: i32 = -100;
     const TOKENIZED_SCHEMA_VERSION: usize = 8;
+
+    fn model_name() -> LlmModelName {
+        LlmModelName::from_str(M::CLI_NAME, false)
+            .expect("LlmModelMarker::CLI_NAME must map to LlmModelName")
+    }
 
     pub fn hyperparameter_hash(&self) -> String {
         short_hyperparameter_hash(&self.hyperparameters)
@@ -68,7 +77,7 @@ impl AssetFileTrainingTokenized {
     pub fn file_path(&self) -> String {
         format!(
             "results/{}/agent/{}_training_tokenized_{}_{}.sqlite",
-            self.model.cli_name(),
+            M::CLI_NAME,
             self.dataset,
             self.num_samples,
             self.hyperparameter_hash(),
@@ -78,18 +87,18 @@ impl AssetFileTrainingTokenized {
     pub fn version_tracking_path(&self) -> String {
         format!(
             "results_version_tracking/{}/agent/{}_training_tokenized_{}_{}.version.json",
-            self.model.cli_name(),
+            M::CLI_NAME,
             self.dataset,
             self.num_samples,
             self.hyperparameter_hash(),
         )
     }
 
-    pub fn sample_store(&self) -> TrainingSampleTokenizedStore {
+    pub fn sample_store(&self) -> TrainingSampleTokenizedStore<M> {
         TrainingSampleTokenizedStore::new(self.file_path()).unwrap()
     }
 
-    pub fn store_tokenized_samples(&self, samples: &[TrainingSampleTokenized]) {
+    pub fn store_tokenized_samples(&self, samples: &[TrainingSampleTokenized<M>]) {
         let store = self.sample_store();
         store.clear().unwrap();
         for sample in samples {
@@ -97,28 +106,10 @@ impl AssetFileTrainingTokenized {
         }
     }
 
-    fn load_tokenizer(&self) -> Tokenizer {
-        // assert!(
-        //     self.model.is_qwen(),
-        //     "Training tokenization currently supports Qwen models only"
-        // );
-        let model = if self.model.is_qwen() {
-            self.model
-        } else {
-            println!(
-                "Warning: Training tokenization currently supports Qwen models only, but received {}",
-                self.model.cli_name()
-            );
-            LlmModelName::Qwen25_7b
-        };
-        Tokenizer::from_pretrained(model.api_name(), None).unwrap()
-    }
-
     fn formatted_to_tokenized_with_tokenizer(
         &self,
         formatted_sample: &TrainingSampleFormatted,
-        tokenizer: &Tokenizer,
-    ) -> TrainingSampleTokenized {
+    ) -> TrainingSampleTokenized<M> {
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum SegmentMode {
             Unmasked,
@@ -130,14 +121,9 @@ impl AssetFileTrainingTokenized {
             text: String,
         }
 
-        let end_of_conversation_id_u32 = tokenizer
-            .token_to_id(Self::END_OF_CONVERSATION_TOKEN)
-            .unwrap();
-        assert!(
-            end_of_conversation_id_u32 <= i32::MAX as u32,
-            "End-of-conversation token id must fit in i32"
+        let end_of_conversation_id = <M::Tokenizer as MyTokenizer<M>>::token_to_id(
+            Self::END_OF_CONVERSATION_TOKEN,
         );
-        let end_of_conversation_id = end_of_conversation_id_u32 as i32;
 
         let original = formatted_sample.content_formatted.as_str();
         let mut cursor = 0usize;
@@ -233,15 +219,7 @@ impl AssetFileTrainingTokenized {
             if segment.text.is_empty() {
                 continue;
             }
-            let segment_encoding = tokenizer.encode(segment.text.clone(), false).unwrap();
-            let segment_ids: Vec<i32> = segment_encoding
-                .get_ids()
-                .iter()
-                .map(|id| {
-                    assert!(*id <= i32::MAX as u32, "Token id must fit in i32");
-                    *id as i32
-                })
-                .collect();
+            let segment_ids = <M::Tokenizer as MyTokenizer<M>>::encode_to_i32_ids(&segment.text);
             if segment_ids.is_empty() {
                 continue;
             }
@@ -304,33 +282,32 @@ impl AssetFileTrainingTokenized {
             reconstructed,
             input_length,
             advantage: formatted_sample.advantage,
-            model_official_name: self.model.api_name().to_string(),
+            model_official_name: M::API_NAME.to_string(),
+            _marker: PhantomData,
         }
     }
 
     pub fn formatted_to_tokenized(
         &self,
         formatted_sample: &TrainingSampleFormatted,
-    ) -> TrainingSampleTokenized {
-        let tokenizer = self.load_tokenizer();
-        self.formatted_to_tokenized_with_tokenizer(formatted_sample, &tokenizer)
+    ) -> TrainingSampleTokenized<M> {
+        self.formatted_to_tokenized_with_tokenizer(formatted_sample)
     }
 
     pub fn generate_tokenized_samples(
         &self,
         formatted_samples: &[TrainingSampleFormatted],
-    ) -> Vec<TrainingSampleTokenized> {
-        let tokenizer = self.load_tokenizer();
+    ) -> Vec<TrainingSampleTokenized<M>> {
         formatted_samples
             .iter()
-            .map(|sample| self.formatted_to_tokenized_with_tokenizer(sample, &tokenizer))
+            .map(|sample| self.formatted_to_tokenized_with_tokenizer(sample))
             .collect()
     }
 }
 
 // use the same style as AssetFileAdvantageComposition
-impl AssetFile for AssetFileTrainingTokenized {
-    type FileModel = TrainingSampleTokenizedStore;
+impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTokenized<M> {
+    type FileModel = TrainingSampleTokenizedStore<M>;
 
     fn fetch(&self) -> Self::FileModel {
         self.synchronize();
@@ -339,7 +316,7 @@ impl AssetFile for AssetFileTrainingTokenized {
 
     fn synchronize(&self) -> crate::asset_file::Base64Hash {
         let asset_file_training_formatted = AssetFileTrainingFormatted {
-            model: self.model,
+            model: Self::model_name(),
             dataset: self.dataset.clone(),
             num_samples: self.num_samples,
             hyperparameters: self.hyperparameters.clone(),
