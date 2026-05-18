@@ -19,11 +19,12 @@ pub struct DirectTree<M: LlmModelMarker> {
     pub correct_answer: String,
     // states
     pub status: DirectTreeStatus,
-    pub segments: BTreeMap<usize, Segment>, // segment_id -> segment. A segment branched from the middle is destroyed and its id is not reused to avoid hiding sneaky bugs
-    pub root_segment_ids: Vec<usize>,
-    pub leaf_segment_judgments: BTreeMap<usize, CorrectnessJudgment>,
+    pub segments: BTreeMap<SegmentId, Segment>, // segment_id -> segment. A segment branched from the middle is destroyed and its id is not reused to avoid hiding sneaky bugs
+    pub root_segment_ids: Vec<SegmentId>,
+    pub leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
     pub next_segment_id: usize,
-    pub focused_segment_id: Option<usize>, // the segment after which we create a new branch and rollout until finding the answer
+    pub next_segment_temperature: f32,
+    pub focused_segment_id: Option<SegmentId>, // the segment after which we create a new branch and rollout until finding the answer
     pub completed: bool,
     // hyperparameters
     pub num_trunks: usize,
@@ -55,6 +56,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
             root_segment_ids: vec![],
             leaf_segment_judgments: BTreeMap::new(),
             next_segment_id: 0,
+            next_segment_temperature: 1.0,
             focused_segment_id: None,
             completed: false,
             num_trunks,
@@ -65,18 +67,21 @@ impl<M: LlmModelMarker> DirectTree<M> {
     }
     pub fn apply_action(&mut self, action: DirectTreeAction) {
         match action {
-            DirectTreeAction::CreateAndFocusTrunkTrajectory { content } => {
+            DirectTreeAction::CreateAndFocusTrunkTrajectory {
+                content_array: content,
+            } => {
                 assert!(matches!(
                     self.status,
                     DirectTreeStatus::CreatingTrunkTrajectory
                 ));
-                let segment_id = self.next_segment_id;
+                let segment_id = SegmentId(self.next_segment_id);
                 self.next_segment_id += 1;
                 self.segments.insert(
                     segment_id,
                     Segment {
                         segment_id,
                         content,
+                        llm_temperature: self.next_segment_temperature,
                         child_ids: vec![],
                         parent_id: None,
                     },
@@ -98,9 +103,9 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     self.status,
                     DirectTreeStatus::CreatingOrChoosingBranchPoint
                 ));
-                let new_first_half_id = self.next_segment_id;
+                let new_first_half_id = SegmentId(self.next_segment_id);
                 self.next_segment_id += 1;
-                let new_second_half_id = self.next_segment_id;
+                let new_second_half_id = SegmentId(self.next_segment_id);
                 self.next_segment_id += 1;
                 let target_segment = self
                     .segments
@@ -145,12 +150,14 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     content: first_half_content_array,
                     child_ids: vec![new_second_half_id],
                     parent_id: target_segment.parent_id,
+                    llm_temperature: target_segment.llm_temperature,
                 };
                 let second_half_segment = Segment {
                     segment_id: new_second_half_id,
                     content: second_half_content_array,
                     child_ids: target_segment.child_ids.clone(),
                     parent_id: Some(new_first_half_id),
+                    llm_temperature: target_segment.llm_temperature,
                 };
                 self.segments.insert(new_first_half_id, first_half_segment);
                 self.segments
@@ -193,7 +200,8 @@ impl<M: LlmModelMarker> DirectTree<M> {
                         .insert(new_second_half_id, judgment);
                 }
                 // after creating the branch point, we move to it and rollout until finding the answer
-                self.focused_segment_id = Some(new_second_half_id);
+                // the new branch point is at the end of the first half segment
+                self.focused_segment_id = Some(new_first_half_id);
                 // update status
                 self.status = DirectTreeStatus::CreatingBranchSegment;
             }
@@ -217,13 +225,14 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     panic!("Must have a focused segment to add a branch segment");
                 };
                 // the focused segment is going to be the parent of the new segment
-                let new_segment_id = self.next_segment_id;
+                let new_segment_id = SegmentId(self.next_segment_id);
                 self.next_segment_id += 1;
                 let new_segment = Segment {
                     segment_id: new_segment_id,
                     content,
                     child_ids: vec![],
                     parent_id: Some(parent_id),
+                    llm_temperature: self.next_segment_temperature,
                 };
                 self.segments.insert(new_segment_id, new_segment);
                 if let Some(parent_segment) = self.segments.get_mut(&parent_id) {
@@ -263,15 +272,19 @@ impl<M: LlmModelMarker> DirectTree<M> {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SegmentId(usize);
+
 // it has interleaved reasoning and tool response
 // we can branch on the reasoning part, but not on the tool response part
 // tool response should not be counted towards the segment length
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Segment {
-    pub segment_id: usize,
+    pub segment_id: SegmentId,
     pub content: Vec<SegmentContent>,
-    pub child_ids: Vec<usize>,
-    pub parent_id: Option<usize>,
+    pub llm_temperature: f32,
+    pub child_ids: Vec<SegmentId>,
+    pub parent_id: Option<SegmentId>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

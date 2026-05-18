@@ -30,6 +30,15 @@ Branch selection is guided by a score with regularization terms:
 2. **Branching-factor penalty (node expansion only):** high-degree nodes receive higher penalty to prevent over-concentration.
 3. **Segment or node score:** uncertainty-aware contribution estimate (defined below).
 
+Both penalties are implemented as multiplicative factors `< 1.0`:
+
+```text
+segment_multiplier_i = 1 - exp(-k_seg * (len_i - 1))
+node_multiplier_n = exp(-k_node * (b_n - 1))
+```
+
+where `len_i in [1, +inf)` is reasoning-token length for segment `i`, `b_n in [1, +inf)` is node branching factor, and `k_seg, k_node > 0` control falloff strength.
+
 These penalties encourage balanced exploration across the full tree.
 
 ### Adaptive Branching Temperature
@@ -135,25 +144,53 @@ Calibration workflow:
 
 ### Branching Scores from Segment Estimates
 
-Segment score is identified with the MAP contribution estimate and interpreted as uncertainty-aware signed evidence:
+For branch-point selection, we map posterior mean and variance to a bounded branching score in `[0, 1]`, where values closer to `1` are prioritized.
 
-- positive: supports correctness
-- negative: opposes correctness
-- near zero: neutral and/or uncertain
+Given segment posterior moments `m_i` and `u_i` (`var_i = exp(2u_i)`), we first normalize statistics across all segments in the tree:
 
-During branching, segments near zero are prioritized for higher expected information gain.
+```text
+m_i_norm = (m_i - mean(m)) / (std(m) + eps)
+log_var_i = ln(var_i + eps)
+log_var_i_norm = (log_var_i - mean(log_var)) / (std(log_var) + eps)
+var_i_norm = exp(log_var_i_norm)
+```
 
-Node score is derived from incident segment scores. For a node with branching factor `b`, parent segment score `s_p`, and child segment scores `s_{c_i}`:
+Define the uncertainty-adjusted ratio:
+
+```text
+ratio_i = |m_i_norm| / sqrt(var_i_norm + eps)
+```
+
+and the segment branching score:
+
+```text
+segment_branch_score_i = exp(-alpha * ratio_i^2),   alpha > 0
+```
+
+Properties:
+
+- `segment_branch_score_i in (0, 1]`
+- `ratio_i -> 0` implies score `-> 1` (highest branching priority)
+- larger `ratio_i` implies lower score
+
+Node score is derived from incident segment branching scores. For a node with branching factor `b`, parent segment score `s_p`, and child segment scores `s_{c_i}`:
 
 ```text
 node_score = (b * s_p + sum_{i=1..b} s_{c_i}) / (2b)
 ```
 
-This weighting gives equal total mass to parent-side and child-side evidence. Nodes near zero are likewise prioritized.
+This weighting gives equal total mass to parent-side and child-side evidence.
+
+Final branch-point priorities are:
+
+```text
+segment_priority_i = segment_branch_score_i * segment_multiplier_i
+node_priority_n = node_score_n * node_multiplier_n
+```
 
 ## Advantage Assignment
 
-After tree construction, each segment advantage is set to its segment score. Advantages are normalized but not mean-shifted.
+After tree construction, each segment advantage is set to its signed MAP contribution estimate. Advantages are normalized but not mean-shifted.
 
 ## Training Set Construction
 

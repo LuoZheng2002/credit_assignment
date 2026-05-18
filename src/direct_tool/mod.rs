@@ -6,3 +6,4 @@ pub mod direct_rollout;
 pub mod direct_tree_to_actions;
 pub mod direct_tree_action;
 pub mod direct_tree_status;
+pub mod direct_tree_advantage;

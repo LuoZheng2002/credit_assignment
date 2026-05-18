@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{agent::tree::CorrectnessJudgment, direct_tool::direct_tree::SegmentContent};
+use crate::{agent::tree::CorrectnessJudgment, direct_tool::direct_tree::{SegmentContent, SegmentId}};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BranchPosition {
@@ -11,14 +11,14 @@ pub struct BranchPosition {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum DirectTreeAction {
     CreateAndFocusTrunkTrajectory {
-        content: Vec<SegmentContent>,
+        content_array: Vec<SegmentContent>,
     },
     CreateAndMoveToBranchPoint {
-        target_segment_id: usize,
+        target_segment_id: SegmentId, // refers to the end of the segment
         position: BranchPosition,
     },
     MoveToBranchPoint {
-        target_segment_id: usize, // refers to the end of the segment
+        target_segment_id: SegmentId, // refers to the end of the segment
     },
     CreateAndFocusBranchSegment {
         content: Vec<SegmentContent>,
