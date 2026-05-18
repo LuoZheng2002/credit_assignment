@@ -1,15 +1,14 @@
 use async_trait::async_trait;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
 use super::{
-    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer,
+    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
     build_simple_qwen_chatml_prefix,
 };
 use super::qwen_shared::{
-    SharedQwenLlmCallable, encode_to_i32_ids, token_to_i32_id,
+    SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
 };
 
 static QWEN35_4B_TOKENIZER: LazyLock<Tokenizer> =
@@ -37,31 +36,30 @@ impl Qwen35_4BLlmCallable {
 
 #[async_trait]
 impl LlmCallable<Qwen35_4B> for Qwen35_4BLlmCallable {
-    async fn generate(&self, prompt_or_tokens: Qwen35TokenArray, passes_in_stop: bool) -> String {
+    async fn generate(&self, prompt_or_tokens: TokenArrayWithLogprob, passes_in_stop: bool) -> String {
         self.shared
             .generate_from_tokens(prompt_or_tokens.tokens, passes_in_stop)
             .await
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Qwen35TokenArray {
-    pub tokens: Vec<i32>,
-    pub decoded_string: String,
-}
-
 pub struct Qwen35_4BTokenizer;
 impl MyTokenizer<Qwen35_4B> for Qwen35_4BTokenizer {
-    fn tokenize(prompt: String) -> Qwen35TokenArray {
+    fn tokenize(prompt: String) -> TokenArrayWithLogprob {
         let tokens = Self::encode_to_i32_ids(&prompt);
-        Qwen35TokenArray {
+        TokenArrayWithLogprob {
             tokens,
             decoded_string: prompt,
+            logprobs: Vec::new(),
         }
     }
 
     fn encode_to_i32_ids(text: &str) -> Vec<i32> {
         encode_to_i32_ids(&QWEN35_4B_TOKENIZER, text)
+    }
+
+    fn decode_i32_ids(token_ids: &[i32]) -> String {
+        decode_from_i32_ids(&QWEN35_4B_TOKENIZER, token_ids)
     }
 
     fn token_to_id(token: &str) -> i32 {
@@ -70,7 +68,6 @@ impl MyTokenizer<Qwen35_4B> for Qwen35_4BTokenizer {
 }
 
 impl LlmModelMarker for Qwen35_4B {
-    type StringOrTokenArray = Qwen35TokenArray;
     type Tokenizer = Qwen35_4BTokenizer;
     type Callable = Qwen35_4BLlmCallable;
 

@@ -18,6 +18,16 @@ pub(crate) fn encode_to_i32_ids(tokenizer: &Tokenizer, text: &str) -> Vec<i32> {
         .collect()
 }
 
+pub(crate) fn decode_from_i32_ids(tokenizer: &Tokenizer, token_ids: &[i32]) -> String {
+    let token_ids: Vec<u32> = token_ids
+        .iter()
+        .map(|token| u32::try_from(*token).expect("token id must be non-negative"))
+        .collect();
+    tokenizer
+        .decode(&token_ids, false)
+        .expect("failed to decode token ids")
+}
+
 pub(crate) fn token_to_i32_id(tokenizer: &Tokenizer, token: &str, api_name: &str) -> i32 {
     let token_id = tokenizer
         .token_to_id(token)

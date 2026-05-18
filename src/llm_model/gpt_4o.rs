@@ -1,9 +1,16 @@
 use async_trait::async_trait;
 use reqwest::Client;
+use std::sync::LazyLock;
+use tiktoken_rs::{CoreBPE, bpe_for_model};
 
-use super::{LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, PassthroughTokenizer};
+use super::{
+    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
+};
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
+
+static GPT4O_TOKENIZER: LazyLock<CoreBPE> =
+    LazyLock::new(|| bpe_for_model(Gpt4o::API_NAME).unwrap().clone());
 
 #[derive(Clone)]
 pub struct Gpt4oLlmCallable {
@@ -30,7 +37,8 @@ impl Gpt4oLlmCallable {
 
 #[async_trait]
 impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
-    async fn generate(&self, prompt: String, passes_in_stop: bool) -> String {
+    async fn generate(&self, prompt_or_tokens: TokenArrayWithLogprob, passes_in_stop: bool) -> String {
+        let prompt = prompt_or_tokens.decoded_string;
         let body = if passes_in_stop {
             serde_json::json!({
                 "model": Gpt4o::API_NAME,
@@ -66,9 +74,50 @@ impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
 }
 
 pub struct Gpt4o;
+
+pub struct Gpt4oTokenizer;
+impl MyTokenizer<Gpt4o> for Gpt4oTokenizer {
+    fn tokenize(prompt: String) -> TokenArrayWithLogprob {
+        let tokens = Self::encode_to_i32_ids(&prompt);
+        TokenArrayWithLogprob {
+            tokens,
+            decoded_string: prompt,
+            logprobs: Vec::new(),
+        }
+    }
+
+    fn encode_to_i32_ids(text: &str) -> Vec<i32> {
+        GPT4O_TOKENIZER
+            .encode_with_special_tokens(text)
+            .into_iter()
+            .map(|token| i32::try_from(token).expect("token id must fit in i32"))
+            .collect()
+    }
+
+    fn decode_i32_ids(token_ids: &[i32]) -> String {
+        let token_ids: Vec<u32> = token_ids
+            .iter()
+            .map(|token| u32::try_from(*token).expect("token id must be non-negative"))
+            .collect();
+        GPT4O_TOKENIZER
+            .decode(&token_ids)
+            .expect("failed to decode GPT token ids")
+    }
+
+    fn token_to_id(token: &str) -> i32 {
+        let encoded = GPT4O_TOKENIZER.encode_with_special_tokens(token);
+        assert_eq!(
+            encoded.len(),
+            1,
+            "Token '{token}' must map to a single GPT token for model {}",
+            Gpt4o::API_NAME
+        );
+        i32::try_from(encoded[0]).expect("token id must fit in i32")
+    }
+}
+
 impl LlmModelMarker for Gpt4o {
-    type StringOrTokenArray = String;
-    type Tokenizer = PassthroughTokenizer;
+    type Tokenizer = Gpt4oTokenizer;
     type Callable = Gpt4oLlmCallable;
 
     const CLI_NAME: &'static str = "gpt-4o";

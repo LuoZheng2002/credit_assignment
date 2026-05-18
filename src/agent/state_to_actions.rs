@@ -17,7 +17,7 @@ use crate::agent::trajectory_state::TrajectoryState;
 use crate::agent::trajectory_status::TrajectoryStatus;
 use crate::agent::tree::{CorrectnessJudgment, Tree};
 use crate::agent::tree_action::TreeAction;
-use crate::llm_model::{Gpt4oLlmCallable, LlmCallable, LlmModelMarker};
+use crate::llm_model::{Gpt4o, Gpt4oLlmCallable, LlmCallable, LlmModelMarker};
 use crate::status_prompts::universal_prompt::get_prompt_according_to_session_status;
 use crate::util::extract_boxed_content;
 use crate::worker_message_tx::log_key_value_pair;
@@ -42,7 +42,7 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
     );
     let gpt_callable = Gpt4oLlmCallable::new(client);
     let evaluation = gpt_callable
-        .generate(prompt, false)
+        .generate(Gpt4o::tokenize(prompt), false)
         .await
         .trim()
         .to_lowercase();

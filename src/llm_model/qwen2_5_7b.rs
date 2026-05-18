@@ -1,12 +1,16 @@
 use async_trait::async_trait;
 use minijinja::context;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
-use super::qwen_shared::{SharedQwenLlmCallable, encode_to_i32_ids, token_to_i32_id};
-use super::{LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer};
+use super::qwen_shared::{
+    SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
+};
+use super::{
+    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
+};
 
 static QWEN25_TOKENIZER: LazyLock<Tokenizer> =
     LazyLock::new(|| Tokenizer::from_pretrained(Qwen25::API_NAME, None).unwrap());
@@ -60,31 +64,34 @@ impl Qwen25LlmCallable {
 
 #[async_trait]
 impl LlmCallable<Qwen25> for Qwen25LlmCallable {
-    async fn generate(&self, prompt_or_tokens: Qwen25TokenArray, passes_in_stop: bool) -> String {
+    async fn generate(
+        &self,
+        prompt_or_tokens: TokenArrayWithLogprob,
+        passes_in_stop: bool,
+    ) -> String {
         self.shared
             .generate_from_tokens(prompt_or_tokens.tokens, passes_in_stop)
             .await
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Qwen25TokenArray {
-    pub tokens: Vec<i32>,
-    pub decoded_string: String,
-}
-
 pub struct Qwen25Tokenizer;
 impl MyTokenizer<Qwen25> for Qwen25Tokenizer {
-    fn tokenize(prompt: String) -> Qwen25TokenArray {
+    fn tokenize(prompt: String) -> TokenArrayWithLogprob {
         let tokens = Self::encode_to_i32_ids(&prompt);
-        Qwen25TokenArray {
+        TokenArrayWithLogprob {
             tokens,
             decoded_string: prompt,
+            logprobs: Vec::new(),
         }
     }
 
     fn encode_to_i32_ids(text: &str) -> Vec<i32> {
         encode_to_i32_ids(&QWEN25_TOKENIZER, text)
+    }
+
+    fn decode_i32_ids(token_ids: &[i32]) -> String {
+        decode_from_i32_ids(&QWEN25_TOKENIZER, token_ids)
     }
 
     fn token_to_id(token: &str) -> i32 {
@@ -93,7 +100,6 @@ impl MyTokenizer<Qwen25> for Qwen25Tokenizer {
 }
 
 impl LlmModelMarker for Qwen25 {
-    type StringOrTokenArray = Qwen25TokenArray;
     type Tokenizer = Qwen25Tokenizer;
     type Callable = Qwen25LlmCallable;
 

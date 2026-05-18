@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use clap::Args;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 
 pub mod gpt_4o;
 pub mod gpt_5_mini;
@@ -12,12 +11,13 @@ pub mod qwen3_4b;
 pub mod qwen3_5_4b;
 
 pub use llm_model_name::LlmModelName;
-pub use gpt_4o::{Gpt4o, Gpt4oLlmCallable};
-pub use gpt_5_mini::{Gpt5Mini, Gpt5MiniLlmCallable};
-pub use qwen2_5_7b::{Qwen25, Qwen25LlmCallable, Qwen25TokenArray, Qwen25Tokenizer};
-pub use qwen3_4b::{Qwen3_4B, Qwen3_4BLlmCallable, Qwen3TokenArray};
-pub use qwen3_5_4b::{Qwen35_4B, Qwen35_4BLlmCallable, Qwen35TokenArray};
+pub use gpt_4o::{Gpt4o, Gpt4oLlmCallable, Gpt4oTokenizer};
+pub use gpt_5_mini::{Gpt5Mini, Gpt5MiniLlmCallable, Gpt5MiniTokenizer};
+pub use qwen2_5_7b::{Qwen25, Qwen25LlmCallable, Qwen25Tokenizer};
+pub use qwen3_4b::{Qwen3_4B, Qwen3_4BLlmCallable, Qwen3_4BTokenizer};
+pub use qwen3_5_4b::{Qwen35_4B, Qwen35_4BLlmCallable, Qwen35_4BTokenizer};
 pub use qwen_shared::CONTEXT_LENGTH_EXCEEDED_RESPONSE;
+pub use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate, Top8Candidates};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmFamily {
@@ -26,18 +26,15 @@ pub enum LlmFamily {
 }
 
 pub trait MyTokenizer<M: LlmModelMarker>: Send + Sync + 'static {
-    fn tokenize(prompt: String) -> M::StringOrTokenArray;
+    fn tokenize(prompt: String) -> TokenArrayWithLogprob;
     fn encode_to_i32_ids(text: &str) -> Vec<i32>;
+    fn decode_i32_ids(token_ids: &[i32]) -> String;
     fn token_to_id(token: &str) -> i32;
 }
 
 #[async_trait]
 pub trait LlmCallable<M: LlmModelMarker>: Clone + Send + Sync {
-    async fn generate(
-        &self,
-        prompt_or_tokens: M::StringOrTokenArray,
-        passes_in_stop: bool,
-    ) -> String;
+    async fn generate(&self, prompt_or_tokens: TokenArrayWithLogprob, passes_in_stop: bool) -> String;
 
     async fn call_with_prefix_thinking_disabled(
         &self,
@@ -58,8 +55,6 @@ pub trait LlmCallable<M: LlmModelMarker>: Clone + Send + Sync {
 }
 
 pub trait LlmModelMarker: Sized + Send + Sync + 'static {
-    type StringOrTokenArray:
-        Serialize + for<'de> Deserialize<'de> + Clone + std::fmt::Debug + Send + Sync + 'static;
     type Tokenizer: MyTokenizer<Self>;
     type Callable: LlmCallable<Self> + Send + Sync + 'static;
 
@@ -82,7 +77,7 @@ pub trait LlmModelMarker: Sized + Send + Sync + 'static {
 
     fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String;
 
-    fn tokenize(prompt: String) -> Self::StringOrTokenArray {
+    fn tokenize(prompt: String) -> TokenArrayWithLogprob {
         <Self::Tokenizer as MyTokenizer<Self>>::tokenize(prompt)
     }
 
@@ -123,33 +118,6 @@ pub(crate) fn build_simple_qwen_chatml_prefix(user_prompt: &str, enable_thinking
             "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
             user_prompt
         )
-    }
-}
-
-pub struct PassthroughTokenizer;
-impl<M> MyTokenizer<M> for PassthroughTokenizer
-where
-    M: LlmModelMarker<StringOrTokenArray = String>,
-{
-    fn tokenize(prompt: String) -> M::StringOrTokenArray {
-        prompt
-    }
-
-    fn encode_to_i32_ids(text: &str) -> Vec<i32> {
-        println!(
-            "Warning: encode_to_i32_ids called for GPT model {}; falling back to {} tokenizer",
-            M::CLI_NAME,
-            Qwen25::CLI_NAME
-        );
-        crate::llm_model::qwen2_5_7b::Qwen25Tokenizer::encode_to_i32_ids(text)
-    }
-
-    fn token_to_id(token: &str) -> i32 {
-        println!(
-            "Warning: token_to_id('{token}') called for GPT model {}; returning 0",
-            M::CLI_NAME
-        );
-        0
     }
 }
 

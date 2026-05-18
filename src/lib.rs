@@ -5,6 +5,7 @@ pub mod em;
 pub mod json_line_util;
 pub mod llm_model;
 pub mod status_prompts;
+pub mod token_array;
 pub mod training_set;
 pub mod util;
 
