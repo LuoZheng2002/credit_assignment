@@ -4,7 +4,7 @@ use research_utility::worker_message_tx::log_key_value_pair;
 use tokio::sync::mpsc;
 
 use crate::{
-    direct_tool::{direct_tree::{DirectTree, DirectTreeAction}, hybrid_dataset_entry::HybridDatasetEntry},
+    direct_tool::{direct_tree::DirectTree, direct_tree_action::DirectTreeAction, hybrid_dataset_entry::HybridDatasetEntry},
     llm_model::LlmModelMarker,
 };
 
@@ -32,7 +32,7 @@ pub async fn rollout<M: LlmModelMarker>(
         question.correct_answer.clone(),
         num_trunks,
         max_num_total_trajectories,
-        use_tool
+        use_tool,
     );
     log_key_value_pair(
         "status".to_string(),

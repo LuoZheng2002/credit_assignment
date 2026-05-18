@@ -3,3 +3,6 @@ pub mod hybrid_dataset_entry;
 pub mod test_set_entry;
 pub mod prompt;
 pub mod direct_rollout;
+pub mod direct_tree_to_actions;
+pub mod direct_tree_action;
+pub mod direct_tree_status;

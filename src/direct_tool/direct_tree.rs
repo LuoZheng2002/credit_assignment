@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     agent::tree::CorrectnessJudgment,
+    direct_tool::{direct_tree_action::DirectTreeAction, direct_tree_status::DirectTreeStatus},
     llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob},
     token_array::TokenArray,
 };
@@ -16,6 +17,8 @@ pub struct DirectTree<M: LlmModelMarker> {
     pub question_id: usize,
     pub question: String,
     pub correct_answer: String,
+    // states
+    pub status: DirectTreeStatus,
     pub segments: BTreeMap<usize, Segment>, // segment_id -> segment. A segment branched from the middle is destroyed and its id is not reused to avoid hiding sneaky bugs
     pub root_segment_ids: Vec<usize>,
     pub leaf_segment_judgments: BTreeMap<usize, CorrectnessJudgment>,
@@ -47,6 +50,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
             question_id,
             question,
             correct_answer,
+            status: DirectTreeStatus::CreatingTrunkTrajectory,
             segments: BTreeMap::new(),
             root_segment_ids: vec![],
             leaf_segment_judgments: BTreeMap::new(),
@@ -62,6 +66,10 @@ impl<M: LlmModelMarker> DirectTree<M> {
     pub fn apply_action(&mut self, action: DirectTreeAction) {
         match action {
             DirectTreeAction::CreateAndFocusTrunkTrajectory { content } => {
+                assert!(matches!(
+                    self.status,
+                    DirectTreeStatus::CreatingTrunkTrajectory
+                ));
                 let segment_id = self.next_segment_id;
                 self.next_segment_id += 1;
                 self.segments.insert(
@@ -75,11 +83,21 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 );
                 self.root_segment_ids.push(segment_id);
                 self.focused_segment_id = Some(segment_id);
+                // update status
+                if self.root_segment_ids.len() >= self.num_trunks {
+                    self.status = DirectTreeStatus::CreatingOrChoosingBranchPoint;
+                } else {
+                    self.status = DirectTreeStatus::CreatingTrunkTrajectory;
+                }
             }
             DirectTreeAction::CreateAndMoveToBranchPoint {
                 target_segment_id,
                 position,
             } => {
+                assert!(matches!(
+                    self.status,
+                    DirectTreeStatus::CreatingOrChoosingBranchPoint
+                ));
                 let new_first_half_id = self.next_segment_id;
                 self.next_segment_id += 1;
                 let new_second_half_id = self.next_segment_id;
@@ -176,12 +194,24 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 }
                 // after creating the branch point, we move to it and rollout until finding the answer
                 self.focused_segment_id = Some(new_second_half_id);
+                // update status
+                self.status = DirectTreeStatus::CreatingBranchSegment;
             }
             DirectTreeAction::MoveToBranchPoint { target_segment_id } => {
                 // this action does not change the tree structure, it only indicates that we are currently at a certain branch point
+                assert!(matches!(
+                    self.status,
+                    DirectTreeStatus::CreatingOrChoosingBranchPoint
+                ));
                 self.focused_segment_id = Some(target_segment_id);
+                // update status
+                self.status = DirectTreeStatus::CreatingBranchSegment;
             }
-            DirectTreeAction::AddAndFocusBranchSegment { content } => {
+            DirectTreeAction::CreateAndFocusBranchSegment { content } => {
+                assert!(matches!(
+                    self.status,
+                    DirectTreeStatus::CreatingBranchSegment
+                ));
                 // this action adds a new segment as a child of the current branch point
                 let Some(parent_id) = self.focused_segment_id else {
                     panic!("Must have a focused segment to add a branch segment");
@@ -200,10 +230,16 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     parent_segment.child_ids.push(new_segment_id);
                 }
                 self.focused_segment_id = Some(new_segment_id);
+                // update status
+                self.status = DirectTreeStatus::JudgingBranchSegment;
             }
             DirectTreeAction::JudgeFocusedSegmentCorrectness {
                 correctness_judgment,
             } => {
+                assert!(matches!(
+                    self.status,
+                    DirectTreeStatus::JudgingBranchSegment
+                ));
                 let Some(focused_segment_id) = self.focused_segment_id else {
                     panic!("Must have a focused segment to judge trajectory correctness");
                 };
@@ -215,6 +251,13 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 );
                 self.leaf_segment_judgments
                     .insert(focused_segment_id, correctness_judgment);
+                // update status
+                if self.segments.len() >= self.max_num_total_trajectories {
+                    self.status = DirectTreeStatus::Complete;
+                    self.completed = true;
+                } else {
+                    self.status = DirectTreeStatus::CreatingOrChoosingBranchPoint;
+                }
             }
         }
     }
@@ -240,32 +283,6 @@ pub enum SegmentContent {
 
 // initially we need to finish 4 full trajectory rollouts.
 // we can choose which trajectory to first branch on?
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct BranchPosition {
-    pub content_index: usize, // must point to a ReasoningOrToolCall content
-    pub offset: usize, // the first position that differs from the original trajectory, must be > 0 and < the length of the content tokens
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum DirectTreeAction {
-    CreateAndFocusTrunkTrajectory {
-        content: Vec<SegmentContent>,
-    },
-    CreateAndMoveToBranchPoint {
-        target_segment_id: usize,
-        position: BranchPosition,
-    },
-    MoveToBranchPoint {
-        target_segment_id: usize, // refers to the end of the segment
-    },
-    AddAndFocusBranchSegment {
-        content: Vec<SegmentContent>,
-    },
-    JudgeFocusedSegmentCorrectness {
-        correctness_judgment: CorrectnessJudgment,
-    },
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DirectTreeActionEntry {
