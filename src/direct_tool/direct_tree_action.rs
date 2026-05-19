@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{agent::tree::CorrectnessJudgment, direct_tool::direct_tree::{SegmentContent, SegmentId}};
+use crate::{
+    agent::tree::CorrectnessJudgment,
+    direct_tool::direct_tree::{SegmentContent, SegmentId},
+};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BranchPosition {

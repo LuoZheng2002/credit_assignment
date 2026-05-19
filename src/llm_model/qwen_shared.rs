@@ -3,8 +3,8 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use tokio::sync::Semaphore;
 use tokenizers::Tokenizer;
+use tokio::sync::Semaphore;
 
 pub const CONTEXT_LENGTH_EXCEEDED_RESPONSE: &str = "<error>QWEN_CONTEXT_LENGTH_EXCEEDED</error>";
 
@@ -56,7 +56,11 @@ impl SharedQwenLlmCallable {
         }
     }
 
-    pub(crate) async fn generate_from_tokens(&self, tokens: Vec<i32>, passes_in_stop: bool) -> String {
+    pub(crate) async fn generate_from_tokens(
+        &self,
+        tokens: Vec<i32>,
+        passes_in_stop: bool,
+    ) -> String {
         let endpoint = self.endpoint.clone();
         let _permit = endpoint
             .request_semaphore

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     agent::tree::CorrectnessJudgment,
     direct_tool::{direct_tree_action::DirectTreeAction, direct_tree_status::DirectTreeStatus},
-    llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob},
+    llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob, TokenLogprobCandidate},
     token_array::TokenArray,
 };
 
@@ -116,16 +116,24 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     target_segment.content[..position.content_index].to_vec();
                 let mut second_half_content_array =
                     target_segment.content[position.content_index + 1..].to_vec();
-                let SegmentContent::ReasoningOrToolCall(original_tokens) = target_content else {
+                let SegmentContent::ReasoningOrToolCall(target_content_token_array) =
+                    target_content
+                else {
                     panic!("Branch position must point to a ReasoningOrToolCall content");
                 };
                 assert!(
-                    position.offset > 0 && position.offset < original_tokens.tokens.len(),
+                    position.offset > 0
+                        && position.offset < target_content_token_array.tokens.len(),
                     "Branch position offset must be > 0 and < the length of the content tokens"
                 );
-                let first_half_tokens = original_tokens.tokens[..position.offset].to_vec();
-                let first_half_logprobs = original_tokens.logprobs[..position.offset].to_vec();
-                let second_half_tokens = original_tokens.tokens[position.offset..].to_vec();
+                let first_half_tokens =
+                    target_content_token_array.tokens[..position.offset].to_vec();
+                let first_half_logprobs =
+                    target_content_token_array.logprobs[..position.offset].to_vec();
+                let second_half_tokens =
+                    target_content_token_array.tokens[position.offset..].to_vec();
+                let second_half_logprobs =
+                    target_content_token_array.logprobs[position.offset..].to_vec();
                 first_half_content_array.push(SegmentContent::ReasoningOrToolCall(
                     TokenArrayWithLogprob {
                         tokens: first_half_tokens.clone(),
@@ -133,6 +141,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                             &first_half_tokens,
                         ),
                         logprobs: first_half_logprobs, // we can fill in the logprobs later if needed
+                        logprobs_past_end: second_half_logprobs[0],
                     },
                 ));
                 second_half_content_array.insert(
@@ -142,7 +151,8 @@ impl<M: LlmModelMarker> DirectTree<M> {
                         decoded_string: <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(
                             &second_half_tokens,
                         ),
-                        logprobs: vec![], // we can fill in the logprobs later if needed
+                        logprobs: second_half_logprobs,
+                        logprobs_past_end: target_content_token_array.logprobs_past_end, // inherit the logprobs_past_end from the original content
                     }),
                 );
                 let first_half_segment = Segment {
@@ -285,6 +295,47 @@ pub struct Segment {
     pub llm_temperature: f32,
     pub child_ids: Vec<SegmentId>,
     pub parent_id: Option<SegmentId>,
+}
+// #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+// pub struct ReasoningContentIndex(usize);
+// pub struct ReasoningOnlySegmentView<'a> {
+//     // pub reasoning_contents: Vec<TokenArrayWithLogprob>,
+
+//     pub corresponding_segment: &'a Segment,
+// }
+
+pub struct ReasoningOnlyTokenView<'a> {
+    pub flat_index: usize, // the index of the token in the flattened reasoning-only token sequence of the segment
+    pub token: i32,
+    pub logprobs: [TokenLogprobCandidate; 8],
+    pub original_content_index: usize, // the index of the content in the original segment content array that this token belongs to
+    pub original_token_offset: usize,  // the offset of the token in the original content tokens
+    pub corresponding_segment: &'a Segment,
+}
+
+impl Segment {
+    pub fn reasoning_only_tokens(&self) -> Vec<ReasoningOnlyTokenView> {
+        let mut views = vec![];
+        let mut flat_index = 0;
+        for (content_index, content) in self.content.iter().enumerate() {
+            if let SegmentContent::ReasoningOrToolCall(tokens) = content {
+                for (token_offset, (&token, logprobs)) in
+                    tokens.tokens.iter().zip(tokens.logprobs.iter()).enumerate()
+                {
+                    views.push(ReasoningOnlyTokenView {
+                        flat_index,
+                        token,
+                        logprobs: *logprobs,
+                        original_content_index: content_index,
+                        original_token_offset: token_offset,
+                        corresponding_segment: self,
+                    });
+                    flat_index += 1;
+                }
+            }
+        }
+        views
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

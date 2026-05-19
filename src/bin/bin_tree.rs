@@ -7,7 +7,8 @@ use credit_assignment::{
         Gpt4o, Gpt5Mini, LlmCliArgs, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B,
     },
     message::WorkerMessage,
-    progress_screen::ProgressScreen, progress_screen::ProgressScreenConfig,
+    progress_screen::ProgressScreen,
+    progress_screen::ProgressScreenConfig,
     worker_message_tx::WORKER_MESSAGE_TX,
 };
 use reqwest::Client;
@@ -118,8 +119,7 @@ async fn main() {
                 .await
         }
         LlmModelName::Qwen25_7b => {
-            run_rollout_for_marker::<Qwen25>(model, dataset_name, num_samples, &llm_cli_args)
-                .await
+            run_rollout_for_marker::<Qwen25>(model, dataset_name, num_samples, &llm_cli_args).await
         }
         LlmModelName::Qwen3_4b => {
             run_rollout_for_marker::<Qwen3_4B>(model, dataset_name, num_samples, &llm_cli_args)

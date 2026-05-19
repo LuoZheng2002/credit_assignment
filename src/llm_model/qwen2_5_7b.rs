@@ -5,12 +5,12 @@ use serde::Serialize;
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
+use crate::token_array::TokenArray;
+
 use super::qwen_shared::{
     SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
 };
-use super::{
-    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
-};
+use super::{LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer};
 
 static QWEN25_TOKENIZER: LazyLock<Tokenizer> =
     LazyLock::new(|| Tokenizer::from_pretrained(Qwen25::API_NAME, None).unwrap());
@@ -64,25 +64,20 @@ impl Qwen25LlmCallable {
 
 #[async_trait]
 impl LlmCallable<Qwen25> for Qwen25LlmCallable {
-    async fn generate(
-        &self,
-        prompt_or_tokens: TokenArrayWithLogprob,
-        passes_in_stop: bool,
-    ) -> String {
+    async fn generate(&self, prompt_or_tokens: Vec<i32>, passes_in_stop: bool) -> String {
         self.shared
-            .generate_from_tokens(prompt_or_tokens.tokens, passes_in_stop)
+            .generate_from_tokens(prompt_or_tokens, passes_in_stop)
             .await
     }
 }
 
 pub struct Qwen25Tokenizer;
 impl MyTokenizer<Qwen25> for Qwen25Tokenizer {
-    fn tokenize(prompt: String) -> TokenArrayWithLogprob {
+    fn tokenize(prompt: String) -> TokenArray {
         let tokens = Self::encode_to_i32_ids(&prompt);
-        TokenArrayWithLogprob {
+        TokenArray {
             tokens,
             decoded_string: prompt,
-            logprobs: Vec::new(),
         }
     }
 

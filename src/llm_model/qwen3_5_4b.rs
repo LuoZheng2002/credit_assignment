@@ -3,12 +3,12 @@ use reqwest::Client;
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
-use super::{
-    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
-    build_simple_qwen_chatml_prefix,
-};
 use super::qwen_shared::{
     SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
+};
+use super::{
+    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArray,
+    build_simple_qwen_chatml_prefix,
 };
 
 static QWEN35_4B_TOKENIZER: LazyLock<Tokenizer> =
@@ -36,21 +36,20 @@ impl Qwen35_4BLlmCallable {
 
 #[async_trait]
 impl LlmCallable<Qwen35_4B> for Qwen35_4BLlmCallable {
-    async fn generate(&self, prompt_or_tokens: TokenArrayWithLogprob, passes_in_stop: bool) -> String {
+    async fn generate(&self, prompt_or_tokens: Vec<i32>, passes_in_stop: bool) -> String {
         self.shared
-            .generate_from_tokens(prompt_or_tokens.tokens, passes_in_stop)
+            .generate_from_tokens(prompt_or_tokens, passes_in_stop)
             .await
     }
 }
 
 pub struct Qwen35_4BTokenizer;
 impl MyTokenizer<Qwen35_4B> for Qwen35_4BTokenizer {
-    fn tokenize(prompt: String) -> TokenArrayWithLogprob {
+    fn tokenize(prompt: String) -> TokenArray {
         let tokens = Self::encode_to_i32_ids(&prompt);
-        TokenArrayWithLogprob {
+        TokenArray {
             tokens,
             decoded_string: prompt,
-            logprobs: Vec::new(),
         }
     }
 

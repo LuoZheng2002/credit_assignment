@@ -144,34 +144,31 @@ Calibration workflow:
 
 ### Branching Scores from Segment Estimates
 
-For branch-point selection, we map posterior mean and variance to a bounded branching score in `[0, 1]`, where values closer to `1` are prioritized.
+For branch-point selection, we map posterior mean and standard deviation to a bounded branching score in `[0, 1]`, where values closer to `1` are prioritized.
 
-Given segment posterior moments `m_i` and `u_i` (`var_i = exp(2u_i)`), we first normalize statistics across all segments in the tree:
+Given segment posterior moments `m_i` and `u_i` (`std_i = exp(u_i)`), we first compute:
 
 ```text
-m_i_norm = (m_i - mean(m)) / (std(m) + eps)
-log_var_i = ln(var_i + eps)
-log_var_i_norm = (log_var_i - mean(log_var)) / (std(log_var) + eps)
-var_i_norm = exp(log_var_i_norm)
+r_i = m_i / (std_i + eps)
 ```
 
-Define the uncertainty-adjusted ratio:
+Then we normalize `r_i` across all segments in the tree:
 
 ```text
-ratio_i = |m_i_norm| / sqrt(var_i_norm + eps)
+r_i_norm = (r_i - mean(r)) / (std(r) + eps)
 ```
 
-and the segment branching score:
+and define the segment branching score:
 
 ```text
-segment_branch_score_i = exp(-alpha * ratio_i^2),   alpha > 0
+segment_branch_score_i = exp(-alpha * r_i_norm^2),   alpha > 0
 ```
 
 Properties:
 
 - `segment_branch_score_i in (0, 1]`
 - `ratio_i -> 0` implies score `-> 1` (highest branching priority)
-- larger `ratio_i` implies lower score
+- larger `|r_i_norm|` implies lower score
 
 Node score is derived from incident segment branching scores. For a node with branching factor `b`, parent segment score `s_p`, and child segment scores `s_{c_i}`:
 

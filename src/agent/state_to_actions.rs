@@ -42,7 +42,7 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
     );
     let gpt_callable = Gpt4oLlmCallable::new(client);
     let evaluation = gpt_callable
-        .generate(Gpt4o::tokenize(prompt), false)
+        .generate(Gpt4o::tokenize(prompt).tokens, false)
         .await
         .trim()
         .to_lowercase();
@@ -191,7 +191,10 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                     "Verifier commenting should not have prompt after assistant"
                 );
                 let response = llm_callable
-                    .call_with_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
+                    .call_with_prefix_thinking_disabled(
+                        prompt_before_assistant,
+                        prompt_after_assistant,
+                    )
                     .await;
                 if is_context_length_exceeded_response(&response) {
                     context_length_exceeded_result(
@@ -236,7 +239,10 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                 let (prompt_before_assistant, prompt_after_assistant) =
                     get_prompt_according_to_session_status(&session_state);
                 let response = llm_callable
-                    .call_with_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
+                    .call_with_prefix_thinking_disabled(
+                        prompt_before_assistant,
+                        prompt_after_assistant,
+                    )
                     .await;
                 if is_context_length_exceeded_response(&response) {
                     context_length_exceeded_result(
@@ -472,7 +478,10 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                 let (prompt_before_assistant, prompt_after_assistant) =
                     get_prompt_according_to_session_status(&session_state);
                 let response = llm_callable
-                    .call_with_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
+                    .call_with_prefix_thinking_disabled(
+                        prompt_before_assistant,
+                        prompt_after_assistant,
+                    )
                     .await;
                 if is_context_length_exceeded_response(&response) {
                     context_length_exceeded_result(

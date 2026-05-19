@@ -38,13 +38,9 @@ pub async fn rollout<M: LlmModelMarker>(
         if tree.completed {
             break;
         }
-        let new_actions = produce_actions_from_state::<M, M::Callable>(
-            &tree,
-            &llm_callable,
-            client.clone(),
-            rng,
-        )
-        .await;
+        let new_actions =
+            produce_actions_from_state::<M, M::Callable>(&tree, &llm_callable, client.clone(), rng)
+                .await;
         for action in new_actions {
             tree.apply_action(action.clone());
             log_or_tree_tx.send(LogOrTree::Action(action)).unwrap();

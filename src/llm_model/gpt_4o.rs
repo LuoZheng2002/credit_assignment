@@ -3,9 +3,9 @@ use reqwest::Client;
 use std::sync::LazyLock;
 use tiktoken_rs::{CoreBPE, bpe_for_model};
 
-use super::{
-    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
-};
+use crate::token_array::TokenArray;
+
+use super::{LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer};
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
 
@@ -37,8 +37,8 @@ impl Gpt4oLlmCallable {
 
 #[async_trait]
 impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
-    async fn generate(&self, prompt_or_tokens: TokenArrayWithLogprob, passes_in_stop: bool) -> String {
-        let prompt = prompt_or_tokens.decoded_string;
+    async fn generate(&self, prompt_or_tokens: Vec<i32>, passes_in_stop: bool) -> String {
+        let prompt = <Gpt4o as LlmModelMarker>::Tokenizer::decode_i32_ids(&prompt_or_tokens);
         let body = if passes_in_stop {
             serde_json::json!({
                 "model": Gpt4o::API_NAME,
@@ -77,12 +77,11 @@ pub struct Gpt4o;
 
 pub struct Gpt4oTokenizer;
 impl MyTokenizer<Gpt4o> for Gpt4oTokenizer {
-    fn tokenize(prompt: String) -> TokenArrayWithLogprob {
+    fn tokenize(prompt: String) -> TokenArray {
         let tokens = Self::encode_to_i32_ids(&prompt);
-        TokenArrayWithLogprob {
+        TokenArray {
             tokens,
             decoded_string: prompt,
-            logprobs: Vec::new(),
         }
     }
 
@@ -128,7 +127,10 @@ impl LlmModelMarker for Gpt4o {
         prompt_before_assistant: &str,
         prompt_after_assistant: &str,
     ) -> String {
-        format!("{}\nAssistant: {}", prompt_before_assistant, prompt_after_assistant)
+        format!(
+            "{}\nAssistant: {}",
+            prompt_before_assistant, prompt_after_assistant
+        )
     }
 
     fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String {

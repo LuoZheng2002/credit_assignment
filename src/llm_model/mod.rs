@@ -6,18 +6,19 @@ pub mod gpt_4o;
 pub mod gpt_5_mini;
 pub mod llm_model_name;
 pub mod qwen2_5_7b;
-pub mod qwen_shared;
 pub mod qwen3_4b;
 pub mod qwen3_5_4b;
+pub mod qwen_shared;
 
-pub use llm_model_name::LlmModelName;
+use crate::token_array::TokenArray;
+pub use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate, Top8Candidates};
 pub use gpt_4o::{Gpt4o, Gpt4oLlmCallable, Gpt4oTokenizer};
 pub use gpt_5_mini::{Gpt5Mini, Gpt5MiniLlmCallable, Gpt5MiniTokenizer};
+pub use llm_model_name::LlmModelName;
+pub use qwen_shared::CONTEXT_LENGTH_EXCEEDED_RESPONSE;
 pub use qwen2_5_7b::{Qwen25, Qwen25LlmCallable, Qwen25Tokenizer};
 pub use qwen3_4b::{Qwen3_4B, Qwen3_4BLlmCallable, Qwen3_4BTokenizer};
 pub use qwen3_5_4b::{Qwen35_4B, Qwen35_4BLlmCallable, Qwen35_4BTokenizer};
-pub use qwen_shared::CONTEXT_LENGTH_EXCEEDED_RESPONSE;
-pub use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate, Top8Candidates};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmFamily {
@@ -26,7 +27,7 @@ pub enum LlmFamily {
 }
 
 pub trait MyTokenizer<M: LlmModelMarker>: Send + Sync + 'static {
-    fn tokenize(prompt: String) -> TokenArrayWithLogprob;
+    fn tokenize(prompt: String) -> TokenArray;
     fn encode_to_i32_ids(text: &str) -> Vec<i32>;
     fn decode_i32_ids(token_ids: &[i32]) -> String;
     fn token_to_id(token: &str) -> i32;
@@ -34,7 +35,7 @@ pub trait MyTokenizer<M: LlmModelMarker>: Send + Sync + 'static {
 
 #[async_trait]
 pub trait LlmCallable<M: LlmModelMarker>: Clone + Send + Sync {
-    async fn generate(&self, prompt_or_tokens: TokenArrayWithLogprob, passes_in_stop: bool) -> String;
+    async fn generate(&self, prompt_or_tokens: Vec<i32>, passes_in_stop: bool) -> String;
 
     async fn call_with_prefix_thinking_disabled(
         &self,
@@ -43,13 +44,13 @@ pub trait LlmCallable<M: LlmModelMarker>: Clone + Send + Sync {
     ) -> String {
         let prompt =
             M::build_prefix_thinking_disabled(&prompt_before_assistant, &prompt_after_assistant);
-        let input = M::tokenize(prompt);
+        let input = M::tokenize(prompt).tokens;
         self.generate(input, true).await
     }
 
     async fn call_with_prefix_thinking_enabled(&self, prompt_before_assistant: String) -> String {
         let prompt = M::build_prefix_thinking_enabled(&prompt_before_assistant);
-        let input = M::tokenize(prompt);
+        let input = M::tokenize(prompt).tokens;
         self.generate(input, true).await
     }
 }
@@ -77,7 +78,7 @@ pub trait LlmModelMarker: Sized + Send + Sync + 'static {
 
     fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String;
 
-    fn tokenize(prompt: String) -> TokenArrayWithLogprob {
+    fn tokenize(prompt: String) -> TokenArray {
         <Self::Tokenizer as MyTokenizer<Self>>::tokenize(prompt)
     }
 
@@ -133,17 +134,20 @@ pub fn build_prefix_thinking_disabled_by_model(
         LlmModelName::Qwen25_7b => {
             Qwen25::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
         }
-        LlmModelName::Qwen3_4b => {
-            Qwen3_4B::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
-        }
-        LlmModelName::Qwen35_4b => {
-            Qwen35_4B::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
-        }
+        LlmModelName::Qwen3_4b => Qwen3_4B::build_prefix_thinking_disabled(
+            prompt_before_assistant,
+            prompt_after_assistant,
+        ),
+        LlmModelName::Qwen35_4b => Qwen35_4B::build_prefix_thinking_disabled(
+            prompt_before_assistant,
+            prompt_after_assistant,
+        ),
         LlmModelName::Gpt4o => {
             Gpt4o::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
         }
-        LlmModelName::Gpt5Mini => {
-            Gpt5Mini::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
-        }
+        LlmModelName::Gpt5Mini => Gpt5Mini::build_prefix_thinking_disabled(
+            prompt_before_assistant,
+            prompt_after_assistant,
+        ),
     }
 }

@@ -121,9 +121,8 @@ impl<M: LlmModelMarker> AssetFileTrainingTokenized<M> {
             text: String,
         }
 
-        let end_of_conversation_id = <M::Tokenizer as MyTokenizer<M>>::token_to_id(
-            Self::END_OF_CONVERSATION_TOKEN,
-        );
+        let end_of_conversation_id =
+            <M::Tokenizer as MyTokenizer<M>>::token_to_id(Self::END_OF_CONVERSATION_TOKEN);
 
         let original = formatted_sample.content_formatted.as_str();
         let mut cursor = 0usize;
