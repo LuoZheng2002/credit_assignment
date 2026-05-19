@@ -5,9 +5,7 @@ use reqwest::Client;
 
 use crate::{
     direct_tool::{
-        direct_tree::{DirectTree, SegmentContent, SegmentId},
-        direct_tree_action::DirectTreeAction,
-        direct_tree_status::DirectTreeStatus,
+        direct_tree::{DirectTree, SegmentContent, SegmentId}, direct_tree_action::{BranchPosition, DirectTreeAction}, direct_tree_advantage::Posterior, direct_tree_status::DirectTreeStatus
     },
     llm_model::LlmModelMarker,
 };
@@ -32,6 +30,14 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 vec![DirectTreeAction::CreateAndFocusTrunkTrajectory { content_array }]
             }
             DirectTreeStatus::CreatingOrChoosingBranchPoint => {
+                // segment score composition:
+                // advantage (mean / variance)
+                // segment length
+                // the best breaking point and its probability (with penalty of deviating from the middle point)
+                
+                // node advantage score is dependent on segment advantage score
+
+
                 assert!(!self.root_segment_ids.is_empty());
                 assert!(!self.leaf_segment_judgments.is_empty());
 
@@ -39,13 +45,15 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 let segment_branching_scores =
                     self.posteriors_to_segment_branching_scores(&posteriors);
                 let node_branching_scores = self.segment_scores_to_node_scores(&segment_branching_scores);
-                let segment_branching_scores_with_penalty = self.add_penalty_to_segment_score(segment_branching_scores);
-                let node_branching_scores_with_penalty = self.add_penalty_to_node_score(node_branching_scores);
-                // 
+                // let segment_branching_scores_with_penalty = self.add_penalty_to_segment_score(segment_branching_scores);
+                // let node_branching_scores_with_penalty = self.add_penalty_to_node_score(node_branching_scores);
+                
                 let branching_candidates = sort_segment_or_node_candidates(
                     segment_branching_scores_with_penalty,
                     node_branching_scores_with_penalty,
                 );
+                // branching candidates are sorted in a descending order
+
                 
                 // we are currently creating or choosing a branch point, so the action could be either to create a new branch point or to move to an existing branch point
                 todo!()
@@ -96,11 +104,11 @@ impl<M: LlmModelMarker> DirectTree<M> {
     }
     pub fn posteriors_to_segment_branching_scores(
         &self,
-        posteriors: &BTreeMap<SegmentId, crate::direct_tool::direct_tree_advantage::Posterior>,
-    ) -> BTreeMap<SegmentId, f32> {
+        posteriors: &BTreeMap<SegmentId, Posterior>,
+    ) -> BTreeMap<SegmentId, SegmentBranchingScoreComposition> {
         let eps = 1e-8_f32;
         let alpha = 1.0_f32;
-
+        // avoid division by zero
         if posteriors.is_empty() {
             return BTreeMap::new();
         }
@@ -130,7 +138,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
             / log_vars.len() as f32)
             .sqrt();
 
-        posteriors
+        let uncertainty_scores = posteriors
             .iter()
             .map(|(segment_id, posterior)| {
                 let mean_norm = (posterior.mean - mean_of_means) / (std_of_means + eps);
@@ -144,7 +152,8 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 let score = (-alpha * ratio.powi(2)).exp();
                 (*segment_id, score)
             })
-            .collect()
+            .collect();
+        todo!()
     }
     pub fn add_penalty_to_segment_score(&self, segment_scores: BTreeMap<SegmentId, f32>) -> BTreeMap<SegmentId, f32> {
         // the shorter the segment is (only consider the reasoning tokens), the higher the penalty is
@@ -202,37 +211,93 @@ impl<M: LlmModelMarker> DirectTree<M> {
 }
 
 #[derive(Debug, Clone)]
-pub enum SegmentOrNodeCandidate {
-    Segment(SegmentId),
-    Node(SegmentId),
+pub struct SegmentBranchingScoreComposition {
+    pub uncertainty_score: f32, // ranges from 0 to 1, the higher the score, the more uncertain and the better for branching
+    pub token_probability_multiplier: f32, // ranges from 0 to 1, equals to the probability of the new token at temperature 1.0
+    pub first_half_length_penalty_multiplier: f32, // ranges from 0 to 1, the shorter the split first half is, the higher the penalty is, and the lower the multiplier is
+    pub second_half_length_penalty_multiplier: f32, // ranges from 0 to 1, the shorter the split second half is, the higher the penalty is, and the lower the multiplier is
+    pub chosen_branch_position: BranchPosition,
+    pub chosen_token: i32,
 }
 
 #[derive(Debug, Clone)]
-pub struct SegmentOrNodeCandidateWithScore {
-    pub candidate: SegmentOrNodeCandidate,
+pub struct NodeBranchingScoreComposition {
+    pub uncertainty_score: f32, // ranges from 0 to 1, the higher the score, the more uncertain and the better for branching
+    pub token_probability_multiplier: f32, // ranges from 0 to 1, equals to the probability of the new token at temperature 1.0
+    pub branching_factor_penalty_multiplier: f32, // ranges from 0 to 1, the larger the branching factor is, the higher the penalty is, and the lower the multiplier is
+    pub chosen_token: i32,
+}
+
+// #[derive(Debug, Clone)]
+// pub enum BranchingPoint {
+//     Segment {
+//         segment_id: SegmentId,
+//         position: BranchPosition,
+//     },
+//     Node(SegmentId),
+// }
+#[derive(Debug, Clone)]
+pub struct SegmentCandidate {
+    pub segment_id: SegmentId,
+    pub position: BranchPosition,
     pub score: f32,
+}
+#[derive(Debug, Clone)]
+pub struct NodeCandidate {
+    pub node_id: SegmentId,
+    pub score: f32,
+}
+pub enum SegmentOrNodeCandidate {
+    Segment(SegmentCandidate),
+    Node(NodeCandidate),
+}
+impl SegmentOrNodeCandidate {
+    pub fn score(&self) -> f32 {
+        match self {
+            SegmentOrNodeCandidate::Segment(candidate) => candidate.score,
+            SegmentOrNodeCandidate::Node(candidate) => candidate.score,
+        }
+    }
 }
 
 pub fn sort_segment_or_node_candidates(
-    segment_scores: BTreeMap<SegmentId, f32>,
-    node_scores: BTreeMap<SegmentId, f32>,
-) -> Vec<SegmentOrNodeCandidateWithScore> {
-    let mut candidates_with_scores = Vec::new();
-    for (segment_id, score) in segment_scores {
-        candidates_with_scores.push(SegmentOrNodeCandidateWithScore {
-            candidate: SegmentOrNodeCandidate::Segment(segment_id),
-            score,
-        });
+    segment_scores: BTreeMap<SegmentId, SegmentCandidate>,
+    node_scores: BTreeMap<SegmentId, NodeCandidate>,
+)-> Vec<SegmentOrNodeCandidate> {
+    let mut candidates = Vec::new();
+    for (_segment_id, candidate) in segment_scores {
+        candidates.push(SegmentOrNodeCandidate::Segment(candidate));
     }
-    for (node_id, score) in node_scores {
-        candidates_with_scores.push(SegmentOrNodeCandidateWithScore {
-            candidate: SegmentOrNodeCandidate::Node(node_id),
-            score,
-        });
+    for (_node_id, candidate) in node_scores {
+        candidates.push(SegmentOrNodeCandidate::Node(candidate));
     }
     // descending order: larger score means higher branch priority
-    candidates_with_scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-    candidates_with_scores
+    candidates.sort_by(|a, b| b.score().partial_cmp(&a.score()).unwrap());
+    candidates
+}
+
+// pub fn pick_best_branching_point(candidates: Vec<SegmentOrNodeCandidate>) -> Option<BranchingPoint> {
+//     candidates.into_iter().next().map(|candidate| match candidate {
+//         SegmentOrNodeCandidate::Segment(segment_candidate) => BranchingPoint::Segment {
+//             segment_id: segment_candidate.segment_id,
+//             position: segment_candidate.position,
+//         },
+//         SegmentOrNodeCandidate::Node(node_candidate) => BranchingPoint::Node(node_candidate.node_id),
+//     })
+// }
+
+fn try_get_best_branch_position_in_segment(segment: &SegmentContent) -> Option<BranchPosition> {
+    // ideally we need to choose the middle point of the segment
+    // but the middle point of the segment might have very concentrated probability distribution
+    // in this case if we choose the second option of the starting token, this will confuse the model
+    // instead, we need to give a comprehensive score for each token in the segment.
+    // the primary factor is the probability of the new token to be chosen
+
+    // in fact, for determining the branching point, we also need to consider the probability of the new token
+    // then branching from existing branching point may be very unfair compared with branching from segments
+
+    // if each segment is to be chosen, then it will have its best score and best branching position
+    todo!()
 }
 
 pub enum SegmentContentResult {
