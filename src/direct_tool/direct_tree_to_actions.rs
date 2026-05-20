@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use rand::rngs::StdRng;
 use reqwest::Client;
@@ -6,14 +6,104 @@ use reqwest::Client;
 use crate::{
     direct_tool::{
         direct_tree::{DirectTree, SegmentContent, SegmentId},
-        direct_tree_action::{BranchPosition, DirectTreeAction},
+        direct_tree_action::{DirectTreeAction, TokenPositionInTree},
         direct_tree_advantage::Posterior,
         direct_tree_status::DirectTreeStatus,
     },
-    llm_model::LlmModelMarker,
+    llm_model::{LlmModelMarker, TokenLogprobCandidate, Top8Candidates},
 };
 
+#[derive(Debug)]
+pub enum TokenViewMeta {
+    NodeBranchingCandidate {
+        parent_segment: SegmentId,
+        child_segments: Vec<SegmentId>, // the children of parent segments, including self
+        child_tokens: Vec<i32>, // the first token of each child segment, need to be excluded from choosing as the first token of the new branch
+    },
+    SegmentBranchingCandidate {
+        segment_id: SegmentId,
+        reasoning_only_segment_length: usize,
+        first_half_length_after_split: usize,
+        second_half_length_after_split: usize,
+    },
+}
+// only provide necessary information for branching
+#[derive(Debug)]
+pub struct TokenViewForBranching<'a, M: LlmModelMarker> {
+    pub token_position: TokenPositionInTree,
+    pub token_id: i32,
+    pub token_logprobs: Top8Candidates,
+    pub token_meta: TokenViewMeta,
+    pub corresponding_tree: &'a DirectTree<M>,
+}
+
 impl<M: LlmModelMarker> DirectTree<M> {
+    pub fn token_views_for_branching(&self) -> Vec<TokenViewForBranching<'_, M>> {
+        // we need to find all the token views for branching, including both segment branching and node branching
+        // for segment branching, we only consider the reasoning tokens, and we have the logprobs for those tokens
+        // for node branching, we consider all the tokens in the segment, but we only have the logprobs for the first token (the branching token), and the rest of the tokens share the same logprobs as the branching token
+        // for node branching, we also need to include the information of sibling segment id and parent segment id for calculating the uncertainty score
+        let mut token_views: Vec<TokenViewForBranching<'_, M>> = Vec::new();
+        for (segment_id, segment) in self.segments.iter() {
+            let reasoning_only_tokens = segment.reasoning_only_tokens();
+            for (token_index_in_reasoning, token_view) in reasoning_only_tokens.iter().enumerate() {
+                assert!(token_view.flat_index == token_index_in_reasoning);
+                let token_position = TokenPositionInTree {
+                    segment_id: *segment_id,
+                    content_index: token_view.content_index_in_segment,
+                    offset: token_view.token_offset_in_content,
+                };
+                let token_meta = if token_index_in_reasoning == 0 {
+                    // the first token in reasoning_only_tokens is considered to be a node branching candidate only if the first content in the segment is a reasoning content
+                    // this is true if the first trunk has separate prompt segment and reasoning segment, and by induction the invariant should always hold
+                    // so, we assert that the first token view corresponds to a reasoning content, and therefore it is a node branching candidate
+                    assert!(token_view.content_index_in_segment == 0); // the first token view must correspond to the first content in the segment, which should be a reasoning content
+                    // node branching candidate
+                    let parent_segment = self.segments.get(segment_id).unwrap().parent_id.expect(
+                        "A reasoning only token must have parents since prompt segment is root",
+                    ); // considering that we want the invariant that every reasoning segment has a parent, we need to do special treatment for the first trunk
+                    let child_segments = self.segments.get(segment_id).unwrap().child_ids.clone();
+                    // sibling tokens are the first token view token of the sibling segments
+                    let child_tokens = child_segments
+                        .iter()
+                        .map(|sibling_segment_id| {
+                            self.segments
+                                .get(sibling_segment_id)
+                                .expect("Sibling segment id must exist in tree")
+                                .first_reasoning_token()
+                                .expect("Sibling segment must have at least one reasoning token")
+                        })
+                        .collect();
+                    TokenViewMeta::NodeBranchingCandidate {
+                        parent_segment,
+                        child_segments,
+                        child_tokens,
+                    }
+                } else {
+                    // segment branching candidate
+                    let reasoning_only_segment_length = reasoning_only_tokens.len();
+                    let first_half_length_after_split = token_index_in_reasoning;
+                    let second_half_length_after_split =
+                        reasoning_only_segment_length - token_index_in_reasoning;
+                    TokenViewMeta::SegmentBranchingCandidate {
+                        segment_id: *segment_id,
+                        reasoning_only_segment_length,
+                        first_half_length_after_split,
+                        second_half_length_after_split,
+                    }
+                };
+                let token_view_for_branching = TokenViewForBranching {
+                    token_position,
+                    token_id: token_view.token,
+                    token_logprobs: token_view.logprobs.clone(),
+                    token_meta,
+                    corresponding_tree: self,
+                };
+                token_views.push(token_view_for_branching);
+            }
+        }
+        token_views
+    }
     pub async fn produce_actions_from_direct_tree(
         &self,
         llm_callable: &M::Callable,
@@ -33,40 +123,121 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 vec![DirectTreeAction::CreateAndFocusTrunkTrajectory { content_array }]
             }
             DirectTreeStatus::CreatingOrChoosingBranchPoint => {
-                // segment score composition:
-                // advantage (mean / std)
-                // segment length
-                // the best breaking point and its probability (with penalty of deviating from the middle point)
-
-                // node advantage score is dependent on segment advantage score
-
                 assert!(!self.root_segment_ids.is_empty());
                 assert!(!self.leaf_segment_judgments.is_empty());
 
                 let posteriors = self.calculate_segment_posteriors();
-                // let segment_branching_scores =
-                //     self.posteriors_to_segment_branching_scores(&posteriors);
                 let segment_uncertainty_scores =
                     self.posteriors_to_segment_uncertainty_scores(&posteriors);
-                let segment_probability_and_length_scores =
-                    self.segment_probability_and_length_scores();
-                let node_branching_scores = self
-                    .segment_uncertainty_scores_to_node_uncertainty_scores(
-                        &segment_uncertainty_scores,
-                    );
-                let node_probability_and_branching_factor_scores =
-                    self.node_probability_and_branching_factor_scores();
-                // let segment_branching_scores_with_penalty = self.add_penalty_to_segment_score(segment_branching_scores);
-                // let node_branching_scores_with_penalty = self.add_penalty_to_node_score(node_branching_scores);
+                let token_views_for_branching = self.token_views_for_branching();
+                // now we consider the branching position at the token level granularity
+                // each segment can have one node branching candidate and multiple segment branching candidates
+                // actually the asymptotic complexity is the same
 
-                // let branching_candidates = sort_segment_or_node_candidates(
-                //     segment_branching_scores_with_penalty,
-                //     node_branching_scores_with_penalty,
-                // );
-                // branching candidates are sorted in a descending order
+                let mut best_token_position: Option<TokenPositionInTree> = None;
+                let mut best_token_id: Option<i32> = None;
+                let mut best_branching_score = f32::NEG_INFINITY;
+                let mut best_token_is_node: Option<bool> = None;
+                // we also need to pass in the token id for branching
 
-                // we are currently creating or choosing a branch point, so the action could be either to create a new branch point or to move to an existing branch point
-                todo!()
+                for token_view in token_views_for_branching.iter() {
+                    let segment_uncertainty_score = segment_uncertainty_scores
+                        .get(&token_view.token_position.segment_id)
+                        .expect("Each token view must correspond to a segment with an uncertainty score");
+                    let (new_token_id, branching_score, token_is_node) =
+                        match &token_view.token_meta {
+                            TokenViewMeta::NodeBranchingCandidate {
+                                child_segments,
+                                child_tokens,
+                                parent_segment,
+                            } => {
+                                let node_uncertainty_score =
+                                    Self::node_uncertainty_score_from_parent_and_child_ids(
+                                        *parent_segment,
+                                        child_segments,
+                                        &segment_uncertainty_scores,
+                                    );
+                                let Some((best_token_id, best_token_relative_probability)) =
+                                    Self::best_token_and_relative_probability(
+                                        &token_view.token_logprobs,
+                                        child_tokens,
+                                    )
+                                else {
+                                    continue; // if there is no valid branching token candidate, we skip this token view
+                                };
+                                let branching_factor = child_segments.len() as f32;
+                                let branching_factor_penalty_multiplier =
+                                    Self::branching_factor_penalty_multiplier(
+                                        branching_factor as usize,
+                                    );
+                                let branching_score = node_uncertainty_score
+                                    * best_token_relative_probability
+                                    * branching_factor_penalty_multiplier;
+                                (best_token_id, branching_score, true)
+                            }
+                            TokenViewMeta::SegmentBranchingCandidate {
+                                segment_id,
+                                reasoning_only_segment_length,
+                                first_half_length_after_split,
+                                second_half_length_after_split,
+                            } => {
+                                assert!(*segment_id == token_view.token_position.segment_id);
+                                assert!(
+                                    *reasoning_only_segment_length
+                                        == *first_half_length_after_split
+                                            + *second_half_length_after_split
+                                );
+                                // we already got segment_uncertainty_score
+                                // then we need the relative probability
+                                let Some((best_token_id, best_token_relative_probability)) =
+                                    Self::best_token_and_relative_probability(
+                                        &token_view.token_logprobs,
+                                        &[token_view.token_id], // we exclude the existing token
+                                    )
+                                else {
+                                    continue; // if there is no valid branching token candidate, we skip this token view
+                                };
+                                let segment_length_penalty_multiplier =
+                                    Self::segment_length_penalty_multiplier(
+                                        *first_half_length_after_split,
+                                        *second_half_length_after_split,
+                                    );
+                                let branching_score = segment_uncertainty_score
+                                    * best_token_relative_probability
+                                    * segment_length_penalty_multiplier;
+                                (best_token_id, branching_score, false)
+                            }
+                        };
+                    if branching_score > best_branching_score {
+                        best_branching_score = branching_score;
+                        best_token_position = Some(token_view.token_position.clone());
+                        best_token_id = Some(new_token_id);
+                        best_token_is_node = Some(token_is_node);
+                    }
+                }
+                if let Some(best_token_position) = best_token_position {
+                    let new_branch_start_token = best_token_id
+                        .expect("Best token id must exist if best token position exists");
+                    let action = if best_token_is_node.unwrap() {
+                        assert!(best_token_position.content_index == 0);
+                        assert!(best_token_position.offset == 0);
+                        DirectTreeAction::BranchFromNode {
+                            position: best_token_position,
+                            new_branch_start_token,
+                        }
+                    } else {
+                        assert!(
+                            best_token_position.content_index > 0 || best_token_position.offset > 0
+                        );
+                        DirectTreeAction::BranchFromSegment {
+                            position: best_token_position,
+                            new_branch_start_token,
+                        }
+                    };
+                    vec![action]
+                } else {
+                    vec![DirectTreeAction::NoAvailableBranchPoint]
+                }
             }
             DirectTreeStatus::CreatingBranchSegment => {
                 // we are currently creating a branch segment, so the action should be to create and focus on a new branch segment under the current branch point
@@ -82,40 +253,83 @@ impl<M: LlmModelMarker> DirectTree<M> {
             }
         }
     }
-    pub fn segment_uncertainty_scores_to_node_uncertainty_scores(
-        &self,
+    fn node_uncertainty_score_from_parent_and_children(
+        parent_uncertainty_score: f32,
+        children_uncertainty_score: &[f32],
+    ) -> f32 {
+        // parent has the same weight as the sum of children
+        let b = children_uncertainty_score.len() as f32;
+        (b * parent_uncertainty_score + children_uncertainty_score.iter().sum::<f32>()) / (2.0 * b)
+    }
+    fn node_uncertainty_score_from_parent_and_child_ids(
+        parent_segment_id: SegmentId,
+        child_segment_ids: &[SegmentId],
         segment_uncertainty_scores: &BTreeMap<SegmentId, f32>,
-    ) -> BTreeMap<SegmentId, f32> {
-        // each node is represented as the end of a segment
-        self.segments
+    ) -> f32 {
+        let parent_uncertainty_score = segment_uncertainty_scores
+            .get(&parent_segment_id)
+            .expect("Parent segment must have an uncertainty score");
+        let children_uncertainty_score: Vec<f32> = child_segment_ids
             .iter()
-            .filter_map(|(segment_id, segment)| {
-                let parent_score = *segment_uncertainty_scores
-                    .get(segment_id)
-                    .expect("Each segment must have a segment score");
-
-                let branching_factor = segment.child_ids.len();
-                if branching_factor == 0 {
-                    return None;
-                }
-
-                let child_score_sum: f32 = segment
-                    .child_ids
-                    .iter()
-                    .map(|child_id| {
-                        *segment_uncertainty_scores
-                            .get(child_id)
-                            .expect("Each child segment must have a segment score")
-                    })
-                    .sum();
-
-                let b = branching_factor as f32;
-                let node_score = (b * parent_score + child_score_sum) / (2.0 * b);
-                Some((*segment_id, node_score))
+            .map(|child_id| {
+                segment_uncertainty_scores
+                    .get(child_id)
+                    .expect("Child segment must have an uncertainty score")
             })
-            .collect()
+            .cloned()
+            .collect();
+        Self::node_uncertainty_score_from_parent_and_children(
+            *parent_uncertainty_score,
+            &children_uncertainty_score,
+        )
     }
 
+    fn best_token_and_relative_probability(
+        token_logprobs: &Top8Candidates,
+        token_ids_to_exclude: &[i32],
+    ) -> Option<(i32, f32)> {
+        let max_logprob = token_logprobs
+            .iter()
+            .map(|candidate| candidate.logprob)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let remaining_token_logprobs: Vec<TokenLogprobCandidate> = token_logprobs
+            .iter()
+            .filter(|candidate| !token_ids_to_exclude.contains(&candidate.token_id))
+            .cloned()
+            .collect();
+        if remaining_token_logprobs.is_empty() {
+            return None;
+        }
+        let best_candidate = remaining_token_logprobs
+            .iter()
+            .max_by(|a, b| a.logprob.partial_cmp(&b.logprob).unwrap())
+            .unwrap();
+        let relative_probability = (best_candidate.logprob - max_logprob).exp();
+        if relative_probability < 0.1 {
+            // if the best candidate has a relative probability less than 0.1, we do not consider it as a valid branching token candidate, and we skip this token view
+            return None;
+        }
+        Some((best_candidate.token_id, relative_probability))
+    }
+    pub fn branching_factor_penalty_multiplier(branching_factor: usize) -> f32 {
+        let k_branching_factor = 0.35_f32;
+        (-k_branching_factor * (branching_factor as f32 - 1.0)).exp()
+    }
+
+    pub fn segment_length_penalty_multiplier(
+        first_half_length_after_split: usize,
+        second_half_length_after_split: usize,
+    ) -> f32 {
+        assert!(first_half_length_after_split > 0);
+        assert!(second_half_length_after_split > 0);
+        // the same exponential falloff formula as add_penalty_to_segment_score
+        let k_length = 0.35_f32;
+        let first_half_length_penalty_multiplier =
+            1.0 - (-k_length * (first_half_length_after_split as f32 - 1.0)).exp();
+        let second_half_length_penalty_multiplier =
+            1.0 - (-k_length * (second_half_length_after_split as f32 - 1.0)).exp();
+        first_half_length_penalty_multiplier * second_half_length_penalty_multiplier
+    }
     pub fn posteriors_to_segment_uncertainty_scores(
         &self,
         posteriors: &BTreeMap<SegmentId, Posterior>,
@@ -162,277 +376,18 @@ impl<M: LlmModelMarker> DirectTree<M> {
             .collect();
         uncertainty_scores
     }
-
-    pub fn segment_probability_and_length_scores(
-        &self,
-    ) -> BTreeMap<SegmentId, SegmentBranchPositionScore> {
-        // we need to convert a segment to a reasoning-only segment, find the best token, and has to map back
-        let mut branch_positions: BTreeMap<SegmentId, SegmentBranchPositionScore> = BTreeMap::new();
-        for (segment_id, segment) in &self.segments {
-            let reasoning_only_tokens = segment.reasoning_only_tokens();
-            let length = reasoning_only_tokens.len();
-            let mut best_branch_position_candidate: Option<SegmentBranchPositionScore> = None;
-            for token_view in reasoning_only_tokens.iter() {
-                // actually we do not consider distance to middle, but the two split lengths
-                let first_half_length = token_view.flat_index as f32;
-                let second_half_length = (length - token_view.flat_index) as f32;
-                // the same exponential falloff formula as add_penalty_to_segment_score
-                let k_length = 0.35_f32;
-                let first_half_length_penalty_multiplier =
-                    1.0 - (-k_length * (first_half_length - 1.0)).exp();
-                let second_half_length_penalty_multiplier =
-                    1.0 - (-k_length * (second_half_length - 1.0)).exp();
-                // if token probability is too low, we do not consider this branching position candidate
-                // we use relative probability for penalty and pruning
-                let max_logprob = token_view
-                    .logprobs
-                    .iter()
-                    .map(|candidate| candidate.logprob)
-                    .fold(f32::NEG_INFINITY, f32::max);
-                let mut token_relative_probabilities: BTreeMap<i32, f32> = token_view
-                    .logprobs
-                    .iter()
-                    .map(|candidate| {
-                        let relative_probability = (candidate.logprob - max_logprob).exp(); // convert logprob to probability and normalize by max_logprob for numerical stability
-                        (candidate.token_id, relative_probability)
-                    })
-                    .collect();
-                let existing_token = token_view.token;
-                token_relative_probabilities.remove(&existing_token);
-                assert!(
-                    token_relative_probabilities.len() >= 7,
-                    "There should be at least 7 candidate tokens other than the existing token"
-                );
-                let (best_token_id, best_token_relative_probability) = token_relative_probabilities
-                    .into_iter()
-                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-                    .expect("There should be at least one candidate token");
-                if best_token_relative_probability < 0.1 {
-                    // if the best token has very low probability, we do not consider this branching position candidate
-                    continue;
-                }
-                let branch_position_candidate = SegmentBranchPositionScore {
-                    token_id: best_token_id,
-                    token_relative_probability: best_token_relative_probability,
-                    first_half_length_penalty_multiplier,
-                    second_half_length_penalty_multiplier,
-                    position: BranchPosition {
-                        content_index: token_view.original_content_index,
-                        offset: token_view.original_token_offset,
-                    },
-                };
-                if best_branch_position_candidate.is_none()
-                    || branch_position_candidate.total_penalty_multiplier()
-                        > best_branch_position_candidate
-                            .as_ref()
-                            .unwrap()
-                            .total_penalty_multiplier()
-                {
-                    best_branch_position_candidate = Some(branch_position_candidate);
-                }
-            }
-            if let Some(best_branch_position_candidate) = best_branch_position_candidate {
-                branch_positions.insert(*segment_id, best_branch_position_candidate);
-            } else {
-                println!(
-                    "Warning: No valid branching position candidate found for segment {:?}, this segment will not be branched",
-                    segment_id
-                );
-            }
-        }
-        branch_positions
-    }
-    pub fn node_probability_and_branching_factor_scores(
-        &self,
-    ) -> BTreeMap<SegmentId, NodeProbabilityAndBranchingFactorScore> {
-        let mut node_scores: BTreeMap<SegmentId, NodeProbabilityAndBranchingFactorScore> =
-            BTreeMap::new();
-        for (segment_id, segment) in &self.segments {
-            let branching_factor = segment.child_ids.len();
-            if branching_factor == 0 {
-                continue;
-            }
-            let k_branching_factor = 0.35_f32;
-            let branching_factor_penalty_multiplier =
-                (-k_branching_factor * (branching_factor as f32 - 1.0)).exp();
-
-            // let node_score = NodeProbabilityAndBranchingFactorScore {
-            //     branching_factor_penalty_multiplier,
-            //     chosen_token: best_branch_position_score.token_id,
-            // };
-            // node_scores.insert(*segment_id, node_score);
-            todo!() // we need to find the token probability for the new token
-        }
-        node_scores
-    }
-    pub fn add_penalty_to_segment_score(
-        &self,
-        segment_scores: BTreeMap<SegmentId, f32>,
-    ) -> BTreeMap<SegmentId, f32> {
-        // the shorter the segment is (only consider the reasoning tokens), the higher the penalty is
-        let k_segment = 0.35_f32;
-
-        let reasoning_lengths: BTreeMap<SegmentId, usize> = self
-            .segments
-            .iter()
-            .map(|(segment_id, segment)| {
-                let length = segment
-                    .content
-                    .iter()
-                    .map(|content| match content {
-                        SegmentContent::ReasoningOrToolCall(tokens) => tokens.tokens.len(),
-                        SegmentContent::Prompt(_) | SegmentContent::ToolResponse(_) => 0,
-                    })
-                    .sum::<usize>();
-                (*segment_id, length)
-            })
-            .collect();
-
-        segment_scores
-            .into_iter()
-            .map(|(segment_id, score)| {
-                let len = *reasoning_lengths
-                    .get(&segment_id)
-                    .expect("Segment score id must exist in tree");
-                assert!(len >= 1, "Segment reasoning length must be >= 1");
-                let len = len as f32;
-                let multiplier = 1.0 - (-k_segment * (len - 1.0)).exp();
-                (segment_id, score * multiplier)
-            })
-            .collect()
-    }
-    pub fn add_penalty_to_node_score(
-        &self,
-        node_scores: BTreeMap<SegmentId, f32>,
-    ) -> BTreeMap<SegmentId, f32> {
-        // the larger the branching factor is, the higher the penalty is
-        let k_node = 0.35_f32;
-
-        node_scores
-            .into_iter()
-            .map(|(node_id, score)| {
-                let branching_factor = self
-                    .segments
-                    .get(&node_id)
-                    .expect("Node score id must exist in tree")
-                    .child_ids
-                    .len();
-                assert!(branching_factor >= 1, "Node branching factor must be >= 1");
-                let branch_factor = branching_factor as f32;
-                let multiplier = (-k_node * (branch_factor - 1.0)).exp();
-                (node_id, score * multiplier)
-            })
-            .collect()
-    }
 }
 
-// #[derive(Debug, Clone)]
-// pub struct SegmentBranchingScoreComposition {
-//     pub uncertainty_score: f32, // ranges from 0 to 1, the higher the score, the more uncertain and the better for branching
-//     pub branch_position: SegmentBranchPositionScore, // the best branching position in the segment and its corresponding token probability multiplier
-// }
-#[derive(Debug, Clone)]
-pub struct SegmentBranchPositionScore {
-    pub position: BranchPosition,
-    pub token_id: i32,
-    pub token_relative_probability: f32, // ranges from 0 to 1, equals to the probability of the new token at temperature 1.0
-    pub first_half_length_penalty_multiplier: f32, // ranges from 0 to 1, the shorter the split first half is, the higher the penalty is, and the lower the multiplier is
-    pub second_half_length_penalty_multiplier: f32, // ranges from 0 to 1, the shorter the split second half is, the higher the penalty is, and the lower the multiplier is
-}
-
-impl SegmentBranchPositionScore {
-    pub fn total_penalty_multiplier(&self) -> f32 {
-        self.token_relative_probability
-            * self.first_half_length_penalty_multiplier
-            * self.second_half_length_penalty_multiplier
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct NodeProbabilityAndBranchingFactorScore {
-    pub token_relative_probability: f32, // ranges from 0 to 1, equals to the probability of the new token at temperature 1.0
-    pub branching_factor_penalty_multiplier: f32, // ranges from 0 to 1, the larger the branching factor is, the higher the penalty is, and the lower the multiplier is
-    pub chosen_token: i32,
-}
-
-// #[derive(Debug, Clone)]
-// pub struct NodeBranchingScoreComposition {
-//     pub uncertainty_score: f32, // ranges from 0 to 1, the higher the score, the more uncertain and the better for branching
-//     pub token_relative_probability: f32, // ranges from 0 to 1, equals to the probability of the new token at temperature 1.0
-//     pub branching_factor_penalty_multiplier: f32, // ranges from 0 to 1, the larger the branching factor is, the higher the penalty is, and the lower the multiplier is
-//     pub chosen_token: i32,
-// }
-
-// #[derive(Debug, Clone)]
-// pub enum BranchingPoint {
-//     Segment {
-//         segment_id: SegmentId,
-//         position: BranchPosition,
-//     },
-//     Node(SegmentId),
-// }
 #[derive(Debug, Clone)]
 pub struct SegmentCandidate {
     pub segment_id: SegmentId,
-    pub position: BranchPosition,
+    pub position: TokenPositionInTree,
     pub score: f32,
 }
 #[derive(Debug, Clone)]
 pub struct NodeCandidate {
     pub node_id: SegmentId,
     pub score: f32,
-}
-pub enum SegmentOrNodeCandidate {
-    Segment(SegmentCandidate),
-    Node(NodeCandidate),
-}
-impl SegmentOrNodeCandidate {
-    pub fn score(&self) -> f32 {
-        match self {
-            SegmentOrNodeCandidate::Segment(candidate) => candidate.score,
-            SegmentOrNodeCandidate::Node(candidate) => candidate.score,
-        }
-    }
-}
-
-pub fn sort_segment_or_node_candidates(
-    segment_scores: BTreeMap<SegmentId, SegmentCandidate>,
-    node_scores: BTreeMap<SegmentId, NodeCandidate>,
-) -> Vec<SegmentOrNodeCandidate> {
-    let mut candidates = Vec::new();
-    for (_segment_id, candidate) in segment_scores {
-        candidates.push(SegmentOrNodeCandidate::Segment(candidate));
-    }
-    for (_node_id, candidate) in node_scores {
-        candidates.push(SegmentOrNodeCandidate::Node(candidate));
-    }
-    // descending order: larger score means higher branch priority
-    candidates.sort_by(|a, b| b.score().partial_cmp(&a.score()).unwrap());
-    candidates
-}
-
-// pub fn pick_best_branching_point(candidates: Vec<SegmentOrNodeCandidate>) -> Option<BranchingPoint> {
-//     candidates.into_iter().next().map(|candidate| match candidate {
-//         SegmentOrNodeCandidate::Segment(segment_candidate) => BranchingPoint::Segment {
-//             segment_id: segment_candidate.segment_id,
-//             position: segment_candidate.position,
-//         },
-//         SegmentOrNodeCandidate::Node(node_candidate) => BranchingPoint::Node(node_candidate.node_id),
-//     })
-// }
-
-fn try_get_best_branch_position_in_segment(segment: &SegmentContent) -> Option<BranchPosition> {
-    // ideally we need to choose the middle point of the segment
-    // but the middle point of the segment might have very concentrated probability distribution
-    // in this case if we choose the second option of the starting token, this will confuse the model
-    // instead, we need to give a comprehensive score for each token in the segment.
-    // the primary factor is the probability of the new token to be chosen
-
-    // in fact, for determining the branching point, we also need to consider the probability of the new token
-    // then branching from existing branching point may be very unfair compared with branching from segments
-
-    // if each segment is to be chosen, then it will have its best score and best branching position
-    todo!()
 }
 
 pub enum SegmentContentResult {

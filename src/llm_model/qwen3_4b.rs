@@ -9,7 +9,7 @@ use super::qwen_shared::{
     SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
 };
 use super::{
-    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
+    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer,
     build_simple_qwen_chatml_prefix,
 };
 

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     agent::tree::CorrectnessJudgment,
     direct_tool::{direct_tree_action::DirectTreeAction, direct_tree_status::DirectTreeStatus},
-    llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob, TokenLogprobCandidate},
+    llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob, Top8Candidates},
     token_array::TokenArray,
 };
 
@@ -24,7 +24,8 @@ pub struct DirectTree<M: LlmModelMarker> {
     pub leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
     pub next_segment_id: usize,
     pub next_segment_temperature: f32,
-    pub focused_segment_id: Option<SegmentId>, // the segment after which we create a new branch and rollout until finding the answer
+    pub focused_parent_segment_id: Option<SegmentId>, // the segment after which we create a new branch and rollout until finding the answer
+    pub new_branch_start_token: Option<i32>, // the token id for the next branching point, which is determined when we create a branch and will be used in the rollout after branching to determine when to stop and judge the trajectory
     pub completed: bool,
     // hyperparameters
     pub num_trunks: usize,
@@ -57,7 +58,8 @@ impl<M: LlmModelMarker> DirectTree<M> {
             leaf_segment_judgments: BTreeMap::new(),
             next_segment_id: 0,
             next_segment_temperature: 1.0,
-            focused_segment_id: None,
+            focused_parent_segment_id: None,
+            new_branch_start_token: None,
             completed: false,
             num_trunks,
             max_num_total_trajectories,
@@ -87,7 +89,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     },
                 );
                 self.root_segment_ids.push(segment_id);
-                self.focused_segment_id = Some(segment_id);
+                self.focused_parent_segment_id = Some(segment_id);
                 // update status
                 if self.root_segment_ids.len() >= self.num_trunks {
                     self.status = DirectTreeStatus::CreatingOrChoosingBranchPoint;
@@ -95,9 +97,9 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     self.status = DirectTreeStatus::CreatingTrunkTrajectory;
                 }
             }
-            DirectTreeAction::CreateAndMoveToBranchPoint {
-                target_segment_id,
+            DirectTreeAction::BranchFromSegment {
                 position,
+                new_branch_start_token,
             } => {
                 assert!(matches!(
                     self.status,
@@ -109,7 +111,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 self.next_segment_id += 1;
                 let target_segment = self
                     .segments
-                    .remove(&target_segment_id)
+                    .remove(&position.segment_id)
                     .expect("Target segment id must exist");
                 let target_content = &target_segment.content[position.content_index];
                 let mut first_half_content_array =
@@ -140,8 +142,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                         decoded_string: <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(
                             &first_half_tokens,
                         ),
-                        logprobs: first_half_logprobs, // we can fill in the logprobs later if needed
-                        logprobs_past_end: second_half_logprobs[0],
+                        logprobs: first_half_logprobs,
                     },
                 ));
                 second_half_content_array.insert(
@@ -152,7 +153,6 @@ impl<M: LlmModelMarker> DirectTree<M> {
                             &second_half_tokens,
                         ),
                         logprobs: second_half_logprobs,
-                        logprobs_past_end: target_content_token_array.logprobs_past_end, // inherit the logprobs_past_end from the original content
                     }),
                 );
                 let first_half_segment = Segment {
@@ -179,7 +179,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                         .get_mut(&parent_id)
                         .expect("Parent segment must exist");
                     for child_id in &mut parent_segment.child_ids {
-                        if *child_id == target_segment_id {
+                        if *child_id == position.segment_id {
                             *child_id = new_first_half_id;
                             break;
                         }
@@ -195,7 +195,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 }
                 // always check root
                 for root_id in &mut self.root_segment_ids {
-                    if *root_id == target_segment_id {
+                    if *root_id == position.segment_id {
                         assert_eq!(
                             target_segment.parent_id, None,
                             "Root segment must not have a parent"
@@ -205,25 +205,49 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     }
                 }
                 // always checks leaf
-                if let Some(judgment) = self.leaf_segment_judgments.remove(&target_segment_id) {
+                if let Some(judgment) = self.leaf_segment_judgments.remove(&position.segment_id) {
                     self.leaf_segment_judgments
                         .insert(new_second_half_id, judgment);
                 }
                 // after creating the branch point, we move to it and rollout until finding the answer
                 // the new branch point is at the end of the first half segment
-                self.focused_segment_id = Some(new_first_half_id);
+                self.focused_parent_segment_id = Some(new_first_half_id);
+                self.new_branch_start_token = Some(new_branch_start_token);
                 // update status
                 self.status = DirectTreeStatus::CreatingBranchSegment;
             }
-            DirectTreeAction::MoveToBranchPoint { target_segment_id } => {
+            DirectTreeAction::BranchFromNode {
+                position,
+                new_branch_start_token,
+            } => {
                 // this action does not change the tree structure, it only indicates that we are currently at a certain branch point
                 assert!(matches!(
                     self.status,
                     DirectTreeStatus::CreatingOrChoosingBranchPoint
                 ));
-                self.focused_segment_id = Some(target_segment_id);
+                assert!(
+                    position.content_index == 0 && position.offset == 0,
+                    "Branch from node action must branch at the boundary between segments"
+                );
+                let parent_id = self
+                    .segments
+                    .get(&position.segment_id)
+                    .expect("Target segment id must exist")
+                    .parent_id
+                    .expect("Target segment must have a parent segment to branch from a node");
+                self.focused_parent_segment_id = Some(parent_id);
+                self.new_branch_start_token = Some(new_branch_start_token);
                 // update status
                 self.status = DirectTreeStatus::CreatingBranchSegment;
+            }
+            DirectTreeAction::NoAvailableBranchPoint => {
+                assert!(matches!(
+                    self.status,
+                    DirectTreeStatus::CreatingOrChoosingBranchPoint
+                ));
+                // this action does not change the tree structure, it only indicates that we have found no valid branching point and should conclude the tree
+                self.status = DirectTreeStatus::Complete;
+                self.completed = true;
             }
             DirectTreeAction::CreateAndFocusBranchSegment { content } => {
                 assert!(matches!(
@@ -231,7 +255,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     DirectTreeStatus::CreatingBranchSegment
                 ));
                 // this action adds a new segment as a child of the current branch point
-                let Some(parent_id) = self.focused_segment_id else {
+                let Some(parent_id) = self.focused_parent_segment_id else {
                     panic!("Must have a focused segment to add a branch segment");
                 };
                 // the focused segment is going to be the parent of the new segment
@@ -248,7 +272,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 if let Some(parent_segment) = self.segments.get_mut(&parent_id) {
                     parent_segment.child_ids.push(new_segment_id);
                 }
-                self.focused_segment_id = Some(new_segment_id);
+                self.focused_parent_segment_id = Some(new_segment_id);
                 // update status
                 self.status = DirectTreeStatus::JudgingBranchSegment;
             }
@@ -259,7 +283,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     self.status,
                     DirectTreeStatus::JudgingBranchSegment
                 ));
-                let Some(focused_segment_id) = self.focused_segment_id else {
+                let Some(focused_segment_id) = self.focused_parent_segment_id else {
                     panic!("Must have a focused segment to judge trajectory correctness");
                 };
                 assert!(
@@ -307,14 +331,14 @@ pub struct Segment {
 pub struct ReasoningOnlyTokenView<'a> {
     pub flat_index: usize, // the index of the token in the flattened reasoning-only token sequence of the segment
     pub token: i32,
-    pub logprobs: [TokenLogprobCandidate; 8],
-    pub original_content_index: usize, // the index of the content in the original segment content array that this token belongs to
-    pub original_token_offset: usize,  // the offset of the token in the original content tokens
+    pub logprobs: Top8Candidates,
+    pub content_index_in_segment: usize, // the index of the content in the original segment content array that this token belongs to
+    pub token_offset_in_content: usize,  // the offset of the token in the original content tokens
     pub corresponding_segment: &'a Segment,
 }
 
 impl Segment {
-    pub fn reasoning_only_tokens(&self) -> Vec<ReasoningOnlyTokenView> {
+    pub fn reasoning_only_tokens<'a>(&'a self) -> Vec<ReasoningOnlyTokenView<'a>> {
         let mut views = vec![];
         let mut flat_index = 0;
         for (content_index, content) in self.content.iter().enumerate() {
@@ -326,8 +350,8 @@ impl Segment {
                         flat_index,
                         token,
                         logprobs: *logprobs,
-                        original_content_index: content_index,
-                        original_token_offset: token_offset,
+                        content_index_in_segment: content_index,
+                        token_offset_in_content: token_offset,
                         corresponding_segment: self,
                     });
                     flat_index += 1;
@@ -335,6 +359,16 @@ impl Segment {
             }
         }
         views
+    }
+    pub fn first_reasoning_token(&self) -> Option<i32> {
+        for content in &self.content {
+            if let SegmentContent::ReasoningOrToolCall(tokens) = content {
+                if let Some(&first_token) = tokens.tokens.first() {
+                    return Some(first_token);
+                }
+            }
+        }
+        None
     }
 }
 
