@@ -1,4 +1,3 @@
-aiohttp
 anthropic
 anyio
 fastapi
@@ -19,8 +18,7 @@ rich
 sympy
 tabulate
 tiktoken
-torch
 transformers
 typer
 uvicorn
-vllm
+-e /home/luoz/projects/research-utility

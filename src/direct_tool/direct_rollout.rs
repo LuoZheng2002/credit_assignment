@@ -11,6 +11,14 @@ use crate::{
     llm_model::LlmModelMarker,
 };
 
+// now that we can build a tree from some log, can we use an array of actions to represent the final tree?
+
+// the advantage is that we can display the reconstruction procedure
+// the disadvantage is that the structure is hard to modify
+
+// we can have a single source of truth
+
+// if we adopt the log as source of truth strategy, we no longer need to use the following struct
 pub enum DirectLogOrTree {
     Log(String),
     Action(DirectTreeAction),

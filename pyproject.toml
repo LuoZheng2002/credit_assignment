@@ -1,0 +1,38 @@
+[project]
+name = "credit-assignment"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=2.37.0",
+    "research-utility",
+]
+
+[project.optional-dependencies]
+cpu = [
+    "torch",
+]
+gpu = [
+    "torch",
+    "vllm",
+]
+
+[tool.uv]
+conflicts = [
+  [
+    { extra = "cpu" },
+    { extra = "gpu" },
+  ],
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+]
+research-utility = { path = "../research-utility", editable = true }
