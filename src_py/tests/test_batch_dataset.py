@@ -1,21 +1,19 @@
-import json
-import sqlite3
 import tempfile
 import unittest
+
+from research_utility import SqliteStore
 
 from src_py.train.batch_dataset import load_resolved_training_batches
 
 
-def _create_store_entries_table(connection: sqlite3.Connection) -> None:
-    connection.execute(
-        """
-        CREATE TABLE store_entries (
-            id TEXT PRIMARY KEY,
-            payload_json TEXT NOT NULL
-        )
-        """
-    )
-    connection.commit()
+def _write_entries(db_path: str, entries: list[tuple[str, object]]) -> None:
+    store = SqliteStore[str, object](db_path)
+    try:
+        store.clear()
+        for entry_id, payload in entries:
+            store.upsert(entry_id, payload)
+    finally:
+        store.close()
 
 
 class TestBatchDataset(unittest.TestCase):
@@ -23,9 +21,6 @@ class TestBatchDataset(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".sqlite") as tokenized_db, tempfile.NamedTemporaryFile(
             suffix=".sqlite"
         ) as batch_db:
-            tokenized_connection = sqlite3.connect(tokenized_db.name)
-            _create_store_entries_table(tokenized_connection)
-
             sample_q1_n1 = {
                 "id": {"question_id": 1, "node_id": 1},
                 "input_ids": [11, 12],
@@ -45,19 +40,13 @@ class TestBatchDataset(unittest.TestCase):
                 "model_official_name": "Qwen/Qwen2.5-7B-Instruct",
             }
 
-            tokenized_connection.execute(
-                "INSERT INTO store_entries (id, payload_json) VALUES (?, ?)",
-                ("q2_n2", json.dumps(sample_q2_n2)),
+            _write_entries(
+                tokenized_db.name,
+                [
+                    ("q2_n2", sample_q2_n2),
+                    ("q1_n1", sample_q1_n1),
+                ],
             )
-            tokenized_connection.execute(
-                "INSERT INTO store_entries (id, payload_json) VALUES (?, ?)",
-                ("q1_n1", json.dumps(sample_q1_n1)),
-            )
-            tokenized_connection.commit()
-            tokenized_connection.close()
-
-            batch_connection = sqlite3.connect(batch_db.name)
-            _create_store_entries_table(batch_connection)
 
             batch_zero = {
                 "ids": [{"question_id": 2, "node_id": 2}],
@@ -76,16 +65,13 @@ class TestBatchDataset(unittest.TestCase):
                 "model_official_name": "Qwen/Qwen2.5-7B-Instruct",
             }
 
-            batch_connection.execute(
-                "INSERT INTO store_entries (id, payload_json) VALUES (?, ?)",
-                ("0", json.dumps(batch_zero)),
+            _write_entries(
+                batch_db.name,
+                [
+                    ("0", batch_zero),
+                    ("1", batch_one),
+                ],
             )
-            batch_connection.execute(
-                "INSERT INTO store_entries (id, payload_json) VALUES (?, ?)",
-                ("1", json.dumps(batch_one)),
-            )
-            batch_connection.commit()
-            batch_connection.close()
 
             batches = load_resolved_training_batches(tokenized_db.name, batch_db.name)
 
@@ -99,8 +85,6 @@ class TestBatchDataset(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".sqlite") as tokenized_db, tempfile.NamedTemporaryFile(
             suffix=".sqlite"
         ) as batch_db:
-            tokenized_connection = sqlite3.connect(tokenized_db.name)
-            _create_store_entries_table(tokenized_connection)
             tokenized_sample = {
                 "id": {"question_id": 1, "node_id": 1},
                 "input_ids": [101],
@@ -110,15 +94,8 @@ class TestBatchDataset(unittest.TestCase):
                 "advantage": 0.0,
                 "model_official_name": "Qwen/Qwen2.5-7B-Instruct",
             }
-            tokenized_connection.execute(
-                "INSERT INTO store_entries (id, payload_json) VALUES (?, ?)",
-                ("q1_n1", json.dumps(tokenized_sample)),
-            )
-            tokenized_connection.commit()
-            tokenized_connection.close()
+            _write_entries(tokenized_db.name, [("q1_n1", tokenized_sample)])
 
-            batch_connection = sqlite3.connect(batch_db.name)
-            _create_store_entries_table(batch_connection)
             missing_batch = {
                 "ids": [{"question_id": 9, "node_id": 9}],
                 "max_advantage": 1.0,
@@ -127,12 +104,7 @@ class TestBatchDataset(unittest.TestCase):
                 "min_length": 1,
                 "model_official_name": "Qwen/Qwen2.5-7B-Instruct",
             }
-            batch_connection.execute(
-                "INSERT INTO store_entries (id, payload_json) VALUES (?, ?)",
-                ("0", json.dumps(missing_batch)),
-            )
-            batch_connection.commit()
-            batch_connection.close()
+            _write_entries(batch_db.name, [("0", missing_batch)])
 
             with self.assertRaises(AssertionError):
                 load_resolved_training_batches(tokenized_db.name, batch_db.name)
@@ -141,8 +113,6 @@ class TestBatchDataset(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".sqlite") as tokenized_db, tempfile.NamedTemporaryFile(
             suffix=".sqlite"
         ) as batch_db:
-            tokenized_connection = sqlite3.connect(tokenized_db.name)
-            _create_store_entries_table(tokenized_connection)
             tokenized_sample = {
                 "id": {"question_id": 1, "node_id": 1},
                 "input_ids": [9],
@@ -152,15 +122,8 @@ class TestBatchDataset(unittest.TestCase):
                 "advantage": 0.2,
                 "model_official_name": "Qwen/Qwen2.5-7B-Instruct",
             }
-            tokenized_connection.execute(
-                "INSERT INTO store_entries (id, payload_json) VALUES (?, ?)",
-                ("q1_n1", json.dumps(tokenized_sample)),
-            )
-            tokenized_connection.commit()
-            tokenized_connection.close()
+            _write_entries(tokenized_db.name, [("q1_n1", tokenized_sample)])
 
-            batch_connection = sqlite3.connect(batch_db.name)
-            _create_store_entries_table(batch_connection)
             mismatched_batch = {
                 "ids": [{"question_id": 1, "node_id": 1}],
                 "max_advantage": 0.2,
@@ -169,12 +132,7 @@ class TestBatchDataset(unittest.TestCase):
                 "min_length": 1,
                 "model_official_name": "Qwen/Qwen3-4B",
             }
-            batch_connection.execute(
-                "INSERT INTO store_entries (id, payload_json) VALUES (?, ?)",
-                ("0", json.dumps(mismatched_batch)),
-            )
-            batch_connection.commit()
-            batch_connection.close()
+            _write_entries(batch_db.name, [("0", mismatched_batch)])
 
             with self.assertRaises(AssertionError):
                 load_resolved_training_batches(tokenized_db.name, batch_db.name)

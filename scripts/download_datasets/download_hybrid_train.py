@@ -1,24 +1,19 @@
 """Build a hybrid training sqlite database from DeepMath, MATH, and GSM8K.
 
-The output schema matches `research_utility::sqlite_store::SqliteStore`:
-- table name: store_entries
-- columns: id TEXT PRIMARY KEY, payload_json TEXT NOT NULL
-
-Each payload is a JSON object matching `HybridDatasetEntry`.
+Payloads are written via `research_utility.SqliteStore`, and readers should
+consume them through the same abstraction as Python objects.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import sqlite3
 from pathlib import Path
 
 from datasets import concatenate_datasets, load_dataset
 from dotenv import load_dotenv
+from research_utility import SqliteStore
 
-STORE_TABLE_NAME = "store_entries"
 SAMPLES_PER_DATASET = 5_000
 
 
@@ -142,27 +137,13 @@ def _write_store_entries(db_path: Path, payload_rows: list[dict[str, object]]) -
         db_path.unlink()
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    connection = sqlite3.connect(db_path)
+    store = SqliteStore[str, dict[str, object]](db_path)
     try:
-        with connection:
-            connection.execute(
-                f"""
-                CREATE TABLE {STORE_TABLE_NAME} (
-                    id TEXT PRIMARY KEY,
-                    payload_json TEXT NOT NULL
-                )
-                """
-            )
-
-            for row in payload_rows:
-                flat_id = row["flat_id"]
-                payload_json = json.dumps(row, ensure_ascii=False)
-                connection.execute(
-                    f"INSERT INTO {STORE_TABLE_NAME} (id, payload_json) VALUES (?, ?)",
-                    (str(flat_id), payload_json),
-                )
+        for row in payload_rows:
+            flat_id = row["flat_id"]
+            store.upsert(str(flat_id), row)
     finally:
-        connection.close()
+        store.close()
 
 
 def main() -> None:

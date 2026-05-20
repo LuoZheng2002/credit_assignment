@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import math
 import os
-import sqlite3
 from typing import Iterator
 
-
-SQLITE_TABLE_NAME = "store_entries"
+from research_utility import SqliteStore
 
 
 @dataclass(frozen=True)
@@ -39,15 +36,18 @@ class TrainingBatch:
     model_official_name: str
 
 
-def _open_connection(sqlite_path: str) -> sqlite3.Connection:
+def _assert_sqlite_path_exists(sqlite_path: str) -> None:
     assert os.path.isfile(sqlite_path), f"sqlite file not found: {sqlite_path}"
-    connection = sqlite3.connect(sqlite_path)
-    connection.row_factory = sqlite3.Row
-    return connection
+
+
+def _parse_payload_object(payload_obj: object, payload_kind: str) -> dict[str, object]:
+    # SqliteStore returns decoded Python values, so callers always parse objects.
+    assert isinstance(payload_obj, dict), f"{payload_kind} payload must be a dictionary"
+    return payload_obj
 
 
 def _parse_question_node_id(value: object) -> QuestionNodeId:
-    assert isinstance(value, dict), "QuestionNodeId must be a JSON object"
+    assert isinstance(value, dict), "QuestionNodeId must be an object"
     assert "question_id" in value, "QuestionNodeId must contain question_id"
     assert "node_id" in value, "QuestionNodeId must contain node_id"
 
@@ -62,7 +62,7 @@ def _parse_question_node_id(value: object) -> QuestionNodeId:
 
 
 def _parse_int_list(value: object, field_name: str) -> list[int]:
-    assert isinstance(value, list), f"{field_name} must be a JSON array"
+    assert isinstance(value, list), f"{field_name} must be a list"
     output: list[int] = []
     for element in value:
         assert isinstance(element, int), f"{field_name} must contain int values"
@@ -83,9 +83,8 @@ def _parse_positive_int(value: object, field_name: str) -> int:
     return value
 
 
-def _parse_tokenized_payload(payload_json: str) -> TrainingSampleTokenized:
-    payload_obj = json.loads(payload_json)
-    assert isinstance(payload_obj, dict), "tokenized payload must be a JSON object"
+def _parse_tokenized_payload(payload: object) -> TrainingSampleTokenized:
+    payload_obj = _parse_payload_object(payload, "tokenized")
     assert "id" in payload_obj, "tokenized payload must contain id"
     assert "input_ids" in payload_obj, "tokenized payload must contain input_ids"
     assert "labels" in payload_obj, "tokenized payload must contain labels"
@@ -122,9 +121,8 @@ def _parse_tokenized_payload(payload_json: str) -> TrainingSampleTokenized:
     )
 
 
-def _parse_batch_payload(batch_index: int, payload_json: str) -> TrainingBatch:
-    payload_obj = json.loads(payload_json)
-    assert isinstance(payload_obj, dict), "batch payload must be a JSON object"
+def _parse_batch_payload(batch_index: int, payload: object) -> TrainingBatch:
+    payload_obj = _parse_payload_object(payload, "batch")
     assert "ids" in payload_obj, "batch payload must contain ids"
     assert "max_advantage" in payload_obj, "batch payload must contain max_advantage"
     assert "min_advantage" in payload_obj, "batch payload must contain min_advantage"
@@ -133,7 +131,7 @@ def _parse_batch_payload(batch_index: int, payload_json: str) -> TrainingBatch:
     assert "model_official_name" in payload_obj, "batch payload must contain model_official_name"
 
     ids_obj = payload_obj["ids"]
-    assert isinstance(ids_obj, list), "ids must be a JSON array"
+    assert isinstance(ids_obj, list), "ids must be a list"
     ids: list[QuestionNodeId] = []
     for id_obj in ids_obj:
         ids.append(_parse_question_node_id(id_obj))
@@ -163,17 +161,13 @@ def _parse_batch_payload(batch_index: int, payload_json: str) -> TrainingBatch:
 
 
 def iter_tokenized_samples(sqlite_path: str) -> Iterator[TrainingSampleTokenized]:
-    connection = _open_connection(sqlite_path)
+    _assert_sqlite_path_exists(sqlite_path)
+    store = SqliteStore[str, object](sqlite_path)
     try:
-        cursor = connection.execute(
-            f"SELECT payload_json FROM {SQLITE_TABLE_NAME} ORDER BY id ASC"
-        )
-        for row in cursor:
-            payload_json_obj = row["payload_json"]
-            assert isinstance(payload_json_obj, str), "payload_json must be string"
-            yield _parse_tokenized_payload(payload_json_obj)
+        for payload in store.load_all():
+            yield _parse_tokenized_payload(payload)
     finally:
-        connection.close()
+        store.close()
 
 
 def load_tokenized_samples(sqlite_path: str) -> list[TrainingSampleTokenized]:
@@ -181,28 +175,18 @@ def load_tokenized_samples(sqlite_path: str) -> list[TrainingSampleTokenized]:
 
 
 def iter_training_batches(sqlite_path: str) -> Iterator[TrainingBatch]:
-    connection = _open_connection(sqlite_path)
+    _assert_sqlite_path_exists(sqlite_path)
+    store = SqliteStore[str, object](sqlite_path)
     try:
-        cursor = connection.execute(
-            f"SELECT id, payload_json FROM {SQLITE_TABLE_NAME} ORDER BY CAST(id AS INTEGER) ASC"
-        )
-        expected_batch_index = 0
-        for row in cursor:
-            id_obj = row["id"]
-            payload_json_obj = row["payload_json"]
-            assert isinstance(id_obj, str), "batch id must be string"
-            assert isinstance(payload_json_obj, str), "payload_json must be string"
-            assert id_obj.isdigit(), "batch id must be numeric text"
-
-            batch_index = int(id_obj)
-            assert (
-                batch_index == expected_batch_index
-            ), f"batch index must be contiguous: expected {expected_batch_index}, got {batch_index}"
-
-            yield _parse_batch_payload(batch_index=batch_index, payload_json=payload_json_obj)
-            expected_batch_index += 1
+        payload_count = len(store.load_all())
+        for batch_index in range(payload_count):
+            payload = store.get(str(batch_index))
+            assert payload is not None, (
+                f"batch index must be contiguous: expected {batch_index}, got missing id {batch_index}"
+            )
+            yield _parse_batch_payload(batch_index=batch_index, payload=payload)
     finally:
-        connection.close()
+        store.close()
 
 
 def load_training_batches(sqlite_path: str) -> list[TrainingBatch]:

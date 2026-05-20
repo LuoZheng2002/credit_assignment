@@ -1,7 +1,7 @@
-import json
-import sqlite3
 import tempfile
 import unittest
+
+from research_utility import SqliteStore
 
 from src_py.train.data_sqlite import (
     load_tokenized_samples,
@@ -9,24 +9,19 @@ from src_py.train.data_sqlite import (
 )
 
 
-def _create_store_entries_table(connection: sqlite3.Connection) -> None:
-    connection.execute(
-        """
-        CREATE TABLE store_entries (
-            id TEXT PRIMARY KEY,
-            payload_json TEXT NOT NULL
-        )
-        """
-    )
-    connection.commit()
+def _write_entries(db_path: str, entries: list[tuple[str, object]]) -> None:
+    store = SqliteStore[str, object](db_path)
+    try:
+        store.clear()
+        for entry_id, payload in entries:
+            store.upsert(entry_id, payload)
+    finally:
+        store.close()
 
 
 class TestDataSqlite(unittest.TestCase):
     def test_load_tokenized_samples_parses_and_orders_by_id(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".sqlite") as temp_db:
-            connection = sqlite3.connect(temp_db.name)
-            _create_store_entries_table(connection)
-
             payload_b = {
                 "id": {"question_id": 2, "node_id": 5},
                 "input_ids": [11, 12, 13],
@@ -46,16 +41,13 @@ class TestDataSqlite(unittest.TestCase):
                 "model_official_name": "Qwen/Qwen2.5-7B-Instruct",
             }
 
-            connection.execute(
-                "INSERT INTO store_entries (id, payload_json) VALUES (?, ?)",
-                ("q2_n5", json.dumps(payload_b)),
+            _write_entries(
+                temp_db.name,
+                [
+                    ("q2_n5", payload_b),
+                    ("q1_n3", payload_a),
+                ],
             )
-            connection.execute(
-                "INSERT INTO store_entries (id, payload_json) VALUES (?, ?)",
-                ("q1_n3", json.dumps(payload_a)),
-            )
-            connection.commit()
-            connection.close()
 
             samples = load_tokenized_samples(temp_db.name)
             self.assertEqual(2, len(samples))
@@ -71,9 +63,7 @@ class TestDataSqlite(unittest.TestCase):
 
     def test_iter_training_batches_orders_numerically(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".sqlite") as temp_db:
-            connection = sqlite3.connect(temp_db.name)
-            _create_store_entries_table(connection)
-
+            entries: list[tuple[str, object]] = []
             for batch_id in ["10", "2", "0", "1"]:
                 index = int(batch_id)
                 payload = {
@@ -84,12 +74,9 @@ class TestDataSqlite(unittest.TestCase):
                     "min_length": index + 100,
                     "model_official_name": "Qwen/Qwen2.5-7B-Instruct",
                 }
-                connection.execute(
-                    "INSERT INTO store_entries (id, payload_json) VALUES (?, ?)",
-                    (batch_id, json.dumps(payload)),
-                )
-            connection.commit()
-            connection.close()
+                entries.append((batch_id, payload))
+
+            _write_entries(temp_db.name, entries)
 
             with self.assertRaises(AssertionError):
                 # The iterator reads in numeric order: 0, 1, 2, 10.
@@ -98,9 +85,6 @@ class TestDataSqlite(unittest.TestCase):
 
     def test_iter_training_batches_rejects_non_numeric_batch_id(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".sqlite") as temp_db:
-            connection = sqlite3.connect(temp_db.name)
-            _create_store_entries_table(connection)
-
             valid_payload = {
                 "ids": [{"question_id": 0, "node_id": 0}],
                 "max_advantage": 0.0,
@@ -109,16 +93,13 @@ class TestDataSqlite(unittest.TestCase):
                 "min_length": 8,
                 "model_official_name": "Qwen/Qwen2.5-7B-Instruct",
             }
-            connection.execute(
-                "INSERT INTO store_entries (id, payload_json) VALUES (?, ?)",
-                ("0", json.dumps(valid_payload)),
+            _write_entries(
+                temp_db.name,
+                [
+                    ("0", valid_payload),
+                    ("bad_id", valid_payload),
+                ],
             )
-            connection.execute(
-                "INSERT INTO store_entries (id, payload_json) VALUES (?, ?)",
-                ("bad_id", json.dumps(valid_payload)),
-            )
-            connection.commit()
-            connection.close()
 
             with self.assertRaises(AssertionError):
                 list(iter_training_batches(temp_db.name))
