@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::json_line_util::HasId;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct HybridDatasetEntry {
+pub struct HybridDatasetQuestion {
     pub flat_id: usize,
     pub dataset_name: String,
     pub question_id: usize,
@@ -12,13 +12,13 @@ pub struct HybridDatasetEntry {
     pub correct_answer: String,
 }
 
-impl HasId for HybridDatasetEntry {
+impl HasId for HybridDatasetQuestion {
     fn id(&self) -> usize {
         self.flat_id
     }
 }
 
-pub type HybridDatasetStore = SqliteStore<usize, HybridDatasetEntry>;
+pub type HybridDatasetStore = SqliteStore<usize, HybridDatasetQuestion>;
 
 // we no longer need to specify the dataset name
 pub struct AssetFileHybridDataset;

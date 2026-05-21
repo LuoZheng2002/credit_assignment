@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     agent::tree::CorrectnessJudgment,
-    direct_tool::{direct_tree_action::DirectTreeAction, direct_tree_status::DirectTreeStatus},
+    direct_tool::{
+        direct_tree_action::DirectTreeAction, direct_tree_action_log::DirectTreeActionLog,
+        direct_tree_status::DirectTreeStatus,
+    },
     llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob, Top8Candidates},
     token_array::TokenArray,
 };
@@ -35,24 +38,52 @@ pub struct DirectTree<M: LlmModelMarker> {
     _phantom: std::marker::PhantomData<M>, // for tokenizer utility
 }
 
+pub const NUM_TRUNKS: usize = 4;
+
 impl<M: LlmModelMarker> DirectTree<M> {
-    pub fn new(
-        flat_id: usize,
-        dataset_name: String,
-        question_id: usize,
-        question: String,
-        correct_answer: String,
-        num_trunks: usize,
+    // pub fn new(
+    //     flat_id: usize,
+    //     dataset_name: String,
+    //     question_id: usize,
+    //     question: String,
+    //     correct_answer: String,
+    //     num_trunks: usize,
+    //     max_num_total_trajectories: usize,
+    //     use_tool: bool,
+    // ) -> Self {
+    //     Self {
+    //         flat_id,
+    //         dataset_name,
+    //         question_id,
+    //         question,
+    //         correct_answer,
+    //         status: DirectTreeStatus::CreatingTrunkTrajectory,
+    //         segments: BTreeMap::new(),
+    //         root_segment_ids: vec![],
+    //         leaf_segment_judgments: BTreeMap::new(),
+    //         next_segment_id: 0,
+    //         next_segment_temperature: 1.0,
+    //         focused_parent_segment_id: None,
+    //         new_branch_start_token: None,
+    //         completed: false,
+    //         num_trunks,
+    //         max_num_total_trajectories,
+    //         use_tool,
+    //         _phantom: std::marker::PhantomData::<M>,
+    //     }
+    // }
+    pub fn from_action_log(
+        action_log: &DirectTreeActionLog,
         max_num_total_trajectories: usize,
         use_tool: bool,
     ) -> Self {
-        Self {
-            flat_id,
-            dataset_name,
-            question_id,
-            question,
-            correct_answer,
-            status: DirectTreeStatus::CreatingTrunkTrajectory,
+        let mut tree = Self {
+            flat_id: action_log.question.flat_id,
+            dataset_name: action_log.question.dataset_name.clone(),
+            question_id: action_log.question.question_id,
+            question: action_log.question.question.clone(),
+            correct_answer: action_log.question.correct_answer.clone(),
+            status: DirectTreeStatus::CreatingTrunkTrajectory, // this will be updated when applying actions
             segments: BTreeMap::new(),
             root_segment_ids: vec![],
             leaf_segment_judgments: BTreeMap::new(),
@@ -61,13 +92,17 @@ impl<M: LlmModelMarker> DirectTree<M> {
             focused_parent_segment_id: None,
             new_branch_start_token: None,
             completed: false,
-            num_trunks,
+            num_trunks: NUM_TRUNKS, // default value, will not affect the tree structure
             max_num_total_trajectories,
             use_tool,
             _phantom: std::marker::PhantomData::<M>,
+        };
+        for action in &action_log.actions {
+            tree.apply_action(action.clone());
         }
+        tree
     }
-    pub fn apply_action(&mut self, action: DirectTreeAction) {
+    fn apply_action(&mut self, action: DirectTreeAction) {
         match action {
             DirectTreeAction::CreateAndFocusTrunkTrajectory {
                 content_array: content,
