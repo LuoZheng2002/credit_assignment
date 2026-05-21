@@ -14,6 +14,7 @@ use crate::{
         training_set_formatted::QuestionNodeId,
         training_set_tokenized::{AssetFileTrainingTokenized, TrainingSampleTokenized},
     },
+    util::block_on_async,
 };
 
 #[derive(Debug, Clone)]
@@ -83,14 +84,14 @@ impl<M: LlmModelMarker> AssetFileTrainingBatch<M> {
     }
 
     pub fn batch_store(&self) -> TrainingBatchStore {
-        TrainingBatchStore::new(self.file_path()).unwrap()
+        block_on_async(TrainingBatchStore::initialize_if_missing(self.file_path()))
     }
 
     pub fn store_batches(&self, batches: &[TrainingBatch]) {
         let store = self.batch_store();
-        store.clear().unwrap();
+        block_on_async(store.clear()).unwrap();
         for (batch_index, batch) in batches.iter().enumerate() {
-            store.upsert(batch_index, batch).unwrap();
+            block_on_async(store.upsert(batch_index, batch)).unwrap();
         }
     }
 
@@ -298,7 +299,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingBatch<M> {
                         || tracking.batch_schema_version != Self::BATCH_SCHEMA_VERSION
                     {
                         let tokenized_store = tokenized_asset.fetch();
-                        let tokenized_samples = tokenized_store.load_all().unwrap();
+                        let tokenized_samples = block_on_async(tokenized_store.load_all()).unwrap();
                         let batches =
                             self.generate_batches_from_tokenized_samples(&tokenized_samples);
                         self.store_batches(&batches);
@@ -309,7 +310,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingBatch<M> {
                 }
                 Err(_) => {
                     let tokenized_store = tokenized_asset.fetch();
-                    let tokenized_samples = tokenized_store.load_all().unwrap();
+                    let tokenized_samples = block_on_async(tokenized_store.load_all()).unwrap();
                     let batches = self.generate_batches_from_tokenized_samples(&tokenized_samples);
                     self.store_batches(&batches);
                     AssetFileTrainingBatchTracking {

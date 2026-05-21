@@ -305,7 +305,6 @@ pub async fn determine_chosen_mode(
     };
     let chosen_mode = determine_chosen_mode_with_take_over(session_state, verifier_comment, rng);
     TreeAction::AddTrajectoryAction {
-        question_id: session_state.source_tree.question_id,
         action: TrajectoryAction::PlannerDecideNextStep(chosen_mode),
     }
 }

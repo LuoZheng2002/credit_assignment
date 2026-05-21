@@ -278,10 +278,10 @@ impl Tree {
                     denominator: num_judged_leaves,
                 };
             }
-            TreeAction::ToolWaitViolation { .. } => {
+            TreeAction::ToolWaitViolation => {
                 self.tool_wait_violations += 1;
             }
-            TreeAction::TreeComplete { question_id: _ } => {
+            TreeAction::TreeComplete => {
                 self.completed = true;
             }
         }

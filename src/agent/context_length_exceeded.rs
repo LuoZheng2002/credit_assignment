@@ -13,7 +13,7 @@ pub fn is_context_length_exceeded_response(response: &str) -> bool {
 }
 
 pub fn context_length_exceeded_result(
-    question_id: usize,
+    _question_id: usize,
     final_answer_submitted: bool,
 ) -> Vec<TreeAction> {
     log_key_value_pair(
@@ -22,7 +22,6 @@ pub fn context_length_exceeded_result(
     );
     if !final_answer_submitted {
         vec![TreeAction::AddTrajectoryAction {
-            question_id,
             action: TrajectoryAction::SubmitFinalAnswer(FinalAnswer::Failure(
                 CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE.to_string(),
             )),

@@ -1,10 +1,9 @@
 use crate::{
-    agent::single_dataset::AssetFileSingleDataset,
+    agent::action_log_schema::AssetFileActionLogs,
     agent::tree::Tree,
     asset_file::{AssetFile, Base64Hash, hash_file},
-    json_line_util::{HasId, read_json},
+    json_line_util::HasId,
     llm_model::LlmModelName,
-    sqlite_store::SqliteStore,
 };
 use serde::{Deserialize, Serialize};
 
@@ -66,8 +65,45 @@ impl AssetFileTrees {
     }
 }
 
-// Kept as a type alias for compatibility at call sites.
-pub type CompletedTreeStore = SqliteStore<usize, CompletedTree>;
+#[derive(Debug, Clone)]
+pub struct CompletedTreeStore {
+    rows: Vec<CompletedTree>,
+}
+
+impl CompletedTreeStore {
+    pub fn from_rows(mut rows: Vec<CompletedTree>) -> Self {
+        rows.sort_by_key(|row| row.id);
+        Self { rows }
+    }
+
+    pub fn load_all(&self) -> Result<Vec<CompletedTree>, String> {
+        Ok(self.rows.clone())
+    }
+
+    pub fn statement(&self) -> Result<CompletedTreeStatement, String> {
+        Ok(CompletedTreeStatement {
+            rows: self.rows.clone(),
+        })
+    }
+}
+
+pub struct CompletedTreeStatement {
+    rows: Vec<CompletedTree>,
+}
+
+impl CompletedTreeStatement {
+    pub fn try_iter(
+        &mut self,
+    ) -> Result<std::vec::IntoIter<Result<CompletedTree, String>>, String> {
+        Ok(self
+            .rows
+            .clone()
+            .into_iter()
+            .map(Ok)
+            .collect::<Vec<_>>()
+            .into_iter())
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetFileTreesTracking {
@@ -75,43 +111,22 @@ pub struct AssetFileTreesTracking {
 }
 impl AssetFile for AssetFileTrees {
     type FileModel = CompletedTreeStore;
+
     fn synchronize(&self) -> Base64Hash {
-        let dataset = AssetFileSingleDataset {
+        let action_logs = AssetFileActionLogs {
+            model: self.model,
             dataset: self.dataset.clone(),
             num_samples: self.num_samples,
         };
-        let dataset_hash = dataset.synchronize();
-        // if tracking exists then the target file also exists
-        let tracking_file = match read_json::<AssetFileTreesTracking>(&self.version_tracking_path())
-        {
-            Ok(tracking) => {
-                if tracking.dataset_hash != dataset_hash {
-                    // tracking.dataset_hash = dataset_hash.clone();
-                    // normally we need to regenerate the stale file, but since this file is expensive to generate, we only print a warning.
-                    println!(
-                        "[Warning]: The dependency of trees file {} has changed (dataset content changed: {})",
-                        self.file_path(),
-                        dataset.file_path(),
-                    );
-                }
-                tracking
-            }
-            Err(_) => {
-                panic!(
-                    "Tracking file for trees file {} does not exist. Please first generate the trees file",
-                    self.file_path()
-                );
-            }
-        };
-        std::fs::write(
-            self.version_tracking_path(),
-            serde_json::to_string_pretty(&tracking_file).unwrap(),
-        )
-        .unwrap();
-        hash_file(self.file_path()).unwrap()
+        hash_file(action_logs.file_path()).unwrap()
     }
+
     fn fetch(&self) -> Self::FileModel {
-        self.synchronize();
-        CompletedTreeStore::new(self.file_path()).unwrap()
+        let action_logs = AssetFileActionLogs {
+            model: self.model,
+            dataset: self.dataset.clone(),
+            num_samples: self.num_samples,
+        };
+        CompletedTreeStore::from_rows(action_logs.load_completed_trees_sync())
     }
 }

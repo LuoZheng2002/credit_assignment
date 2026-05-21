@@ -1,7 +1,10 @@
-use crate::{agent::tree_action::TreeAction, llm_model::LlmModelName};
+use crate::{
+    agent::{action_log_schema::TreeActionLogStore, tree_action_log::TreeActionLog},
+    llm_model::LlmModelName,
+};
 
-pub type SqliteSessionLogStore =
-    research_utility::sqlite_table_array_store::SqliteTableArrayStore<usize, TreeAction>;
+pub type SqliteSessionLogStore = TreeActionLogStore;
+pub type SqliteSessionLogEntry = TreeActionLog;
 
 pub fn get_rollout_log_path(model: LlmModelName, dataset_name: &str, num_samples: usize) -> String {
     format!(

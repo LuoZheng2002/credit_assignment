@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::tree_schema::{AssetFileTrees, CompletedTreeStore};
+use crate::agent::action_log_schema::AssetFileActionLogs;
+use crate::agent::tree_schema::CompletedTree;
 use crate::{
     asset_file::{AssetFile, Base64Hash, hash_file},
     em::em_dataset_builder::EmDatasetBuilder,
@@ -14,6 +15,7 @@ use crate::{
     json_line_util::{read_json, write_json},
     llm_model::LlmModelName,
     sqlite_store::SqliteStore,
+    util::block_on_async,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -108,22 +110,14 @@ pub fn short_hyperparameter_hash(hyperparameters: &EmHyperparameters) -> String 
 }
 
 pub fn run_em_fit(
-    completed_trees: &CompletedTreeStore,
+    completed_trees: &[CompletedTree],
     hyperparameters: EmHyperparameters,
 ) -> (Vec<EmFitPerTree>, EmFitMeta) {
     let mut expected_tree_ids: BTreeSet<usize> = BTreeSet::new();
-    let mut seen_tree_count = 0usize;
-    let mut tree_scan_statement = completed_trees.statement().unwrap();
-    let mut rows = tree_scan_statement.try_iter().unwrap();
+    let mut completed_trees_iter = completed_trees.iter();
     let dataset = EmDatasetBuilder::new().build_from_tree_fn(|| {
-        let completed_tree = match rows.next() {
-            Some(Ok(tree)) => tree,
-            Some(Err(err)) => {
-                panic!(
-                    "Failed to read completed tree row during EM dataset build: {}",
-                    err
-                )
-            }
+        let completed_tree = match completed_trees_iter.next() {
+            Some(tree) => tree,
             None => return None,
         };
         assert_eq!(
@@ -135,9 +129,9 @@ pub fn run_em_fit(
             "Duplicate CompletedTree.id found in input: {}",
             completed_tree.id
         );
-        seen_tree_count += 1;
-        Some(completed_tree.trajectory)
+        Some(completed_tree.trajectory.clone())
     });
+    let seen_tree_count = completed_trees.len();
     assert!(
         seen_tree_count > 0,
         "Input trees file must contain at least one CompletedTree entry"
@@ -220,12 +214,14 @@ impl AssetFileEmFit {
     }
 
     pub fn per_tree_store(&self) -> SqliteStore<usize, EmFitPerTree> {
-        SqliteStore::new(self.per_tree_file_path()).unwrap()
+        block_on_async(SqliteStore::initialize_if_missing(
+            self.per_tree_file_path(),
+        ))
     }
 
     pub fn store_em_fit_results(&self, per_tree: &[EmFitPerTree], meta: &EmFitMeta) {
         let per_tree_store = self.per_tree_store();
-        per_tree_store.clear().unwrap();
+        block_on_async(per_tree_store.clear()).unwrap();
         let mut seen_tree_ids: BTreeSet<usize> = BTreeSet::new();
         for tree_fit in per_tree {
             assert!(
@@ -233,9 +229,7 @@ impl AssetFileEmFit {
                 "Duplicate tree_question_id found in EmFitPerTree output: {}",
                 tree_fit.tree_question_id
             );
-            per_tree_store
-                .upsert(tree_fit.tree_question_id, tree_fit)
-                .unwrap();
+            block_on_async(per_tree_store.upsert(tree_fit.tree_question_id, tree_fit)).unwrap();
         }
         let meta_path = self.meta_file_path();
         write_json(&meta_path, meta).unwrap();
@@ -246,12 +240,12 @@ impl AssetFile for AssetFileEmFit {
     type FileModel = (Vec<EmFitPerTree>, EmFitMeta);
 
     fn synchronize(&self) -> Base64Hash {
-        let asset_file_trees = AssetFileTrees {
+        let action_logs = AssetFileActionLogs {
             model: self.model.clone(),
             dataset: self.dataset.clone(),
             num_samples: self.num_samples,
         };
-        let trees_hash = asset_file_trees.synchronize();
+        let trees_hash = hash_file(action_logs.file_path()).unwrap();
         let tracking_content = match read_json::<AssetFileEmFitTracking>(
             &self.version_tracking_path(),
         ) {
@@ -264,8 +258,8 @@ impl AssetFile for AssetFileEmFit {
                         self.num_samples,
                         self.hyperparameters
                     );
-                    let tree_store = asset_file_trees.fetch();
-                    let (per_tree, meta) = run_em_fit(&tree_store, self.hyperparameters.clone());
+                    let trees = action_logs.load_completed_trees_sync();
+                    let (per_tree, meta) = run_em_fit(&trees, self.hyperparameters.clone());
                     self.store_em_fit_results(&per_tree, &meta);
                     tracking.trees_hash = trees_hash.clone();
                 }
@@ -279,8 +273,8 @@ impl AssetFile for AssetFileEmFit {
                     self.num_samples,
                     self.hyperparameters
                 );
-                let tree_store = asset_file_trees.fetch();
-                let (per_tree, meta) = run_em_fit(&tree_store, self.hyperparameters.clone());
+                let trees = action_logs.load_completed_trees_sync();
+                let (per_tree, meta) = run_em_fit(&trees, self.hyperparameters.clone());
                 self.store_em_fit_results(&per_tree, &meta);
                 AssetFileEmFitTracking {
                     trees_hash,
@@ -295,7 +289,7 @@ impl AssetFile for AssetFileEmFit {
 
     fn fetch(&self) -> Self::FileModel {
         self.synchronize();
-        let per_tree = self.per_tree_store().load_all().unwrap();
+        let per_tree = block_on_async(self.per_tree_store().load_all()).unwrap();
         let meta = read_json(self.meta_file_path()).unwrap();
         (per_tree, meta)
     }

@@ -1,3 +1,14 @@
+use std::future::Future;
+
+pub fn block_on_async<F: Future>(future: F) -> F::Output {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(future))
+    } else {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(future)
+    }
+}
+
 pub fn extract_boxed_content(text: &str) -> Option<String> {
     const MARKER: &str = "\\boxed{";
     let start = text.find(MARKER)?;

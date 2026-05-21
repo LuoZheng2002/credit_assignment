@@ -2,38 +2,52 @@ use reqwest::Client;
 
 use crate::{
     agent::{
-        rollout_batch::LogOrTree, state_to_actions::produce_actions_from_state, tree::Tree,
-        tree_action::TreeAction, tree_schema::CompletedTree,
+        action_log_schema::TreeActionLogStore, single_dataset::SingleDatasetQuestion,
+        state_to_actions::produce_actions_from_state, tree_action_log::TreeActionLog,
+        tree_reconstruction::reconstruct_tree,
     },
     llm_model::LlmModelMarker,
     worker_message_tx::log_key_value_pair,
 };
 
-// it will output action logs and final trajectory
-// it will also load existing logs
 pub async fn rollout<M: LlmModelMarker>(
-    question_id: usize,
-    question: String,
-    reference_answer: String,
-    loaded_events: Vec<TreeAction>,
+    question: SingleDatasetQuestion,
+    rollout_store: TreeActionLogStore,
     llm_callable: M::Callable,
     client: Client,
     rng: &mut impl rand::Rng,
-    log_or_tree_tx: tokio::sync::mpsc::UnboundedSender<LogOrTree>,
 ) {
-    // create a state machine
-    let mut tree = Tree::new(question_id, question.clone(), reference_answer.clone());
+    let mut action_log = rollout_store
+        .get(question.id)
+        .await
+        .unwrap()
+        .unwrap_or_else(|| TreeActionLog {
+            question: question.clone(),
+            actions: vec![],
+        });
+    assert_eq!(
+        action_log.question.id, question.id,
+        "TreeActionLog.question.id must match rollout question.id"
+    );
+    assert_eq!(
+        action_log.question.question, question.question,
+        "TreeActionLog.question.question must remain immutable"
+    );
+    assert_eq!(
+        action_log.question.final_answer, question.final_answer,
+        "TreeActionLog.question.final_answer must remain immutable"
+    );
+
+    let mut tree = reconstruct_tree(&action_log);
     log_key_value_pair(
         "status".to_string(),
         format!(
             "Loading {} existing events for question id {}...",
-            loaded_events.len(),
-            question_id
+            action_log.actions.len(),
+            question.id
         ),
     );
-    for event in loaded_events {
-        tree.apply_action(event);
-    }
+
     loop {
         if tree.completed {
             break;
@@ -41,23 +55,17 @@ pub async fn rollout<M: LlmModelMarker>(
         let new_actions =
             produce_actions_from_state::<M, M::Callable>(&tree, &llm_callable, client.clone(), rng)
                 .await;
+        assert!(
+            !new_actions.is_empty(),
+            "produce_actions_from_state must emit at least one action"
+        );
         for action in new_actions {
-            tree.apply_action(action.clone());
-            log_or_tree_tx.send(LogOrTree::Action(action)).unwrap();
+            action_log.actions.push(action);
         }
+        rollout_store
+            .upsert(question.id, &action_log)
+            .await
+            .unwrap();
+        tree = reconstruct_tree(&action_log);
     }
-    let step_quality_ratio = tree.get_step_quality_ratio();
-    let failed_and_aborted_ratio = tree.get_failed_and_aborted_ratio();
-    let trajectory_tree = tree.clone();
-    let rollout_trajectory = CompletedTree {
-        id: question_id,
-        question,
-        correct_answer: reference_answer,
-        step_quality_ratio,
-        failed_and_aborted_ratio,
-        trajectory: trajectory_tree,
-    };
-    log_or_tree_tx
-        .send(LogOrTree::Tree(rollout_trajectory))
-        .unwrap();
 }

@@ -3,10 +3,10 @@ use std::error::Error;
 use std::io::{self, Stdout};
 
 use clap::Parser;
+use credit_assignment::agent::action_log_schema::AssetFileActionLogs;
 use credit_assignment::agent::advantage_composition::{
     AdvantageCompositionPerTree, AssetFileAdvantageComposition,
 };
-use credit_assignment::agent::tree_schema::AssetFileTrees;
 use credit_assignment::asset_file::AssetFile;
 use credit_assignment::constants::{
     FIXED_ADVANTAGE_WEIGHT_CONTRIBUTION, FIXED_ADVANTAGE_WEIGHT_STEP_QUALITY,
@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             max: args.log_std_max,
         },
     };
-    let asset_trees = AssetFileTrees {
+    let action_logs = AssetFileActionLogs {
         model: args.model,
         dataset: args.dataset_name.clone(),
         num_samples: args.num_samples,
@@ -112,7 +112,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         num_samples: args.num_samples,
         hyperparameters,
     };
-    let mut answers = asset_trees.fetch().load_all().unwrap();
+    let mut answers = action_logs.load_completed_trees_sync();
     answers.sort_by_key(|answer| answer.id);
     let (per_tree_em_fit, _meta) = asset_em_fit.fetch();
     let per_tree_advantage = asset_advantage.fetch();

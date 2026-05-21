@@ -3,14 +3,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    agent::action_log_schema::AssetFileActionLogs,
     agent::advantage_composition::{AdvantageCompositionPerTree, AssetFileAdvantageComposition},
-    agent::tree_schema::AssetFileTrees,
+    agent::tree_schema::CompletedTree,
     asset_file::{AssetFile, Base64Hash, hash_file},
     em::{em_schema::short_hyperparameter_hash, em_types::EmHyperparameters},
     json_line_util::{read_json, write_json},
     llm_model::LlmModelName,
     sqlite_store::{SqliteStore, SqliteStoreKey},
     training_set::training_set_generation::generate_sample_formatted_from_tree_node,
+    util::block_on_async,
 };
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -21,6 +23,37 @@ pub struct QuestionNodeId {
 impl SqliteStoreKey for QuestionNodeId {
     fn to_key_text(&self) -> String {
         format!("q{}_n{}", self.question_id, self.node_id)
+    }
+
+    fn from_key_text(key_text: &str) -> Result<Self, String> {
+        let Some(question_part) = key_text.strip_prefix('q') else {
+            return Err(format!(
+                "Invalid QuestionNodeId key '{}': missing q prefix",
+                key_text
+            ));
+        };
+        let Some((question_id_text, node_id_text)) = question_part.split_once("_n") else {
+            return Err(format!(
+                "Invalid QuestionNodeId key '{}': expected q{{question_id}}_n{{node_id}}",
+                key_text
+            ));
+        };
+        let question_id = question_id_text.parse::<usize>().map_err(|err| {
+            format!(
+                "Invalid QuestionNodeId question_id '{}' in key '{}': {}",
+                question_id_text, key_text, err
+            )
+        })?;
+        let node_id = node_id_text.parse::<usize>().map_err(|err| {
+            format!(
+                "Invalid QuestionNodeId node_id '{}' in key '{}': {}",
+                node_id_text, key_text, err
+            )
+        })?;
+        Ok(Self {
+            question_id,
+            node_id,
+        })
     }
 }
 
@@ -78,12 +111,14 @@ impl AssetFileTrainingFormatted {
     }
 
     pub fn sample_store(&self) -> TrainingSampleFormattedStore {
-        TrainingSampleFormattedStore::new(self.file_path()).unwrap()
+        block_on_async(TrainingSampleFormattedStore::initialize_if_missing(
+            self.file_path(),
+        ))
     }
 
     pub fn store_formatted_samples(&self, samples: &[TrainingSampleFormatted]) {
         let store = self.sample_store();
-        store.clear().unwrap();
+        block_on_async(store.clear()).unwrap();
         let mut seen_ids: BTreeSet<QuestionNodeId> = BTreeSet::new();
         for sample in samples {
             assert!(
@@ -91,13 +126,13 @@ impl AssetFileTrainingFormatted {
                 "Duplicate QuestionNodeId found in formatted samples: {:?}",
                 sample.id
             );
-            store.upsert(sample.id, sample).unwrap();
+            block_on_async(store.upsert(sample.id, sample)).unwrap();
         }
     }
 
     fn generate_formatted_samples(
         &self,
-        trees: &crate::agent::tree_schema::CompletedTreeStore,
+        trees: &[CompletedTree],
         advantage_per_tree: &[AdvantageCompositionPerTree],
     ) -> Vec<TrainingSampleFormatted> {
         let advantage_by_id: BTreeMap<usize, &AdvantageCompositionPerTree> = advantage_per_tree
@@ -112,10 +147,7 @@ impl AssetFileTrainingFormatted {
 
         let mut output: Vec<TrainingSampleFormatted> = Vec::new();
         let mut seen_tree_ids: BTreeSet<usize> = BTreeSet::new();
-        let mut tree_scan_statement = trees.statement().unwrap();
-        let rows = tree_scan_statement.try_iter().unwrap();
-        for row in rows {
-            let tree = row.unwrap();
+        for tree in trees {
             assert!(
                 seen_tree_ids.insert(tree.id),
                 "Duplicate tree id found in trees: {}",
@@ -150,12 +182,12 @@ impl AssetFile for AssetFileTrainingFormatted {
     }
 
     fn synchronize(&self) -> crate::asset_file::Base64Hash {
-        let asset_file_trees = AssetFileTrees {
+        let action_logs = AssetFileActionLogs {
             model: self.model,
             dataset: self.dataset.clone(),
             num_samples: self.num_samples,
         };
-        let trees_hash = asset_file_trees.synchronize();
+        let trees_hash = hash_file(action_logs.file_path()).unwrap();
 
         let asset_file_advantage = AssetFileAdvantageComposition {
             model: self.model,
@@ -172,7 +204,7 @@ impl AssetFile for AssetFileTrainingFormatted {
                         || tracking.advantage_hash != advantage_hash
                         || tracking.formatted_schema_version != Self::FORMATTED_SCHEMA_VERSION
                     {
-                        let trees = asset_file_trees.fetch();
+                        let trees = action_logs.load_completed_trees_sync();
                         let advantage_per_tree = asset_file_advantage.fetch();
                         let samples = self.generate_formatted_samples(&trees, &advantage_per_tree);
                         self.store_formatted_samples(&samples);
@@ -183,7 +215,7 @@ impl AssetFile for AssetFileTrainingFormatted {
                     tracking
                 }
                 Err(_) => {
-                    let trees = asset_file_trees.fetch();
+                    let trees = action_logs.load_completed_trees_sync();
                     let advantage_per_tree = asset_file_advantage.fetch();
                     let samples = self.generate_formatted_samples(&trees, &advantage_per_tree);
                     self.store_formatted_samples(&samples);

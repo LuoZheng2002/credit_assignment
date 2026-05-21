@@ -12,6 +12,7 @@ use crate::{
     training_set::training_set_formatted::{
         AssetFileTrainingFormatted, QuestionNodeId, TrainingSampleFormatted,
     },
+    util::block_on_async,
 };
 // The tokenization should follow the following rules:
 // 1. The control tags are <__start_mask__> and <__end_mask_with_eos__>, and tags are removed before tokenization.
@@ -95,14 +96,16 @@ impl<M: LlmModelMarker> AssetFileTrainingTokenized<M> {
     }
 
     pub fn sample_store(&self) -> TrainingSampleTokenizedStore<M> {
-        TrainingSampleTokenizedStore::new(self.file_path()).unwrap()
+        block_on_async(TrainingSampleTokenizedStore::initialize_if_missing(
+            self.file_path(),
+        ))
     }
 
     pub fn store_tokenized_samples(&self, samples: &[TrainingSampleTokenized<M>]) {
         let store = self.sample_store();
-        store.clear().unwrap();
+        block_on_async(store.clear()).unwrap();
         for sample in samples {
-            store.upsert(sample.id, sample).unwrap();
+            block_on_async(store.upsert(sample.id, sample)).unwrap();
         }
     }
 
@@ -329,7 +332,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTokenized<M> {
                         || tracking.tokenized_schema_version != Self::TOKENIZED_SCHEMA_VERSION
                     {
                         let formatted_store = asset_file_training_formatted.fetch();
-                        let formatted_samples = formatted_store.load_all().unwrap();
+                        let formatted_samples = block_on_async(formatted_store.load_all()).unwrap();
                         let tokenized_samples = self.generate_tokenized_samples(&formatted_samples);
                         self.store_tokenized_samples(&tokenized_samples);
                         tracking.formatted_hash = formatted_hash.clone();
@@ -339,7 +342,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTokenized<M> {
                 }
                 Err(_) => {
                     let formatted_store = asset_file_training_formatted.fetch();
-                    let formatted_samples = formatted_store.load_all().unwrap();
+                    let formatted_samples = block_on_async(formatted_store.load_all()).unwrap();
                     let tokenized_samples = self.generate_tokenized_samples(&formatted_samples);
                     self.store_tokenized_samples(&tokenized_samples);
                     AssetFileTrainingTokenizedTracking {

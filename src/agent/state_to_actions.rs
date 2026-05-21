@@ -142,11 +142,9 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                 .current_node_id
                 .expect("Step ended requires current_node_id");
             actions.push(TreeAction::AddTrajectoryAction {
-                question_id,
                 action: TrajectoryAction::StartNewStep, // set the trajectory status to verifier commenting, finalize the old step node
             });
             actions.push(TreeAction::CreateAndMoveToNode {
-                question_id,
                 parent_id: Some(parent_id),
             });
             actions
@@ -203,7 +201,6 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                     )
                 } else {
                     let action = TreeAction::AddTrajectoryAction {
-                        question_id,
                         action: TrajectoryAction::VerifierComment(Some(
                             parse_verifier_comment_response(response.clone()),
                         )),
@@ -213,7 +210,6 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
             } else {
                 // if verifier is off, we still want to add a TrajectoryAction to record the verifier comment is off for the current step, which will be used for determining the node type in the next step
                 let action = TreeAction::AddTrajectoryAction {
-                    question_id,
                     action: TrajectoryAction::VerifierComment(None),
                 };
                 vec![action]
@@ -261,13 +257,11 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                         NextStepDecision::OverwriteLastStep(_) => unreachable!(),
                     }; // we change to not require the plan to be in a markdown code block
                     vec![TreeAction::AddTrajectoryAction {
-                        question_id,
                         action: TrajectoryAction::PlannerMakeOrChangePlan(plan_content),
                     }]
                 }
             } else {
                 vec![TreeAction::AddTrajectoryAction {
-                    question_id,
                     action: TrajectoryAction::PlannerMakeOrChangePlan(None),
                 }]
             }
@@ -293,7 +287,6 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                     && let Some(boxed_content) = extract_boxed_content(&response)
                 {
                     actions.push(TreeAction::AddTrajectoryAction {
-                        question_id,
                         action: TrajectoryAction::SubmitFinalAnswer(FinalAnswer::ModelProvided(
                             boxed_content,
                         )),
@@ -317,14 +310,13 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                 let mut has_step_terminate_intervention = false;
 
                 if tool_wait_violation {
-                    actions.push(TreeAction::ToolWaitViolation { question_id });
+                    actions.push(TreeAction::ToolWaitViolation);
                 }
                 if let Some(reasoning) = reasoning {
                     if reasoning.contains("<end_step>") {
                         push_end_step = true;
                     }
                     actions.push(TreeAction::AddTrajectoryAction {
-                        question_id,
                         action: TrajectoryAction::PlannerReasoning { reasoning },
                     });
                 }
@@ -333,7 +325,6 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                     let previous_python_error =
                         session_state.current_step_last_python_error.clone();
                     actions.push(TreeAction::AddTrajectoryAction {
-                        question_id,
                         action: TrajectoryAction::PlannerToolCall(tool_call),
                     });
                     if let ToolResponse::PythonError(current_python_error) = &tool_response {
@@ -346,11 +337,9 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                                     .into(),
                             );
                             actions.push(TreeAction::AddTrajectoryAction {
-                                question_id,
                                 action: TrajectoryAction::ToolCallResponse(tool_response),
                             });
                             actions.push(TreeAction::AddTrajectoryAction {
-                                question_id,
                                 // action: RolloutAction::ToolCallResponse(
                                 //     ToolResponse::Intervention(
                                 //         IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
@@ -363,13 +352,11 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                             has_step_terminate_intervention = true;
                         } else {
                             actions.push(TreeAction::AddTrajectoryAction {
-                                question_id,
                                 action: TrajectoryAction::ToolCallResponse(tool_response),
                             });
                         }
                     } else {
                         actions.push(TreeAction::AddTrajectoryAction {
-                            question_id,
                             action: TrajectoryAction::ToolCallResponse(tool_response),
                         });
                     }
@@ -377,7 +364,6 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
 
                 if response_is_empty {
                     actions.push(TreeAction::AddTrajectoryAction {
-                        question_id,
                         // action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
                         //     SUBMIT_ANSWER_HINT.to_string(),
                         // )),
@@ -411,7 +397,6 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                             "Detected repetition of the same response at least five times. This may indicate that the model is stuck in a loop.".into(),
                         );
                     actions.push(TreeAction::AddTrajectoryAction {
-                        question_id,
                         action: TrajectoryAction::SystemInterrupt(
                             REPETITION_ABORT_MESSAGE.to_string(),
                         ),
@@ -428,7 +413,6 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                     //     "PlannerEndStep should not be emitted after terminal intervention"
                     // );
                     actions.push(TreeAction::AddTrajectoryAction {
-                        question_id,
                         action: TrajectoryAction::PlannerEndStep,
                     });
                 }
@@ -452,7 +436,6 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                     && let Some(boxed_content) = extract_boxed_content(&response)
                 {
                     actions.push(TreeAction::AddTrajectoryAction {
-                        question_id,
                         action: TrajectoryAction::SubmitFinalAnswer(FinalAnswer::ModelProvided(
                             boxed_content,
                         )),
@@ -460,7 +443,6 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                 }
                 let (step_content_compacted, step_quality) = parse_compactor_response(response);
                 actions.push(TreeAction::AddTrajectoryAction {
-                    question_id,
                     action: TrajectoryAction::CompactorCompactStep {
                         step_content_compacted,
                         step_quality,
@@ -491,14 +473,12 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                 } else {
                     let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
                     vec![TreeAction::AddTrajectoryAction {
-                        question_id,
                         action: TrajectoryAction::PlannerUpdatePlan(Some(updated_plan_content)),
                     }]
                 }
             } else {
                 // if final answer already exists, we skip the plan updating and directly add a PlannerUpdatePlan action with None content, which will be treated as a signal to skip updating plan in the reducer
                 vec![TreeAction::AddTrajectoryAction {
-                    question_id,
                     action: TrajectoryAction::PlannerUpdatePlan(None),
                 }]
             }
@@ -514,7 +494,6 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                 .expect("WorkingOnTrajectory should always have current_node_id when ending");
 
             let register_leaf_action = TreeAction::RegisterLeaf {
-                question_id: tree.question_id,
                 node_id: leaf_node_id,
             };
 
@@ -533,7 +512,6 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                 FinalAnswer::Failure(_) => false, // if the model fails to provide a final answer, we treat it as an incorrect answer
             };
             let judge_leaf_correctness_event = TreeAction::JudgeLeafCorrectness {
-                question_id: tree.question_id,
                 node_id: leaf_node_id,
                 correctness_judgment: CorrectnessJudgment {
                     model_answer: final_answer.clone(),
@@ -552,7 +530,6 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
             actions.push(register_leaf_action);
             actions.push(judge_leaf_correctness_event);
             actions.push(TreeAction::AddTrajectoryAction {
-                question_id,
                 action: TrajectoryAction::StartDeterminingBranchingNode,
             });
             actions
@@ -562,11 +539,10 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
             let branching_node = determine_branching_node(tree, rng);
             match branching_node {
                 Some(branching_node) => actions.push(TreeAction::CreateAndMoveToNode {
-                    question_id,
                     parent_id: Some(branching_node),
                 }),
                 None => {
-                    actions.push(TreeAction::TreeComplete { question_id });
+                    actions.push(TreeAction::TreeComplete);
                 }
             }
             actions

@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    agent::action_log_schema::AssetFileActionLogs,
     agent::trajectory_action_types::StepQuality,
-    agent::tree_schema::AssetFileTrees,
     agent::tree_schema::CompletedTree,
     asset_file::{AssetFile, Base64Hash, hash_file},
     em::{
@@ -162,7 +162,7 @@ impl AssetFileAdvantageComposition {
     }
 
     pub fn compose_advantage(
-        trees: &crate::agent::tree_schema::CompletedTreeStore,
+        trees: &[CompletedTree],
         em_fit_per_tree: &[EmFitPerTree],
     ) -> Vec<AdvantageCompositionPerTree> {
         let mut em_by_tree_id: BTreeMap<usize, &EmFitPerTree> = BTreeMap::new();
@@ -186,10 +186,7 @@ impl AssetFileAdvantageComposition {
         let mut tree_length_factor_raw_by_tree_id: BTreeMap<usize, f64> = BTreeMap::new();
         let mut win_loss_ratio_factor_by_tree_id: BTreeMap<usize, f64> = BTreeMap::new();
 
-        let mut tree_scan_statement = trees.statement().unwrap();
-        let rows = tree_scan_statement.try_iter().unwrap();
-        for row in rows {
-            let tree = row.unwrap();
+        for tree in trees {
             assert_eq!(
                 tree.id, tree.trajectory.question_id,
                 "CompletedTree.id must equal Tree.question_id"
@@ -269,10 +266,7 @@ impl AssetFileAdvantageComposition {
         let mut focused_values_raw: Vec<f64> = Vec::new();
         let mut node_positions: Vec<(usize, usize)> = Vec::new();
 
-        let mut tree_scan_statement = trees.statement().unwrap();
-        let rows = tree_scan_statement.try_iter().unwrap();
-        for row in rows {
-            let tree = row.unwrap();
+        for tree in trees {
             let tree_id = tree.id;
             let tree_fit = em_by_tree_id
                 .get(&tree_id)
@@ -411,12 +405,12 @@ impl AssetFile for AssetFileAdvantageComposition {
     type FileModel = Vec<AdvantageCompositionPerTree>;
 
     fn synchronize(&self) -> Base64Hash {
-        let asset_file_trees = AssetFileTrees {
+        let action_logs = AssetFileActionLogs {
             model: self.model.clone(),
             dataset: self.dataset.clone(),
             num_samples: self.num_samples,
         };
-        let trees_hash = asset_file_trees.synchronize();
+        let trees_hash = hash_file(action_logs.file_path()).unwrap();
 
         let asset_file_em_fit = AssetFileEmFit {
             model: self.model.clone(),
@@ -438,7 +432,7 @@ impl AssetFile for AssetFileAdvantageComposition {
                         self.num_samples,
                         self.hyperparameters
                     );
-                    let trees = asset_file_trees.fetch();
+                    let trees = action_logs.load_completed_trees_sync();
                     let (em_fit_per_tree, _meta) = asset_file_em_fit.fetch();
                     let advantage = Self::compose_advantage(&trees, &em_fit_per_tree);
                     write_json(self.file_path(), &advantage).unwrap();
@@ -455,7 +449,7 @@ impl AssetFile for AssetFileAdvantageComposition {
                     self.num_samples,
                     self.hyperparameters
                 );
-                let trees = asset_file_trees.fetch();
+                let trees = action_logs.load_completed_trees_sync();
                 let (em_fit_per_tree, _meta) = asset_file_em_fit.fetch();
                 let advantage = Self::compose_advantage(&trees, &em_fit_per_tree);
                 write_json(self.file_path(), &advantage).unwrap();
