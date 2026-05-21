@@ -35,7 +35,7 @@ impl Gpt5MiniLlmCallable {
 
 #[async_trait]
 impl LlmCallable<Gpt5Mini> for Gpt5MiniLlmCallable {
-    async fn generate(&self, prompt_or_tokens: Vec<i32>, passes_in_stop: bool) -> String {
+    async fn generate_text(&self, prompt_or_tokens: Vec<i32>, passes_in_stop: bool) -> String {
         let prompt = <Gpt5Mini as LlmModelMarker>::Tokenizer::decode_i32_ids(&prompt_or_tokens);
         let body = if passes_in_stop {
             serde_json::json!({

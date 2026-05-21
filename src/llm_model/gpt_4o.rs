@@ -37,7 +37,7 @@ impl Gpt4oLlmCallable {
 
 #[async_trait]
 impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
-    async fn generate(&self, prompt_or_tokens: Vec<i32>, passes_in_stop: bool) -> String {
+    async fn generate_text(&self, prompt_or_tokens: Vec<i32>, passes_in_stop: bool) -> String {
         let prompt = <Gpt4o as LlmModelMarker>::Tokenizer::decode_i32_ids(&prompt_or_tokens);
         let body = if passes_in_stop {
             serde_json::json!({

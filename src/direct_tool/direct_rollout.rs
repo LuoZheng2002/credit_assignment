@@ -52,4 +52,5 @@ pub async fn rollout<M: LlmModelMarker>(
             .await
             .unwrap();
     }
+    log_key_value_pair("info".to_string(), format!("Rollout {} finished", question.flat_id));
 }

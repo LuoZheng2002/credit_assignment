@@ -36,7 +36,7 @@ impl Qwen35_4BLlmCallable {
 
 #[async_trait]
 impl LlmCallable<Qwen35_4B> for Qwen35_4BLlmCallable {
-    async fn generate(&self, prompt_or_tokens: Vec<i32>, passes_in_stop: bool) -> String {
+    async fn generate_text(&self, prompt_or_tokens: Vec<i32>, passes_in_stop: bool) -> String {
         self.shared
             .generate_from_tokens(prompt_or_tokens, passes_in_stop)
             .await

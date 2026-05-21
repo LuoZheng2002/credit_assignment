@@ -27,7 +27,7 @@ pub enum DirectTreeAction {
     },
     NoAvailableBranchPoint, // this is in parallel with BranchFromSegment and BranchFromNode, indicating a failure in finding a valid branching token, in which case the agent should conclude the tree
     CreateAndFocusBranchSegment {
-        content: Vec<SegmentContent>,
+        contents: Vec<SegmentContent>,
     },
     JudgeFocusedSegmentCorrectness {
         correctness_judgment: CorrectnessJudgment,

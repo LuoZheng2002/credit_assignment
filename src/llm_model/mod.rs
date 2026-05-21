@@ -35,7 +35,7 @@ pub trait MyTokenizer<M: LlmModelMarker>: Send + Sync + 'static {
 
 #[async_trait]
 pub trait LlmCallable<M: LlmModelMarker>: Clone + Send + Sync {
-    async fn generate(&self, prompt_or_tokens: Vec<i32>, passes_in_stop: bool) -> String;
+    async fn generate_text(&self, tokens: Vec<i32>, passes_in_stop: bool) -> String;
 
     async fn call_with_prefix_thinking_disabled(
         &self,
@@ -45,13 +45,13 @@ pub trait LlmCallable<M: LlmModelMarker>: Clone + Send + Sync {
         let prompt =
             M::build_prefix_thinking_disabled(&prompt_before_assistant, &prompt_after_assistant);
         let input = M::tokenize(prompt).tokens;
-        self.generate(input, true).await
+        self.generate_text(input, true).await
     }
 
     async fn call_with_prefix_thinking_enabled(&self, prompt_before_assistant: String) -> String {
         let prompt = M::build_prefix_thinking_enabled(&prompt_before_assistant);
         let input = M::tokenize(prompt).tokens;
-        self.generate(input, true).await
+        self.generate_text(input, true).await
     }
 }
 

@@ -27,7 +27,6 @@ use crate::{
 };
 
 pub async fn judge_answer_task(
-    question_id: usize,
     model_answer: String,
     correct_answer: String,
     question: String,
@@ -42,7 +41,7 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
     );
     let gpt_callable = Gpt4oLlmCallable::new(client);
     let evaluation = gpt_callable
-        .generate(Gpt4o::tokenize(prompt).tokens, false)
+        .generate_text(Gpt4o::tokenize(prompt).tokens, false)
         .await
         .trim()
         .to_lowercase();
@@ -50,8 +49,8 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
         "correct" => true,
         "incorrect" => false,
         _ => panic!(
-            "Unexpected evaluation result for question {}: {}",
-            question_id, evaluation
+            "Unexpected evaluation result: {}",
+            evaluation
         ),
     }
 }
@@ -501,7 +500,6 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
             let is_correct = match final_answer {
                 FinalAnswer::ModelProvided(final_answer) => {
                     judge_answer_task(
-                        tree.question_id,
                         final_answer.clone(),
                         tree.reference_answer.clone(),
                         tree.question.clone(),

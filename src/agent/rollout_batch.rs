@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -84,7 +84,7 @@ pub async fn rollout_batch<M: LlmModelMarker + 'static>(
         .collect::<IndexMap<usize, SingleDatasetQuestion>>();
     let total_questions = questions.len();
 
-    let mut tree_completed_ids: HashSet<usize> = HashSet::new();
+    let mut tree_completed_ids: BTreeSet<usize> = BTreeSet::new();
     for (id, question) in &questions {
         if let Some(log) = rollout_store.get(*id).await.unwrap() {
             assert_eq!(
@@ -105,7 +105,7 @@ pub async fn rollout_batch<M: LlmModelMarker + 'static>(
         }
     }
 
-    let mut unfinished_tree_ids: HashSet<usize> = questions.keys().cloned().collect();
+    let mut unfinished_tree_ids: BTreeSet<usize> = questions.keys().cloned().collect();
     unfinished_tree_ids.retain(|id| !tree_completed_ids.contains(id));
 
     log_key_value_pair(
