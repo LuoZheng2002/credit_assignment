@@ -81,7 +81,8 @@ struct Args {
     log_std_max: f64,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     let hyperparameters = EmHyperparameters {
         sigma_ordinary: args.sigma_ordinary,
@@ -114,8 +115,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let mut answers = action_logs.load_completed_trees_sync();
     answers.sort_by_key(|answer| answer.id);
-    let (per_tree_em_fit, _meta) = asset_em_fit.fetch();
-    let per_tree_advantage = asset_advantage.fetch();
+    let (per_tree_em_fit, _meta) = asset_em_fit.fetch().await;
+    let per_tree_advantage = asset_advantage.fetch().await;
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();

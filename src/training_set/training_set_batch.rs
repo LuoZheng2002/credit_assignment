@@ -275,22 +275,23 @@ impl<M: LlmModelMarker> AssetFileTrainingBatch<M> {
 }
 
 // use the same style as AssetFileAdvantageComposition
+#[async_trait::async_trait]
 impl<M: LlmModelMarker> AssetFile for AssetFileTrainingBatch<M> {
     type FileModel = TrainingBatchStore;
 
-    fn fetch(&self) -> Self::FileModel {
-        self.synchronize();
+    async fn fetch(&self) -> Self::FileModel {
+        self.synchronize().await;
         self.batch_store()
     }
 
-    fn synchronize(&self) -> crate::asset_file::Base64Hash {
+    async fn synchronize(&self) -> crate::asset_file::Base64Hash {
         let tokenized_asset = AssetFileTrainingTokenized {
             dataset: self.dataset.clone(),
             num_samples: self.num_samples,
             hyperparameters: self.hyperparameters.clone(),
             _marker: PhantomData::<M>,
         };
-        let tokenized_hash = tokenized_asset.synchronize();
+        let tokenized_hash = tokenized_asset.synchronize().await;
 
         let tracking_content =
             match read_json::<AssetFileTrainingBatchTracking>(self.version_tracking_path()) {
@@ -298,7 +299,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingBatch<M> {
                     if tracking.tokenized_hash != tokenized_hash
                         || tracking.batch_schema_version != Self::BATCH_SCHEMA_VERSION
                     {
-                        let tokenized_store = tokenized_asset.fetch();
+                        let tokenized_store = tokenized_asset.fetch().await;
                         let tokenized_samples = block_on_async(tokenized_store.load_all()).unwrap();
                         let batches =
                             self.generate_batches_from_tokenized_samples(&tokenized_samples);
@@ -309,7 +310,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingBatch<M> {
                     tracking
                 }
                 Err(_) => {
-                    let tokenized_store = tokenized_asset.fetch();
+                    let tokenized_store = tokenized_asset.fetch().await;
                     let tokenized_samples = block_on_async(tokenized_store.load_all()).unwrap();
                     let batches = self.generate_batches_from_tokenized_samples(&tokenized_samples);
                     self.store_batches(&batches);

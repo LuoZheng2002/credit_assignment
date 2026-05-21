@@ -1,4 +1,7 @@
-use research_utility::{asset_file::AssetFile, sqlite_store::SqliteStore};
+use research_utility::{
+    asset_file::{AssetFile, hash_file},
+    sqlite_store::SqliteStore,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::json_line_util::HasId;
@@ -29,13 +32,15 @@ impl AssetFileHybridDataset {
     }
 }
 
+#[async_trait::async_trait]
 impl AssetFile for AssetFileHybridDataset {
     type FileModel = HybridDatasetStore;
-    fn fetch(&self) -> Self::FileModel {
-        todo!()
-    }
-    fn synchronize(&self) -> research_utility::asset_file::Base64Hash {
+    async fn synchronize(&self) -> research_utility::asset_file::Base64Hash {
         // if the file is stale, we should panic instead of synchronizing, since the file should be updated manually by the user
-        todo!()
+        hash_file(Self::file_path()).unwrap()
+    }
+    async fn fetch(&self) -> Self::FileModel {
+        self.synchronize().await;
+        SqliteStore::assume_initialized(Self::file_path()).await
     }
 }

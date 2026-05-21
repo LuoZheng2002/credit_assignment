@@ -173,15 +173,16 @@ impl AssetFileTrainingFormatted {
 }
 
 // use the same style as AssetFileAdvantageComposition
+#[async_trait::async_trait]
 impl AssetFile for AssetFileTrainingFormatted {
     type FileModel = TrainingSampleFormattedStore;
 
-    fn fetch(&self) -> Self::FileModel {
-        self.synchronize();
+    async fn fetch(&self) -> Self::FileModel {
+        self.synchronize().await;
         self.sample_store()
     }
 
-    fn synchronize(&self) -> crate::asset_file::Base64Hash {
+    async fn synchronize(&self) -> crate::asset_file::Base64Hash {
         let action_logs = AssetFileActionLogs {
             model: self.model,
             dataset: self.dataset.clone(),
@@ -195,7 +196,7 @@ impl AssetFile for AssetFileTrainingFormatted {
             num_samples: self.num_samples,
             hyperparameters: self.hyperparameters.clone(),
         };
-        let advantage_hash = asset_file_advantage.synchronize();
+        let advantage_hash = asset_file_advantage.synchronize().await;
 
         let tracking_content =
             match read_json::<AssetFileTrainingFormattedTracking>(self.version_tracking_path()) {
@@ -205,7 +206,7 @@ impl AssetFile for AssetFileTrainingFormatted {
                         || tracking.formatted_schema_version != Self::FORMATTED_SCHEMA_VERSION
                     {
                         let trees = action_logs.load_completed_trees_sync();
-                        let advantage_per_tree = asset_file_advantage.fetch();
+                        let advantage_per_tree = asset_file_advantage.fetch().await;
                         let samples = self.generate_formatted_samples(&trees, &advantage_per_tree);
                         self.store_formatted_samples(&samples);
                         tracking.trees_hash = trees_hash.clone();
@@ -216,7 +217,7 @@ impl AssetFile for AssetFileTrainingFormatted {
                 }
                 Err(_) => {
                     let trees = action_logs.load_completed_trees_sync();
-                    let advantage_per_tree = asset_file_advantage.fetch();
+                    let advantage_per_tree = asset_file_advantage.fetch().await;
                     let samples = self.generate_formatted_samples(&trees, &advantage_per_tree);
                     self.store_formatted_samples(&samples);
                     AssetFileTrainingFormattedTracking {

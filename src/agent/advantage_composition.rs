@@ -400,11 +400,11 @@ impl AssetFileAdvantageComposition {
         output
     }
 }
-
+#[async_trait::async_trait]
 impl AssetFile for AssetFileAdvantageComposition {
     type FileModel = Vec<AdvantageCompositionPerTree>;
 
-    fn synchronize(&self) -> Base64Hash {
+    async fn synchronize(&self) -> Base64Hash {
         let action_logs = AssetFileActionLogs {
             model: self.model.clone(),
             dataset: self.dataset.clone(),
@@ -418,7 +418,7 @@ impl AssetFile for AssetFileAdvantageComposition {
             num_samples: self.num_samples,
             hyperparameters: self.hyperparameters.clone(),
         };
-        let em_fit_hash = asset_file_em_fit.synchronize();
+        let em_fit_hash = asset_file_em_fit.synchronize().await;
 
         let tracking_content = match read_json::<AssetFileAdvantageCompositionTracking>(
             self.version_tracking_path(),
@@ -433,7 +433,7 @@ impl AssetFile for AssetFileAdvantageComposition {
                         self.hyperparameters
                     );
                     let trees = action_logs.load_completed_trees_sync();
-                    let (em_fit_per_tree, _meta) = asset_file_em_fit.fetch();
+                    let (em_fit_per_tree, _meta) = asset_file_em_fit.fetch().await;
                     let advantage = Self::compose_advantage(&trees, &em_fit_per_tree);
                     write_json(self.file_path(), &advantage).unwrap();
                     tracking.trees_hash = trees_hash.clone();
@@ -450,7 +450,7 @@ impl AssetFile for AssetFileAdvantageComposition {
                     self.hyperparameters
                 );
                 let trees = action_logs.load_completed_trees_sync();
-                let (em_fit_per_tree, _meta) = asset_file_em_fit.fetch();
+                let (em_fit_per_tree, _meta) = asset_file_em_fit.fetch().await;
                 let advantage = Self::compose_advantage(&trees, &em_fit_per_tree);
                 write_json(self.file_path(), &advantage).unwrap();
                 AssetFileAdvantageCompositionTracking {
@@ -463,8 +463,8 @@ impl AssetFile for AssetFileAdvantageComposition {
         hash_file(self.file_path()).unwrap()
     }
 
-    fn fetch(&self) -> Self::FileModel {
-        self.synchronize();
+    async fn fetch(&self) -> Self::FileModel {
+        self.synchronize().await;
         read_json(self.file_path()).unwrap()
     }
 }

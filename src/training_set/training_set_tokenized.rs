@@ -308,22 +308,23 @@ impl<M: LlmModelMarker> AssetFileTrainingTokenized<M> {
 }
 
 // use the same style as AssetFileAdvantageComposition
+#[async_trait::async_trait]
 impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTokenized<M> {
     type FileModel = TrainingSampleTokenizedStore<M>;
 
-    fn fetch(&self) -> Self::FileModel {
-        self.synchronize();
+    async fn fetch(&self) -> Self::FileModel {
+        self.synchronize().await;
         self.sample_store()
     }
 
-    fn synchronize(&self) -> crate::asset_file::Base64Hash {
+    async fn synchronize(&self) -> crate::asset_file::Base64Hash {
         let asset_file_training_formatted = AssetFileTrainingFormatted {
             model: Self::model_name(),
             dataset: self.dataset.clone(),
             num_samples: self.num_samples,
             hyperparameters: self.hyperparameters.clone(),
         };
-        let formatted_hash = asset_file_training_formatted.synchronize();
+        let formatted_hash = asset_file_training_formatted.synchronize().await;
 
         let tracking_content =
             match read_json::<AssetFileTrainingTokenizedTracking>(self.version_tracking_path()) {
@@ -331,7 +332,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTokenized<M> {
                     if tracking.formatted_hash != formatted_hash
                         || tracking.tokenized_schema_version != Self::TOKENIZED_SCHEMA_VERSION
                     {
-                        let formatted_store = asset_file_training_formatted.fetch();
+                        let formatted_store = asset_file_training_formatted.fetch().await;
                         let formatted_samples = block_on_async(formatted_store.load_all()).unwrap();
                         let tokenized_samples = self.generate_tokenized_samples(&formatted_samples);
                         self.store_tokenized_samples(&tokenized_samples);
@@ -341,7 +342,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTokenized<M> {
                     tracking
                 }
                 Err(_) => {
-                    let formatted_store = asset_file_training_formatted.fetch();
+                    let formatted_store = asset_file_training_formatted.fetch().await;
                     let formatted_samples = block_on_async(formatted_store.load_all()).unwrap();
                     let tokenized_samples = self.generate_tokenized_samples(&formatted_samples);
                     self.store_tokenized_samples(&tokenized_samples);

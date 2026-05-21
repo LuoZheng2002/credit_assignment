@@ -236,10 +236,11 @@ impl AssetFileEmFit {
     }
 }
 
+#[async_trait::async_trait]
 impl AssetFile for AssetFileEmFit {
     type FileModel = (Vec<EmFitPerTree>, EmFitMeta);
 
-    fn synchronize(&self) -> Base64Hash {
+    async fn synchronize(&self) -> Base64Hash {
         let action_logs = AssetFileActionLogs {
             model: self.model.clone(),
             dataset: self.dataset.clone(),
@@ -287,8 +288,8 @@ impl AssetFile for AssetFileEmFit {
         hash_file(self.per_tree_file_path()).unwrap()
     }
 
-    fn fetch(&self) -> Self::FileModel {
-        self.synchronize();
+    async fn fetch(&self) -> Self::FileModel {
+        self.synchronize().await;
         let per_tree = block_on_async(self.per_tree_store().load_all()).unwrap();
         let meta = read_json(self.meta_file_path()).unwrap();
         (per_tree, meta)

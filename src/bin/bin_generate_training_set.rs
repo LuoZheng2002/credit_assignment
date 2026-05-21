@@ -5,6 +5,7 @@ use credit_assignment::asset_file::AssetFile;
 use credit_assignment::em::em_types::{EmHyperparameters, LogStdClamp};
 use credit_assignment::llm_model::{Gpt4o, Gpt5Mini, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B};
 use credit_assignment::training_set::training_set_batch::AssetFileTrainingBatch;
+use credit_assignment::util::block_on_async;
 
 const DEFAULT_BATCH_SIZE: usize = 4;
 
@@ -80,7 +81,7 @@ fn generate_for_model<M: credit_assignment::llm_model::LlmModelMarker>(
         batch_size: DEFAULT_BATCH_SIZE,
         _marker: PhantomData,
     };
-    training_batch_asset.synchronize();
+    block_on_async(training_batch_asset.synchronize());
     println!(
         "Generated training batches at {}",
         training_batch_asset.file_path()

@@ -52,7 +52,8 @@ impl AssetFileActionLogs {
             dataset: self.dataset.clone(),
             num_samples: self.num_samples,
         }
-        .synchronize();
+        .synchronize()
+        .await;
 
         match read_json::<AssetFileActionLogsTracking>(self.version_tracking_path()) {
             Ok(tracking) => {

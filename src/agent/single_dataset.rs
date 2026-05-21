@@ -36,15 +36,15 @@ impl AssetFileSingleDataset {
         unreachable!("Dataset file does not have a tracking file.")
     }
 }
-
+#[async_trait::async_trait]
 impl AssetFile for AssetFileSingleDataset {
     type FileModel = Vec<SingleDatasetQuestion>;
 
-    fn synchronize(&self) -> Base64Hash {
+    async fn synchronize(&self) -> Base64Hash {
         hash_file(self.file_path()).unwrap()
     }
-    fn fetch(&self) -> Self::FileModel {
-        self.synchronize();
+    async fn fetch(&self) -> Self::FileModel {
+        self.synchronize().await;
         read_json_lines(self.file_path()).unwrap()
     }
 }

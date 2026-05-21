@@ -41,7 +41,8 @@ struct Args {
     log_std_max: f64,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
     let em_fit_file = AssetFileEmFit {
         model: args.model,
@@ -60,7 +61,7 @@ fn main() {
             },
         },
     };
-    let (per_tree, _meta) = em_fit_file.fetch();
+    let (per_tree, _meta) = em_fit_file.fetch().await;
     let written_count = per_tree.len();
     let output_file = em_fit_file.per_tree_file_path();
     let em_fit_meta_file = em_fit_file.meta_file_path();

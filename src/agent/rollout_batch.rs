@@ -75,7 +75,7 @@ pub async fn rollout_batch<M: LlmModelMarker + 'static>(
         dataset: dataset_name.clone(),
         num_samples,
     };
-    let dataset = asset_file_dataset.fetch();
+    let dataset = asset_file_dataset.fetch().await;
     log_key_value_pair("status".to_string(), "Dataset loaded".to_string());
 
     let questions = dataset

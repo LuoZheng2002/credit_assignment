@@ -8,7 +8,7 @@ use crate::{
         direct_tree_action::DirectTreeAction,
         direct_tree_action_log::DirectTreeActionLog,
         direct_tree_status::DirectTreeStatus,
-        hybrid_dataset_entry::HybridDatasetQuestion,
+        hybrid_dataset::HybridDatasetQuestion,
         prompt::{prompt_with_tool_call, prompt_without_tool_call},
     },
     llm_model::{LlmModelMarker, TokenArrayWithLogprob, Top8Candidates},

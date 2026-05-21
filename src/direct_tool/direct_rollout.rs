@@ -4,7 +4,7 @@ use research_utility::{sqlite_store::SqliteStore, worker_message_tx::log_key_val
 use crate::{
     direct_tool::{
         direct_tree::DirectTree, direct_tree_action_log::DirectTreeActionLog,
-        hybrid_dataset_entry::HybridDatasetQuestion,
+        hybrid_dataset::HybridDatasetQuestion,
     },
     llm_model::LlmModelMarker,
 };

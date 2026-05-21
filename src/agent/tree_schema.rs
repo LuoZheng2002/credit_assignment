@@ -109,10 +109,11 @@ impl CompletedTreeStatement {
 pub struct AssetFileTreesTracking {
     pub dataset_hash: Base64Hash,
 }
+#[async_trait::async_trait]
 impl AssetFile for AssetFileTrees {
     type FileModel = CompletedTreeStore;
 
-    fn synchronize(&self) -> Base64Hash {
+    async fn synchronize(&self) -> Base64Hash {
         let action_logs = AssetFileActionLogs {
             model: self.model,
             dataset: self.dataset.clone(),
@@ -121,7 +122,7 @@ impl AssetFile for AssetFileTrees {
         hash_file(action_logs.file_path()).unwrap()
     }
 
-    fn fetch(&self) -> Self::FileModel {
+    async fn fetch(&self) -> Self::FileModel {
         let action_logs = AssetFileActionLogs {
             model: self.model,
             dataset: self.dataset.clone(),
