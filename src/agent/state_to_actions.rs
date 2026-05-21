@@ -48,10 +48,7 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
     match evaluation.as_str() {
         "correct" => true,
         "incorrect" => false,
-        _ => panic!(
-            "Unexpected evaluation result: {}",
-            evaluation
-        ),
+        _ => panic!("Unexpected evaluation result: {}", evaluation),
     }
 }
 

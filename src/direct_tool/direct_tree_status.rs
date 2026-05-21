@@ -5,6 +5,6 @@ pub enum DirectTreeStatus {
     CreatingTrunkTrajectory,
     CreatingOrChoosingBranchPoint,
     CreatingBranchSegment,
-    JudgingBranchSegment,
+    // JudgingBranchSegment,
     Complete,
 }

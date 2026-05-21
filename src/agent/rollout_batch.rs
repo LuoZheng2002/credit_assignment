@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::BTreeSet,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},

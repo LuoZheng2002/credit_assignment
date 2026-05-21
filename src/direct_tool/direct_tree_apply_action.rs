@@ -10,8 +10,9 @@ use crate::{
 impl<M: LlmModelMarker> DirectTree<M> {
     pub fn apply_action(&mut self, action: DirectTreeAction) {
         match action {
-            DirectTreeAction::CreateAndFocusTrunkTrajectory {
+            DirectTreeAction::CreateAndJudgeTrunkTrajectory {
                 content_array: content,
+                correctness_judgment,
             } => {
                 assert!(matches!(
                     self.status,
@@ -29,10 +30,21 @@ impl<M: LlmModelMarker> DirectTree<M> {
                         parent_id: None,
                     },
                 );
-                self.root_segment_ids.push(segment_id);
-                self.focused_parent_segment_id = Some(segment_id);
+                let root_id = self.root_segment_id.expect("Root id must exist");
+                let root_segment = self
+                    .segments
+                    .get_mut(&root_id)
+                    .expect("Root segment must exist");
+                root_segment.child_ids.push(segment_id);
+                self.focused_parent_segment_id = None; // focused_parent_segment_id is only set when a branching point is determined
+                // register the judgment for this trunk
+                assert!(!self.leaf_segment_judgments.contains_key(&segment_id));
+                self.leaf_segment_judgments
+                    .insert(segment_id, correctness_judgment);
                 // update status
-                if self.root_segment_ids.len() >= self.num_trunks {
+                assert!(self.max_num_trunks <= self.max_num_total_trajectories);
+                self.current_num_trunks += 1;
+                if self.current_num_trunks >= self.max_num_trunks {
                     self.status = DirectTreeStatus::CreatingOrChoosingBranchPoint;
                 } else {
                     self.status = DirectTreeStatus::CreatingTrunkTrajectory;
@@ -59,42 +71,43 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     target_segment.content[..position.content_index].to_vec();
                 let mut second_half_content_array =
                     target_segment.content[position.content_index + 1..].to_vec();
-                let SegmentContent::ReasoningOrToolCall(target_content_token_array) =
-                    target_content
+                let SegmentContent::ReasoningOrToolCall {
+                    tokens,
+                    complete: target_is_complete,
+                } = target_content
                 else {
                     panic!("Branch position must point to a ReasoningOrToolCall content");
                 };
                 assert!(
-                    position.offset > 0
-                        && position.offset < target_content_token_array.tokens.len(),
+                    position.offset > 0 && position.offset < tokens.tokens.len(),
                     "Branch position offset must be > 0 and < the length of the content tokens"
                 );
-                let first_half_tokens =
-                    target_content_token_array.tokens[..position.offset].to_vec();
-                let first_half_logprobs =
-                    target_content_token_array.logprobs[..position.offset].to_vec();
-                let second_half_tokens =
-                    target_content_token_array.tokens[position.offset..].to_vec();
-                let second_half_logprobs =
-                    target_content_token_array.logprobs[position.offset..].to_vec();
-                first_half_content_array.push(SegmentContent::ReasoningOrToolCall(
-                    TokenArrayWithLogprob {
+                let first_half_tokens = tokens.tokens[..position.offset].to_vec();
+                let first_half_logprobs = tokens.logprobs[..position.offset].to_vec();
+                let second_half_tokens = tokens.tokens[position.offset..].to_vec();
+                let second_half_logprobs = tokens.logprobs[position.offset..].to_vec();
+                first_half_content_array.push(SegmentContent::ReasoningOrToolCall {
+                    tokens: TokenArrayWithLogprob {
                         tokens: first_half_tokens.clone(),
                         decoded_string: <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(
                             &first_half_tokens,
                         ),
                         logprobs: first_half_logprobs,
                     },
-                ));
+                    complete: false, // the first half is always incomplete
+                });
                 second_half_content_array.insert(
                     0,
-                    SegmentContent::ReasoningOrToolCall(TokenArrayWithLogprob {
-                        tokens: second_half_tokens.clone(),
-                        decoded_string: <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(
-                            &second_half_tokens,
-                        ),
-                        logprobs: second_half_logprobs,
-                    }),
+                    SegmentContent::ReasoningOrToolCall {
+                        tokens: TokenArrayWithLogprob {
+                            tokens: second_half_tokens.clone(),
+                            decoded_string: <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(
+                                &second_half_tokens,
+                            ),
+                            logprobs: second_half_logprobs,
+                        },
+                        complete: *target_is_complete, // the second half is complete if and only if the original content is complete
+                    },
                 );
                 let first_half_segment = Segment {
                     segment_id: new_first_half_id,
@@ -135,16 +148,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     child_segment.parent_id = Some(new_second_half_id);
                 }
                 // always check root
-                for root_id in &mut self.root_segment_ids {
-                    if *root_id == position.segment_id {
-                        assert_eq!(
-                            target_segment.parent_id, None,
-                            "Root segment must not have a parent"
-                        );
-                        *root_id = new_first_half_id;
-                        break;
-                    }
-                }
+                assert!(position.segment_id != self.root_segment_id.expect("Root id must exist"));
                 // always checks leaf
                 if let Some(judgment) = self.leaf_segment_judgments.remove(&position.segment_id) {
                     self.leaf_segment_judgments
@@ -190,7 +194,10 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 self.status = DirectTreeStatus::Complete;
                 self.completed = true;
             }
-            DirectTreeAction::CreateAndFocusBranchSegment { contents: content } => {
+            DirectTreeAction::CreateAndJudgeBranchSegment {
+                contents,
+                correctness_judgment,
+            } => {
                 assert!(matches!(
                     self.status,
                     DirectTreeStatus::CreatingBranchSegment
@@ -204,7 +211,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 self.next_segment_id += 1;
                 let new_segment = Segment {
                     segment_id: new_segment_id,
-                    content,
+                    content: contents,
                     child_ids: vec![],
                     parent_id: Some(parent_id),
                     llm_temperature: self.next_segment_temperature,
@@ -215,27 +222,9 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 }
                 self.focused_parent_segment_id = Some(new_segment_id);
                 // update status
-                self.status = DirectTreeStatus::JudgingBranchSegment;
-            }
-            DirectTreeAction::JudgeFocusedSegmentCorrectness {
-                correctness_judgment,
-            } => {
-                assert!(matches!(
-                    self.status,
-                    DirectTreeStatus::JudgingBranchSegment
-                ));
-                let Some(focused_segment_id) = self.focused_parent_segment_id else {
-                    panic!("Must have a focused segment to judge trajectory correctness");
-                };
-                assert!(
-                    !self
-                        .leaf_segment_judgments
-                        .contains_key(&focused_segment_id),
-                    "Focused segment must be a leaf segment that has not been judged before"
-                );
+                assert!(!self.leaf_segment_judgments.contains_key(&new_segment_id));
                 self.leaf_segment_judgments
-                    .insert(focused_segment_id, correctness_judgment);
-                // update status
+                    .insert(new_segment_id, correctness_judgment);
                 if self.segments.len() >= self.max_num_total_trajectories {
                     self.status = DirectTreeStatus::Complete;
                     self.completed = true;

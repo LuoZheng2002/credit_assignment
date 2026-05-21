@@ -1,4 +1,3 @@
-use rand::rngs::StdRng;
 use reqwest::Client;
 use research_utility::{sqlite_store::SqliteStore, worker_message_tx::log_key_value_pair};
 
@@ -17,7 +16,7 @@ pub async fn rollout<M: LlmModelMarker>(
     use_tool: bool,
     llm_callable: M::Callable,
     client: Client,
-    rng: &mut StdRng,
+    // rng: &mut StdRng,
 ) {
     let mut action_log = rollout_store
         .get(question.flat_id)
@@ -42,7 +41,7 @@ pub async fn rollout<M: LlmModelMarker>(
             break;
         }
         let new_actions = tree
-            .produce_actions_from_direct_tree(&llm_callable, client.clone(), rng)
+            .produce_actions_from_direct_tree(&llm_callable, client.clone())
             .await;
         for action in new_actions {
             action_log.actions.push(action.clone());
@@ -52,5 +51,8 @@ pub async fn rollout<M: LlmModelMarker>(
             .await
             .unwrap();
     }
-    log_key_value_pair("info".to_string(), format!("Rollout {} finished", question.flat_id));
+    log_key_value_pair(
+        "info".to_string(),
+        format!("Rollout {} finished", question.flat_id),
+    );
 }

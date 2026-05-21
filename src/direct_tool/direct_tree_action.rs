@@ -14,8 +14,9 @@ pub struct TokenPositionInTree {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum DirectTreeAction {
-    CreateAndFocusTrunkTrajectory {
+    CreateAndJudgeTrunkTrajectory {
         content_array: Vec<SegmentContent>,
+        correctness_judgment: CorrectnessJudgment,
     },
     BranchFromSegment {
         position: TokenPositionInTree, // at least one of content_index and offset must be > 0, indicating the branching happens in the middle of a segment
@@ -26,10 +27,11 @@ pub enum DirectTreeAction {
         new_branch_start_token: i32,
     },
     NoAvailableBranchPoint, // this is in parallel with BranchFromSegment and BranchFromNode, indicating a failure in finding a valid branching token, in which case the agent should conclude the tree
-    CreateAndFocusBranchSegment {
+    CreateAndJudgeBranchSegment {
         contents: Vec<SegmentContent>,
-    },
-    JudgeFocusedSegmentCorrectness {
         correctness_judgment: CorrectnessJudgment,
     },
+    // JudgeFocusedSegmentCorrectness {
+    //     correctness_judgment: CorrectnessJudgment,
+    // },
 }

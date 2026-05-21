@@ -1,24 +1,21 @@
 use std::collections::BTreeMap;
 
-use rand::rngs::StdRng;
 use reqwest::Client;
 
+use crate::direct_tool::direct_trajectory::{DirectTrajectory, TrajectoryContent};
+use crate::llm_model::MyTokenizer;
 use crate::{
     agent::{
-        state_to_actions::judge_answer_task, trajectory_action_types::FinalAnswer,
-        tree::CorrectnessJudgment,
+        state_to_actions::judge_answer_task, tool_call_execution::execute_planner_tool_call,
+        trajectory_action_types::FinalAnswer, tree::CorrectnessJudgment,
     },
     direct_tool::{
-        direct_tree::{DirectTree, Segment, SegmentContent, SegmentId},
+        direct_tree::{DirectTree, SegmentContent, SegmentId},
         direct_tree_action::{DirectTreeAction, TokenPositionInTree},
         direct_tree_advantage::Posterior,
         direct_tree_status::DirectTreeStatus,
     },
-    llm_model::{
-        LlmCallable, LlmModelMarker, TokenArrayWithLogprob, TokenLogprobCandidate, Top8Candidates,
-    },
-    token_array::TokenArray,
-    util::extract_boxed_content,
+    llm_model::{LlmCallable, LlmModelMarker, TokenLogprobCandidate, Top8Candidates},
 };
 
 #[derive(Debug)]
@@ -116,37 +113,45 @@ impl<M: LlmModelMarker> DirectTree<M> {
         &self,
         llm_callable: &M::Callable,
         client: Client,
-        rng: &mut StdRng,
+        // rng: &mut StdRng,
     ) -> Vec<DirectTreeAction> {
         match self.status {
             DirectTreeStatus::CreatingTrunkTrajectory => {
-                assert!(self.root_segment_ids.len() < self.num_trunks);
-                let content_array = generate_continuing_segment_contents::<M>(
-                    Vec::new(),
+                assert!(self.current_num_trunks < self.max_num_trunks);
+                let root_id = self
+                    .root_segment_id
+                    .expect("Root segment id must exist when creating trunk trajectory");
+                let (content_array, final_answer) = self
+                    .generate_continuing_segment_contents(root_id, llm_callable)
+                    .await;
+                let correctness_judgment = judge_final_answer(
+                    &final_answer,
+                    &self.question.correct_answer,
+                    &self.question.question,
                     client,
-                    llm_callable,
-                    rng,
                 )
                 .await;
-                vec![DirectTreeAction::CreateAndFocusTrunkTrajectory { content_array }]
+                vec![DirectTreeAction::CreateAndJudgeTrunkTrajectory {
+                    content_array,
+                    correctness_judgment,
+                }]
             }
             DirectTreeStatus::CreatingOrChoosingBranchPoint => {
-                assert!(!self.root_segment_ids.is_empty());
+                assert!(
+                    self.current_num_trunks == self.max_num_trunks,
+                    "Current number of trunks must be equal to the max number of trunks before creating branch point"
+                );
                 assert!(!self.leaf_segment_judgments.is_empty());
 
                 let posteriors = self.calculate_segment_posteriors();
                 let segment_uncertainty_scores =
                     self.posteriors_to_segment_uncertainty_scores(&posteriors);
                 let token_views_for_branching = self.token_views_for_branching();
-                // now we consider the branching position at the token level granularity
-                // each segment can have one node branching candidate and multiple segment branching candidates
-                // actually the asymptotic complexity is the same
 
                 let mut best_token_position: Option<TokenPositionInTree> = None;
                 let mut best_token_id: Option<i32> = None;
                 let mut best_branching_score = f32::NEG_INFINITY;
                 let mut best_token_is_node: Option<bool> = None;
-                // we also need to pass in the token id for branching
 
                 for token_view in token_views_for_branching.iter() {
                     let segment_uncertainty_score = segment_uncertainty_scores
@@ -248,58 +253,28 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 }
             }
             DirectTreeStatus::CreatingBranchSegment => {
-                // we are currently creating a branch segment, so the action should be to create and focus on a new branch segment under the current branch point
-                // assert!(self.focused_parent_segment_id.is_some());
-                let Some(focused_parent_segment_id) = self.focused_parent_segment_id else {
-                    panic!("Focused parent segment id must exist when creating branch segment");
-                };
-                let current_contents =
-                    self.get_previous_contents_from_parent_id(focused_parent_segment_id);
-                let new_contents = generate_continuing_segment_contents::<M>(
-                    current_contents,
+                let focused_parent_segment_id = self
+                    .focused_parent_segment_id
+                    .expect("Focused parent segment id must exist when creating branch segment");
+                let (new_contents, final_answer) = self
+                    .generate_continuing_segment_contents(focused_parent_segment_id, llm_callable)
+                    .await;
+                let correctness_judgment = judge_final_answer(
+                    &final_answer,
+                    &self.question.correct_answer,
+                    &self.question.question,
                     client,
-                    llm_callable,
-                    rng,
                 )
                 .await;
-                let action = DirectTreeAction::CreateAndFocusBranchSegment {
+                let action = DirectTreeAction::CreateAndJudgeBranchSegment {
                     contents: new_contents,
-                };
-                vec![action]
-            }
-            DirectTreeStatus::JudgingBranchSegment => {
-                // we are currently judging a branch segment, so the action should be to judge the correctness of the focused segment
-                let Some(focused_parent_segment_id) = self.focused_parent_segment_id else {
-                    panic!("Focused parent segment id must exist when judging branch segment");
-                };
-                let target_segment = self
-                    .segments
-                    .get(&focused_parent_segment_id)
-                    .expect("Focused parent segment id must exist in segments");
-                let answer = get_answer_from_segment(target_segment)
-                    .expect("The final branch should have a final answer in one of its segments");
-                let is_correct = match &answer {
-                    FinalAnswer::ModelProvided(model_answer) => {
-                        judge_answer_task(
-                            model_answer.clone(),
-                            self.question.correct_answer.clone(),
-                            self.question.question.clone(),
-                            client.clone(),
-                        )
-                        .await
-                    }
-                    FinalAnswer::Failure(_error_message) => false,
-                };
-                let correctness_judgment = CorrectnessJudgment {
-                    model_answer: answer,
-                    correct_answer: self.question.correct_answer.clone(),
-                    is_correct,
-                };
-                let action = DirectTreeAction::JudgeFocusedSegmentCorrectness {
                     correctness_judgment,
                 };
                 vec![action]
             }
+            // DirectTreeStatus::JudgingBranchSegment => {
+            //     //
+            // }
             DirectTreeStatus::Complete => {
                 // the tree is complete, no more actions can be taken
                 unreachable!()
@@ -429,37 +404,29 @@ impl<M: LlmModelMarker> DirectTree<M> {
             .collect();
         uncertainty_scores
     }
-    fn get_previous_contents_from_parent_id(&self, parent_id: SegmentId) -> Vec<SegmentContent> {
-        let mut contents: Vec<Vec<SegmentContent>> = Vec::new();
-        let mut current_parent_id = Some(parent_id);
-        while let Some(pid) = current_parent_id {
-            let parent_segment = self
-                .segments
-                .get(&pid)
-                .expect("Parent segment id must exist in segments");
-            contents.push(parent_segment.content.clone());
-            current_parent_id = parent_segment.parent_id;
-        }
-        contents.reverse(); // reverse only the order of segments, but keep the content order within each segment
-        contents.into_iter().flatten().collect()
-    }
-}
-
-// #[derive(Debug, Clone)]
-// pub enum DirectFinalAnswer {
-//     ModelProvided(String),
-//     Failure(String),
-// }
-
-fn get_answer_from_segment(segment: &Segment) -> Option<FinalAnswer> {
-    for content in &segment.content {
-        if let SegmentContent::ReasoningOrToolCall(tokens) = content {
-            if let Some(boxed_content) = extract_boxed_content(&tokens.decoded_string) {
-                return Some(FinalAnswer::ModelProvided(boxed_content));
+    async fn generate_continuing_segment_contents(
+        &self,
+        // mut current_contents: Vec<SegmentContent>,
+        target_segment_id: SegmentId,
+        // client: Client,
+        llm_callable: &M::Callable,
+        // rng: &mut StdRng,
+    ) -> (Vec<SegmentContent>, FinalAnswer) {
+        let mut continuing_contents = Vec::new();
+        loop {
+            let trajectory = self.get_trajectory(target_segment_id, &continuing_contents);
+            let next_content = generate_next_segment_content::<M>(
+                &trajectory,
+                llm_callable,
+                // rng,
+            )
+            .await;
+            continuing_contents.push(next_content.clone());
+            if let Some(answer) = trajectory.try_get_answer() {
+                return (continuing_contents, answer);
             }
         }
     }
-    None
 }
 
 #[derive(Debug, Clone)]
@@ -474,69 +441,105 @@ pub struct NodeCandidate {
     pub score: f32,
 }
 
-pub enum SegmentContentResult {
-    Continue(SegmentContent),
-    Stop(SegmentContent),
-    Error(String),
-}
+// pub enum SegmentContentResult {
+//     Continue(SegmentContent),
+//     Stop(SegmentContent),
+// }
 
 // when can a trajectory end?
 // 1. found answer in \boxed{}
 // 2. context length exceeded
 // 3. other scenarios that require termination
-async fn generate_next_segment_content<M: LlmModelMarker>(
-    current_content: &[SegmentContent],
-    client: Client,
-    llm_callable: &M::Callable,
-    rng: &mut StdRng,
-) -> SegmentContentResult {
+
+fn direct_trajectory_to_prompt_tokens(trajectory: &DirectTrajectory) -> Vec<i32> {
     let mut prompt_tokens: Vec<i32> = Vec::new();
-    for content in current_content.iter() {
+    for content in trajectory.trajectory_contents.iter() {
         let tokens = match content {
-            SegmentContent::Prompt(tokens) => &tokens.tokens,
-            SegmentContent::ReasoningOrToolCall(tokens) => &tokens.tokens,
-            SegmentContent::ToolResponse(tokens) => &tokens.tokens,
+            TrajectoryContent::Prompt(tokens) => &tokens.tokens,
+            TrajectoryContent::ReasoningOrToolCallIncomplete(tokens) => &tokens.tokens,
+            TrajectoryContent::ReasoningOrToolCallComplete(tokens) => &tokens.tokens,
+            TrajectoryContent::ToolResponse(tokens) => &tokens.tokens,
         };
         prompt_tokens.extend_from_slice(tokens);
     }
-    let response = llm_callable.generate_text(prompt_tokens, true).await;
-    // this function generates the content for the next segment to be added to the tree, based on the current tree structure and focused segment
-    todo!()
+    prompt_tokens
 }
 
-async fn generate_continuing_segment_contents<M: LlmModelMarker>(
-    mut current_contents: Vec<SegmentContent>,
-    client: Client,
+async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
+    // current_content: &[SegmentContent],
+    trajectory: &DirectTrajectory,
     llm_callable: &M::Callable,
-    rng: &mut StdRng,
-) -> Vec<SegmentContent> {
-    let mut continuing_contents = Vec::new();
-    loop {
-        let next_content_result = generate_next_segment_content::<M>(
-            &current_contents,
-            client.clone(),
-            llm_callable,
-            rng,
-        )
+) -> SegmentContent {
+    let prompt_tokens = direct_trajectory_to_prompt_tokens(trajectory);
+    let response = llm_callable
+        .generate_tokens_with_logprobs(prompt_tokens.clone(), true)
         .await;
-        match next_content_result {
-            SegmentContentResult::Continue(next_content) => {
-                current_contents.push(next_content.clone());
-                continuing_contents.push(next_content);
-            }
-            SegmentContentResult::Stop(next_content) => {
-                current_contents.push(next_content.clone());
-                continuing_contents.push(next_content);
-                break;
-            }
-            SegmentContentResult::Error(error_message) => {
-                println!(
-                    "Error generating segment content: {}, stopping generation for this trajectory",
-                    error_message
+    if response.tokens.is_empty() || response.decoded_string.trim().is_empty() {
+        panic!(
+            "LLM returned empty response. Decoded string: '{}', tokens: {:?}",
+            response.decoded_string, response.tokens
+        );
+    }
+    SegmentContent::ReasoningOrToolCall {
+        tokens: response,
+        complete: true,
+    }
+}
+
+async fn generate_next_segment_content<M: LlmModelMarker>(
+    trajectory: &DirectTrajectory,
+    // current_content: &[SegmentContent],
+    // client: Client,
+    llm_callable: &M::Callable,
+    // rng: &mut StdRng,
+) -> SegmentContent {
+    let last_trajectory_content = trajectory
+        .trajectory_contents
+        .last()
+        .expect("Current content must not be empty");
+    match last_trajectory_content {
+        TrajectoryContent::Prompt(_)
+        | TrajectoryContent::ToolResponse(_)
+        | TrajectoryContent::ReasoningOrToolCallIncomplete(_) => {
+            let new_content =
+                generate_reasoning_or_tool_call_content::<M>(trajectory, llm_callable).await;
+            new_content
+        }
+        TrajectoryContent::ReasoningOrToolCallComplete(_) => {
+            let Some(tool_call) = trajectory.try_get_last_content_tool_call() else {
+                panic!(
+                    "tool call should not be none when the last content is a reasoning or tool call content when generating next segment content"
                 );
-                break;
-            }
+            };
+            let tool_response = execute_planner_tool_call(&tool_call).await;
+            let tool_response_raw = tool_response.to_raw_content();
+            let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
+            SegmentContent::ToolResponse(response_tokenized)
         }
     }
-    continuing_contents
+}
+
+async fn judge_final_answer(
+    final_answer: &FinalAnswer,
+    correct_answer: &str,
+    question: &str,
+    client: Client,
+) -> CorrectnessJudgment {
+    let is_correct = match final_answer {
+        FinalAnswer::ModelProvided(model_answer) => {
+            judge_answer_task(
+                model_answer.clone(),
+                correct_answer.to_string(),
+                question.to_string(),
+                client,
+            )
+            .await
+        }
+        FinalAnswer::Failure(_error_message) => false,
+    };
+    CorrectnessJudgment {
+        model_answer: final_answer.clone(),
+        correct_answer: correct_answer.to_string(),
+        is_correct,
+    }
 }

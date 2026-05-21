@@ -1,10 +1,13 @@
 use reqwest::Client;
+use serde_json::Value;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 use tokenizers::Tokenizer;
 use tokio::sync::Semaphore;
+
+use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate};
 
 pub const CONTEXT_LENGTH_EXCEEDED_RESPONSE: &str = "<error>QWEN_CONTEXT_LENGTH_EXCEEDED</error>";
 
@@ -106,9 +109,147 @@ impl SharedQwenLlmCallable {
         content
     }
 
+    pub(crate) async fn generate_tokens_with_logprobs_from_tokens(
+        &self,
+        tokens: Vec<i32>,
+        passes_in_stop: bool,
+    ) -> TokenArrayWithLogprob {
+        let endpoint = self.endpoint.clone();
+        let _permit = endpoint
+            .request_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+
+        let mut body = serde_json::json!({
+            "model": self.api_name,
+            "prompt_token_ids": tokens,
+            "max_tokens": 2048,
+            "include_stop_str_in_output": true,
+            "logprobs": 8,
+            "return_tokens_as_token_ids": true,
+        });
+        if passes_in_stop {
+            body["stop"] = serde_json::json!(["</tool_wait>"]);
+        }
+
+        let json: Value = self
+            .post_json(&endpoint.vllm_raw_completions_url(), body)
+            .await
+            .json()
+            .await
+            .unwrap();
+        if let Some(error_message) = json["error"]["message"].as_str() {
+            panic!(
+                "Qwen completion with logprobs failed on endpoint {} (port {}): {}. Full response: {:?}",
+                endpoint.id, endpoint.vllm_port, error_message, json
+            );
+        }
+
+        let choice = &json["choices"][0];
+        let decoded_string = choice["text"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Qwen completion response missing choices[0].text on endpoint {} (port {}): {:?}",
+                    endpoint.id, endpoint.vllm_port, json
+                )
+            })
+            .to_string();
+
+        let generated_tokens: Vec<i32> = choice["token_ids"]
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Qwen completion response missing choices[0].token_ids on endpoint {} (port {}): {:?}",
+                    endpoint.id, endpoint.vllm_port, json
+                )
+            })
+            .iter()
+            .map(|token| {
+                i32::try_from(
+                    token
+                        .as_i64()
+                        .unwrap_or_else(|| panic!("token id must be i64-compatible: {token:?}")),
+                )
+                .expect("token id must fit in i32")
+            })
+            .collect();
+
+        let token_logprobs = choice["logprobs"]["token_logprobs"].as_array();
+        let top_logprobs = choice["logprobs"]["top_logprobs"].as_array();
+
+        let mut aligned_logprobs = Vec::with_capacity(generated_tokens.len());
+        for (idx, generated_token_id) in generated_tokens.iter().copied().enumerate() {
+            let generated_logprob = token_logprobs
+                .and_then(|vals| vals.get(idx))
+                .and_then(Value::as_f64)
+                .map(|value| value as f32)
+                .unwrap_or(f32::NEG_INFINITY);
+
+            let mut candidates = top_logprobs
+                .and_then(|vals| vals.get(idx))
+                .map(parse_vllm_candidates)
+                .unwrap_or_default();
+
+            if !candidates
+                .iter()
+                .any(|candidate| candidate.token_id == generated_token_id)
+            {
+                candidates.push(TokenLogprobCandidate {
+                    token_id: generated_token_id,
+                    logprob: generated_logprob,
+                });
+            }
+
+            candidates.sort_by(|a, b| b.logprob.total_cmp(&a.logprob));
+            candidates.dedup_by(|a, b| a.token_id == b.token_id);
+
+            let mut top8 = [TokenLogprobCandidate {
+                token_id: generated_token_id,
+                logprob: f32::NEG_INFINITY,
+            }; 8];
+
+            for (slot, candidate) in candidates.into_iter().take(8).enumerate() {
+                top8[slot] = candidate;
+            }
+            aligned_logprobs.push(top8);
+        }
+
+        endpoint.completed_requests.fetch_add(1, Ordering::SeqCst);
+        TokenArrayWithLogprob {
+            tokens: generated_tokens,
+            decoded_string,
+            logprobs: aligned_logprobs,
+        }
+    }
+
     async fn post_json(&self, url: &str, body: serde_json::Value) -> reqwest::Response {
         self.client.post(url).json(&body).send().await.unwrap()
     }
+}
+
+fn parse_vllm_candidates(value: &Value) -> Vec<TokenLogprobCandidate> {
+    if let Some(array) = value.as_array() {
+        return array
+            .iter()
+            .filter_map(|entry| {
+                let map = entry.as_object()?;
+                let token_id = map.get("token_id")?.as_i64()?;
+                let logprob = map.get("logprob")?.as_f64()? as f32;
+                Some(TokenLogprobCandidate {
+                    token_id: i32::try_from(token_id).ok()?,
+                    logprob,
+                })
+            })
+            .collect();
+    }
+
+    panic!(
+        "Unexpected vLLM top_logprobs shape; expected array entries with token_id/logprob. Got: {:?}",
+        value
+    )
 }
 
 #[derive(Debug)]

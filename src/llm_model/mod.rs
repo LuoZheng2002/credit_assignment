@@ -37,6 +37,14 @@ pub trait MyTokenizer<M: LlmModelMarker>: Send + Sync + 'static {
 pub trait LlmCallable<M: LlmModelMarker>: Clone + Send + Sync {
     async fn generate_text(&self, tokens: Vec<i32>, passes_in_stop: bool) -> String;
 
+    async fn generate_tokens_with_logprobs(
+        &self,
+        _tokens: Vec<i32>,
+        _passes_in_stop: bool,
+    ) -> TokenArrayWithLogprob {
+        panic!("generate_tokens_with_logprobs is only implemented for vLLM-backed callables")
+    }
+
     async fn call_with_prefix_thinking_disabled(
         &self,
         prompt_before_assistant: String,

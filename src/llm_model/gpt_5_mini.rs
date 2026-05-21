@@ -1,9 +1,13 @@
 use async_trait::async_trait;
 use reqwest::Client;
+use serde_json::Value;
 use std::sync::LazyLock;
 use tiktoken_rs::{CoreBPE, bpe_for_model};
 
-use super::{LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArray};
+use super::{
+    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArray,
+    TokenArrayWithLogprob, TokenLogprobCandidate,
+};
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
 
@@ -68,6 +72,126 @@ impl LlmCallable<Gpt5Mini> for Gpt5MiniLlmCallable {
             .as_str()
             .unwrap_or_else(|| panic!("LLM response is invalid: {:?}", json))
             .to_string()
+    }
+
+    async fn generate_tokens_with_logprobs(
+        &self,
+        prompt_or_tokens: Vec<i32>,
+        passes_in_stop: bool,
+    ) -> TokenArrayWithLogprob {
+        let prompt = <Gpt5Mini as LlmModelMarker>::Tokenizer::decode_i32_ids(&prompt_or_tokens);
+        let body = if passes_in_stop {
+            serde_json::json!({
+                "model": Gpt5Mini::API_NAME,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_completion_tokens": 2048,
+                "stop": ["</tool_wait>"],
+                "logprobs": true,
+                "top_logprobs": 8,
+            })
+        } else {
+            serde_json::json!({
+                "model": Gpt5Mini::API_NAME,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_completion_tokens": 2048,
+                "logprobs": true,
+                "top_logprobs": 8,
+            })
+        };
+
+        let response = self
+            .post_json(OPENAI_CHAT_COMPLETIONS_URL, body)
+            .await
+            .bytes()
+            .await
+            .unwrap();
+        let Ok(json) = serde_json::from_slice::<Value>(&response) else {
+            panic!(
+                "Failed to parse LLM response as JSON. Response text: {:?}",
+                String::from_utf8_lossy(&response)
+            );
+        };
+
+        let content_entries = json["choices"][0]["logprobs"]["content"]
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!("LLM response is invalid (missing logprobs.content): {json:?}")
+            });
+
+        let mut tokens = Vec::with_capacity(content_entries.len());
+        let mut decoded_string = String::new();
+        let mut logprobs = Vec::with_capacity(content_entries.len());
+
+        for entry in content_entries {
+            let sampled_token = entry["token"]
+                .as_str()
+                .unwrap_or_else(|| panic!("LLM logprob entry missing token: {entry:?}"));
+            decoded_string.push_str(sampled_token);
+
+            let sampled_token_id = token_to_single_id::<Gpt5Mini>(sampled_token);
+            tokens.push(sampled_token_id);
+            let sampled_logprob = entry["logprob"].as_f64().unwrap_or(f64::NEG_INFINITY) as f32;
+
+            let mut candidates: Vec<TokenLogprobCandidate> = entry["top_logprobs"]
+                .as_array()
+                .map(|top| {
+                    top.iter()
+                        .filter_map(|candidate| {
+                            let token = candidate["token"].as_str()?;
+                            let token_id = token_to_single_id::<Gpt5Mini>(token);
+                            let logprob =
+                                candidate["logprob"].as_f64().unwrap_or(f64::NEG_INFINITY) as f32;
+                            Some(TokenLogprobCandidate { token_id, logprob })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            if !candidates.iter().any(|c| c.token_id == sampled_token_id) {
+                candidates.push(TokenLogprobCandidate {
+                    token_id: sampled_token_id,
+                    logprob: sampled_logprob,
+                });
+            }
+
+            candidates.sort_by(|a, b| b.logprob.total_cmp(&a.logprob));
+            candidates.dedup_by(|a, b| a.token_id == b.token_id);
+
+            let mut top8 = [TokenLogprobCandidate {
+                token_id: sampled_token_id,
+                logprob: f32::NEG_INFINITY,
+            }; 8];
+            for (slot, candidate) in candidates.into_iter().take(8).enumerate() {
+                top8[slot] = candidate;
+            }
+            logprobs.push(top8);
+        }
+
+        TokenArrayWithLogprob {
+            tokens,
+            decoded_string,
+            logprobs,
+        }
+    }
+}
+
+fn token_to_single_id<M: LlmModelMarker>(token: &str) -> i32 {
+    let token_id = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        <M as LlmModelMarker>::Tokenizer::token_to_id(token)
+    }));
+    if let Ok(token_id) = token_id {
+        return token_id;
+    }
+
+    let encoded = <M as LlmModelMarker>::Tokenizer::encode_to_i32_ids(token);
+    if encoded.len() == 1 {
+        encoded[0]
+    } else {
+        panic!(
+            "OpenAI token {:?} does not map to a single tokenizer id for {}",
+            token,
+            M::API_NAME
+        );
     }
 }
 

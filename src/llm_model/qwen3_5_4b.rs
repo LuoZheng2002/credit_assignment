@@ -8,7 +8,7 @@ use super::qwen_shared::{
 };
 use super::{
     LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArray,
-    build_simple_qwen_chatml_prefix,
+    TokenArrayWithLogprob, build_simple_qwen_chatml_prefix,
 };
 
 static QWEN35_4B_TOKENIZER: LazyLock<Tokenizer> =
@@ -39,6 +39,16 @@ impl LlmCallable<Qwen35_4B> for Qwen35_4BLlmCallable {
     async fn generate_text(&self, prompt_or_tokens: Vec<i32>, passes_in_stop: bool) -> String {
         self.shared
             .generate_from_tokens(prompt_or_tokens, passes_in_stop)
+            .await
+    }
+
+    async fn generate_tokens_with_logprobs(
+        &self,
+        prompt_or_tokens: Vec<i32>,
+        passes_in_stop: bool,
+    ) -> TokenArrayWithLogprob {
+        self.shared
+            .generate_tokens_with_logprobs_from_tokens(prompt_or_tokens, passes_in_stop)
             .await
     }
 }

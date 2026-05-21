@@ -10,7 +10,9 @@ use crate::token_array::TokenArray;
 use super::qwen_shared::{
     SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
 };
-use super::{LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer};
+use super::{
+    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
+};
 
 static QWEN25_TOKENIZER: LazyLock<Tokenizer> =
     LazyLock::new(|| Tokenizer::from_pretrained(Qwen25::API_NAME, None).unwrap());
@@ -67,6 +69,16 @@ impl LlmCallable<Qwen25> for Qwen25LlmCallable {
     async fn generate_text(&self, prompt_or_tokens: Vec<i32>, passes_in_stop: bool) -> String {
         self.shared
             .generate_from_tokens(prompt_or_tokens, passes_in_stop)
+            .await
+    }
+
+    async fn generate_tokens_with_logprobs(
+        &self,
+        prompt_or_tokens: Vec<i32>,
+        passes_in_stop: bool,
+    ) -> TokenArrayWithLogprob {
+        self.shared
+            .generate_tokens_with_logprobs_from_tokens(prompt_or_tokens, passes_in_stop)
             .await
     }
 }

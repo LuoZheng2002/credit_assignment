@@ -5,12 +5,17 @@ use serde::{Deserialize, Serialize};
 use crate::{
     agent::tree::CorrectnessJudgment,
     direct_tool::{
-        direct_tree_action::DirectTreeAction, direct_tree_action_log::DirectTreeActionLog,
-        direct_tree_status::DirectTreeStatus, hybrid_dataset_entry::HybridDatasetQuestion,
+        direct_tree_action::DirectTreeAction,
+        direct_tree_action_log::DirectTreeActionLog,
+        direct_tree_status::DirectTreeStatus,
+        hybrid_dataset_entry::HybridDatasetQuestion,
+        prompt::{prompt_with_tool_call, prompt_without_tool_call},
     },
     llm_model::{LlmModelMarker, TokenArrayWithLogprob, Top8Candidates},
     token_array::TokenArray,
 };
+
+use crate::llm_model::MyTokenizer;
 
 // this tree is similar to the completed tree in src/agent folder, but now it runs on a lightweight tool-calling context instead of a heavy agent framework
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -19,15 +24,17 @@ pub struct DirectTree<M: LlmModelMarker> {
     // states
     pub status: DirectTreeStatus,
     pub segments: BTreeMap<SegmentId, Segment>, // segment_id -> segment. A segment branched from the middle is destroyed and its id is not reused to avoid hiding sneaky bugs
-    pub root_segment_ids: Vec<SegmentId>,
+    // pub root_segment_ids: Vec<SegmentId>,
+    pub root_segment_id: Option<SegmentId>, // all the trunks share the same root segment, which is the prompt segment
     pub leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
+    pub current_num_trunks: usize,
     pub next_segment_id: usize,
     pub next_segment_temperature: f32,
     pub focused_parent_segment_id: Option<SegmentId>, // the segment after which we create a new branch and rollout until finding the answer
     pub new_branch_start_token: Option<i32>, // the token id for the next branching point, which is determined when we create a branch and will be used in the rollout after branching to determine when to stop and judge the trajectory
     pub completed: bool,
     // hyperparameters
-    pub num_trunks: usize,
+    pub max_num_trunks: usize,
     pub max_num_total_trajectories: usize,
     pub use_tool: bool,
     #[serde(skip)]
@@ -46,63 +53,59 @@ impl<M: LlmModelMarker> DirectTree<M> {
             question: action_log.question.clone(),
             status: DirectTreeStatus::CreatingTrunkTrajectory, // this will be updated when applying actions
             segments: BTreeMap::new(),
-            root_segment_ids: vec![],
+            root_segment_id: None, // all the trunks share the same root segment, which is the prompt segment
             leaf_segment_judgments: BTreeMap::new(),
+            current_num_trunks: 0,
             next_segment_id: 0,
             next_segment_temperature: 1.0,
             focused_parent_segment_id: None,
             new_branch_start_token: None,
             completed: false,
-            num_trunks: NUM_TRUNKS, // default value, will not affect the tree structure
+            max_num_trunks: NUM_TRUNKS, // default value, will not affect the tree structure
             max_num_total_trajectories,
             use_tool,
             _phantom: std::marker::PhantomData::<M>,
         };
+        // we push the prompt segment to the tree before applying any action
+        let root_segment_id = SegmentId(tree.next_segment_id);
+        tree.next_segment_id += 1;
+        let prompt_segment = Self::create_prompt_segment(
+            action_log.question.question.clone(),
+            use_tool,
+            root_segment_id,
+            tree.next_segment_temperature,
+        );
+        tree.segments.insert(root_segment_id, prompt_segment);
+        tree.root_segment_id = Some(root_segment_id);
         for action in &action_log.actions {
             tree.apply_action(action.clone());
         }
         tree
     }
-    // pub fn new(
-    //     flat_id: usize,
-    //     dataset_name: String,
-    //     question_id: usize,
-    //     question: String,
-    //     correct_answer: String,
-    //     num_trunks: usize,
-    //     max_num_total_trajectories: usize,
-    //     use_tool: bool,
-    // ) -> Self {
-    //     Self {
-    //         flat_id,
-    //         dataset_name,
-    //         question_id,
-    //         question,
-    //         correct_answer,
-    //         status: DirectTreeStatus::CreatingTrunkTrajectory,
-    //         segments: BTreeMap::new(),
-    //         root_segment_ids: vec![],
-    //         leaf_segment_judgments: BTreeMap::new(),
-    //         next_segment_id: 0,
-    //         next_segment_temperature: 1.0,
-    //         focused_parent_segment_id: None,
-    //         new_branch_start_token: None,
-    //         completed: false,
-    //         num_trunks,
-    //         max_num_total_trajectories,
-    //         use_tool,
-    //         _phantom: std::marker::PhantomData::<M>,
-    //     }
-    // }
-    
+    fn create_prompt_segment(
+        question: String,
+        use_tool: bool,
+        segment_id: SegmentId,
+        temperature: f32,
+    ) -> Segment {
+        let prompt_string = match use_tool {
+            true => prompt_with_tool_call(question),
+            false => prompt_without_tool_call(question),
+        };
+        let tokenized = M::Tokenizer::tokenize(prompt_string);
+        Segment {
+            segment_id,
+            content: vec![SegmentContent::Prompt(tokenized)],
+            llm_temperature: temperature,
+            child_ids: vec![],
+            parent_id: None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SegmentId(pub usize);
 
-// it has interleaved reasoning and tool response
-// we can branch on the reasoning part, but not on the tool response part
-// tool response should not be counted towards the segment length
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Segment {
     pub segment_id: SegmentId,
@@ -111,13 +114,6 @@ pub struct Segment {
     pub child_ids: Vec<SegmentId>,
     pub parent_id: Option<SegmentId>,
 }
-// #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-// pub struct ReasoningContentIndex(usize);
-// pub struct ReasoningOnlySegmentView<'a> {
-//     // pub reasoning_contents: Vec<TokenArrayWithLogprob>,
-
-//     pub corresponding_segment: &'a Segment,
-// }
 
 pub struct ReasoningOnlyTokenView<'a> {
     pub flat_index: usize, // the index of the token in the flattened reasoning-only token sequence of the segment
@@ -133,7 +129,7 @@ impl Segment {
         let mut views = vec![];
         let mut flat_index = 0;
         for (content_index, content) in self.content.iter().enumerate() {
-            if let SegmentContent::ReasoningOrToolCall(tokens) = content {
+            if let SegmentContent::ReasoningOrToolCall { tokens, .. } = content {
                 for (token_offset, (&token, logprobs)) in
                     tokens.tokens.iter().zip(tokens.logprobs.iter()).enumerate()
                 {
@@ -152,21 +148,34 @@ impl Segment {
         views
     }
     pub fn first_reasoning_token(&self) -> Option<i32> {
-        for content in &self.content {
-            if let SegmentContent::ReasoningOrToolCall(tokens) = content {
-                if let Some(&first_token) = tokens.tokens.first() {
-                    return Some(first_token);
-                }
-            }
-        }
-        None
+        // for content in &self.content {
+        //     if let SegmentContent::ReasoningOrToolCall { tokens, .. } = content {
+        //         if let Some(&first_token) = tokens.tokens.first() {
+        //             return Some(first_token);
+        //         }
+        //     }
+        // }
+        let Some(first_content) = self.content.first() else {
+            return None;
+        };
+        let SegmentContent::ReasoningOrToolCall { tokens, .. } = first_content else {
+            panic!(
+                "the first content of a segment should be reasoning, but got tool response or prompt."
+            );
+        };
+        tokens.tokens.first().copied()
     }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SegmentContent {
     Prompt(TokenArray),
-    ReasoningOrToolCall(TokenArrayWithLogprob),
+    ReasoningOrToolCall {
+        tokens: TokenArrayWithLogprob,
+        complete: bool,
+        // answer: Option<FinalAnswer>,
+        // tool_call: Option<String>, // the tool call string if this is a tool call, which can be used for better interpretability and debugging, but should not be used for any logic in the code to avoid sneaky bugs where the tool call string is not correctly recorded
+    },
     ToolResponse(TokenArray),
 }
 
