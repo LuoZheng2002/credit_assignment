@@ -5,6 +5,7 @@
 
 use std::{collections::BTreeMap, path::PathBuf};
 
+use clap::ValueEnum;
 use ordered_float::NotNan;
 use research_utility::{
     asset_file::{AssetFile, Base64Hash, hash_file},
@@ -20,7 +21,7 @@ use crate::{
         posterior_calculation::action_log_to_posterior_fit,
     },
     json_line_util::{read_json, write_json},
-    llm_model::LlmModelName,
+    llm_model::{LlmModelMarker, LlmModelName},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -35,14 +36,15 @@ pub struct AssetFilePosteriorFitTracking {
     pub posterior_calculation_config: PosteriorCalculationConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AssetFilePosteriorFit {
-    pub model: LlmModelName,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AssetFilePosteriorFit<M: LlmModelMarker> {
+    // pub model: LlmModelName,
     pub direct_rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub _phantom: std::marker::PhantomData<M>,
 }
 
-impl AssetFilePosteriorFit {
+impl<M: LlmModelMarker> AssetFilePosteriorFit<M> {
     fn short_hash(&self) -> String {
         let serialized = serde_json::to_vec(&(
             &self.direct_rollout_config,
@@ -57,14 +59,14 @@ impl AssetFilePosteriorFit {
     fn file_path(&self) -> String {
         format!(
             "results/{}/direct_tool/posterior_fit_{}.sqlite",
-            self.model.cli_name(),
+            M::CLI_NAME,
             self.short_hash()
         )
     }
     fn version_tracking_path(&self) -> String {
         format!(
             "results_version_tracking/{}/direct_tool/posterior_fit_{}.version.json",
-            self.model.cli_name(),
+            M::CLI_NAME,
             self.short_hash()
         )
     }
@@ -73,12 +75,12 @@ impl AssetFilePosteriorFit {
 pub struct PosteriorFitPerTree {}
 
 #[async_trait::async_trait]
-impl AssetFile for AssetFilePosteriorFit {
+impl<M: LlmModelMarker> AssetFile for AssetFilePosteriorFit<M> {
     type FileModel = SqliteStore<usize, PosteriorFitPerTree>;
     async fn synchronize(&self) -> Base64Hash {
         // synchronize all dependency assets
         let asset_file_direct_tree_action_logs = AssetFileDirectTreeActionLogs {
-            model: self.model.clone(),
+            model: LlmModelName::from_str(M::CLI_NAME, true).unwrap(),
             config: self.direct_rollout_config.clone(),
         };
         let action_log_hash = asset_file_direct_tree_action_logs.synchronize().await;
@@ -111,7 +113,7 @@ impl AssetFile for AssetFilePosteriorFit {
         // if stale, we regenerate
         if stale {
             let rollout_store = asset_file_direct_tree_action_logs.fetch().await;
-            calculate_posterior_and_store(
+            calculate_posterior_and_store::<M>(
                 rollout_store,
                 self.file_path(),
                 &self.posterior_calculation_config,
@@ -135,7 +137,7 @@ impl AssetFile for AssetFilePosteriorFit {
     }
 }
 
-pub async fn calculate_posterior_and_store(
+pub async fn calculate_posterior_and_store<M: LlmModelMarker>(
     rollout_store: SqliteStore<usize, DirectTreeActionLog>,
     posterior_path: impl Into<PathBuf>,
     posterior_calculation_config: &PosteriorCalculationConfig,
@@ -158,7 +160,7 @@ pub async fn calculate_posterior_and_store(
             .expect("Failed to get action log from rollout store");
         let action_log = action_log.expect("Corresponding row does not exist");
         // calculate posterior fit for the tree corresponding to this action log
-        let posterior_fit = action_log_to_posterior_fit(&action_log, posterior_calculation_config);
+        let posterior_fit = action_log_to_posterior_fit::<M>(&action_log, posterior_calculation_config);
         posterior_store
             .upsert(key, &posterior_fit)
             .await
