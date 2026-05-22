@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+
+use ordered_float::NotNan;
 use research_utility::{
     asset_file::{AssetFile, Base64Hash, hash_file},
     sqlite_store::SqliteStore,
@@ -7,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     direct_tool::{
         direct_tree_action::DirectTreeAction,
+        direct_tree_posterior::PosteriorHyperparameters,
         hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
     },
     json_line_util::read_json,
@@ -19,6 +23,7 @@ const ACTION_LOG_SCHEMA_VERSION: usize = 1;
 pub struct DirectTreeActionLog {
     pub question: HybridDatasetQuestion,
     pub rollout_config: DirectRolloutConfig,
+    pub posterior_calculation_config: PosteriorCalculationConfig,
     pub actions: Vec<DirectTreeAction>,
 }
 
@@ -44,13 +49,20 @@ impl DirectRolloutConfig {
 pub struct AssetFileDirectTreeActionLogsTracking {
     pub dataset_hash: Base64Hash,
     pub action_log_schema_version: usize,
-    pub config: DirectRolloutConfig,
+    pub rollout_config: DirectRolloutConfig,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AssetFileDirectTreeActionLogs {
     pub model: LlmModelName,
-    pub config: DirectRolloutConfig,
+    pub rollout_config: DirectRolloutConfig,
+    pub posterior_calculation_config: PosteriorCalculationConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PosteriorCalculationConfig {
+    pub temperature_to_accuracy: BTreeMap<NotNan<f32>, NotNan<f32>>,
+    pub hyperparameters: PosteriorHyperparameters,
 }
 
 impl AssetFileDirectTreeActionLogs {
@@ -58,14 +70,14 @@ impl AssetFileDirectTreeActionLogs {
         format!(
             "results/{}/direct_action_Log_{}.sqlite",
             self.model.cli_name(),
-            self.config.to_short_hash()
+            self.rollout_config.to_short_hash()
         )
     }
     fn version_tracking_path(&self) -> String {
         format!(
             "results_version_tracking/{}/direct_action_Log_{}_tracking.json",
             self.model.cli_name(),
-            self.config.to_short_hash()
+            self.rollout_config.to_short_hash()
         )
     }
 }
@@ -86,7 +98,7 @@ impl AssetFile for AssetFileDirectTreeActionLogs {
             tracking_content.action_log_schema_version,
             ACTION_LOG_SCHEMA_VERSION
         );
-        assert_eq!(tracking_content.config, self.config);
+        assert_eq!(tracking_content.rollout_config, self.rollout_config);
         // check if target file exists and returns hash
         hash_file(self.file_path()).expect("Target file missing for direct action log")
     }

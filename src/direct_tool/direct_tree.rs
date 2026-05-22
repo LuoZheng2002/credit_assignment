@@ -6,7 +6,9 @@ use crate::{
     agent::tree::CorrectnessJudgment,
     direct_tool::{
         direct_tree_action::DirectTreeAction,
-        direct_tree_action_log::{DirectRolloutConfig, DirectTreeActionLog},
+        direct_tree_action_log::{
+            DirectRolloutConfig, DirectTreeActionLog, PosteriorCalculationConfig,
+        },
         direct_tree_status::DirectTreeStatus,
         hybrid_dataset::HybridDatasetQuestion,
         prompt::{prompt_with_tool_call, prompt_without_tool_call},
@@ -22,6 +24,7 @@ use crate::llm_model::MyTokenizer;
 pub struct DirectTree<M: LlmModelMarker> {
     pub question: HybridDatasetQuestion,
     pub rollout_config: DirectRolloutConfig,
+    pub posterior_calculation_config: PosteriorCalculationConfig,
     // states
     pub status: DirectTreeStatus,
     pub segments: BTreeMap<SegmentId, Segment>, // segment_id -> segment. A segment branched from the middle is destroyed and its id is not reused to avoid hiding sneaky bugs
@@ -53,6 +56,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
         let mut tree = Self {
             question: action_log.question.clone(),
             rollout_config: action_log.rollout_config.clone(),
+            posterior_calculation_config: action_log.posterior_calculation_config.clone(),
             status: DirectTreeStatus::CreatingTrunkTrajectory, // this will be updated when applying actions
             segments: BTreeMap::new(),
             root_segment_id: None, // all the trunks share the same root segment, which is the prompt segment

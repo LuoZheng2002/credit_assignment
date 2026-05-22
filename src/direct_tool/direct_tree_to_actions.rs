@@ -12,7 +12,7 @@ use crate::{
     direct_tool::{
         direct_tree::{DirectTree, SegmentContent, SegmentId},
         direct_tree_action::{DirectTreeAction, TokenPositionInTree},
-        direct_tree_advantage::Posterior,
+        direct_tree_posterior::Posterior,
         direct_tree_status::DirectTreeStatus,
     },
     llm_model::{LlmCallable, LlmModelMarker, TokenLogprobCandidate, Top8Candidates},

@@ -4,7 +4,9 @@ use research_utility::{sqlite_store::SqliteStore, worker_message_tx::log_key_val
 use crate::{
     direct_tool::{
         direct_tree::DirectTree,
-        direct_tree_action_log::{DirectRolloutConfig, DirectTreeActionLog},
+        direct_tree_action_log::{
+            DirectRolloutConfig, DirectTreeActionLog, PosteriorCalculationConfig,
+        },
         hybrid_dataset::HybridDatasetQuestion,
     },
     llm_model::LlmModelMarker,
@@ -13,6 +15,7 @@ use crate::{
 pub async fn rollout<M: LlmModelMarker>(
     question: HybridDatasetQuestion,
     rollout_config: DirectRolloutConfig,
+    posterior_calculation_config: PosteriorCalculationConfig,
     rollout_store: SqliteStore<usize, DirectTreeActionLog>,
     llm_callable: M::Callable,
     client: Client,
@@ -25,6 +28,7 @@ pub async fn rollout<M: LlmModelMarker>(
         .unwrap_or_else(|| DirectTreeActionLog {
             question: question.clone(),
             rollout_config: rollout_config.clone(),
+            posterior_calculation_config: posterior_calculation_config.clone(),
             actions: vec![],
         });
     log_key_value_pair(
