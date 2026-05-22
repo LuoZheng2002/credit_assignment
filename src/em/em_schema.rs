@@ -100,11 +100,11 @@ pub fn short_hyperparameter_hash(hyperparameters: &EmHyperparameters) -> String 
     let serialized_hyperparameters =
         serde_json::to_vec(hyperparameters).expect("EmHyperparameters should be serializable");
     let hash = blake3::hash(&serialized_hyperparameters);
-    let short_hash = hex::encode(&hash.as_bytes()[..2]);
+    let short_hash = hex::encode(&hash.as_bytes()[..4]);
     assert_eq!(
         short_hash.len(),
-        4,
-        "Expected a 4-character hexadecimal hyperparameter hash"
+        8,
+        "Expected an 8-character hexadecimal hyperparameter hash"
     );
     short_hash
 }

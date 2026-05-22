@@ -6,7 +6,7 @@ use crate::{
     agent::tree::CorrectnessJudgment,
     direct_tool::{
         direct_tree_action::DirectTreeAction,
-        direct_tree_action_log::DirectTreeActionLog,
+        direct_tree_action_log::{DirectRolloutConfig, DirectTreeActionLog},
         direct_tree_status::DirectTreeStatus,
         hybrid_dataset::HybridDatasetQuestion,
         prompt::{prompt_with_tool_call, prompt_without_tool_call},
@@ -18,9 +18,10 @@ use crate::{
 use crate::llm_model::MyTokenizer;
 
 // this tree is similar to the completed tree in src/agent folder, but now it runs on a lightweight tool-calling context instead of a heavy agent framework
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct DirectTree<M: LlmModelMarker> {
     pub question: HybridDatasetQuestion,
+    pub rollout_config: DirectRolloutConfig,
     // states
     pub status: DirectTreeStatus,
     pub segments: BTreeMap<SegmentId, Segment>, // segment_id -> segment. A segment branched from the middle is destroyed and its id is not reused to avoid hiding sneaky bugs
@@ -34,23 +35,24 @@ pub struct DirectTree<M: LlmModelMarker> {
     pub new_branch_start_token: Option<i32>, // the token id for the next branching point, which is determined when we create a branch and will be used in the rollout after branching to determine when to stop and judge the trajectory
     pub completed: bool,
     // hyperparameters
-    pub max_num_trunks: usize,
-    pub max_num_total_trajectories: usize,
-    pub use_tool: bool,
-    #[serde(skip)]
+    // pub max_num_trunks: usize,
+    // pub max_num_total_trajectories: usize,
+    // pub use_tool: bool,
+    // #[serde(skip)]
     _phantom: std::marker::PhantomData<M>, // for tokenizer utility
 }
 
-pub const NUM_TRUNKS: usize = 4;
+// pub const NUM_TRUNKS: usize = 4;
 
 impl<M: LlmModelMarker> DirectTree<M> {
     pub fn from_action_log(
         action_log: &DirectTreeActionLog,
-        max_num_total_trajectories: usize,
-        use_tool: bool,
+        // max_num_total_trajectories: usize,
+        // use_tool: bool,
     ) -> Self {
         let mut tree = Self {
             question: action_log.question.clone(),
+            rollout_config: action_log.rollout_config.clone(),
             status: DirectTreeStatus::CreatingTrunkTrajectory, // this will be updated when applying actions
             segments: BTreeMap::new(),
             root_segment_id: None, // all the trunks share the same root segment, which is the prompt segment
@@ -61,17 +63,17 @@ impl<M: LlmModelMarker> DirectTree<M> {
             focused_parent_segment_id: None,
             new_branch_start_token: None,
             completed: false,
-            max_num_trunks: NUM_TRUNKS, // default value, will not affect the tree structure
-            max_num_total_trajectories,
-            use_tool,
+            // max_num_trunks: NUM_TRUNKS, // default value, will not affect the tree structure
+            // max_num_total_trajectories,
+            // use_tool,
             _phantom: std::marker::PhantomData::<M>,
         };
         // we push the prompt segment to the tree before applying any action
         let root_segment_id = SegmentId(tree.next_segment_id);
         tree.next_segment_id += 1;
         let prompt_segment = Self::create_prompt_segment(
-            action_log.question.question.clone(),
-            use_tool,
+            tree.question.question.clone(),
+            tree.rollout_config.use_tool,
             root_segment_id,
             tree.next_segment_temperature,
         );

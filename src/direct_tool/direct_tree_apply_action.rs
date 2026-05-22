@@ -42,9 +42,12 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 self.leaf_segment_judgments
                     .insert(segment_id, correctness_judgment);
                 // update status
-                assert!(self.max_num_trunks <= self.max_num_total_trajectories);
+                assert!(
+                    self.rollout_config.max_num_trunks
+                        <= self.rollout_config.max_num_total_trajectories
+                );
                 self.current_num_trunks += 1;
-                if self.current_num_trunks >= self.max_num_trunks {
+                if self.current_num_trunks >= self.rollout_config.max_num_trunks {
                     self.status = DirectTreeStatus::CreatingOrChoosingBranchPoint;
                 } else {
                     self.status = DirectTreeStatus::CreatingTrunkTrajectory;
@@ -225,7 +228,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 assert!(!self.leaf_segment_judgments.contains_key(&new_segment_id));
                 self.leaf_segment_judgments
                     .insert(new_segment_id, correctness_judgment);
-                if self.segments.len() >= self.max_num_total_trajectories {
+                if self.segments.len() >= self.rollout_config.max_num_total_trajectories {
                     self.status = DirectTreeStatus::Complete;
                     self.completed = true;
                 } else {

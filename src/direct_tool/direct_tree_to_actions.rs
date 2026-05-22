@@ -117,7 +117,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
     ) -> Vec<DirectTreeAction> {
         match self.status {
             DirectTreeStatus::CreatingTrunkTrajectory => {
-                assert!(self.current_num_trunks < self.max_num_trunks);
+                assert!(self.current_num_trunks < self.rollout_config.max_num_trunks);
                 let root_id = self
                     .root_segment_id
                     .expect("Root segment id must exist when creating trunk trajectory");
@@ -138,7 +138,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
             }
             DirectTreeStatus::CreatingOrChoosingBranchPoint => {
                 assert!(
-                    self.current_num_trunks == self.max_num_trunks,
+                    self.current_num_trunks == self.rollout_config.max_num_trunks,
                     "Current number of trunks must be equal to the max number of trunks before creating branch point"
                 );
                 assert!(!self.leaf_segment_judgments.is_empty());

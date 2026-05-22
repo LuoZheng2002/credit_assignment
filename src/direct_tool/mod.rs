@@ -10,5 +10,6 @@ pub mod direct_tree_status;
 pub mod direct_tree_to_actions;
 pub mod hybrid_dataset;
 pub mod posterior_calculation;
+pub mod posterior_schema;
 pub mod prompt;
 pub mod test_set_entry;

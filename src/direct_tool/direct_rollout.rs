@@ -3,7 +3,8 @@ use research_utility::{sqlite_store::SqliteStore, worker_message_tx::log_key_val
 
 use crate::{
     direct_tool::{
-        direct_tree::DirectTree, direct_tree_action_log::DirectTreeActionLog,
+        direct_tree::DirectTree,
+        direct_tree_action_log::{DirectRolloutConfig, DirectTreeActionLog},
         hybrid_dataset::HybridDatasetQuestion,
     },
     llm_model::LlmModelMarker,
@@ -11,9 +12,8 @@ use crate::{
 
 pub async fn rollout<M: LlmModelMarker>(
     question: HybridDatasetQuestion,
+    rollout_config: DirectRolloutConfig,
     rollout_store: SqliteStore<usize, DirectTreeActionLog>,
-    max_num_total_trajectories: usize,
-    use_tool: bool,
     llm_callable: M::Callable,
     client: Client,
     // rng: &mut StdRng,
@@ -24,6 +24,7 @@ pub async fn rollout<M: LlmModelMarker>(
         .unwrap()
         .unwrap_or_else(|| DirectTreeActionLog {
             question: question.clone(),
+            rollout_config: rollout_config.clone(),
             actions: vec![],
         });
     log_key_value_pair(
@@ -35,8 +36,7 @@ pub async fn rollout<M: LlmModelMarker>(
         ),
     );
     loop {
-        let tree =
-            DirectTree::<M>::from_action_log(&action_log, max_num_total_trajectories, use_tool);
+        let tree = DirectTree::<M>::from_action_log(&action_log);
         if tree.completed {
             break;
         }

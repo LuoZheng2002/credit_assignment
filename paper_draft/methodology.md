@@ -256,6 +256,7 @@ Out-of-distribution datasets:
 3. **MAP credit model (vs. TreeRPO):** replace MAP-based segment scoring with leaf-dominant heuristic advantage assignment.
 4. **Optional baseline (TreePO):** compare against subgroup-relative segment advantages among shared-prefix trajectories.
 5. **Branching budget sensitivity:** vary the number of branches per tree (e.g., low/medium/high expansion budgets) to quantify the trade-off between sample efficiency, segment utilization, and downstream pass@1.
+6. **Whether uses tools**
 
 ## Experiment Details
 
