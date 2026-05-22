@@ -179,7 +179,7 @@ pub struct AssetFileEmFit {
 }
 
 impl AssetFileEmFit {
-    pub fn hyperparameter_hash(&self) -> String {
+    fn hyperparameter_hash(&self) -> String {
         short_hyperparameter_hash(&self.hyperparameters)
     }
 
