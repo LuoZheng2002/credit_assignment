@@ -42,6 +42,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 assert!(!self.leaf_segment_judgments.contains_key(&segment_id));
                 self.leaf_segment_judgments
                     .insert(segment_id, correctness_judgment);
+                self.trunk_leaf_segments.push(segment_id);
                 // update status
                 assert!(
                     self.rollout_config.max_num_trunks
@@ -83,9 +84,11 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     panic!("Branch position must point to a ReasoningOrToolCall content");
                 };
                 assert!(
-                    (position.offset > 0 || position.content_index > 0) && position.offset < tokens.tokens.len(),
+                    (position.offset > 0 || position.content_index > 0)
+                        && position.offset < tokens.tokens.len(),
                     "Branch position offset must be > 0 and < the length of the content tokens. position.offset: {}, tokens length: {}",
-                    position.offset, tokens.tokens.len()
+                    position.offset,
+                    tokens.tokens.len()
                 );
                 let first_half_tokens = tokens.tokens[..position.offset].to_vec();
                 let first_half_logprobs = tokens.logprobs[..position.offset].to_vec();
@@ -230,7 +233,9 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 assert!(!self.leaf_segment_judgments.contains_key(&new_segment_id));
                 self.leaf_segment_judgments
                     .insert(new_segment_id, correctness_judgment);
-                if self.leaf_segment_judgments.len() >= self.rollout_config.max_num_total_trajectories {
+                if self.leaf_segment_judgments.len()
+                    >= self.rollout_config.max_num_total_trajectories
+                {
                     self.status = DirectTreeStatus::Complete;
                     self.completed = true;
                 } else {
