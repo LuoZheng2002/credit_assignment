@@ -6,6 +6,7 @@ use research_utility::{
     asset_file::AssetFile, sqlite_store::SqliteStore, worker_message_tx::log_key_value_pair,
 };
 use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use crate::{
     direct_tool::{
@@ -40,9 +41,9 @@ pub async fn rollout<M: LlmModelMarker>(
     log_key_value_pair(
         "status".to_string(),
         format!(
-            "Loading {} existing actions for question id {}...",
+            "Loading {} existing actions for question flat id {}...",
             action_log.actions.len(),
-            question.question_id
+            question.flat_id
         ),
     );
     loop {
@@ -95,6 +96,7 @@ pub async fn direct_rollout_all_with_config<M: LlmModelMarker>(
     if let Some(first_n) = first_n_samples {
         question_keys.truncate(first_n);
     }
+    let mut join_set = JoinSet::new();
     for question_key in question_keys {
         let owned_permit = question_semaphore.clone().acquire_owned().await.unwrap();
         let question = dataset.get(question_key).await.unwrap().unwrap();
@@ -103,7 +105,7 @@ pub async fn direct_rollout_all_with_config<M: LlmModelMarker>(
         let rollout_store = rollout_store.clone();
         let llm_callable_clone = llm_callable.clone();
         let client_clone = client.clone();
-        tokio::spawn(async move {
+        join_set.spawn(async move {
             rollout::<M>(
                 question,
                 rollout_config_clone,
@@ -115,5 +117,14 @@ pub async fn direct_rollout_all_with_config<M: LlmModelMarker>(
             .await;
             drop(owned_permit);
         });
+
+        while let Some(result) = join_set.try_join_next() {
+            result.expect("direct rollout worker task panicked or was cancelled");
+        }
+    }
+
+    while let Some(result) = join_set.join_next().await {
+        result
+            .expect("direct rollout worker task panicked or was cancelled");
     }
 }

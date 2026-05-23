@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::Value;
 use std::sync::LazyLock;
+use std::time::Duration;
 use tiktoken_rs::{CoreBPE, bpe_for_model};
 
 use super::{
@@ -27,13 +28,34 @@ impl Gpt5MiniLlmCallable {
     async fn post_json(&self, url: &str, body: serde_json::Value) -> reqwest::Response {
         let api_key =
             std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set");
-        self.client
-            .post(url)
-            .bearer_auth(api_key)
-            .json(&body)
-            .send()
-            .await
-            .unwrap()
+        const MAX_ATTEMPTS: usize = 3;
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            match self
+                .client
+                .post(url)
+                .bearer_auth(&api_key)
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(response) => return response,
+                Err(err)
+                    if attempt < MAX_ATTEMPTS
+                        && (err.is_connect() || err.is_timeout() || err.is_request()) =>
+                {
+                    let backoff_ms = 250_u64 * (attempt as u64);
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                }
+                Err(err) => {
+                    panic!(
+                        "OpenAI request failed (attempt {attempt}/{MAX_ATTEMPTS}) to {url}: {err:?}"
+                    )
+                }
+            }
+        }
+
+        panic!("OpenAI request failed unexpectedly without returning an error")
     }
 }
 
@@ -126,9 +148,10 @@ impl LlmCallable<Gpt5Mini> for Gpt5MiniLlmCallable {
             let sampled_token = entry["token"]
                 .as_str()
                 .unwrap_or_else(|| panic!("LLM logprob entry missing token: {entry:?}"));
+            let Some(sampled_token_id) = try_token_to_single_id::<Gpt5Mini>(sampled_token) else {
+                continue;
+            };
             decoded_string.push_str(sampled_token);
-
-            let sampled_token_id = token_to_single_id::<Gpt5Mini>(sampled_token);
             tokens.push(sampled_token_id);
             let sampled_logprob = entry["logprob"].as_f64().unwrap_or(f64::NEG_INFINITY) as f32;
 
@@ -138,7 +161,7 @@ impl LlmCallable<Gpt5Mini> for Gpt5MiniLlmCallable {
                     top.iter()
                         .filter_map(|candidate| {
                             let token = candidate["token"].as_str()?;
-                            let token_id = token_to_single_id::<Gpt5Mini>(token);
+                            let token_id = try_token_to_single_id::<Gpt5Mini>(token)?;
                             let logprob =
                                 candidate["logprob"].as_f64().unwrap_or(f64::NEG_INFINITY) as f32;
                             Some(TokenLogprobCandidate { token_id, logprob })
@@ -175,23 +198,12 @@ impl LlmCallable<Gpt5Mini> for Gpt5MiniLlmCallable {
     }
 }
 
-fn token_to_single_id<M: LlmModelMarker>(token: &str) -> i32 {
-    let token_id = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        <M as LlmModelMarker>::Tokenizer::token_to_id(token)
-    }));
-    if let Ok(token_id) = token_id {
-        return token_id;
-    }
-
+fn try_token_to_single_id<M: LlmModelMarker>(token: &str) -> Option<i32> {
     let encoded = <M as LlmModelMarker>::Tokenizer::encode_to_i32_ids(token);
     if encoded.len() == 1 {
-        encoded[0]
+        Some(encoded[0])
     } else {
-        panic!(
-            "OpenAI token {:?} does not map to a single tokenizer id for {}",
-            token,
-            M::API_NAME
-        );
+        None
     }
 }
 
