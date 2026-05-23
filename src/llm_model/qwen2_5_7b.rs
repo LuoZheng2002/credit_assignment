@@ -156,10 +156,6 @@ impl LlmModelMarker for Qwen25 {
             },
         };
 
-        Qwen25LlmCallable::new(
-            client,
-            backend,
-            llm_cli_args.max_concurrent_requests,
-        )
+        Qwen25LlmCallable::new(client, backend, llm_cli_args.max_concurrent_requests)
     }
 }

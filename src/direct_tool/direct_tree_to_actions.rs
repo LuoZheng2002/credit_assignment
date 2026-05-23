@@ -418,17 +418,14 @@ impl<M: LlmModelMarker> DirectTree<M> {
             if let Some(answer) = trajectory.try_get_answer() {
                 if continuing_contents.is_empty() {
                     println!("trajectory contents: {}", trajectory.to_decoded_string());
-                    panic!("The trajectory should produce some continuing content before producing the answer");
+                    panic!(
+                        "The trajectory should produce some continuing content before producing the answer"
+                    );
                 }
                 return (continuing_contents, answer);
-            }            
-            let next_content = generate_next_segment_content::<M>(
-                &trajectory,
-                llm_callable,
-            )
-            .await;
+            }
+            let next_content = generate_next_segment_content::<M>(&trajectory, llm_callable).await;
             continuing_contents.push(next_content.clone());
-            
         }
     }
 }

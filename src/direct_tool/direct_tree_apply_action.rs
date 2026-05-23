@@ -31,7 +31,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                         parent_id: Some(root_id),
                     },
                 );
-                
+
                 let root_segment = self
                     .segments
                     .get_mut(&root_id)

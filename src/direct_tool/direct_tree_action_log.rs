@@ -33,14 +33,13 @@ pub struct DirectTreeActionLog {
 
 // if we only get the unique name, we cannot synchronize the rollout log file since we don't know which config it corresponds to
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetFileDirectTreeActionLogsTracking {
     pub dataset_hash: Base64Hash,
     pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
-    pub action_log_schema_version: usize,    
+    pub action_log_schema_version: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -100,10 +99,13 @@ impl AssetFileDirectTreeActionLogs {
                         "Tracking file exists but stale: rollout config mismatch (tracking: {:?}, current: {:?})",
                         tracking_content.rollout_config, self.rollout_config
                     ))
-                } else if tracking_content.posterior_calculation_config != self.posterior_calculation_config {
+                } else if tracking_content.posterior_calculation_config
+                    != self.posterior_calculation_config
+                {
                     Some(format!(
                         "Tracking file exists but stale: posterior calculation config mismatch (tracking: {:?}, current: {:?})",
-                        tracking_content.posterior_calculation_config, self.posterior_calculation_config
+                        tracking_content.posterior_calculation_config,
+                        self.posterior_calculation_config
                     ))
                 } else if tracking_content.config_nickname != self.nickname {
                     Some(format!(
@@ -138,7 +140,7 @@ impl AssetFileDirectTreeActionLogs {
         let dataset_hash = futures::executor::block_on(dataset_asset_file.synchronize());
         let tracking_content = AssetFileDirectTreeActionLogsTracking {
             dataset_hash,
-            config_nickname: self.nickname.clone(),            
+            config_nickname: self.nickname.clone(),
             rollout_config: self.rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
             action_log_schema_version: ACTION_LOG_SCHEMA_VERSION,
@@ -168,7 +170,10 @@ impl AssetFile for AssetFileDirectTreeActionLogs {
             ACTION_LOG_SCHEMA_VERSION
         );
         assert_eq!(tracking_content.rollout_config, self.rollout_config);
-        assert_eq!(tracking_content.posterior_calculation_config, self.posterior_calculation_config);
+        assert_eq!(
+            tracking_content.posterior_calculation_config,
+            self.posterior_calculation_config
+        );
         assert_eq!(tracking_content.config_nickname, self.nickname);
         // check if target file exists and returns hash
         hash_file(self.file_path()).expect("Target file missing for direct action log")

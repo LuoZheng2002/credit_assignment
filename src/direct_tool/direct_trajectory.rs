@@ -83,7 +83,9 @@ impl TrajectoryContent {
     }
     pub fn decoded_string(&self) -> String {
         match self {
-            TrajectoryContent::ReasoningOrToolCallIncomplete(tokens) => tokens.decoded_string.clone(),
+            TrajectoryContent::ReasoningOrToolCallIncomplete(tokens) => {
+                tokens.decoded_string.clone()
+            }
             TrajectoryContent::ReasoningOrToolCallComplete(tokens) => tokens.decoded_string.clone(),
             TrajectoryContent::Prompt(tokens) => tokens.decoded_string.clone(),
             TrajectoryContent::ToolResponse(tokens) => tokens.decoded_string.clone(),

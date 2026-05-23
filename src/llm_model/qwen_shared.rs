@@ -96,7 +96,12 @@ impl SharedQwenLlmCallable {
         tokens: Vec<i32>,
         passes_in_stop: bool,
     ) -> String {
-        let _permit = self.request_semaphore.clone().acquire_owned().await.unwrap();
+        let _permit = self
+            .request_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
 
         let response = match &self.backend {
             QwenBackend::Vllm { vllm_port } => {
@@ -110,8 +115,11 @@ impl SharedQwenLlmCallable {
                     body["stop"] = serde_json::json!(["</tool_wait>"]);
                 }
 
-                self.post_json(&format!("http://localhost:{vllm_port}/v1/completions"), body)
-                    .await
+                self.post_json(
+                    &format!("http://localhost:{vllm_port}/v1/completions"),
+                    body,
+                )
+                .await
             }
             QwenBackend::OpenRouter {
                 base_url,
@@ -156,9 +164,7 @@ impl SharedQwenLlmCallable {
                 })
                 .to_string(),
             QwenBackend::OpenRouter { .. } => parse_openrouter_message_content(&response)
-                .unwrap_or_else(|| {
-                    panic!("Qwen OpenRouter response is invalid: {:?}", response)
-                }),
+                .unwrap_or_else(|| panic!("Qwen OpenRouter response is invalid: {:?}", response)),
         };
 
         self.completed_requests.fetch_add(1, Ordering::SeqCst);
@@ -170,7 +176,12 @@ impl SharedQwenLlmCallable {
         tokens: Vec<i32>,
         passes_in_stop: bool,
     ) -> TokenArrayWithLogprob {
-        let _permit = self.request_semaphore.clone().acquire_owned().await.unwrap();
+        let _permit = self
+            .request_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
 
         let result = match &self.backend {
             QwenBackend::Vllm { vllm_port } => {
@@ -187,7 +198,10 @@ impl SharedQwenLlmCallable {
                 }
 
                 let json = self
-                    .post_json(&format!("http://localhost:{vllm_port}/v1/completions"), body)
+                    .post_json(
+                        &format!("http://localhost:{vllm_port}/v1/completions"),
+                        body,
+                    )
                     .await;
                 parse_vllm_response_with_logprobs(vllm_port, &json)
             }
@@ -399,8 +413,8 @@ Try a different OpenRouter model/provider. Full response: {:?}",
                     .filter_map(|candidate| {
                         let token = candidate["token"].as_str()?;
                         let token_id = try_token_to_single_id(encode_text, token)?;
-                        let logprob = candidate["logprob"].as_f64().unwrap_or(f64::NEG_INFINITY)
-                            as f32;
+                        let logprob =
+                            candidate["logprob"].as_f64().unwrap_or(f64::NEG_INFINITY) as f32;
                         Some(TokenLogprobCandidate { token_id, logprob })
                     })
                     .collect()

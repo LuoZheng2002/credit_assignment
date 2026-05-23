@@ -58,10 +58,10 @@ pub fn split_reasoning_and_tool_call(response: String) -> (Option<String>, Optio
     } else {
         tool_wait_violation = true;
 
-        log_key_value_pair(
-            "warning".into(),
-            "Model's tool call does not end with </tool_wait> tag.".into(),
-        );
+        // log_key_value_pair(
+        //     "warning".into(),
+        //     "Model's tool call does not end with </tool_wait> tag.".into(),
+        // );
         tool_call.push_str("</tool_wait>"); // if there is no </tool_wait> tag, we also add it and trim all the content after the tool call
     }
     let reasoning = if !response[..start_position].trim().is_empty() {

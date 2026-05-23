@@ -76,7 +76,7 @@ pub async fn direct_rollout_all_with_config<M: LlmModelMarker>(
     question_semaphore: Arc<Semaphore>,
     llm_cli_args: &LlmCliArgs,
     first_n_samples: Option<usize>,
-) {    
+) {
     let llm_callable = M::callable_from_cli_args(client.clone(), llm_cli_args);
     let asset_file_dataset = AssetFileHybridDataset;
     let dataset = asset_file_dataset.fetch().await;
@@ -126,7 +126,6 @@ pub async fn direct_rollout_all_with_config<M: LlmModelMarker>(
     }
 
     while let Some(result) = join_set.join_next().await {
-        result
-            .expect("direct rollout worker task panicked or was cancelled");
+        result.expect("direct rollout worker task panicked or was cancelled");
     }
 }

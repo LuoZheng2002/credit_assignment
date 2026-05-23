@@ -127,10 +127,6 @@ impl LlmModelMarker for Qwen3_4B {
             },
         };
 
-        Qwen3_4BLlmCallable::new(
-            client,
-            backend,
-            llm_cli_args.max_concurrent_requests,
-        )
+        Qwen3_4BLlmCallable::new(client, backend, llm_cli_args.max_concurrent_requests)
     }
 }

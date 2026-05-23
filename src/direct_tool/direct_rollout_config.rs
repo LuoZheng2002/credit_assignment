@@ -7,4 +7,3 @@ pub struct DirectRolloutConfig {
     pub temperature_fixed: bool,
     pub use_tool: bool,
 }
-
