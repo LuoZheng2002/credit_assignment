@@ -26,6 +26,12 @@ pub enum LlmFamily {
     Qwen,
 }
 
+#[derive(clap::ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]
+pub enum QwenApiBackend {
+    Vllm,
+    Openrouter,
+}
+
 pub trait MyTokenizer<M: LlmModelMarker>: Send + Sync + 'static {
     fn tokenize(prompt: String) -> TokenArray;
     fn encode_to_i32_ids(text: &str) -> Vec<i32>;
@@ -97,19 +103,40 @@ pub trait LlmModelMarker: Sized + Send + Sync + 'static {
 pub struct LlmCliArgs {
     #[arg(long)]
     pub model_cli_name: String,
+    #[arg(long, default_value = "vllm")]
+    pub qwen_api_backend: QwenApiBackend,
     #[arg(long)]
     pub qwen_vllm_port: Option<u16>,
+    #[arg(long)]
+    pub openrouter_model: Option<String>,
+    #[arg(long, default_value = "https://openrouter.ai/api/v1")]
+    pub openrouter_base_url: String,
+    #[arg(long)]
+    pub openrouter_http_referer: Option<String>,
+    #[arg(long)]
+    pub openrouter_x_title: Option<String>,
     #[arg(long, default_value_t = 100)]
     pub max_concurrent_requests: usize,
 }
 
 impl LlmCliArgs {
-    pub fn single_port_for_qwen(&self) -> u16 {
+    pub fn qwen_vllm_port(&self) -> u16 {
         let port = self
             .qwen_vllm_port
-            .expect("Qwen model requires --qwen-vllm-port (or --gpt-vllm-port as fallback)");
+            .expect("Qwen vLLM backend requires --qwen-vllm-port");
         assert!(port > 0, "vLLM port must be greater than 0");
         port
+    }
+
+    pub fn openrouter_model_or_default(&self, default_model: &'static str) -> String {
+        self.openrouter_model
+            .clone()
+            .unwrap_or_else(|| default_model.to_string())
+    }
+
+    pub fn openrouter_api_key(&self) -> String {
+        std::env::var("OPENROUTER_API_KEY")
+            .expect("OPENROUTER_API_KEY environment variable not set for OpenRouter backend")
     }
 }
 

@@ -507,6 +507,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
         }
         TrajectoryContent::ReasoningOrToolCallComplete(_) => {
             let Some(tool_call) = trajectory.try_get_last_content_tool_call() else {
+                println!("Trajectory contents: {}", trajectory.to_decoded_string());
                 panic!(
                     "tool call should not be none when the last content is a reasoning or tool call content when generating next segment content"
                 );

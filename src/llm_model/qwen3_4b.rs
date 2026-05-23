@@ -6,11 +6,11 @@ use tokenizers::Tokenizer;
 use crate::token_array::TokenArray;
 
 use super::qwen_shared::{
-    SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
+    QwenBackend, SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
 };
 use super::{
-    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
-    build_simple_qwen_chatml_prefix,
+    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, QwenApiBackend,
+    TokenArrayWithLogprob, build_simple_qwen_chatml_prefix,
 };
 
 static QWEN3_4B_TOKENIZER: LazyLock<Tokenizer> =
@@ -24,16 +24,30 @@ pub struct Qwen3_4BLlmCallable {
 }
 
 impl Qwen3_4BLlmCallable {
-    pub fn new(client: Client, vllm_port: u16, max_concurrent_requests: usize) -> Self {
+    pub(crate) fn new(
+        client: Client,
+        backend: QwenBackend,
+        max_concurrent_requests: usize,
+    ) -> Self {
         Self {
             shared: SharedQwenLlmCallable::new(
                 client,
                 Qwen3_4B::API_NAME,
-                vllm_port,
+                backend,
                 max_concurrent_requests,
+                decode_qwen3_4b_tokens,
+                encode_qwen3_4b_text,
             ),
         }
     }
+}
+
+fn decode_qwen3_4b_tokens(token_ids: &[i32]) -> String {
+    decode_from_i32_ids(&QWEN3_4B_TOKENIZER, token_ids)
+}
+
+fn encode_qwen3_4b_text(text: &str) -> Vec<i32> {
+    encode_to_i32_ids(&QWEN3_4B_TOKENIZER, text)
 }
 
 #[async_trait]
@@ -100,9 +114,22 @@ impl LlmModelMarker for Qwen3_4B {
     }
 
     fn callable_from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self::Callable {
+        let backend = match llm_cli_args.qwen_api_backend {
+            QwenApiBackend::Vllm => QwenBackend::Vllm {
+                vllm_port: llm_cli_args.qwen_vllm_port(),
+            },
+            QwenApiBackend::Openrouter => QwenBackend::OpenRouter {
+                base_url: llm_cli_args.openrouter_base_url.clone(),
+                model: llm_cli_args.openrouter_model_or_default(Self::API_NAME),
+                api_key: llm_cli_args.openrouter_api_key(),
+                http_referer: llm_cli_args.openrouter_http_referer.clone(),
+                x_title: llm_cli_args.openrouter_x_title.clone(),
+            },
+        };
+
         Qwen3_4BLlmCallable::new(
             client,
-            llm_cli_args.single_port_for_qwen(),
+            backend,
             llm_cli_args.max_concurrent_requests,
         )
     }

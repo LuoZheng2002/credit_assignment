@@ -11,6 +11,7 @@ use credit_assignment::{
     json_line_util::read_json,
     llm_model::{Gpt4o, Gpt5Mini, LlmCliArgs, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B},
 };
+use pyo3::Python;
 use reqwest::Client;
 use research_utility::{
     message::WorkerMessage,
@@ -62,6 +63,7 @@ async fn main() {
         ui,
         first_n_samples,
     } = Args::parse();
+    Python::initialize();
     let client = Client::new();
     let rollout_config = read_json(rollout_config_path).unwrap();
     let temperature_to_accuracy =

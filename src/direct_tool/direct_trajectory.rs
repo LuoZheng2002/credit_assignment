@@ -50,6 +50,13 @@ impl DirectTrajectory {
         let (_, tool_call, _) = split_reasoning_and_tool_call(tokens.decoded_string.clone());
         tool_call
     }
+    pub fn to_decoded_string(&self) -> String {
+        self.trajectory_contents
+            .iter()
+            .map(|content| content.decoded_string())
+            .collect::<Vec<String>>()
+            .join("    ")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +79,14 @@ impl TrajectoryContent {
             TrajectoryContent::ReasoningOrToolCallComplete(tokens) => &tokens.tokens,
             TrajectoryContent::Prompt(tokens) => &tokens.tokens,
             TrajectoryContent::ToolResponse(tokens) => &tokens.tokens,
+        }
+    }
+    pub fn decoded_string(&self) -> String {
+        match self {
+            TrajectoryContent::ReasoningOrToolCallIncomplete(tokens) => tokens.decoded_string.clone(),
+            TrajectoryContent::ReasoningOrToolCallComplete(tokens) => tokens.decoded_string.clone(),
+            TrajectoryContent::Prompt(tokens) => tokens.decoded_string.clone(),
+            TrajectoryContent::ToolResponse(tokens) => tokens.decoded_string.clone(),
         }
     }
 }

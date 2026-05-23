@@ -4,10 +4,10 @@ use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
 use super::qwen_shared::{
-    SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
+    QwenBackend, SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
 };
 use super::{
-    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArray,
+    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, QwenApiBackend, TokenArray,
     TokenArrayWithLogprob, build_simple_qwen_chatml_prefix,
 };
 
@@ -22,16 +22,30 @@ pub struct Qwen35_4BLlmCallable {
 }
 
 impl Qwen35_4BLlmCallable {
-    pub fn new(client: Client, vllm_port: u16, max_concurrent_requests: usize) -> Self {
+    pub(crate) fn new(
+        client: Client,
+        backend: QwenBackend,
+        max_concurrent_requests: usize,
+    ) -> Self {
         Self {
             shared: SharedQwenLlmCallable::new(
                 client,
                 Qwen35_4B::API_NAME,
-                vllm_port,
+                backend,
                 max_concurrent_requests,
+                decode_qwen35_4b_tokens,
+                encode_qwen35_4b_text,
             ),
         }
     }
+}
+
+fn decode_qwen35_4b_tokens(token_ids: &[i32]) -> String {
+    decode_from_i32_ids(&QWEN35_4B_TOKENIZER, token_ids)
+}
+
+fn encode_qwen35_4b_text(text: &str) -> Vec<i32> {
+    encode_to_i32_ids(&QWEN35_4B_TOKENIZER, text)
 }
 
 #[async_trait]
@@ -98,9 +112,22 @@ impl LlmModelMarker for Qwen35_4B {
     }
 
     fn callable_from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self::Callable {
+        let backend = match llm_cli_args.qwen_api_backend {
+            QwenApiBackend::Vllm => QwenBackend::Vllm {
+                vllm_port: llm_cli_args.qwen_vllm_port(),
+            },
+            QwenApiBackend::Openrouter => QwenBackend::OpenRouter {
+                base_url: llm_cli_args.openrouter_base_url.clone(),
+                model: llm_cli_args.openrouter_model_or_default(Self::API_NAME),
+                api_key: llm_cli_args.openrouter_api_key(),
+                http_referer: llm_cli_args.openrouter_http_referer.clone(),
+                x_title: llm_cli_args.openrouter_x_title.clone(),
+            },
+        };
+
         Qwen35_4BLlmCallable::new(
             client,
-            llm_cli_args.single_port_for_qwen(),
+            backend,
             llm_cli_args.max_concurrent_requests,
         )
     }
