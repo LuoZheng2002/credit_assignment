@@ -30,7 +30,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::prelude::Widget;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui_core::buffer::Buffer;
 use research_utility::asset_file::AssetFile;
@@ -80,10 +80,22 @@ struct TreeSnapshot {
     segments: BTreeMap<SegmentId, Segment>,
     root_segment_id: SegmentId,
     leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
+    segment_posterior_stats: BTreeMap<SegmentId, SegmentPosteriorStats>,
+    segment_posterior_signal_scaled: BTreeMap<SegmentId, f32>,
+}
+
+#[derive(Clone, Copy)]
+struct SegmentPosteriorStats {
+    posterior_mean: f32,
+    posterior_std: f32,
+    signal_to_noise: f32,
 }
 
 impl TreeSnapshot {
     fn from_tree<M: credit_assignment::llm_model::LlmModelMarker>(tree: DirectTree<M>) -> Self {
+        let segment_posterior_stats = segment_posterior_stats(&tree);
+        let segment_posterior_signal_scaled =
+            scaled_segment_posterior_signal(&tree, &segment_posterior_stats);
         let root_segment_id = tree
             .root_segment_id
             .expect("Direct tree browser requires root segment");
@@ -91,6 +103,8 @@ impl TreeSnapshot {
             segments: tree.segments,
             root_segment_id,
             leaf_segment_judgments: tree.leaf_segment_judgments,
+            segment_posterior_stats,
+            segment_posterior_signal_scaled,
         }
     }
 }
@@ -113,7 +127,6 @@ struct TreePage {
     action_limit: usize,
     snapshot: TreeSnapshot,
     selected_segment_id: SegmentId,
-    segment_order: Vec<SegmentId>,
     tree_lines: Vec<String>,
     rendered_segments: Vec<TreeRenderedSegment>,
     hovered_segment_id: Option<SegmentId>,
@@ -127,6 +140,11 @@ struct TreeRenderedSegment {
     col: usize,
 }
 
+struct ConversationRender {
+    plain: String,
+    styled: Text<'static>,
+}
+
 impl TreePage {
     fn new(model: LlmModelName, entry_index: usize, entry: &QuestionEntry) -> Self {
         let total_actions = entry.action_log.actions.len();
@@ -134,14 +152,12 @@ impl TreePage {
         let snapshot = snapshot_for_model(model, &entry.action_log, action_limit);
         let selected_segment_id = snapshot.root_segment_id;
         let (tree_lines, rendered_segments) = build_segment_graph_lines(&snapshot);
-        let segment_order = collect_segment_preorder(&snapshot);
         Self {
             entry_index,
             total_actions,
             action_limit,
             snapshot,
             selected_segment_id,
-            segment_order,
             tree_lines,
             rendered_segments,
             hovered_segment_id: None,
@@ -149,33 +165,9 @@ impl TreePage {
         }
     }
 
-    fn selected_row_index(&self) -> Option<usize> {
-        self.rendered_segments
-            .iter()
-            .find(|segment| segment.segment_id == self.selected_segment_id)
-            .map(|segment| segment.row)
-    }
-
-    fn move_selected_segment_by(&mut self, delta: isize) {
-        let Some(current_index) = self
-            .segment_order
-            .iter()
-            .position(|id| *id == self.selected_segment_id)
-        else {
-            return;
-        };
-        let total = self.segment_order.len();
-        if total == 0 {
-            return;
-        }
-        let next = (current_index as isize + delta).clamp(0, total as isize - 1) as usize;
-        self.selected_segment_id = self.segment_order[next];
-    }
-
     fn rebuild_snapshot(&mut self, model: LlmModelName, entry: &QuestionEntry) {
         self.snapshot = snapshot_for_model(model, &entry.action_log, self.action_limit);
         let (tree_lines, rendered_segments) = build_segment_graph_lines(&self.snapshot);
-        self.segment_order = collect_segment_preorder(&self.snapshot);
         self.tree_lines = tree_lines;
         self.rendered_segments = rendered_segments;
         if !self
@@ -343,12 +335,19 @@ impl App {
             .get(&tree_page.selected_segment_id)
             .expect("selected segment must exist");
 
+        let tree_window_height = (tree_page.tree_lines.len() + 2).max(6);
+        let tree_window_height_u16 = if tree_window_height > u16::MAX as usize {
+            u16::MAX
+        } else {
+            tree_window_height as u16
+        };
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(8),
                 Constraint::Min(8),
-                Constraint::Length(10),
+                Constraint::Length(tree_window_height_u16),
             ])
             .split(frame.area());
 
@@ -356,16 +355,34 @@ impl App {
             .snapshot
             .leaf_segment_judgments
             .get(&tree_page.selected_segment_id);
+        let posterior_stats = tree_page
+            .snapshot
+            .segment_posterior_stats
+            .get(&tree_page.selected_segment_id)
+            .copied();
+
+        let posterior_mean_text = posterior_stats
+            .map(|stats| format!("{:.6}", stats.posterior_mean))
+            .unwrap_or_else(|| "N/A".to_string());
+        let posterior_std_text = posterior_stats
+            .map(|stats| format!("{:.6}", stats.posterior_std))
+            .unwrap_or_else(|| "N/A".to_string());
+        let signal_to_noise_text = posterior_stats
+            .map(|stats| format!("{:.6}", stats.signal_to_noise))
+            .unwrap_or_else(|| "N/A".to_string());
 
         let mut summary = format!(
-            "Question #{}\nQuestion: {}\nCorrect answer: {}\nActions applied: {}/{}\nSelected segment: S{} (children: {})",
+            "Question #{}\nQuestion: {}\nCorrect answer: {}\nActions applied: {}/{}\nSelected segment: S{} (children: {})\nposterior_mean: {}\nposterior_std: {}\nsignal_to_noise: {}",
             entry.key,
             entry.action_log.question.question,
             entry.action_log.question.correct_answer,
             tree_page.action_limit,
             tree_page.total_actions,
             tree_page.selected_segment_id.0,
-            selected_segment.child_ids.len()
+            selected_segment.child_ids.len(),
+            posterior_mean_text,
+            posterior_std_text,
+            signal_to_noise_text,
         );
         if let Some(judgment) = judgment {
             let model_answer = model_answer_text(&judgment.model_answer);
@@ -387,8 +404,8 @@ impl App {
             chunks[0],
         );
 
-        let conversation =
-            build_conversation_text(&tree_page.snapshot, tree_page.selected_segment_id);
+        let conversation_render =
+            build_conversation_render(&tree_page.snapshot, tree_page.selected_segment_id);
         self.conversation_area = Some(chunks[1]);
         let conversation_block = Block::default()
             .borders(Borders::ALL)
@@ -403,7 +420,7 @@ impl App {
         let conversation_inner = conversation_block.inner(chunks[1]);
         let conversation_height = conversation_inner.height as usize;
         let conversation_lines = compute_wrapped_line_count(
-            &conversation,
+            &conversation_render.plain,
             conversation_inner,
             &mut self.conversation_metrics,
         );
@@ -411,7 +428,7 @@ impl App {
             bottom_scroll_limit(conversation_lines, conversation_height.max(1));
         self.conversation_max_scroll = conversation_max_scroll;
         frame.render_widget(
-            Paragraph::new(conversation)
+            Paragraph::new(conversation_render.styled)
                 .wrap(Wrap { trim: false })
                 .block(conversation_block)
                 .scroll((clamp_scroll(self.conversation_scroll), 0)),
@@ -423,11 +440,11 @@ impl App {
             .map(|row| ListItem::new(render_tree_line(tree_page, row)))
             .collect();
         let mut state = ListState::default();
-        state.select(tree_page.selected_row_index());
+        state.select(None);
         let tree_block = Block::default()
             .borders(Borders::ALL)
             .title(
-                "Segment tree (Left/Right changes action count, click or Up/Down selects segment)",
+                "Segment tree (hover highlights, click selects, Left/Right changes action count)",
             )
             .border_style(if self.tree_focus == TreePaneFocus::Tree {
                 Style::default()
@@ -439,7 +456,7 @@ impl App {
         frame.render_stateful_widget(
             List::new(list_items)
                 .block(tree_block)
-                .highlight_style(Style::default().bg(Color::DarkGray))
+                .highlight_style(Style::default())
                 .highlight_symbol(""),
             chunks[2],
             &mut state,
@@ -508,32 +525,24 @@ impl App {
             KeyCode::Up => {
                 if self.tree_focus == TreePaneFocus::Conversation {
                     self.scroll_conversation_up(1);
-                } else {
-                    tree_page.move_selected_segment_by(-1);
                 }
                 false
             }
             KeyCode::Down => {
                 if self.tree_focus == TreePaneFocus::Conversation {
                     self.conversation_scroll = self.conversation_scroll.saturating_add(1);
-                } else {
-                    tree_page.move_selected_segment_by(1);
                 }
                 false
             }
             KeyCode::PageUp => {
                 if self.tree_focus == TreePaneFocus::Conversation {
                     self.scroll_conversation_up(10);
-                } else {
-                    tree_page.move_selected_segment_by(-10);
                 }
                 false
             }
             KeyCode::PageDown => {
                 if self.tree_focus == TreePaneFocus::Conversation {
                     self.conversation_scroll = self.conversation_scroll.saturating_add(10);
-                } else {
-                    tree_page.move_selected_segment_by(10);
                 }
                 false
             }
@@ -673,6 +682,71 @@ fn clamp_scroll(value: usize) -> u16 {
     }
 }
 
+fn segment_posterior_stats<M: credit_assignment::llm_model::LlmModelMarker>(
+    tree: &DirectTree<M>,
+) -> BTreeMap<SegmentId, SegmentPosteriorStats> {
+    let mut stats_by_segment = BTreeMap::new();
+    if tree.segments.is_empty() || tree.leaf_segment_judgments.is_empty() {
+        return stats_by_segment;
+    }
+
+    let eps = 1e-8_f32;
+    let posteriors = tree.calculate_segment_posteriors();
+    for (segment_id, posterior) in posteriors {
+        let posterior_std = posterior.log_std.exp();
+        let signal_to_noise = posterior.mean / (posterior_std + eps);
+        stats_by_segment.insert(
+            segment_id,
+            SegmentPosteriorStats {
+                posterior_mean: posterior.mean,
+                posterior_std,
+                signal_to_noise,
+            },
+        );
+    }
+    stats_by_segment
+}
+
+fn scaled_segment_posterior_signal<M: credit_assignment::llm_model::LlmModelMarker>(
+    tree: &DirectTree<M>,
+    stats_by_segment: &BTreeMap<SegmentId, SegmentPosteriorStats>,
+) -> BTreeMap<SegmentId, f32> {
+    let mut raw_signal = BTreeMap::new();
+    for segment_id in tree.segments.keys().copied() {
+        raw_signal.insert(segment_id, 0.0);
+    }
+    if tree.segments.is_empty() || stats_by_segment.is_empty() {
+        return raw_signal;
+    }
+
+    for (segment_id, stats) in stats_by_segment {
+        raw_signal.insert(*segment_id, stats.signal_to_noise);
+    }
+
+    let mut max_abs = 0.0_f32;
+    for value in raw_signal.values().copied() {
+        max_abs = max_abs.max(value.abs());
+    }
+    if max_abs <= 0.0 {
+        return raw_signal;
+    }
+
+    raw_signal
+        .into_iter()
+        .map(|(segment_id, value)| (segment_id, value / max_abs))
+        .collect()
+}
+
+fn signed_posterior_to_color(signed_position: f32) -> Color {
+    let x = signed_position.clamp(-1.0, 1.0);
+    let (red, green) = if x >= 0.0 {
+        (((1.0 - x) * 255.0).round() as u8, 255)
+    } else {
+        (255, ((1.0 + x) * 255.0).round() as u8)
+    };
+    Color::Rgb(red, green, 0)
+}
+
 fn count_wrapped_lines(text: &str, area: Rect) -> usize {
     if area.width == 0 {
         return 0;
@@ -776,20 +850,6 @@ fn write_pattern(canvas: &mut [Vec<char>], row: usize, col: usize, pattern: &str
     for (i, ch) in pattern_chars.into_iter().enumerate() {
         canvas[row][col + i] = ch;
     }
-}
-
-fn collect_segment_preorder(snapshot: &TreeSnapshot) -> Vec<SegmentId> {
-    let mut order = Vec::new();
-    let mut stack = vec![snapshot.root_segment_id];
-    while let Some(segment_id) = stack.pop() {
-        order.push(segment_id);
-        if let Some(segment) = snapshot.segments.get(&segment_id) {
-            for child in segment.child_ids.iter().rev() {
-                stack.push(*child);
-            }
-        }
-    }
-    order
 }
 
 fn collect_leaf_order(snapshot: &TreeSnapshot) -> Vec<SegmentId> {
@@ -901,7 +961,13 @@ fn build_segment_graph_lines(snapshot: &TreeSnapshot) -> (Vec<String>, Vec<TreeR
                 }
             } else {
                 for row in (parent_row + 1)..child_row {
-                    write_pattern(&mut canvas, row, edge_col, " ┃ ");
+                    let mid_col = edge_col + 1;
+                    if canvas[row].len() <= mid_col {
+                        canvas[row].resize(mid_col + 1, ' ');
+                    }
+                    if canvas[row][mid_col] == ' ' {
+                        canvas[row][mid_col] = '┃';
+                    }
                 }
                 let has_lower_sibling = parent
                     .child_ids
@@ -965,21 +1031,22 @@ fn render_tree_line(tree_page: &TreePage, row: usize) -> Line<'static> {
         if rendered.row != row {
             continue;
         }
-        let style = if rendered.segment_id == tree_page.selected_segment_id {
-            Some(
-                Style::default()
-                    .fg(Color::LightGreen)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else if tree_page.hovered_segment_id == Some(rendered.segment_id) {
-            Some(
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            None
-        };
+        let posterior_signal = tree_page
+            .snapshot
+            .segment_posterior_signal_scaled
+            .get(&rendered.segment_id)
+            .copied()
+            .unwrap_or(0.0);
+        let is_selected = rendered.segment_id == tree_page.selected_segment_id;
+        let is_hovered = tree_page.hovered_segment_id == Some(rendered.segment_id);
+        let mut style = Style::default().fg(signed_posterior_to_color(posterior_signal));
+        if is_selected {
+            style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        }
+        if is_hovered {
+            style = style.bg(Color::DarkGray);
+        }
+        let style = Some(style);
         if let Some(style) = style {
             for idx in rendered.col..(rendered.col + 5) {
                 if idx < styles.len() {
@@ -1053,7 +1120,24 @@ fn tree_segment_at_mouse(tree_page: &TreePage, column: u16, row: u16) -> Option<
         .map(|rendered| rendered.segment_id)
 }
 
-fn build_conversation_text(snapshot: &TreeSnapshot, segment_id: SegmentId) -> String {
+fn push_text_as_spans(
+    spans: &mut Vec<Span<'static>>,
+    text: &str,
+    style: Option<Style>,
+    plain: &mut String,
+) {
+    if text.is_empty() {
+        return;
+    }
+    plain.push_str(text);
+    let span = match style {
+        Some(style) => Span::styled(text.to_string(), style),
+        None => Span::raw(text.to_string()),
+    };
+    spans.push(span);
+}
+
+fn build_conversation_render(snapshot: &TreeSnapshot, segment_id: SegmentId) -> ConversationRender {
     let mut path = Vec::new();
     let mut cursor = Some(segment_id);
     while let Some(current_id) = cursor {
@@ -1066,34 +1150,49 @@ fn build_conversation_text(snapshot: &TreeSnapshot, segment_id: SegmentId) -> St
     }
     path.reverse();
 
-    let mut out = String::new();
+    let mut plain = String::new();
+    let mut spans: Vec<Span<'static>> = Vec::new();
     for sid in path {
         let segment = snapshot
             .segments
             .get(&sid)
             .expect("segment in path must exist");
-        out.push_str(&format!("=== Segment S{} ===\n", sid.0));
+        let segment_color = snapshot
+            .segment_posterior_signal_scaled
+            .get(&sid)
+            .copied()
+            .map(signed_posterior_to_color)
+            .unwrap_or(Color::White);
+        let reasoning_style = Some(Style::default().fg(segment_color));
         for content in &segment.content {
             match content {
                 SegmentContent::Prompt(tokens) => {
-                    out.push_str("[Prompt]\n");
-                    out.push_str(&tokens.decoded_string);
-                    out.push_str("\n\n");
+                    push_text_as_spans(&mut spans, &tokens.decoded_string, None, &mut plain);
                 }
-                SegmentContent::ReasoningOrToolCall { tokens, complete } => {
-                    out.push_str(&format!("[Reasoning complete={complete}]\n"));
-                    out.push_str(&tokens.decoded_string);
-                    out.push_str("\n\n");
+                SegmentContent::ReasoningOrToolCall {
+                    tokens,
+                    complete: _,
+                } => {
+                    push_text_as_spans(
+                        &mut spans,
+                        &tokens.decoded_string,
+                        reasoning_style,
+                        &mut plain,
+                    );
                 }
                 SegmentContent::ToolResponse(tokens) => {
-                    out.push_str("[Tool response]\n");
-                    out.push_str(&tokens.decoded_string);
-                    out.push_str("\n\n");
+                    push_text_as_spans(&mut spans, &tokens.decoded_string, None, &mut plain);
                 }
             }
         }
     }
-    out
+    if spans.is_empty() {
+        spans.push(Span::raw(String::new()));
+    }
+    ConversationRender {
+        plain,
+        styled: Text::from(Line::from(spans)),
+    }
 }
 
 fn snapshot_for_model(
