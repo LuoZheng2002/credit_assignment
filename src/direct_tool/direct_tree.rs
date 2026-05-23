@@ -5,12 +5,12 @@ use serde::{Deserialize, Serialize};
 use crate::{
     agent::tree::CorrectnessJudgment,
     direct_tool::{
+        direct_rollout_config::DirectRolloutConfig,
         direct_tree_action::DirectTreeAction,
-        direct_tree_action_log::{
-            DirectRolloutConfig, DirectTreeActionLog, PosteriorCalculationConfig,
-        },
+        direct_tree_action_log::DirectTreeActionLog,
         direct_tree_status::DirectTreeStatus,
         hybrid_dataset::HybridDatasetQuestion,
+        posterior_calculation_config::PosteriorCalculationConfig,
         prompt::{prompt_with_tool_call, prompt_without_tool_call},
     },
     llm_model::{LlmModelMarker, TokenArrayWithLogprob, Top8Candidates},

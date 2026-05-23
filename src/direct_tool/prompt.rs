@@ -1,4 +1,3 @@
-// todo: fill the tool information
 pub fn prompt_with_tool_call(question: String) -> String {
     format!(
         "\

@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
-use ordered_float::NotNan;
-use serde::{Deserialize, Serialize};
-
 use crate::{
-    direct_tool::direct_tree::{DirectTree, SegmentId},
+    direct_tool::{
+        direct_tree::{DirectTree, SegmentId},
+        posterior_calculation_config::{PosteriorHyperparameters, TemperatureAccuracyPair},
+    },
     llm_model::LlmModelMarker,
 };
 
@@ -12,33 +12,6 @@ use crate::{
 pub struct Posterior {
     pub mean: f32,
     pub log_std: f32,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PosteriorHyperparameters {
-    sigma_mean: NotNan<f64>,
-    sigma_log_std: NotNan<f64>,
-    eps: NotNan<f64>,
-    max_iterations: usize,
-    log_std_clamp_min: NotNan<f64>,
-    log_std_clamp_max: NotNan<f64>,
-    prior_scale: NotNan<f64>,
-    prior_clip_delta: NotNan<f64>,
-}
-
-impl Default for PosteriorHyperparameters {
-    fn default() -> Self {
-        Self {
-            sigma_mean: NotNan::new(1.0).unwrap(),
-            sigma_log_std: NotNan::new(1.0).unwrap(),
-            eps: NotNan::new(1e-6).unwrap(),
-            max_iterations: 120,
-            log_std_clamp_min: NotNan::new(-4.0).unwrap(),
-            log_std_clamp_max: NotNan::new(2.0).unwrap(),
-            prior_scale: NotNan::new(1.0).unwrap(),
-            prior_clip_delta: NotNan::new(1e-6).unwrap(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -145,24 +118,21 @@ impl<M: LlmModelMarker> DirectTree<M> {
         leaf_paths
     }
 
-    fn temperature_conditioned_prior_means(
-        &self,
-        segment_ids: &[SegmentId],
-    ) -> Vec<f64> {
+    fn temperature_conditioned_prior_means(&self, segment_ids: &[SegmentId]) -> Vec<f64> {
         let hyperparameters = &self.posterior_calculation_config.hyperparameters;
-        let temperature_to_accuracy: Vec<(f32, f32)> = self
-            .posterior_calculation_config
-            .temperature_to_accuracy
-            .iter()
-            .map(|(temperature, accuracy)| (temperature.into_inner(), accuracy.into_inner()))
-            .collect();
+        let temperature_to_accuracy = &self.posterior_calculation_config.temperature_to_accuracy;
 
         let global_accuracy = if temperature_to_accuracy.is_empty() {
             0.5
         } else {
             temperature_to_accuracy
                 .iter()
-                .map(|(_, accuracy)| *accuracy as f64)
+                .map(
+                    |TemperatureAccuracyPair {
+                         temperature: _,
+                         accuracy,
+                     }| accuracy.into_inner() as f64,
+                )
                 .sum::<f64>()
                 / temperature_to_accuracy.len() as f64
         };
@@ -252,52 +222,73 @@ impl<M: LlmModelMarker> DirectTree<M> {
     }
 }
 
+pub struct TemperatureAccuracyPairFloat {
+    pub temperature: f32,
+    pub accuracy: f32,
+}
+
 fn interpolated_temperature_accuracy(
     target_temperature: f32,
-    grouped_accuracy: &[(f32, f32)],
+    grouped_accuracy: &[TemperatureAccuracyPair],
     default_accuracy: f64,
 ) -> f64 {
     if grouped_accuracy.is_empty() {
         return default_accuracy;
     }
-    let mut pairs: Vec<(f32, f32)> = grouped_accuracy.to_vec();
-    for (_, accuracy) in &pairs {
+    let mut pairs: Vec<TemperatureAccuracyPairFloat> = grouped_accuracy
+        .iter()
+        .map(
+            |TemperatureAccuracyPair {
+                 temperature,
+                 accuracy,
+             }| TemperatureAccuracyPairFloat {
+                temperature: temperature.into_inner(),
+                accuracy: accuracy.into_inner(),
+            },
+        )
+        .collect();
+    for TemperatureAccuracyPairFloat {
+        temperature: _,
+        accuracy,
+    } in pairs.iter()
+    {
+        let accuracy = *accuracy;
         assert!(accuracy.is_finite(), "Temperature accuracy must be finite");
         assert!(
-            (0.0..=1.0).contains(accuracy),
+            (0.0..=1.0).contains(&accuracy),
             "Temperature accuracy must be in [0, 1]"
         );
     }
-    pairs.sort_by(|(lhs_t, _), (rhs_t, _)| {
-        lhs_t
-            .partial_cmp(rhs_t)
+    pairs.sort_by(|lhs, rhs| {
+        lhs.temperature
+            .partial_cmp(&rhs.temperature)
             .expect("Temperature keys must be comparable")
     });
 
-    let (first_t, first_acc) = pairs[0];
-    if target_temperature <= first_t {
-        return first_acc as f64;
+    let first_pair = &pairs[0];
+    if target_temperature <= first_pair.temperature {
+        return first_pair.accuracy as f64;
     }
-    let (last_t, last_acc) = pairs[pairs.len() - 1];
-    if target_temperature >= last_t {
-        return last_acc as f64;
+    let last_pair = &pairs[pairs.len() - 1];
+    if target_temperature >= last_pair.temperature {
+        return last_pair.accuracy as f64;
     }
 
     for window in pairs.windows(2) {
-        let (left_t, left_acc) = window[0];
-        let (right_t, right_acc) = window[1];
-        if target_temperature < left_t || target_temperature > right_t {
+        let left_pair = &window[0];
+        let right_pair = &window[1];
+        if target_temperature < left_pair.temperature || target_temperature > right_pair.temperature
+        {
             continue;
         }
-        let span = right_t - left_t;
+        let span = right_pair.temperature - left_pair.temperature;
         if span.abs() <= 1e-8 {
-            return right_acc as f64;
+            return right_pair.accuracy as f64;
         }
-        let ratio = (target_temperature - left_t) / span;
-        let interpolated = left_acc + ratio * (right_acc - left_acc);
+        let ratio = (target_temperature - left_pair.temperature) / span;
+        let interpolated = left_pair.accuracy + ratio * (right_pair.accuracy - left_pair.accuracy);
         return interpolated as f64;
     }
-
     default_accuracy
 }
 

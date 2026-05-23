@@ -1,15 +1,21 @@
+use std::sync::Arc;
+
+use clap::ValueEnum;
 use reqwest::Client;
-use research_utility::{sqlite_store::SqliteStore, worker_message_tx::log_key_value_pair};
+use research_utility::{
+    asset_file::AssetFile, sqlite_store::SqliteStore, worker_message_tx::log_key_value_pair,
+};
+use tokio::sync::Semaphore;
 
 use crate::{
     direct_tool::{
+        direct_rollout_config::DirectRolloutConfig,
         direct_tree::DirectTree,
-        direct_tree_action_log::{
-            DirectRolloutConfig, DirectTreeActionLog, PosteriorCalculationConfig,
-        },
-        hybrid_dataset::HybridDatasetQuestion,
+        direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
+        hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
+        posterior_calculation_config::PosteriorCalculationConfig,
     },
-    llm_model::LlmModelMarker,
+    llm_model::{LlmCliArgs, LlmModelMarker, LlmModelName},
 };
 
 pub async fn rollout<M: LlmModelMarker>(
@@ -59,4 +65,55 @@ pub async fn rollout<M: LlmModelMarker>(
         "info".to_string(),
         format!("Rollout {} finished", question.flat_id),
     );
+}
+
+pub async fn direct_rollout_all_with_config<M: LlmModelMarker>(
+    // llm_callable: M::Callable,
+    rollout_config: DirectRolloutConfig,
+    posterior_calculation_config: PosteriorCalculationConfig,
+    client: Client,
+    question_semaphore: Arc<Semaphore>,
+    llm_cli_args: &LlmCliArgs,
+    first_n_samples: Option<usize>,
+) {
+    let llm_callable = M::callable_from_cli_args(client.clone(), llm_cli_args);
+    let asset_file_dataset = AssetFileHybridDataset;
+    let dataset = asset_file_dataset.fetch().await;
+    let asset_file_action_logs = AssetFileDirectTreeActionLogs {
+        model: LlmModelName::from_str(M::CLI_NAME, true).unwrap(),
+        rollout_config: rollout_config.clone(),
+        posterior_calculation_config: posterior_calculation_config.clone(),
+    };
+    asset_file_action_logs.delete_target_file_if_stale();
+    let rollout_store = SqliteStore::<usize, DirectTreeActionLog>::initialize_if_missing(
+        asset_file_action_logs.file_path(),
+    )
+    .await;
+    let mut question_keys = dataset.get_keys().await.unwrap();
+    // sort by question id to ensure deterministic order
+    question_keys.sort();
+    if let Some(first_n) = first_n_samples {
+        question_keys.truncate(first_n);
+    }
+    for question_key in question_keys {
+        let owned_permit = question_semaphore.clone().acquire_owned().await.unwrap();
+        let question = dataset.get(question_key).await.unwrap().unwrap();
+        let rollout_config_clone = rollout_config.clone();
+        let posterior_calculation_config_clone = posterior_calculation_config.clone();
+        let rollout_store = rollout_store.clone();
+        let llm_callable_clone = llm_callable.clone();
+        let client_clone = client.clone();
+        tokio::spawn(async move {
+            rollout::<M>(
+                question,
+                rollout_config_clone,
+                posterior_calculation_config_clone,
+                rollout_store,
+                llm_callable_clone,
+                client_clone,
+            )
+            .await;
+            drop(owned_permit);
+        });
+    }
 }

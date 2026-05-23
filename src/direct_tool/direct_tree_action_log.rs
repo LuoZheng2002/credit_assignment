@@ -1,6 +1,3 @@
-use std::collections::BTreeMap;
-
-use ordered_float::NotNan;
 use research_utility::{
     asset_file::{AssetFile, Base64Hash, hash_file},
     sqlite_store::SqliteStore,
@@ -9,9 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     direct_tool::{
+        direct_rollout_config::DirectRolloutConfig,
         direct_tree_action::DirectTreeAction,
-        direct_tree_posterior::PosteriorHyperparameters,
         hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
+        posterior_calculation_config::PosteriorCalculationConfig,
     },
     json_line_util::read_json,
     llm_model::LlmModelName,
@@ -25,24 +23,6 @@ pub struct DirectTreeActionLog {
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
     pub actions: Vec<DirectTreeAction>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct DirectRolloutConfig {
-    pub max_num_trunks: usize,
-    pub max_num_total_trajectories: usize,
-    pub temperature_fixed: bool,
-    pub use_tool: bool,
-}
-
-impl DirectRolloutConfig {
-    pub fn to_short_hash(&self) -> String {
-        let serialized = serde_json::to_vec(self).unwrap();
-        let hash = blake3::hash(&serialized);
-        let short_hash = hex::encode(&hash.as_bytes()[..4]); // Take the first 4 bytes for a shorter hash
-        assert_eq!(short_hash.len(), 8); // 4 bytes should give us 8 hex characters
-        short_hash
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,14 +39,11 @@ pub struct AssetFileDirectTreeActionLogs {
     pub posterior_calculation_config: PosteriorCalculationConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PosteriorCalculationConfig {
-    pub temperature_to_accuracy: BTreeMap<NotNan<f32>, NotNan<f32>>,
-    pub hyperparameters: PosteriorHyperparameters,
-}
+// for this asset, we check if the tracking file is stale
+// if so, we delete the target file
 
 impl AssetFileDirectTreeActionLogs {
-    fn file_path(&self) -> String {
+    pub fn file_path(&self) -> String {
         format!(
             "results/{}/direct_action_Log_{}.sqlite",
             self.model.cli_name(),
@@ -79,6 +56,34 @@ impl AssetFileDirectTreeActionLogs {
             self.model.cli_name(),
             self.rollout_config.to_short_hash()
         )
+    }
+    pub fn delete_target_file_if_stale(&self) {
+        let stale = match read_json::<AssetFileDirectTreeActionLogsTracking>(
+            self.version_tracking_path(),
+        ) {
+            Ok(tracking_content) => {
+                let dataset_asset_file = AssetFileHybridDataset;
+                let dataset_hash = futures::executor::block_on(dataset_asset_file.synchronize());
+                dataset_hash != tracking_content.dataset_hash
+                    || tracking_content.action_log_schema_version != ACTION_LOG_SCHEMA_VERSION
+                    || tracking_content.rollout_config != self.rollout_config
+            }
+            Err(_) => {
+                // if we cannot read the tracking file, we consider the target file as stale (if exists)
+                true
+            }
+        };
+        if stale {
+            println!(
+                "Target file {} is stale. Deleting if exists...",
+                self.file_path()
+            );
+            // the target file is stale, delete it if exists
+            if std::path::Path::new(&self.file_path()).exists() {
+                std::fs::remove_file(self.file_path()).expect("Failed to delete stale target file");
+                println!("Deleted stale target file for direct action log");
+            }
+        }
     }
 }
 

@@ -6,6 +6,7 @@ use std::{
     },
 };
 
+use clap::ValueEnum;
 use indexmap::IndexMap;
 use pyo3::Python;
 use rand::{Rng, SeedableRng, rngs::StdRng};
@@ -42,12 +43,11 @@ fn publish_master_progress(processed_questions: usize, total_questions: usize) {
 
 // this function is responsible for loading the dataset, running rollouts and then storing the trajectories.
 pub async fn rollout_batch<M: LlmModelMarker + 'static>(
-    model: LlmModelName,
     dataset_name: String,
     num_samples: usize,
     llm_callable: M::Callable,
 ) {
-    let model_name = model.cli_name();
+    let model_name = M::CLI_NAME;
     log_key_value_pair(
         "status".to_string(),
         "Initializing rollout batch".to_string(),
@@ -65,7 +65,7 @@ pub async fn rollout_batch<M: LlmModelMarker + 'static>(
     let mut rng = StdRng::seed_from_u64(42);
 
     let asset_file_action_logs = AssetFileActionLogs {
-        model,
+        model: LlmModelName::from_str(M::CLI_NAME, true).unwrap(),
         dataset: dataset_name.clone(),
         num_samples,
     };

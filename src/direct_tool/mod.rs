@@ -1,4 +1,5 @@
 pub mod direct_rollout;
+pub mod direct_rollout_config;
 pub mod direct_trajectory;
 pub mod direct_tree;
 pub mod direct_tree_action;
@@ -9,7 +10,7 @@ pub mod direct_tree_posterior;
 pub mod direct_tree_status;
 pub mod direct_tree_to_actions;
 pub mod hybrid_dataset;
-pub mod posterior_calculation;
+pub mod posterior_calculation_config;
 pub mod posterior_schema;
 pub mod prompt;
 pub mod test_set_entry;

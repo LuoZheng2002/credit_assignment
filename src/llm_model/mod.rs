@@ -98,8 +98,6 @@ pub struct LlmCliArgs {
     #[arg(long)]
     pub model_cli_name: String,
     #[arg(long)]
-    pub gpt_vllm_port: Option<u16>,
-    #[arg(long)]
     pub qwen_vllm_port: Option<u16>,
     #[arg(long, default_value_t = 100)]
     pub max_concurrent_requests: usize,
@@ -109,7 +107,6 @@ impl LlmCliArgs {
     pub fn single_port_for_qwen(&self) -> u16 {
         let port = self
             .qwen_vllm_port
-            .or(self.gpt_vllm_port)
             .expect("Qwen model requires --qwen-vllm-port (or --gpt-vllm-port as fallback)");
         assert!(port > 0, "vLLM port must be greater than 0");
         port

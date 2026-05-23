@@ -1,0 +1,6 @@
+{
+    "max_num_trunks": 4,
+    "max_num_total_trajectories": 16,
+    "temperature_fixed": false,
+    "use_tool": true
+}

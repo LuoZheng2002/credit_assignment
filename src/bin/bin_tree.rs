@@ -15,13 +15,13 @@ use reqwest::Client;
 use tokio::sync::mpsc;
 
 async fn run_rollout_for_marker<M: LlmModelMarker>(
-    model: LlmModelName,
+    // model: LlmModelName,
     dataset_name: String,
     num_samples: usize,
     llm_cli_args: &LlmCliArgs,
 ) {
     let llm_callable = M::callable_from_cli_args(Client::new(), llm_cli_args);
-    rollout_batch::<M>(model, dataset_name, num_samples, llm_callable).await;
+    rollout_batch::<M>(dataset_name, num_samples, llm_callable).await;
 }
 
 #[derive(Parser, Debug)]
@@ -71,13 +71,6 @@ async fn main() {
     let progress_screen = if ui {
         let mut progress_screen_config = ProgressScreenConfig::from_defaults(1, 1);
         progress_screen_config.window_title = "Bin Tree Rollout Progress".to_string();
-        progress_screen_config.key_order = vec![
-            "status".to_string(),
-            "model".to_string(),
-            "dataset".to_string(),
-            "num_samples".to_string(),
-            "running_accuracy".to_string(),
-        ];
         progress_screen_config.persist_after_channel_close = false;
 
         let progress_screen = ProgressScreen::new(progress_screen_config);
@@ -112,22 +105,19 @@ async fn main() {
 
     match model {
         LlmModelName::Gpt4o => {
-            run_rollout_for_marker::<Gpt4o>(model, dataset_name, num_samples, &llm_cli_args).await
+            run_rollout_for_marker::<Gpt4o>(dataset_name, num_samples, &llm_cli_args).await
         }
         LlmModelName::Gpt5Mini => {
-            run_rollout_for_marker::<Gpt5Mini>(model, dataset_name, num_samples, &llm_cli_args)
-                .await
+            run_rollout_for_marker::<Gpt5Mini>(dataset_name, num_samples, &llm_cli_args).await
         }
         LlmModelName::Qwen25_7b => {
-            run_rollout_for_marker::<Qwen25>(model, dataset_name, num_samples, &llm_cli_args).await
+            run_rollout_for_marker::<Qwen25>(dataset_name, num_samples, &llm_cli_args).await
         }
         LlmModelName::Qwen3_4b => {
-            run_rollout_for_marker::<Qwen3_4B>(model, dataset_name, num_samples, &llm_cli_args)
-                .await
+            run_rollout_for_marker::<Qwen3_4B>(dataset_name, num_samples, &llm_cli_args).await
         }
         LlmModelName::Qwen35_4b => {
-            run_rollout_for_marker::<Qwen35_4B>(model, dataset_name, num_samples, &llm_cli_args)
-                .await
+            run_rollout_for_marker::<Qwen35_4B>(dataset_name, num_samples, &llm_cli_args).await
         }
     }
 
