@@ -95,9 +95,9 @@ struct SegmentPosteriorStats {
 impl TreeSnapshot {
     fn from_tree<M: credit_assignment::llm_model::LlmModelMarker>(
         tree: DirectTree<M>,
-        fixed_width_scale_ratio: Option<f64>,
+        width_division_ratio: Option<usize>,
     ) -> Self {
-        let segment_display_widths = segment_display_widths(&tree, fixed_width_scale_ratio);
+        let segment_display_widths = segment_display_widths(&tree, width_division_ratio);
         let segment_posterior_stats = segment_posterior_stats(&tree);
         let segment_posterior_signal_scaled =
             scaled_segment_posterior_signal(&tree, &segment_posterior_stats);
@@ -131,13 +131,30 @@ struct TreePage {
     entry_index: usize,
     total_actions: usize,
     action_limit: usize,
-    fixed_width_scale_ratio: f64,
+    width_division_ratio: usize,
     snapshot: TreeSnapshot,
     selected_segment_id: SegmentId,
     tree_lines: Vec<String>,
     rendered_segments: Vec<TreeRenderedSegment>,
     hovered_segment_id: Option<SegmentId>,
     tree_area: Option<Rect>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TreeScrollMode {
+    Scaling,
+    Panning,
+    Evolution,
+}
+
+impl TreeScrollMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Scaling => "Scaling",
+            Self::Panning => "Panning",
+            Self::Evolution => "Evolution",
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -157,12 +174,12 @@ impl TreePage {
     fn new(model: LlmModelName, entry_index: usize, entry: &QuestionEntry) -> Self {
         let total_actions = entry.action_log.actions.len();
         let action_limit = total_actions;
-        let fixed_width_scale_ratio = fixed_width_scale_ratio_for_model(model, &entry.action_log);
+        let width_division_ratio = width_division_ratio_for_model(model, &entry.action_log);
         let snapshot = snapshot_for_model(
             model,
             &entry.action_log,
             action_limit,
-            Some(fixed_width_scale_ratio),
+            Some(width_division_ratio),
         );
         let selected_segment_id = snapshot.root_segment_id;
         let (tree_lines, rendered_segments) = build_segment_graph_lines(&snapshot);
@@ -170,7 +187,7 @@ impl TreePage {
             entry_index,
             total_actions,
             action_limit,
-            fixed_width_scale_ratio,
+            width_division_ratio,
             snapshot,
             selected_segment_id,
             tree_lines,
@@ -185,7 +202,7 @@ impl TreePage {
             model,
             &entry.action_log,
             self.action_limit,
-            Some(self.fixed_width_scale_ratio),
+            Some(self.width_division_ratio),
         );
         let (tree_lines, rendered_segments) = build_segment_graph_lines(&self.snapshot);
         self.tree_lines = tree_lines;
@@ -212,6 +229,19 @@ impl TreePage {
         self.action_limit = new_limit;
         self.rebuild_snapshot(model, entry);
     }
+
+    fn set_width_division_ratio(
+        &mut self,
+        model: LlmModelName,
+        entry: &QuestionEntry,
+        new_ratio: usize,
+    ) {
+        if self.width_division_ratio == new_ratio {
+            return;
+        }
+        self.width_division_ratio = new_ratio.max(1);
+        self.rebuild_snapshot(model, entry);
+    }
 }
 
 struct App {
@@ -223,6 +253,7 @@ struct App {
     conversation_area: Option<Rect>,
     tree_page: Option<TreePage>,
     tree_focus: TreePaneFocus,
+    tree_scroll_mode: TreeScrollMode,
     tree_horizontal_scroll: usize,
     conversation_scroll: usize,
     conversation_max_scroll: usize,
@@ -240,6 +271,7 @@ impl App {
             conversation_area: None,
             tree_page: None,
             tree_focus: TreePaneFocus::Tree,
+            tree_scroll_mode: TreeScrollMode::Scaling,
             tree_horizontal_scroll: 0,
             conversation_scroll: 0,
             conversation_max_scroll: 0,
@@ -473,8 +505,12 @@ impl App {
             .borders(Borders::ALL)
             .title(
                 format!(
-                    "Segment tree (hover highlights, click selects, Left/Right scroll, wheel changes action limit) [hscroll={}]",
-                    self.tree_horizontal_scroll
+                    "Segment tree [mode:{} ratio:{} hscroll:{} actions:{}/{}] (1:scale 2:pan 3:evolve, wheel follows mode)",
+                    self.tree_scroll_mode.label(),
+                    tree_page.width_division_ratio,
+                    self.tree_horizontal_scroll,
+                    tree_page.action_limit,
+                    tree_page.total_actions,
                 ),
             )
             .border_style(if self.tree_focus == TreePaneFocus::Tree {
@@ -536,6 +572,7 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.mode = Mode::Home;
                 self.tree_page = None;
+                self.tree_scroll_mode = TreeScrollMode::Scaling;
                 self.tree_horizontal_scroll = 0;
                 self.conversation_area = None;
                 self.conversation_scroll = 0;
@@ -586,6 +623,18 @@ impl App {
                     TreePaneFocus::Conversation => TreePaneFocus::Tree,
                     TreePaneFocus::Tree => TreePaneFocus::Conversation,
                 };
+                false
+            }
+            KeyCode::Char('1') => {
+                self.tree_scroll_mode = TreeScrollMode::Scaling;
+                false
+            }
+            KeyCode::Char('2') => {
+                self.tree_scroll_mode = TreeScrollMode::Panning;
+                false
+            }
+            KeyCode::Char('3') => {
+                self.tree_scroll_mode = TreeScrollMode::Evolution;
                 false
             }
             _ => false,
@@ -645,8 +694,28 @@ impl App {
                     self.scroll_conversation_up(1);
                 } else if self.tree_focus == TreePaneFocus::Tree {
                     let entry = &self.entries[tree_page.entry_index];
-                    let next = tree_page.action_limit.saturating_sub(1);
-                    tree_page.set_action_limit(self.model, entry, next);
+                    match self.tree_scroll_mode {
+                        TreeScrollMode::Scaling => {
+                            let old_ratio = tree_page.width_division_ratio;
+                            let new_ratio = old_ratio.saturating_sub(1).max(1);
+                            if old_ratio != new_ratio {
+                                self.tree_horizontal_scroll = scale_horizontal_scroll(
+                                    self.tree_horizontal_scroll,
+                                    old_ratio,
+                                    new_ratio,
+                                );
+                                tree_page.set_width_division_ratio(self.model, entry, new_ratio);
+                            }
+                        }
+                        TreeScrollMode::Panning => {
+                            self.tree_horizontal_scroll =
+                                self.tree_horizontal_scroll.saturating_sub(4);
+                        }
+                        TreeScrollMode::Evolution => {
+                            let next = tree_page.action_limit.saturating_sub(1);
+                            tree_page.set_action_limit(self.model, entry, next);
+                        }
+                    }
                 }
             }
             MouseEventKind::ScrollDown => {
@@ -654,8 +723,26 @@ impl App {
                     self.conversation_scroll = self.conversation_scroll.saturating_add(1);
                 } else if self.tree_focus == TreePaneFocus::Tree {
                     let entry = &self.entries[tree_page.entry_index];
-                    let next = (tree_page.action_limit + 1).min(tree_page.total_actions);
-                    tree_page.set_action_limit(self.model, entry, next);
+                    match self.tree_scroll_mode {
+                        TreeScrollMode::Scaling => {
+                            let old_ratio = tree_page.width_division_ratio;
+                            let new_ratio = old_ratio.saturating_add(1);
+                            self.tree_horizontal_scroll = scale_horizontal_scroll(
+                                self.tree_horizontal_scroll,
+                                old_ratio,
+                                new_ratio,
+                            );
+                            tree_page.set_width_division_ratio(self.model, entry, new_ratio);
+                        }
+                        TreeScrollMode::Panning => {
+                            self.tree_horizontal_scroll =
+                                self.tree_horizontal_scroll.saturating_add(4);
+                        }
+                        TreeScrollMode::Evolution => {
+                            let next = (tree_page.action_limit + 1).min(tree_page.total_actions);
+                            tree_page.set_action_limit(self.model, entry, next);
+                        }
+                    }
                 }
             }
             _ => {}
@@ -670,6 +757,7 @@ impl App {
         self.tree_page = Some(TreePage::new(self.model, self.home_selected_index, entry));
         self.mode = Mode::Tree;
         self.tree_focus = TreePaneFocus::Tree;
+        self.tree_scroll_mode = TreeScrollMode::Scaling;
         self.tree_horizontal_scroll = 0;
         self.conversation_scroll = 0;
         self.conversation_max_scroll = 0;
@@ -715,6 +803,12 @@ fn clamp_scroll(value: usize) -> u16 {
     } else {
         value as u16
     }
+}
+
+fn scale_horizontal_scroll(scroll: usize, old_ratio: usize, new_ratio: usize) -> usize {
+    let safe_old = old_ratio.max(1) as f64;
+    let safe_new = new_ratio.max(1) as f64;
+    ((scroll as f64) * safe_old / safe_new).round() as usize
 }
 
 fn segment_token_length(segment: &Segment) -> usize {
@@ -779,19 +873,18 @@ fn fixed_width_scale_ratio_for_tree<M: credit_assignment::llm_model::LlmModelMar
 
 fn segment_display_widths<M: credit_assignment::llm_model::LlmModelMarker>(
     tree: &DirectTree<M>,
-    fixed_width_scale_ratio: Option<f64>,
+    width_division_ratio: Option<usize>,
 ) -> BTreeMap<SegmentId, usize> {
     let mut widths = BTreeMap::new();
     if tree.segments.is_empty() {
         return widths;
     }
 
-    let fixed_ratio =
-        fixed_width_scale_ratio.unwrap_or_else(|| fixed_width_scale_ratio_for_tree(tree));
+    let division_ratio = width_division_ratio.unwrap_or_else(|| width_division_ratio_for_tree(tree));
 
     for (segment_id, segment) in &tree.segments {
         let token_len = segment_token_length(segment);
-        let scaled = ((token_len as f64) * fixed_ratio).round() as usize;
+        let scaled = token_len / division_ratio.max(1);
         widths.insert(*segment_id, scaled.max(1));
     }
     widths
@@ -1417,7 +1510,7 @@ fn snapshot_for_model(
     model: LlmModelName,
     action_log: &DirectTreeActionLog,
     action_limit: usize,
-    fixed_width_scale_ratio: Option<f64>,
+    width_division_ratio: Option<usize>,
 ) -> TreeSnapshot {
     let mut partial_log = action_log.clone();
     partial_log.actions = action_log
@@ -1429,45 +1522,55 @@ fn snapshot_for_model(
     match model {
         LlmModelName::Qwen25_7b => TreeSnapshot::from_tree(
             DirectTree::<Qwen25>::from_action_log(&partial_log),
-            fixed_width_scale_ratio,
+            width_division_ratio,
         ),
         LlmModelName::Qwen3_4b => TreeSnapshot::from_tree(
             DirectTree::<Qwen3_4B>::from_action_log(&partial_log),
-            fixed_width_scale_ratio,
+            width_division_ratio,
         ),
         LlmModelName::Qwen35_4b => TreeSnapshot::from_tree(
             DirectTree::<Qwen35_4B>::from_action_log(&partial_log),
-            fixed_width_scale_ratio,
+            width_division_ratio,
         ),
         LlmModelName::Gpt4o => TreeSnapshot::from_tree(
             DirectTree::<Gpt4o>::from_action_log(&partial_log),
-            fixed_width_scale_ratio,
+            width_division_ratio,
         ),
         LlmModelName::Gpt5Mini => TreeSnapshot::from_tree(
             DirectTree::<Gpt5Mini>::from_action_log(&partial_log),
-            fixed_width_scale_ratio,
+            width_division_ratio,
         ),
     }
 }
 
-fn fixed_width_scale_ratio_for_model(model: LlmModelName, action_log: &DirectTreeActionLog) -> f64 {
+fn width_division_ratio_for_model(model: LlmModelName, action_log: &DirectTreeActionLog) -> usize {
     match model {
         LlmModelName::Qwen25_7b => {
-            fixed_width_scale_ratio_for_tree(&DirectTree::<Qwen25>::from_action_log(action_log))
+            width_division_ratio_for_tree(&DirectTree::<Qwen25>::from_action_log(action_log))
         }
         LlmModelName::Qwen3_4b => {
-            fixed_width_scale_ratio_for_tree(&DirectTree::<Qwen3_4B>::from_action_log(action_log))
+            width_division_ratio_for_tree(&DirectTree::<Qwen3_4B>::from_action_log(action_log))
         }
         LlmModelName::Qwen35_4b => {
-            fixed_width_scale_ratio_for_tree(&DirectTree::<Qwen35_4B>::from_action_log(action_log))
+            width_division_ratio_for_tree(&DirectTree::<Qwen35_4B>::from_action_log(action_log))
         }
         LlmModelName::Gpt4o => {
-            fixed_width_scale_ratio_for_tree(&DirectTree::<Gpt4o>::from_action_log(action_log))
+            width_division_ratio_for_tree(&DirectTree::<Gpt4o>::from_action_log(action_log))
         }
         LlmModelName::Gpt5Mini => {
-            fixed_width_scale_ratio_for_tree(&DirectTree::<Gpt5Mini>::from_action_log(action_log))
+            width_division_ratio_for_tree(&DirectTree::<Gpt5Mini>::from_action_log(action_log))
         }
     }
+}
+
+fn width_division_ratio_for_tree<M: credit_assignment::llm_model::LlmModelMarker>(
+    tree: &DirectTree<M>,
+) -> usize {
+    let fixed_scale_ratio = fixed_width_scale_ratio_for_tree(tree);
+    if fixed_scale_ratio <= 0.0 {
+        return 1;
+    }
+    ((1.0 / fixed_scale_ratio).round() as usize).max(1)
 }
 
 fn question_stats_from_action_log(
