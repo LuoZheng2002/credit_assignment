@@ -25,16 +25,28 @@ pub struct DirectTreeActionLog {
     pub actions: Vec<DirectTreeAction>,
 }
 
+// rollout config and posterior_calculation_config are intrinsic to each action log
+// we need to provide the configs during rollout generation, but for referencing the log, we can use a unique name
+// however, this will complicate things
+
+// we want the downstream files to also record the config as a part of the tracking even if they are no longer used
+
+// if we only get the unique name, we cannot synchronize the rollout log file since we don't know which config it corresponds to
+
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetFileDirectTreeActionLogsTracking {
     pub dataset_hash: Base64Hash,
-    pub action_log_schema_version: usize,
+    pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig,
+    pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub action_log_schema_version: usize,    
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AssetFileDirectTreeActionLogs {
     pub model: LlmModelName,
+    pub nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
 }
@@ -43,40 +55,75 @@ pub struct AssetFileDirectTreeActionLogs {
 // if so, we delete the target file
 
 impl AssetFileDirectTreeActionLogs {
+    fn to_short_hash(&self) -> String {
+        let serialized = serde_json::to_vec(self).unwrap();
+        let hash = blake3::hash(&serialized);
+        let short_hash = hex::encode(&hash.as_bytes()[..4]); // Take the first 4 bytes for a shorter hash
+        assert_eq!(short_hash.len(), 8); // 4 bytes should give us 8 hex characters
+        short_hash
+    }
     pub fn file_path(&self) -> String {
         format!(
-            "results/{}/direct_action_Log_{}.sqlite",
+            "results/{}/direct_action_log_{}_{}.sqlite",
             self.model.cli_name(),
-            self.rollout_config.to_short_hash()
+            self.nickname,
+            self.to_short_hash()
         )
     }
     fn version_tracking_path(&self) -> String {
         format!(
-            "results_version_tracking/{}/direct_action_Log_{}_tracking.json",
+            "results_version_tracking/{}/direct_action_log_{}_{}_tracking.json",
             self.model.cli_name(),
-            self.rollout_config.to_short_hash()
+            self.nickname,
+            self.to_short_hash()
         )
     }
     pub fn delete_target_file_if_stale(&self) {
-        let stale = match read_json::<AssetFileDirectTreeActionLogsTracking>(
+        let stale_reason: Option<String> = match read_json::<AssetFileDirectTreeActionLogsTracking>(
             self.version_tracking_path(),
         ) {
             Ok(tracking_content) => {
                 let dataset_asset_file = AssetFileHybridDataset;
                 let dataset_hash = futures::executor::block_on(dataset_asset_file.synchronize());
-                dataset_hash != tracking_content.dataset_hash
-                    || tracking_content.action_log_schema_version != ACTION_LOG_SCHEMA_VERSION
-                    || tracking_content.rollout_config != self.rollout_config
+                if dataset_hash != tracking_content.dataset_hash {
+                    Some(format!(
+                        "Tracking file exists but stale: dataset hash mismatch (tracking: {:?}, current: {:?})",
+                        tracking_content.dataset_hash, dataset_hash
+                    ))
+                } else if tracking_content.action_log_schema_version != ACTION_LOG_SCHEMA_VERSION {
+                    Some(format!(
+                        "Tracking file exists but stale: action log schema version mismatch (tracking: {}, current: {})",
+                        tracking_content.action_log_schema_version, ACTION_LOG_SCHEMA_VERSION
+                    ))
+                } else if tracking_content.rollout_config != self.rollout_config {
+                    Some(format!(
+                        "Tracking file exists but stale: rollout config mismatch (tracking: {:?}, current: {:?})",
+                        tracking_content.rollout_config, self.rollout_config
+                    ))
+                } else if tracking_content.posterior_calculation_config != self.posterior_calculation_config {
+                    Some(format!(
+                        "Tracking file exists but stale: posterior calculation config mismatch (tracking: {:?}, current: {:?})",
+                        tracking_content.posterior_calculation_config, self.posterior_calculation_config
+                    ))
+                } else if tracking_content.config_nickname != self.nickname {
+                    Some(format!(
+                        "Tracking file exists but stale: nickname mismatch (tracking: {:?}, current: {:?})",
+                        tracking_content.config_nickname, self.nickname
+                    ))
+                } else {
+                    None
+                }
             }
             Err(_) => {
                 // if we cannot read the tracking file, we consider the target file as stale (if exists)
-                true
+                Some("Tracking file missing or incompatible format".to_string())
             }
         };
-        if stale {
+        if let Some(reason) = stale_reason {
             println!(
-                "Target file {} is stale. Deleting if exists...",
-                self.file_path()
+                "Target file {} is stale. Deleting if exists... Reason: {}",
+                self.file_path(),
+                reason
             );
             // the target file is stale, delete it if exists
             if std::path::Path::new(&self.file_path()).exists() {
@@ -84,6 +131,23 @@ impl AssetFileDirectTreeActionLogs {
                 println!("Deleted stale target file for direct action log");
             }
         }
+    }
+    pub fn create_tracking_file(&self) {
+        // we collect the dataset hash
+        let dataset_asset_file = AssetFileHybridDataset;
+        let dataset_hash = futures::executor::block_on(dataset_asset_file.synchronize());
+        let tracking_content = AssetFileDirectTreeActionLogsTracking {
+            dataset_hash,
+            config_nickname: self.nickname.clone(),            
+            rollout_config: self.rollout_config.clone(),
+            posterior_calculation_config: self.posterior_calculation_config.clone(),
+            action_log_schema_version: ACTION_LOG_SCHEMA_VERSION,
+        };
+        std::fs::write(
+            self.version_tracking_path(),
+            serde_json::to_string_pretty(&tracking_content).unwrap(),
+        )
+        .expect("Failed to write tracking file for direct action log");
     }
 }
 
@@ -104,6 +168,8 @@ impl AssetFile for AssetFileDirectTreeActionLogs {
             ACTION_LOG_SCHEMA_VERSION
         );
         assert_eq!(tracking_content.rollout_config, self.rollout_config);
+        assert_eq!(tracking_content.posterior_calculation_config, self.posterior_calculation_config);
+        assert_eq!(tracking_content.config_nickname, self.nickname);
         // check if target file exists and returns hash
         hash_file(self.file_path()).expect("Target file missing for direct action log")
     }

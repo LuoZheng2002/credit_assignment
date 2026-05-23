@@ -20,6 +20,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 ));
                 let segment_id = SegmentId(self.next_segment_id);
                 self.next_segment_id += 1;
+                let root_id = self.root_segment_id.expect("Root id must exist");
                 self.segments.insert(
                     segment_id,
                     Segment {
@@ -27,10 +28,10 @@ impl<M: LlmModelMarker> DirectTree<M> {
                         content,
                         llm_temperature: self.next_segment_temperature,
                         child_ids: vec![],
-                        parent_id: None,
+                        parent_id: Some(root_id),
                     },
                 );
-                let root_id = self.root_segment_id.expect("Root id must exist");
+                
                 let root_segment = self
                     .segments
                     .get_mut(&root_id)

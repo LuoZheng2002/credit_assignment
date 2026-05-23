@@ -30,9 +30,10 @@ struct Args {
     #[command(flatten)]
     llm_cli_args: LlmCliArgs,
     #[arg(long)]
+    config_nickname: String,
+    #[arg(long)]
     rollout_config_path: String,
     #[arg(long)]
-    // posterior_calculation_config_path: String,
     temperature_to_accuracy_path: String,
     #[arg(long)]
     posterior_hyperparameters_path: String,
@@ -56,6 +57,7 @@ async fn main() {
     }));
     dotenvy::dotenv().ok();
     let Args {
+        config_nickname,
         llm_cli_args,
         rollout_config_path,
         temperature_to_accuracy_path,
@@ -116,6 +118,7 @@ async fn main() {
     match model_name {
         LlmModelName::Qwen25_7b => {
             direct_rollout_all_with_config::<Qwen25>(
+                config_nickname,
                 rollout_config,
                 posterior_calculation_config,
                 client,
@@ -127,6 +130,7 @@ async fn main() {
         }
         LlmModelName::Qwen3_4b => {
             direct_rollout_all_with_config::<Qwen3_4B>(
+                config_nickname,
                 rollout_config,
                 posterior_calculation_config,
                 client,
@@ -138,6 +142,7 @@ async fn main() {
         }
         LlmModelName::Qwen35_4b => {
             direct_rollout_all_with_config::<Qwen35_4B>(
+                config_nickname,
                 rollout_config,
                 posterior_calculation_config,
                 client,
@@ -149,6 +154,7 @@ async fn main() {
         }
         LlmModelName::Gpt4o => {
             direct_rollout_all_with_config::<Gpt4o>(
+                config_nickname,
                 rollout_config,
                 posterior_calculation_config,
                 client,
@@ -160,6 +166,7 @@ async fn main() {
         }
         LlmModelName::Gpt5Mini => {
             direct_rollout_all_with_config::<Gpt5Mini>(
+                config_nickname,
                 rollout_config,
                 posterior_calculation_config,
                 client,

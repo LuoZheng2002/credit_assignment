@@ -69,7 +69,7 @@ pub async fn rollout<M: LlmModelMarker>(
 }
 
 pub async fn direct_rollout_all_with_config<M: LlmModelMarker>(
-    // llm_callable: M::Callable,
+    config_nickname: String,
     rollout_config: DirectRolloutConfig,
     posterior_calculation_config: PosteriorCalculationConfig,
     client: Client,
@@ -84,8 +84,10 @@ pub async fn direct_rollout_all_with_config<M: LlmModelMarker>(
         model: LlmModelName::from_str(M::CLI_NAME, true).unwrap(),
         rollout_config: rollout_config.clone(),
         posterior_calculation_config: posterior_calculation_config.clone(),
+        nickname: config_nickname.clone(),
     };
     asset_file_action_logs.delete_target_file_if_stale();
+    asset_file_action_logs.create_tracking_file();
     let rollout_store = SqliteStore::<usize, DirectTreeActionLog>::initialize_if_missing(
         asset_file_action_logs.file_path(),
     )

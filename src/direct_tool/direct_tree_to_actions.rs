@@ -65,7 +65,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     assert!(token_view.content_index_in_segment == 0); // the first token view must correspond to the first content in the segment, which should be a reasoning content
                     // node branching candidate
                     let parent_segment = self.segments.get(segment_id).unwrap().parent_id.expect(
-                        "A reasoning only token must have parents since prompt segment is root",
+                        &format!("A reasoning only segment must have parents since prompt segment is root: {:?}", segment_id),
                     ); // considering that we want the invariant that every reasoning segment has a parent, we need to do special treatment for the first trunk
                     let child_segments = self.segments.get(segment_id).unwrap().child_ids.clone();
                     // sibling tokens are the first token view token of the sibling segments
@@ -415,16 +415,20 @@ impl<M: LlmModelMarker> DirectTree<M> {
         let mut continuing_contents = Vec::new();
         loop {
             let trajectory = self.get_trajectory(target_segment_id, &continuing_contents);
+            if let Some(answer) = trajectory.try_get_answer() {
+                if continuing_contents.is_empty() {
+                    println!("trajectory contents: {}", trajectory.to_decoded_string());
+                    panic!("The trajectory should produce some continuing content before producing the answer");
+                }
+                return (continuing_contents, answer);
+            }            
             let next_content = generate_next_segment_content::<M>(
                 &trajectory,
                 llm_callable,
-                // rng,
             )
             .await;
             continuing_contents.push(next_content.clone());
-            if let Some(answer) = trajectory.try_get_answer() {
-                return (continuing_contents, answer);
-            }
+            
         }
     }
 }
