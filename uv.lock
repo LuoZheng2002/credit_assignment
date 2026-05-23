@@ -542,6 +542,7 @@ dependencies = [
     { name = "dotenv" },
     { name = "openai" },
     { name = "research-utility" },
+    { name = "sympy" },
 ]
 
 [package.optional-dependencies]
@@ -560,6 +561,7 @@ requires-dist = [
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "openai", specifier = ">=2.37.0" },
     { name = "research-utility", editable = "../research-utility" },
+    { name = "sympy", specifier = ">=1.14.0" },
     { name = "torch", marker = "extra == 'cpu'", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "credit-assignment", extra = "cpu" } },
     { name = "torch", marker = "extra == 'gpu'" },
     { name = "vllm", marker = "extra == 'gpu'" },

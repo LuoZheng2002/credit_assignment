@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use reqwest::Client;
+use research_utility::worker_message_tx::log_key_value_pair;
 
 use crate::direct_tool::direct_trajectory::{DirectTrajectory, TrajectoryContent};
 use crate::llm_model::MyTokenizer;
@@ -131,6 +132,13 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     client,
                 )
                 .await;
+                log_key_value_pair(
+                    "progress".into(),
+                    format!(
+                        "Question {}: Created and judged trunk trajectory, correctness: {}",
+                        self.question.flat_id, correctness_judgment.is_correct
+                    ),
+                );
                 vec![DirectTreeAction::CreateAndJudgeTrunkTrajectory {
                     content_array,
                     correctness_judgment,
@@ -266,10 +274,18 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     client,
                 )
                 .await;
+                let is_correct = correctness_judgment.is_correct;
                 let action = DirectTreeAction::CreateAndJudgeBranchSegment {
                     contents: new_contents,
                     correctness_judgment,
                 };
+                log_key_value_pair(
+                    "progress".into(),
+                    format!(
+                        "Question {}: Created and judged branch segment, correctness: {}",
+                        self.question.flat_id, is_correct
+                    ),
+                );
                 vec![action]
             }
             // DirectTreeStatus::JudgingBranchSegment => {

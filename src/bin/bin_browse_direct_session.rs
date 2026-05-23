@@ -1121,7 +1121,7 @@ fn tree_segment_at_mouse(tree_page: &TreePage, column: u16, row: u16) -> Option<
 }
 
 fn push_text_as_spans(
-    spans: &mut Vec<Span<'static>>,
+    lines: &mut Vec<Vec<Span<'static>>>,
     text: &str,
     style: Option<Style>,
     plain: &mut String,
@@ -1130,11 +1130,25 @@ fn push_text_as_spans(
         return;
     }
     plain.push_str(text);
-    let span = match style {
-        Some(style) => Span::styled(text.to_string(), style),
-        None => Span::raw(text.to_string()),
-    };
-    spans.push(span);
+    if lines.is_empty() {
+        lines.push(Vec::new());
+    }
+    for (index, part) in text.split('\n').enumerate() {
+        if index > 0 {
+            lines.push(Vec::new());
+        }
+        if part.is_empty() {
+            continue;
+        }
+        let span = match style {
+            Some(style) => Span::styled(part.to_string(), style),
+            None => Span::raw(part.to_string()),
+        };
+        let current_line = lines
+            .last_mut()
+            .expect("lines must contain at least one entry while appending text");
+        current_line.push(span);
+    }
 }
 
 fn build_conversation_render(snapshot: &TreeSnapshot, segment_id: SegmentId) -> ConversationRender {
@@ -1151,7 +1165,7 @@ fn build_conversation_render(snapshot: &TreeSnapshot, segment_id: SegmentId) -> 
     path.reverse();
 
     let mut plain = String::new();
-    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
     for sid in path {
         let segment = snapshot
             .segments
@@ -1167,31 +1181,41 @@ fn build_conversation_render(snapshot: &TreeSnapshot, segment_id: SegmentId) -> 
         for content in &segment.content {
             match content {
                 SegmentContent::Prompt(tokens) => {
-                    push_text_as_spans(&mut spans, &tokens.decoded_string, None, &mut plain);
+                    push_text_as_spans(&mut lines, &tokens.decoded_string, None, &mut plain);
                 }
                 SegmentContent::ReasoningOrToolCall {
                     tokens,
                     complete: _,
                 } => {
                     push_text_as_spans(
-                        &mut spans,
+                        &mut lines,
                         &tokens.decoded_string,
                         reasoning_style,
                         &mut plain,
                     );
                 }
                 SegmentContent::ToolResponse(tokens) => {
-                    push_text_as_spans(&mut spans, &tokens.decoded_string, None, &mut plain);
+                    push_text_as_spans(&mut lines, &tokens.decoded_string, None, &mut plain);
                 }
             }
         }
     }
-    if spans.is_empty() {
-        spans.push(Span::raw(String::new()));
+    if lines.is_empty() {
+        lines.push(Vec::new());
     }
+    let styled_lines: Vec<Line<'static>> = lines
+        .into_iter()
+        .map(|line_spans| {
+            if line_spans.is_empty() {
+                Line::from(String::new())
+            } else {
+                Line::from(line_spans)
+            }
+        })
+        .collect();
     ConversationRender {
         plain,
-        styled: Text::from(Line::from(spans)),
+        styled: Text::from(styled_lines),
     }
 }
 
