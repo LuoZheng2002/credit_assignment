@@ -8,8 +8,9 @@ use clap::Parser;
 use credit_assignment::{
     agent::{trajectory_action_types::FinalAnswer, tree::CorrectnessJudgment},
     direct_tool::{
-        direct_tree::{DirectTree, Segment, SegmentContent, SegmentId},
+        direct_tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
         direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
+        direct_tree_to_actions::TokenBranchingScore,
         posterior_calculation_config::{
             PosteriorCalculationConfig, PosteriorHyperparameters, TemperatureAccuracyPair,
         },
@@ -82,6 +83,7 @@ struct TreeSnapshot {
     leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
     segment_posterior_stats: BTreeMap<SegmentId, SegmentPosteriorStats>,
     segment_posterior_signal_scaled: BTreeMap<SegmentId, f32>,
+    segment_branching_score_display: BTreeMap<SegmentId, Vec<Option<f32>>>,
     segment_display_widths: BTreeMap<SegmentId, usize>,
 }
 
@@ -101,6 +103,14 @@ impl TreeSnapshot {
         let segment_posterior_stats = segment_posterior_stats(&tree);
         let segment_posterior_signal_scaled =
             scaled_segment_posterior_signal(&tree, &segment_posterior_stats);
+        let effective_width_division_ratio = width_division_ratio
+            .unwrap_or_else(|| width_division_ratio_for_tree(&tree))
+            .max(1);
+        let segment_branching_score_display = segment_branching_score_display(
+            &tree,
+            effective_width_division_ratio,
+            &segment_display_widths,
+        );
         let root_segment_id = tree
             .root_segment_id
             .expect("Direct tree browser requires root segment");
@@ -110,6 +120,7 @@ impl TreeSnapshot {
             leaf_segment_judgments: tree.leaf_segment_judgments,
             segment_posterior_stats,
             segment_posterior_signal_scaled,
+            segment_branching_score_display,
             segment_display_widths,
         }
     }
@@ -145,6 +156,21 @@ enum TreeScrollMode {
     Scaling,
     Panning,
     Evolution,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TreeColorMode {
+    SignalToNoise,
+    BranchingScore,
+}
+
+impl TreeColorMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::SignalToNoise => "SignalToNoise",
+            Self::BranchingScore => "BranchingScore",
+        }
+    }
 }
 
 impl TreeScrollMode {
@@ -254,6 +280,7 @@ struct App {
     tree_page: Option<TreePage>,
     tree_focus: TreePaneFocus,
     tree_scroll_mode: TreeScrollMode,
+    tree_color_mode: TreeColorMode,
     tree_horizontal_scroll: usize,
     conversation_scroll: usize,
     conversation_max_scroll: usize,
@@ -272,6 +299,7 @@ impl App {
             tree_page: None,
             tree_focus: TreePaneFocus::Tree,
             tree_scroll_mode: TreeScrollMode::Scaling,
+            tree_color_mode: TreeColorMode::SignalToNoise,
             tree_horizontal_scroll: 0,
             conversation_scroll: 0,
             conversation_max_scroll: 0,
@@ -496,6 +524,7 @@ impl App {
                     tree_page,
                     row,
                     self.tree_horizontal_scroll,
+                    self.tree_color_mode,
                 ))
             })
             .collect();
@@ -505,8 +534,9 @@ impl App {
             .borders(Borders::ALL)
             .title(
                 format!(
-                    "Segment tree [mode:{} ratio:{} hscroll:{} actions:{}/{}] (1:scale 2:pan 3:evolve, wheel follows mode)",
+                    "Segment tree [scroll:{} color:{} ratio:{} hscroll:{} actions:{}/{}] (1:scale 2:pan 3:evolve, 4:snr 5:branch, wheel follows scroll mode)",
                     self.tree_scroll_mode.label(),
+                    self.tree_color_mode.label(),
                     tree_page.width_division_ratio,
                     self.tree_horizontal_scroll,
                     tree_page.action_limit,
@@ -573,6 +603,7 @@ impl App {
                 self.mode = Mode::Home;
                 self.tree_page = None;
                 self.tree_scroll_mode = TreeScrollMode::Scaling;
+                self.tree_color_mode = TreeColorMode::SignalToNoise;
                 self.tree_horizontal_scroll = 0;
                 self.conversation_area = None;
                 self.conversation_scroll = 0;
@@ -635,6 +666,14 @@ impl App {
             }
             KeyCode::Char('3') => {
                 self.tree_scroll_mode = TreeScrollMode::Evolution;
+                false
+            }
+            KeyCode::Char('4') => {
+                self.tree_color_mode = TreeColorMode::SignalToNoise;
+                false
+            }
+            KeyCode::Char('5') => {
+                self.tree_color_mode = TreeColorMode::BranchingScore;
                 false
             }
             _ => false,
@@ -758,6 +797,7 @@ impl App {
         self.mode = Mode::Tree;
         self.tree_focus = TreePaneFocus::Tree;
         self.tree_scroll_mode = TreeScrollMode::Scaling;
+        self.tree_color_mode = TreeColorMode::SignalToNoise;
         self.tree_horizontal_scroll = 0;
         self.conversation_scroll = 0;
         self.conversation_max_scroll = 0;
@@ -890,6 +930,89 @@ fn segment_display_widths<M: credit_assignment::llm_model::LlmModelMarker>(
     widths
 }
 
+fn segment_branching_score_display<M: credit_assignment::llm_model::LlmModelMarker>(
+    tree: &DirectTree<M>,
+    width_division_ratio: usize,
+    segment_display_widths: &BTreeMap<SegmentId, usize>,
+) -> BTreeMap<SegmentId, Vec<Option<f32>>> {
+    let mut displays = BTreeMap::new();
+    if tree.segments.is_empty() {
+        return displays;
+    }
+
+    if tree.leaf_segment_judgments.is_empty() {
+        for (segment_id, width) in segment_display_widths {
+            displays.insert(*segment_id, vec![None; (*width).max(1)]);
+        }
+        return displays;
+    }
+
+    let posteriors = tree.calculate_segment_posteriors();
+    let mut segment_uncertainty_scores = tree.posteriors_to_segment_uncertainty_scores(&posteriors);
+    for segment_id in tree.segments.keys().copied() {
+        segment_uncertainty_scores.entry(segment_id).or_insert(0.0);
+    }
+    let average_trunk_token_length = if tree.trunk_token_lengths.is_empty() {
+        1.0
+    } else {
+        tree.trunk_token_lengths.values().sum::<usize>() as f32 / tree.trunk_token_lengths.len() as f32
+    };
+    let per_token_branching_scores: BTreeMap<
+        SegmentId,
+        BTreeMap<ContentIndex, BTreeMap<usize, TokenBranchingScore>>,
+    > = tree.calculate_per_token_branching_scores(
+        &segment_uncertainty_scores,
+        average_trunk_token_length,
+    );
+
+    for (segment_id, segment) in &tree.segments {
+        let mut token_level_scores: Vec<Option<f32>> = Vec::new();
+        for (content_index, content) in segment.content.iter().enumerate() {
+            match content {
+                SegmentContent::Prompt(tokens) | SegmentContent::ToolResponse(tokens) => {
+                    token_level_scores.extend((0..tokens.tokens.len()).map(|_| None));
+                }
+                SegmentContent::ReasoningOrToolCall { tokens, .. } => {
+                    for token_offset in 0..tokens.tokens.len() {
+                        let score = per_token_branching_scores
+                            .get(segment_id)
+                            .and_then(|content_map| content_map.get(&content_index))
+                            .and_then(|offset_map| offset_map.get(&token_offset))
+                            .map(|entry| entry.branching_score)
+                            .unwrap_or(0.0)
+                            .clamp(0.0, 1.0);
+                        token_level_scores.push(Some(score));
+                    }
+                }
+            }
+        }
+
+        let display_width = segment_display_widths
+            .get(segment_id)
+            .copied()
+            .unwrap_or(1)
+            .max(1);
+        let ratio = width_division_ratio.max(1);
+        let mut display_scores: Vec<Option<f32>> = Vec::with_capacity(display_width);
+        for display_index in 0..display_width {
+            let start = display_index.saturating_mul(ratio);
+            if start >= token_level_scores.len() {
+                display_scores.push(None);
+                continue;
+            }
+            let end = (start + ratio).min(token_level_scores.len());
+            let max_value = token_level_scores[start..end]
+                .iter()
+                .flatten()
+                .copied()
+                .max_by(|a, b| a.partial_cmp(b).unwrap());
+            display_scores.push(max_value.map(|value| value.clamp(0.0, 1.0)));
+        }
+        displays.insert(*segment_id, display_scores);
+    }
+    displays
+}
+
 fn segment_posterior_stats<M: credit_assignment::llm_model::LlmModelMarker>(
     tree: &DirectTree<M>,
 ) -> BTreeMap<SegmentId, SegmentPosteriorStats> {
@@ -953,6 +1076,17 @@ fn signed_posterior_to_color(signed_position: f32) -> Color {
         (255, ((1.0 + x) * 255.0).round() as u8)
     };
     Color::Rgb(red, green, 0)
+}
+
+fn branching_score_to_color(score: f32) -> Color {
+    let x = score.clamp(0.0, 1.0);
+    if x <= 0.5 {
+        let green = ((x / 0.5) * 255.0).round() as u8;
+        Color::Rgb(255, green, 0)
+    } else {
+        let red = (((1.0 - x) / 0.5) * 255.0).round() as u8;
+        Color::Rgb(red, 255, 0)
+    }
 }
 
 fn count_wrapped_lines(text: &str, area: Rect) -> usize {
@@ -1296,7 +1430,12 @@ fn build_segment_graph_lines(snapshot: &TreeSnapshot) -> (Vec<String>, Vec<TreeR
     (lines, rendered_segments)
 }
 
-fn render_tree_line(tree_page: &TreePage, row: usize, horizontal_scroll: usize) -> Line<'static> {
+fn render_tree_line(
+    tree_page: &TreePage,
+    row: usize,
+    horizontal_scroll: usize,
+    color_mode: TreeColorMode,
+) -> Line<'static> {
     let line = tree_page
         .tree_lines
         .get(row)
@@ -1311,25 +1450,52 @@ fn render_tree_line(tree_page: &TreePage, row: usize, horizontal_scroll: usize) 
         if rendered.row != row {
             continue;
         }
-        let posterior_signal = tree_page
-            .snapshot
-            .segment_posterior_signal_scaled
-            .get(&rendered.segment_id)
-            .copied()
-            .unwrap_or(0.0);
         let is_selected = rendered.segment_id == tree_page.selected_segment_id;
         let is_hovered = tree_page.hovered_segment_id == Some(rendered.segment_id);
-        let mut style = Style::default().fg(signed_posterior_to_color(posterior_signal));
-        if is_selected {
-            style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-        }
-        if is_hovered {
-            style = style.bg(Color::DarkGray);
-        }
-        let style = Some(style);
-        if let Some(style) = style {
-            for idx in rendered.col..(rendered.col + rendered.width) {
-                if idx < styles.len() {
+        match color_mode {
+            TreeColorMode::SignalToNoise => {
+                let posterior_signal = tree_page
+                    .snapshot
+                    .segment_posterior_signal_scaled
+                    .get(&rendered.segment_id)
+                    .copied()
+                    .unwrap_or(0.0);
+                let mut style = Style::default().fg(signed_posterior_to_color(posterior_signal));
+                if is_selected {
+                    style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+                }
+                if is_hovered {
+                    style = style.bg(Color::DarkGray);
+                }
+                for idx in rendered.col..(rendered.col + rendered.width) {
+                    if idx < styles.len() {
+                        styles[idx] = Some(style);
+                    }
+                }
+            }
+            TreeColorMode::BranchingScore => {
+                let score_by_display_token = tree_page
+                    .snapshot
+                    .segment_branching_score_display
+                    .get(&rendered.segment_id);
+                for display_offset in 0..rendered.width {
+                    let idx = rendered.col + display_offset;
+                    if idx >= styles.len() {
+                        continue;
+                    }
+                    let score = score_by_display_token
+                        .and_then(|scores| scores.get(display_offset))
+                        .and_then(|entry| *entry);
+                    let mut style = match score {
+                        Some(score) => Style::default().fg(branching_score_to_color(score)),
+                        None => Style::default().fg(Color::White),
+                    };
+                    if is_selected {
+                        style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+                    }
+                    if is_hovered {
+                        style = style.bg(Color::DarkGray);
+                    }
                     styles[idx] = Some(style);
                 }
             }

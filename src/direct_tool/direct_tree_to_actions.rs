@@ -44,9 +44,6 @@ impl<M: LlmModelMarker> DirectTree<M> {
         > = BTreeMap::new();
 
         for (segment_id, segment) in self.segments.iter() {
-            let segment_uncertainty_score = segment_uncertainty_scores
-                .get(segment_id)
-                .expect("Each segment must have an uncertainty score");
             let reasoning_only_tokens = segment.reasoning_only_tokens();
             for (token_index_in_reasoning, token_view) in reasoning_only_tokens.iter().enumerate() {
                 assert!(token_view.flat_index == token_index_in_reasoning);
@@ -55,25 +52,34 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     let parent_segment = self.segments.get(segment_id).unwrap().parent_id.expect(
                         &format!("A reasoning only segment must have parents since prompt segment is root: {:?}", segment_id),
                     ); // considering that we want the invariant that every reasoning segment has a parent, we need to do special treatment for the first trunk
-                    let child_segments = self.segments.get(segment_id).unwrap().child_ids.clone();
+                    let child_segments = self
+                        .segments
+                        .get(&parent_segment)
+                        .unwrap()
+                        .child_ids
+                        .clone();
                     let child_tokens = child_segments
                         .iter()
-                        .map(|sibling_segment_id| {
+                        .map(|child_segment_id| {
                             self.segments
-                                .get(sibling_segment_id)
+                                .get(child_segment_id)
                                 .expect("Sibling segment id must exist in tree")
                                 .first_reasoning_token()
                                 .expect("Sibling segment must have at least one reasoning token")
                         })
                         .collect::<Vec<i32>>();
 
-                    let node_uncertainty_score = Self::node_uncertainty_score_from_parent_and_child_ids(
-                        parent_segment,
-                        &child_segments,
-                        segment_uncertainty_scores,
-                    );
+                    let node_uncertainty_score =
+                        Self::node_uncertainty_score_from_parent_and_child_ids(
+                            parent_segment,
+                            &child_segments,
+                            segment_uncertainty_scores,
+                        );
                     let Some((token_id, best_token_relative_probability)) =
-                        Self::best_token_and_relative_probability(&token_view.logprobs, &child_tokens)
+                        Self::best_token_and_relative_probability(
+                            &token_view.logprobs, // this might be the cause for the logprobs to be different for gpt models
+                            &child_tokens,
+                        )
                     else {
                         continue;
                     };
@@ -88,6 +94,10 @@ impl<M: LlmModelMarker> DirectTree<M> {
                         branching_type: BranchingType::Node,
                     }
                 } else {
+                    // branching type is segment
+                    let segment_uncertainty_score = segment_uncertainty_scores
+                        .get(segment_id)
+                        .expect("Each segment must have an uncertainty score");
                     let reasoning_only_segment_length = reasoning_only_tokens.len();
                     let first_half_length_after_split = token_index_in_reasoning;
                     let second_half_length_after_split =
@@ -166,18 +176,25 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     "Current number of trunks must be equal to the max number of trunks before creating branch point"
                 );
                 assert!(!self.leaf_segment_judgments.is_empty());
-                assert!(self.leaf_segment_judgments.len() < self.rollout_config.max_num_total_trajectories);
+                assert!(
+                    self.leaf_segment_judgments.len()
+                        < self.rollout_config.max_num_total_trajectories
+                );
 
                 let posteriors = self.calculate_segment_posteriors();
                 let segment_uncertainty_scores =
                     self.posteriors_to_segment_uncertainty_scores(&posteriors);
-                assert!(!self.trunk_token_lengths.is_empty(), "Trunk token lengths must not be empty when creating or choosing branch point");
-                let average_trunk_token_length = self
-                    .trunk_token_lengths
-                    .values()
-                    .sum::<usize>() as f32
+                assert!(
+                    !self.trunk_token_lengths.is_empty(),
+                    "Trunk token lengths must not be empty when creating or choosing branch point"
+                );
+                let average_trunk_token_length = self.trunk_token_lengths.values().sum::<usize>()
+                    as f32
                     / self.trunk_token_lengths.len() as f32;
-                log_key_value_pair("average_trunk_token_length".into(), average_trunk_token_length.to_string());
+                log_key_value_pair(
+                    "average_trunk_token_length".into(),
+                    average_trunk_token_length.to_string(),
+                );
 
                 let per_token_branching_scores = self.calculate_per_token_branching_scores(
                     &segment_uncertainty_scores,
@@ -206,7 +223,10 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 if let Some(best_token_position) = best_token_position {
                     let best_token_branching_score = best_token_branching_score
                         .expect("Best token score must exist if best token position exists");
-                    let action = if matches!(best_token_branching_score.branching_type, BranchingType::Node) {
+                    let action = if matches!(
+                        best_token_branching_score.branching_type,
+                        BranchingType::Node
+                    ) {
                         assert!(best_token_position.content_index == 0);
                         assert!(best_token_position.offset == 0);
                         DirectTreeAction::BranchFromNode {
@@ -322,8 +342,9 @@ impl<M: LlmModelMarker> DirectTree<M> {
         }
         Some((best_candidate.token_id, relative_probability))
     }
-    pub fn branching_factor_penalty_multiplier(branching_factor: usize) -> f32 {
-        assert!(branching_factor >= 1);
+    pub fn branching_factor_penalty_multiplier(mut branching_factor: usize) -> f32 {
+        branching_factor = branching_factor.max(1); // ensure branching factor is at least 1 to avoid zero or negative values
+        // assert!(branching_factor >= 1);
         let k_branching_factor = 0.35_f32;
         (-k_branching_factor * (branching_factor as f32 - 1.0)).exp()
     }
@@ -335,8 +356,12 @@ impl<M: LlmModelMarker> DirectTree<M> {
     ) -> f32 {
         assert!(first_half_length_after_split > 0);
         assert!(second_half_length_after_split > 0);
-        let shorter_half_length = std::cmp::min(first_half_length_after_split, second_half_length_after_split);
-        let shorter_half_to_average_ratio = (shorter_half_length as f32) / average_trunk_token_length;
+        let shorter_half_length = std::cmp::min(
+            first_half_length_after_split,
+            second_half_length_after_split,
+        );
+        let shorter_half_to_average_ratio =
+            (shorter_half_length as f32) / average_trunk_token_length;
         let scaled_ratio = (shorter_half_to_average_ratio * 2.0).clamp(0.0, 1.0);
         // linear relationship
         scaled_ratio
@@ -413,7 +438,11 @@ impl<M: LlmModelMarker> DirectTree<M> {
     }
     pub fn trajectory_reasoning_token_length(&self, segment_id: SegmentId) -> usize {
         let mut trajectory_segments = Vec::new();
-        let mut current_segment = Some(self.segments.get(&segment_id).expect("Segment id must exist in tree"));
+        let mut current_segment = Some(
+            self.segments
+                .get(&segment_id)
+                .expect("Segment id must exist in tree"),
+        );
         while let Some(segment) = current_segment {
             trajectory_segments.push(segment);
             if let Some(parent_id) = segment.parent_id {
@@ -422,7 +451,10 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 break;
             }
         }
-        trajectory_segments.iter().map(|segment| segment.reasoning_only_token_length()).sum()
+        trajectory_segments
+            .iter()
+            .map(|segment| segment.reasoning_only_token_length())
+            .sum()
     }
 }
 
@@ -503,16 +535,21 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
             new_content
         }
         TrajectoryContent::ReasoningOrToolCallComplete(_) => {
-            let Some(tool_call) = trajectory.try_get_last_content_tool_call() else {
-                println!("Trajectory contents: {}", trajectory.to_decoded_string());
-                panic!(
-                    "tool call should not be none when the last content is a reasoning or tool call content when generating next segment content"
-                );
-            };
-            let tool_response = execute_planner_tool_call(&tool_call).await;
-            let tool_response_raw = tool_response.to_raw_content();
-            let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
-            SegmentContent::ToolResponse(response_tokenized)
+            if let Some(tool_call) = trajectory.try_get_last_content_tool_call() {
+                // println!("Trajectory contents: {}", trajectory.to_decoded_string());
+                // panic!(
+                //     "tool call should not be none when the last content is a reasoning or tool call content when generating next segment content"
+                // );
+                let tool_response = execute_planner_tool_call(&tool_call).await;
+                let tool_response_raw = tool_response.to_raw_content();
+                let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
+                SegmentContent::ToolResponse(response_tokenized)
+            } else {
+                log_key_value_pair("warning".to_string(), "The model neither produced an answer nor a tool call when the last content is a reasoning or tool call content.".to_string());
+                let tool_response_raw = "<system>You tried to end the sequence without providing a properly formatted tool call or an answer in \\boxed{}. Please either provide a tool call with <tool_wait></tool_wait> wrapper, or provide an answer in \\boxed{}.</system>".to_string();
+                let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
+                SegmentContent::ToolResponse(response_tokenized)
+            }
         }
     }
 }

@@ -233,10 +233,11 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     llm_temperature: self.next_segment_temperature,
                 };
                 self.segments.insert(new_segment_id, new_segment);
-                if let Some(parent_segment) = self.segments.get_mut(&parent_id) {
-                    parent_segment.child_ids.push(new_segment_id);
-                }
-                self.focused_parent_segment_id = Some(new_segment_id);
+                let Some(parent_segment) = self.segments.get_mut(&parent_id) else {
+                    panic!("Parent segment must exist");                    
+                };
+                parent_segment.child_ids.push(new_segment_id);
+                self.focused_parent_segment_id = None; // after creating the branch segment, we reset the focused segment because we are not in the process of branching anymore
                 // update status
                 assert!(!self.leaf_segment_judgments.contains_key(&new_segment_id));
                 self.leaf_segment_judgments

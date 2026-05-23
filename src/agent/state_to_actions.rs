@@ -45,10 +45,17 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
         .await
         .trim()
         .to_lowercase();
-    match evaluation.as_str() {
-        "correct" => true,
-        "incorrect" => false,
-        _ => panic!("Unexpected evaluation result: {}", evaluation),
+    // match evaluation.as_str() {
+    //     "correct" => true,
+    //     "incorrect" => false,
+    //     _ => panic!("Unexpected evaluation result: {}", evaluation),
+    // }
+    if evaluation.contains("incorrect") {
+        false
+    } else if evaluation.contains("correct") {
+        true
+    } else {
+        panic!("Unexpected evaluation result: {}", evaluation);
     }
 }
 
