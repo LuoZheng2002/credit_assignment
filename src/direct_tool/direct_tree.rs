@@ -31,6 +31,7 @@ pub struct DirectTree<M: LlmModelMarker> {
     // pub root_segment_ids: Vec<SegmentId>,
     pub root_segment_id: Option<SegmentId>, // all the trunks share the same root segment, which is the prompt segment
     pub trunk_leaf_segments: Vec<SegmentId>, // the leaf segments of the trunk trajectories
+    pub trunk_token_lengths: BTreeMap<SegmentId, usize>, // the token length of the trunk segments, which is used for calculating the reward and deciding when to branch
     pub leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
     pub current_num_trunks: usize,
     pub next_segment_id: usize,
@@ -62,6 +63,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
             segments: BTreeMap::new(),
             root_segment_id: None, // all the trunks share the same root segment, which is the prompt segment
             trunk_leaf_segments: Vec::new(), // the leaf segments of the trunk trajectories
+            trunk_token_lengths: BTreeMap::new(), // the token length of the trunk segments, which is used for calculating the reward and deciding when to branch
             leaf_segment_judgments: BTreeMap::new(),
             current_num_trunks: 0,
             next_segment_id: 0,
@@ -154,6 +156,15 @@ impl Segment {
             }
         }
         views
+    }
+    pub fn reasoning_only_token_length(&self) -> usize {
+        let mut total_length = 0;
+        for content in &self.content {
+            if let SegmentContent::ReasoningOrToolCall { tokens, .. } = content {
+                total_length += tokens.tokens.len();
+            }
+        }
+        total_length
     }
     pub fn first_reasoning_token(&self) -> Option<i32> {
         // for content in &self.content {

@@ -150,6 +150,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     "Current number of trunks must be equal to the max number of trunks before creating branch point"
                 );
                 assert!(!self.leaf_segment_judgments.is_empty());
+                assert!(self.leaf_segment_judgments.len() < self.rollout_config.max_num_total_trajectories);
 
                 let posteriors = self.calculate_segment_posteriors();
                 let segment_uncertainty_scores =
@@ -160,6 +161,14 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 let mut best_token_id: Option<i32> = None;
                 let mut best_branching_score = f32::NEG_INFINITY;
                 let mut best_token_is_node: Option<bool> = None;
+
+                assert!(!self.trunk_token_lengths.is_empty(), "Trunk token lengths must not be empty when creating or choosing branch point");
+                let average_trunk_token_length = self
+                    .trunk_token_lengths
+                    .values()
+                    .sum::<usize>() as f32
+                    / self.trunk_token_lengths.len() as f32;
+                log_key_value_pair("average_trunk_token_length".into(), average_trunk_token_length.to_string());
 
                 for token_view in token_views_for_branching.iter() {
                     let segment_uncertainty_score = segment_uncertainty_scores
@@ -222,6 +231,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                                     Self::segment_length_penalty_multiplier(
                                         *first_half_length_after_split,
                                         *second_half_length_after_split,
+                                        average_trunk_token_length,
                                     );
                                 let branching_score = segment_uncertainty_score
                                     * best_token_relative_probability
@@ -356,6 +366,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
         Some((best_candidate.token_id, relative_probability))
     }
     pub fn branching_factor_penalty_multiplier(branching_factor: usize) -> f32 {
+        assert!(branching_factor >= 1);
         let k_branching_factor = 0.35_f32;
         (-k_branching_factor * (branching_factor as f32 - 1.0)).exp()
     }
@@ -363,16 +374,15 @@ impl<M: LlmModelMarker> DirectTree<M> {
     pub fn segment_length_penalty_multiplier(
         first_half_length_after_split: usize,
         second_half_length_after_split: usize,
+        average_trunk_token_length: f32,
     ) -> f32 {
         assert!(first_half_length_after_split > 0);
         assert!(second_half_length_after_split > 0);
-        // the same exponential falloff formula as add_penalty_to_segment_score
-        let k_length = 0.35_f32;
-        let first_half_length_penalty_multiplier =
-            1.0 - (-k_length * (first_half_length_after_split as f32 - 1.0)).exp();
-        let second_half_length_penalty_multiplier =
-            1.0 - (-k_length * (second_half_length_after_split as f32 - 1.0)).exp();
-        first_half_length_penalty_multiplier * second_half_length_penalty_multiplier
+        let shorter_half_length = std::cmp::min(first_half_length_after_split, second_half_length_after_split);
+        let shorter_half_to_average_ratio = (shorter_half_length as f32) / average_trunk_token_length;
+        let scaled_ratio = (shorter_half_to_average_ratio * 2.0).clamp(0.0, 1.0);
+        // linear relationship
+        scaled_ratio
     }
     pub fn posteriors_to_segment_uncertainty_scores(
         &self,
@@ -443,6 +453,19 @@ impl<M: LlmModelMarker> DirectTree<M> {
             let next_content = generate_next_segment_content::<M>(&trajectory, llm_callable).await;
             continuing_contents.push(next_content.clone());
         }
+    }
+    pub fn trajectory_reasoning_token_length(&self, segment_id: SegmentId) -> usize {
+        let mut trajectory_segments = Vec::new();
+        let mut current_segment = Some(self.segments.get(&segment_id).expect("Segment id must exist in tree"));
+        while let Some(segment) = current_segment {
+            trajectory_segments.push(segment);
+            if let Some(parent_id) = segment.parent_id {
+                current_segment = self.segments.get(&parent_id);
+            } else {
+                break;
+            }
+        }
+        trajectory_segments.iter().map(|segment| segment.reasoning_only_token_length()).sum()
     }
 }
 
