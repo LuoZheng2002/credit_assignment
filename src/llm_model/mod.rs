@@ -29,6 +29,7 @@ pub enum LlmFamily {
 #[derive(clap::ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]
 pub enum QwenApiBackend {
     Vllm,
+    VllmWrapper,
     Openrouter,
 }
 
@@ -108,6 +109,8 @@ pub struct LlmCliArgs {
     #[arg(long)]
     pub qwen_vllm_port: Option<u16>,
     #[arg(long)]
+    pub vllm_wrapper_port: Option<u16>,
+    #[arg(long)]
     pub openrouter_model: Option<String>,
     #[arg(long, default_value = "https://openrouter.ai/api/v1")]
     pub openrouter_base_url: String,
@@ -125,6 +128,14 @@ impl LlmCliArgs {
             .qwen_vllm_port
             .expect("Qwen vLLM backend requires --qwen-vllm-port");
         assert!(port > 0, "vLLM port must be greater than 0");
+        port
+    }
+
+    pub fn vllm_wrapper_port(&self) -> u16 {
+        let port = self
+            .vllm_wrapper_port
+            .expect("Qwen vLLM wrapper backend requires --vllm-wrapper-port");
+        assert!(port > 0, "vLLM wrapper port must be greater than 0");
         port
     }
 

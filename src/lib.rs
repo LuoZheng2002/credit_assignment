@@ -8,5 +8,6 @@ pub mod status_prompts;
 pub mod token_array;
 pub mod training_set;
 pub mod util;
+pub mod vllm_wrapper;
 
 pub use research_utility::{asset_file, message, progress_screen, sqlite_store, worker_message_tx};

@@ -105,8 +105,7 @@ impl TreeSnapshot {
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> Self {
         let segment_display_widths = segment_display_widths(&tree, width_division_ratio);
-        let segment_posterior_stats =
-            segment_posterior_stats(&tree, override_hyperparameters);
+        let segment_posterior_stats = segment_posterior_stats(&tree, override_hyperparameters);
         let segment_posterior_signal_scaled =
             scaled_segment_posterior_signal(&tree, &segment_posterior_stats);
         let segment_posterior_mean_scaled =
@@ -520,10 +519,11 @@ impl App {
         );
         match self.tree_color_mode {
             TreeColorMode::SignalToNoise => {
-                if let Some((min_value, max_value)) = posterior_stat_min_max(
-                    &tree_page.snapshot.segment_posterior_stats,
-                    |stats| stats.signal_to_noise,
-                ) {
+                if let Some((min_value, max_value)) =
+                    posterior_stat_min_max(&tree_page.snapshot.segment_posterior_stats, |stats| {
+                        stats.signal_to_noise
+                    })
+                {
                     summary.push_str(&format!(
                         "\n[signal_to_noise range] min: {:.6}, max: {:.6}",
                         min_value, max_value
@@ -531,10 +531,11 @@ impl App {
                 }
             }
             TreeColorMode::PosteriorMean => {
-                if let Some((min_value, max_value)) = posterior_stat_min_max(
-                    &tree_page.snapshot.segment_posterior_stats,
-                    |stats| stats.posterior_mean,
-                ) {
+                if let Some((min_value, max_value)) =
+                    posterior_stat_min_max(&tree_page.snapshot.segment_posterior_stats, |stats| {
+                        stats.posterior_mean
+                    })
+                {
                     summary.push_str(&format!(
                         "\n[posterior_mean range] min: {:.6}, max: {:.6}",
                         min_value, max_value
@@ -542,10 +543,11 @@ impl App {
                 }
             }
             TreeColorMode::PosteriorStd => {
-                if let Some((min_value, max_value)) = posterior_stat_min_max(
-                    &tree_page.snapshot.segment_posterior_stats,
-                    |stats| stats.posterior_std,
-                ) {
+                if let Some((min_value, max_value)) =
+                    posterior_stat_min_max(&tree_page.snapshot.segment_posterior_stats, |stats| {
+                        stats.posterior_std
+                    })
+                {
                     summary.push_str(&format!(
                         "\n[posterior_std range] min: {:.6}, max: {:.6}",
                         min_value, max_value
@@ -580,7 +582,8 @@ impl App {
             });
         let summary_inner = summary_block.inner(chunks[0]);
         let summary_height = summary_inner.height as usize;
-        let summary_lines = compute_wrapped_line_count(&summary, summary_inner, &mut self.summary_metrics);
+        let summary_lines =
+            compute_wrapped_line_count(&summary, summary_inner, &mut self.summary_metrics);
         self.summary_max_scroll = bottom_scroll_limit(summary_lines, summary_height.max(1));
         frame.render_widget(
             Paragraph::new(summary)
@@ -867,61 +870,16 @@ impl App {
                     tree_page.selected_segment_id = segment_id;
                 }
             }
-            MouseEventKind::ScrollUp => {
-                match self.tree_focus {
-                    TreePaneFocus::Summary => self.scroll_summary_up(1),
-                    TreePaneFocus::Conversation => self.scroll_conversation_up(1),
-                    TreePaneFocus::Tree => {
-                        let entry = &self.entries[tree_page.entry_index];
-                        match self.tree_scroll_mode {
-                            TreeScrollMode::Scaling => {
-                                let old_ratio = tree_page.width_division_ratio;
-                                let new_ratio = old_ratio.saturating_sub(1).max(1);
-                                if old_ratio != new_ratio {
-                                    self.tree_horizontal_scroll = scale_horizontal_scroll(
-                                        self.tree_horizontal_scroll,
-                                        old_ratio,
-                                        new_ratio,
-                                    );
-                                    tree_page.set_width_division_ratio(
-                                        self.model,
-                                        entry,
-                                        new_ratio,
-                                        self.override_hyperparameters,
-                                    );
-                                }
-                            }
-                            TreeScrollMode::Panning => {
-                                self.tree_horizontal_scroll =
-                                    self.tree_horizontal_scroll.saturating_sub(4);
-                            }
-                            TreeScrollMode::Evolution => {
-                                let next = tree_page.action_limit.saturating_sub(1);
-                                tree_page.set_action_limit(
-                                    self.model,
-                                    entry,
-                                    next,
-                                    self.override_hyperparameters,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            MouseEventKind::ScrollDown => {
-                match self.tree_focus {
-                    TreePaneFocus::Summary => {
-                        self.summary_scroll = self.summary_scroll.saturating_add(1)
-                    }
-                    TreePaneFocus::Conversation => {
-                        self.conversation_scroll = self.conversation_scroll.saturating_add(1)
-                    }
-                    TreePaneFocus::Tree => {
-                        let entry = &self.entries[tree_page.entry_index];
-                        match self.tree_scroll_mode {
-                            TreeScrollMode::Scaling => {
-                                let old_ratio = tree_page.width_division_ratio;
-                                let new_ratio = old_ratio.saturating_add(1);
+            MouseEventKind::ScrollUp => match self.tree_focus {
+                TreePaneFocus::Summary => self.scroll_summary_up(1),
+                TreePaneFocus::Conversation => self.scroll_conversation_up(1),
+                TreePaneFocus::Tree => {
+                    let entry = &self.entries[tree_page.entry_index];
+                    match self.tree_scroll_mode {
+                        TreeScrollMode::Scaling => {
+                            let old_ratio = tree_page.width_division_ratio;
+                            let new_ratio = old_ratio.saturating_sub(1).max(1);
+                            if old_ratio != new_ratio {
                                 self.tree_horizontal_scroll = scale_horizontal_scroll(
                                     self.tree_horizontal_scroll,
                                     old_ratio,
@@ -934,23 +892,64 @@ impl App {
                                     self.override_hyperparameters,
                                 );
                             }
-                            TreeScrollMode::Panning => {
-                                self.tree_horizontal_scroll =
-                                    self.tree_horizontal_scroll.saturating_add(4);
-                            }
-                            TreeScrollMode::Evolution => {
-                                let next = (tree_page.action_limit + 1).min(tree_page.total_actions);
-                                tree_page.set_action_limit(
-                                    self.model,
-                                    entry,
-                                    next,
-                                    self.override_hyperparameters,
-                                );
-                            }
+                        }
+                        TreeScrollMode::Panning => {
+                            self.tree_horizontal_scroll =
+                                self.tree_horizontal_scroll.saturating_sub(4);
+                        }
+                        TreeScrollMode::Evolution => {
+                            let next = tree_page.action_limit.saturating_sub(1);
+                            tree_page.set_action_limit(
+                                self.model,
+                                entry,
+                                next,
+                                self.override_hyperparameters,
+                            );
                         }
                     }
                 }
-            }
+            },
+            MouseEventKind::ScrollDown => match self.tree_focus {
+                TreePaneFocus::Summary => {
+                    self.summary_scroll = self.summary_scroll.saturating_add(1)
+                }
+                TreePaneFocus::Conversation => {
+                    self.conversation_scroll = self.conversation_scroll.saturating_add(1)
+                }
+                TreePaneFocus::Tree => {
+                    let entry = &self.entries[tree_page.entry_index];
+                    match self.tree_scroll_mode {
+                        TreeScrollMode::Scaling => {
+                            let old_ratio = tree_page.width_division_ratio;
+                            let new_ratio = old_ratio.saturating_add(1);
+                            self.tree_horizontal_scroll = scale_horizontal_scroll(
+                                self.tree_horizontal_scroll,
+                                old_ratio,
+                                new_ratio,
+                            );
+                            tree_page.set_width_division_ratio(
+                                self.model,
+                                entry,
+                                new_ratio,
+                                self.override_hyperparameters,
+                            );
+                        }
+                        TreeScrollMode::Panning => {
+                            self.tree_horizontal_scroll =
+                                self.tree_horizontal_scroll.saturating_add(4);
+                        }
+                        TreeScrollMode::Evolution => {
+                            let next = (tree_page.action_limit + 1).min(tree_page.total_actions);
+                            tree_page.set_action_limit(
+                                self.model,
+                                entry,
+                                next,
+                                self.override_hyperparameters,
+                            );
+                        }
+                    }
+                }
+            },
             _ => {}
         }
     }
@@ -1104,7 +1103,8 @@ fn segment_display_widths<M: credit_assignment::llm_model::LlmModelMarker>(
         return widths;
     }
 
-    let division_ratio = width_division_ratio.unwrap_or_else(|| width_division_ratio_for_tree(tree));
+    let division_ratio =
+        width_division_ratio.unwrap_or_else(|| width_division_ratio_for_tree(tree));
 
     for (segment_id, segment) in &tree.segments {
         let token_len = segment_token_length(segment);
@@ -1140,7 +1140,8 @@ fn segment_branching_score_display<M: credit_assignment::llm_model::LlmModelMark
     let average_trunk_token_length = if tree.trunk_token_lengths.is_empty() {
         1.0
     } else {
-        tree.trunk_token_lengths.values().sum::<usize>() as f32 / tree.trunk_token_lengths.len() as f32
+        tree.trunk_token_lengths.values().sum::<usize>() as f32
+            / tree.trunk_token_lengths.len() as f32
     };
     let per_token_branching_scores: BTreeMap<
         SegmentId,
@@ -2015,7 +2016,8 @@ fn question_stats_from_action_log(
     model: LlmModelName,
     action_log: &DirectTreeActionLog,
 ) -> (usize, usize, f64) {
-    let final_snapshot = snapshot_for_model(model, action_log, action_log.actions.len(), None, None);
+    let final_snapshot =
+        snapshot_for_model(model, action_log, action_log.actions.len(), None, None);
     let num_leaves = final_snapshot.leaf_segment_judgments.len();
     let num_correct = final_snapshot
         .leaf_segment_judgments

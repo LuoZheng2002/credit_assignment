@@ -1,6 +1,8 @@
 anthropic
 anyio
 fastapi
+grpcio
+grpcio-tools
 httpx
 jsonschema
 mcp

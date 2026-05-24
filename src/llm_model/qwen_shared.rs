@@ -6,8 +6,10 @@ use std::sync::{
 };
 use tokenizers::Tokenizer;
 use tokio::sync::Semaphore;
+use tonic::Request;
 
 use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate};
+use crate::vllm_wrapper::{VllmPrompt, VllmRequest as WrapperRequest, VllmResponse, proto};
 
 pub const CONTEXT_LENGTH_EXCEEDED_RESPONSE: &str = "<error>QWEN_CONTEXT_LENGTH_EXCEEDED</error>";
 
@@ -42,6 +44,9 @@ pub(crate) fn token_to_i32_id(tokenizer: &Tokenizer, token: &str, api_name: &str
 pub(crate) enum QwenBackend {
     Vllm {
         vllm_port: u16,
+    },
+    VllmWrapper {
+        vllm_wrapper_port: u16,
     },
     OpenRouter {
         base_url: String,
@@ -78,6 +83,12 @@ impl SharedQwenLlmCallable {
         );
         if let QwenBackend::Vllm { vllm_port } = backend {
             assert!(vllm_port > 0, "vLLM port must be greater than 0");
+        }
+        if let QwenBackend::VllmWrapper { vllm_wrapper_port } = backend {
+            assert!(
+                vllm_wrapper_port > 0,
+                "vLLM wrapper port must be greater than 0"
+            );
         }
 
         Self {
@@ -122,6 +133,15 @@ impl SharedQwenLlmCallable {
                 )
                 .await
             }
+            QwenBackend::VllmWrapper { vllm_wrapper_port } => {
+                return self
+                    .generate_from_tokens_with_vllm_wrapper(
+                        tokens,
+                        *vllm_wrapper_port,
+                        passes_in_stop,
+                    )
+                    .await;
+            }
             QwenBackend::OpenRouter {
                 base_url,
                 model,
@@ -145,11 +165,7 @@ impl SharedQwenLlmCallable {
         };
 
         if let Some(error_message) = response["error"]["message"].as_str() {
-            if error_message.contains("maximum context length")
-                || error_message.contains("Please reduce the length of the input prompt")
-                || error_message.contains("parameter=input_tokens")
-                || error_message.contains("context length")
-            {
+            if is_context_length_error(error_message) {
                 return CONTEXT_LENGTH_EXCEEDED_RESPONSE.to_string();
             }
         }
@@ -166,6 +182,9 @@ impl SharedQwenLlmCallable {
                 .to_string(),
             QwenBackend::OpenRouter { .. } => parse_openrouter_message_content(&response)
                 .unwrap_or_else(|| panic!("Qwen OpenRouter response is invalid: {:?}", response)),
+            QwenBackend::VllmWrapper { .. } => {
+                unreachable!("vLLM-wrapper path returns before JSON parsing")
+            }
         };
 
         self.completed_requests.fetch_add(1, Ordering::SeqCst);
@@ -205,6 +224,14 @@ impl SharedQwenLlmCallable {
                     )
                     .await;
                 parse_vllm_response_with_logprobs(vllm_port, &json, self.encode_text)
+            }
+            QwenBackend::VllmWrapper { vllm_wrapper_port } => {
+                self.generate_tokens_with_logprobs_with_vllm_wrapper(
+                    tokens,
+                    *vllm_wrapper_port,
+                    passes_in_stop,
+                )
+                .await
             }
             QwenBackend::OpenRouter {
                 base_url,
@@ -275,6 +302,133 @@ impl SharedQwenLlmCallable {
 
         request.send().await.unwrap().json().await.unwrap()
     }
+
+    async fn generate_from_tokens_with_vllm_wrapper(
+        &self,
+        tokens: Vec<i32>,
+        vllm_wrapper_port: u16,
+        passes_in_stop: bool,
+    ) -> String {
+        let request = WrapperRequest {
+            model_name: self.api_name.to_string(),
+            prompt: VllmPrompt::TokenIds(tokens),
+            max_tokens: 2048,
+            include_stop_str_in_output: true,
+            requires_logprobs: false,
+            stop: if passes_in_stop {
+                vec!["</tool_wait>".to_string()]
+            } else {
+                Vec::new()
+            },
+            temperature: 0.0,
+        };
+
+        let response = self
+            .call_vllm_wrapper_with_retry(vllm_wrapper_port, request)
+            .await;
+
+        match response {
+            VllmResponse::Success { response_text, .. } => response_text,
+            VllmResponse::Error { error_message } => {
+                if is_context_length_error(&error_message) {
+                    CONTEXT_LENGTH_EXCEEDED_RESPONSE.to_string()
+                } else {
+                    panic!(
+                        "Qwen vLLM-wrapper request failed after retries on port {}: {}",
+                        vllm_wrapper_port, error_message
+                    )
+                }
+            }
+        }
+    }
+
+    async fn generate_tokens_with_logprobs_with_vllm_wrapper(
+        &self,
+        tokens: Vec<i32>,
+        vllm_wrapper_port: u16,
+        passes_in_stop: bool,
+    ) -> TokenArrayWithLogprob {
+        let request = WrapperRequest {
+            model_name: self.api_name.to_string(),
+            prompt: VllmPrompt::TokenIds(tokens),
+            max_tokens: 2048,
+            include_stop_str_in_output: true,
+            requires_logprobs: true,
+            stop: if passes_in_stop {
+                vec!["</tool_wait>".to_string()]
+            } else {
+                Vec::new()
+            },
+            temperature: 0.0,
+        };
+
+        let response = self
+            .call_vllm_wrapper_with_retry(vllm_wrapper_port, request)
+            .await;
+
+        response
+            .into_token_array_with_logprob()
+            .unwrap_or_else(|error| {
+                panic!(
+                    "Qwen vLLM-wrapper logprob request failed on port {}: {}",
+                    vllm_wrapper_port, error
+                )
+            })
+    }
+
+    async fn call_vllm_wrapper_with_retry(
+        &self,
+        vllm_wrapper_port: u16,
+        request: WrapperRequest,
+    ) -> VllmResponse {
+        let endpoint = format!("http://127.0.0.1:{vllm_wrapper_port}");
+        let mut last_error = String::new();
+
+        for attempt in 1..=3 {
+            let mut client = match proto::vllm_wrapper_client::VllmWrapperClient::connect(
+                endpoint.clone(),
+            )
+            .await
+            {
+                Ok(client) => client,
+                Err(error) => {
+                    last_error = format!("connect error: {error}");
+                    if attempt == 3 {
+                        break;
+                    }
+                    continue;
+                }
+            };
+
+            let proto_request = request.to_proto();
+            let rpc_result = client.generate(Request::new(proto_request)).await;
+            match rpc_result {
+                Ok(response) => {
+                    return VllmResponse::from_proto(response.into_inner());
+                }
+                Err(status) => {
+                    last_error = format!("grpc status {:?}: {}", status.code(), status);
+                    if attempt == 3 {
+                        break;
+                    }
+                }
+            }
+        }
+
+        VllmResponse::Error {
+            error_message: format!(
+                "vLLM-wrapper gRPC call failed after 3 retries on {}: {}",
+                endpoint, last_error
+            ),
+        }
+    }
+}
+
+fn is_context_length_error(error_message: &str) -> bool {
+    error_message.contains("maximum context length")
+        || error_message.contains("Please reduce the length of the input prompt")
+        || error_message.contains("parameter=input_tokens")
+        || error_message.contains("context length")
 }
 
 fn parse_vllm_response_with_logprobs(

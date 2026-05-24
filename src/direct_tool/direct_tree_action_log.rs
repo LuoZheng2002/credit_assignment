@@ -145,8 +145,7 @@ impl AssetFileDirectTreeActionLogs {
             posterior_calculation_config: self.posterior_calculation_config.clone(),
             action_log_schema_version: ACTION_LOG_SCHEMA_VERSION,
         };
-        write_json(self.version_tracking_path(), &tracking_content)
-            .unwrap();
+        write_json(self.version_tracking_path(), &tracking_content).unwrap();
     }
 }
 

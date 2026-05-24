@@ -30,3 +30,10 @@ tokenizers = {version="0.22.2", features=["http"]}
 tiktoken-rs = "0.11.0"
 tokio = {version="1.50.0", features=["full"]}
 ordered-float = {version="5.3.0", features=["serde"]}
+tonic = {version="0.14.6", features=["transport"]}
+prost = "0.14.3"
+tonic-prost = "0.14.6"
+
+[build-dependencies]
+protoc-bin-vendored = "3.2.0"
+tonic-prost-build = "0.14.6"

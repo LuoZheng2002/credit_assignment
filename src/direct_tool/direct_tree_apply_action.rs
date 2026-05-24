@@ -234,7 +234,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 };
                 self.segments.insert(new_segment_id, new_segment);
                 let Some(parent_segment) = self.segments.get_mut(&parent_id) else {
-                    panic!("Parent segment must exist");                    
+                    panic!("Parent segment must exist");
                 };
                 parent_segment.child_ids.push(new_segment_id);
                 self.focused_parent_segment_id = None; // after creating the branch segment, we reset the focused segment because we are not in the process of branching anymore

@@ -132,7 +132,7 @@ pub struct ReasoningOnlyTokenView<'a> {
     pub token: i32,
     pub logprobs: Top8Candidates,
     pub content_index_in_segment: ContentIndex, // the index of the content in the original segment content array that this token belongs to
-    pub token_offset_in_content: usize,  // the offset of the token in the original content tokens
+    pub token_offset_in_content: usize, // the offset of the token in the original content tokens
     pub corresponding_segment: &'a Segment,
 }
 
