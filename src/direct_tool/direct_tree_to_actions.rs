@@ -181,7 +181,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                         < self.rollout_config.max_num_total_trajectories
                 );
 
-                let posteriors = self.calculate_segment_posteriors();
+                let posteriors = self.calculate_segment_posteriors(None);
                 let segment_uncertainty_scores =
                     self.posteriors_to_segment_uncertainty_scores(&posteriors);
                 assert!(

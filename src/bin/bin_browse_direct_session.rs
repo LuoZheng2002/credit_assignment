@@ -63,6 +63,8 @@ struct Args {
     temperature_to_accuracy_path: String,
     #[arg(long)]
     posterior_hyperparameters_path: String,
+    #[arg(long)]
+    override_hyperparameters_path: Option<String>,
 }
 
 const QUESTIONS_PER_PAGE: usize = 10;
@@ -100,9 +102,11 @@ impl TreeSnapshot {
     fn from_tree<M: credit_assignment::llm_model::LlmModelMarker>(
         tree: DirectTree<M>,
         width_division_ratio: Option<usize>,
+        override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> Self {
         let segment_display_widths = segment_display_widths(&tree, width_division_ratio);
-        let segment_posterior_stats = segment_posterior_stats(&tree);
+        let segment_posterior_stats =
+            segment_posterior_stats(&tree, override_hyperparameters);
         let segment_posterior_signal_scaled =
             scaled_segment_posterior_signal(&tree, &segment_posterior_stats);
         let segment_posterior_mean_scaled =
@@ -116,6 +120,7 @@ impl TreeSnapshot {
             &tree,
             effective_width_division_ratio,
             &segment_display_widths,
+            override_hyperparameters,
         );
         let root_segment_id = tree
             .root_segment_id
@@ -210,7 +215,12 @@ struct ConversationRender {
 }
 
 impl TreePage {
-    fn new(model: LlmModelName, entry_index: usize, entry: &QuestionEntry) -> Self {
+    fn new(
+        model: LlmModelName,
+        entry_index: usize,
+        entry: &QuestionEntry,
+        override_hyperparameters: Option<PosteriorHyperparameters>,
+    ) -> Self {
         let total_actions = entry.action_log.actions.len();
         let action_limit = total_actions;
         let width_division_ratio = width_division_ratio_for_model(model, &entry.action_log);
@@ -219,6 +229,7 @@ impl TreePage {
             &entry.action_log,
             action_limit,
             Some(width_division_ratio),
+            override_hyperparameters,
         );
         let selected_segment_id = snapshot.root_segment_id;
         let (tree_lines, rendered_segments) = build_segment_graph_lines(&snapshot);
@@ -236,12 +247,18 @@ impl TreePage {
         }
     }
 
-    fn rebuild_snapshot(&mut self, model: LlmModelName, entry: &QuestionEntry) {
+    fn rebuild_snapshot(
+        &mut self,
+        model: LlmModelName,
+        entry: &QuestionEntry,
+        override_hyperparameters: Option<PosteriorHyperparameters>,
+    ) {
         self.snapshot = snapshot_for_model(
             model,
             &entry.action_log,
             self.action_limit,
             Some(self.width_division_ratio),
+            override_hyperparameters,
         );
         let (tree_lines, rendered_segments) = build_segment_graph_lines(&self.snapshot);
         self.tree_lines = tree_lines;
@@ -261,12 +278,18 @@ impl TreePage {
         }
     }
 
-    fn set_action_limit(&mut self, model: LlmModelName, entry: &QuestionEntry, new_limit: usize) {
+    fn set_action_limit(
+        &mut self,
+        model: LlmModelName,
+        entry: &QuestionEntry,
+        new_limit: usize,
+        override_hyperparameters: Option<PosteriorHyperparameters>,
+    ) {
         if self.action_limit == new_limit {
             return;
         }
         self.action_limit = new_limit;
-        self.rebuild_snapshot(model, entry);
+        self.rebuild_snapshot(model, entry, override_hyperparameters);
     }
 
     fn set_width_division_ratio(
@@ -274,17 +297,19 @@ impl TreePage {
         model: LlmModelName,
         entry: &QuestionEntry,
         new_ratio: usize,
+        override_hyperparameters: Option<PosteriorHyperparameters>,
     ) {
         if self.width_division_ratio == new_ratio {
             return;
         }
         self.width_division_ratio = new_ratio.max(1);
-        self.rebuild_snapshot(model, entry);
+        self.rebuild_snapshot(model, entry, override_hyperparameters);
     }
 }
 
 struct App {
     model: LlmModelName,
+    override_hyperparameters: Option<PosteriorHyperparameters>,
     entries: Vec<QuestionEntry>,
     mode: Mode,
     home_selected_index: usize,
@@ -305,9 +330,14 @@ struct App {
 }
 
 impl App {
-    fn new(model: LlmModelName, entries: Vec<QuestionEntry>) -> Self {
+    fn new(
+        model: LlmModelName,
+        entries: Vec<QuestionEntry>,
+        override_hyperparameters: Option<PosteriorHyperparameters>,
+    ) -> Self {
         Self {
             model,
+            override_hyperparameters,
             entries,
             mode: Mode::Home,
             home_selected_index: 0,
@@ -853,7 +883,12 @@ impl App {
                                         old_ratio,
                                         new_ratio,
                                     );
-                                    tree_page.set_width_division_ratio(self.model, entry, new_ratio);
+                                    tree_page.set_width_division_ratio(
+                                        self.model,
+                                        entry,
+                                        new_ratio,
+                                        self.override_hyperparameters,
+                                    );
                                 }
                             }
                             TreeScrollMode::Panning => {
@@ -862,7 +897,12 @@ impl App {
                             }
                             TreeScrollMode::Evolution => {
                                 let next = tree_page.action_limit.saturating_sub(1);
-                                tree_page.set_action_limit(self.model, entry, next);
+                                tree_page.set_action_limit(
+                                    self.model,
+                                    entry,
+                                    next,
+                                    self.override_hyperparameters,
+                                );
                             }
                         }
                     }
@@ -887,7 +927,12 @@ impl App {
                                     old_ratio,
                                     new_ratio,
                                 );
-                                tree_page.set_width_division_ratio(self.model, entry, new_ratio);
+                                tree_page.set_width_division_ratio(
+                                    self.model,
+                                    entry,
+                                    new_ratio,
+                                    self.override_hyperparameters,
+                                );
                             }
                             TreeScrollMode::Panning => {
                                 self.tree_horizontal_scroll =
@@ -895,7 +940,12 @@ impl App {
                             }
                             TreeScrollMode::Evolution => {
                                 let next = (tree_page.action_limit + 1).min(tree_page.total_actions);
-                                tree_page.set_action_limit(self.model, entry, next);
+                                tree_page.set_action_limit(
+                                    self.model,
+                                    entry,
+                                    next,
+                                    self.override_hyperparameters,
+                                );
                             }
                         }
                     }
@@ -910,7 +960,12 @@ impl App {
             return;
         }
         let entry = &self.entries[self.home_selected_index];
-        self.tree_page = Some(TreePage::new(self.model, self.home_selected_index, entry));
+        self.tree_page = Some(TreePage::new(
+            self.model,
+            self.home_selected_index,
+            entry,
+            self.override_hyperparameters,
+        ));
         self.mode = Mode::Tree;
         self.tree_focus = TreePaneFocus::Tree;
         self.tree_scroll_mode = TreeScrollMode::Scaling;
@@ -1063,6 +1118,7 @@ fn segment_branching_score_display<M: credit_assignment::llm_model::LlmModelMark
     tree: &DirectTree<M>,
     width_division_ratio: usize,
     segment_display_widths: &BTreeMap<SegmentId, usize>,
+    override_hyperparameters: Option<PosteriorHyperparameters>,
 ) -> BTreeMap<SegmentId, Vec<Option<f32>>> {
     let mut displays = BTreeMap::new();
     if tree.segments.is_empty() {
@@ -1076,7 +1132,7 @@ fn segment_branching_score_display<M: credit_assignment::llm_model::LlmModelMark
         return displays;
     }
 
-    let posteriors = tree.calculate_segment_posteriors();
+    let posteriors = tree.calculate_segment_posteriors(override_hyperparameters);
     let mut segment_uncertainty_scores = tree.posteriors_to_segment_uncertainty_scores(&posteriors);
     for segment_id in tree.segments.keys().copied() {
         segment_uncertainty_scores.entry(segment_id).or_insert(0.0);
@@ -1144,6 +1200,7 @@ fn segment_branching_score_display<M: credit_assignment::llm_model::LlmModelMark
 
 fn segment_posterior_stats<M: credit_assignment::llm_model::LlmModelMarker>(
     tree: &DirectTree<M>,
+    override_hyperparameters: Option<PosteriorHyperparameters>,
 ) -> BTreeMap<SegmentId, SegmentPosteriorStats> {
     let mut stats_by_segment = BTreeMap::new();
     if tree.segments.is_empty() || tree.leaf_segment_judgments.is_empty() {
@@ -1151,7 +1208,7 @@ fn segment_posterior_stats<M: credit_assignment::llm_model::LlmModelMarker>(
     }
 
     let eps = 1e-8_f32;
-    let posteriors = tree.calculate_segment_posteriors();
+    let posteriors = tree.calculate_segment_posteriors(override_hyperparameters);
     for (segment_id, posterior) in posteriors {
         let posterior_std = posterior.log_std.exp();
         let signal_to_noise = posterior.mean / (posterior_std + eps);
@@ -1886,6 +1943,7 @@ fn snapshot_for_model(
     action_log: &DirectTreeActionLog,
     action_limit: usize,
     width_division_ratio: Option<usize>,
+    override_hyperparameters: Option<PosteriorHyperparameters>,
 ) -> TreeSnapshot {
     let mut partial_log = action_log.clone();
     partial_log.actions = action_log
@@ -1898,22 +1956,27 @@ fn snapshot_for_model(
         LlmModelName::Qwen25_7b => TreeSnapshot::from_tree(
             DirectTree::<Qwen25>::from_action_log(&partial_log),
             width_division_ratio,
+            override_hyperparameters,
         ),
         LlmModelName::Qwen3_4b => TreeSnapshot::from_tree(
             DirectTree::<Qwen3_4B>::from_action_log(&partial_log),
             width_division_ratio,
+            override_hyperparameters,
         ),
         LlmModelName::Qwen35_4b => TreeSnapshot::from_tree(
             DirectTree::<Qwen35_4B>::from_action_log(&partial_log),
             width_division_ratio,
+            override_hyperparameters,
         ),
         LlmModelName::Gpt4o => TreeSnapshot::from_tree(
             DirectTree::<Gpt4o>::from_action_log(&partial_log),
             width_division_ratio,
+            override_hyperparameters,
         ),
         LlmModelName::Gpt5Mini => TreeSnapshot::from_tree(
             DirectTree::<Gpt5Mini>::from_action_log(&partial_log),
             width_division_ratio,
+            override_hyperparameters,
         ),
     }
 }
@@ -1952,7 +2015,7 @@ fn question_stats_from_action_log(
     model: LlmModelName,
     action_log: &DirectTreeActionLog,
 ) -> (usize, usize, f64) {
-    let final_snapshot = snapshot_for_model(model, action_log, action_log.actions.len(), None);
+    let final_snapshot = snapshot_for_model(model, action_log, action_log.actions.len(), None, None);
     let num_leaves = final_snapshot.leaf_segment_judgments.len();
     let num_correct = final_snapshot
         .leaf_segment_judgments
@@ -2003,12 +2066,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         rollout_config_path,
         temperature_to_accuracy_path,
         posterior_hyperparameters_path,
+        override_hyperparameters_path,
     } = Args::parse();
     let rollout_config = read_json(rollout_config_path).unwrap();
     let temperature_to_accuracy =
         read_json::<Vec<TemperatureAccuracyPair>>(temperature_to_accuracy_path).unwrap();
     let posterior_hyperparameters =
         read_json::<PosteriorHyperparameters>(posterior_hyperparameters_path).unwrap();
+    let override_hyperparameters = override_hyperparameters_path
+        .map(|path| read_json::<PosteriorHyperparameters>(path).unwrap());
     let posterior_calculation_config = PosteriorCalculationConfig {
         temperature_to_accuracy,
         hyperparameters: posterior_hyperparameters,
@@ -2046,7 +2112,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let app = App::new(model, entries);
+    let app = App::new(model, entries, override_hyperparameters);
     let result = run_app(&mut terminal, app);
     disable_raw_mode()?;
     execute!(
