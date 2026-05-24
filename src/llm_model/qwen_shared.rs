@@ -105,8 +105,10 @@ impl SharedQwenLlmCallable {
 
         let response = match &self.backend {
             QwenBackend::Vllm { vllm_port } => {
+                let prompt = (self.decode_tokens)(&tokens);
                 let mut body = serde_json::json!({
                     "model": self.api_name,
+                    "prompt": prompt,
                     "prompt_token_ids": tokens,
                     "max_tokens": 2048,
                     "include_stop_str_in_output": true,
@@ -185,8 +187,10 @@ impl SharedQwenLlmCallable {
 
         let result = match &self.backend {
             QwenBackend::Vllm { vllm_port } => {
+                let prompt = (self.decode_tokens)(&tokens);
                 let mut body = serde_json::json!({
                     "model": self.api_name,
+                    "prompt": prompt,
                     "prompt_token_ids": tokens,
                     "max_tokens": 2048,
                     "include_stop_str_in_output": true,
