@@ -537,10 +537,11 @@ fn parse_vllm_candidates(
                 let encoded = encode_text(token);
                 assert!(
                     encoded.len() == 1,
-                    "vLLM top_logprobs token must map to exactly one token id on vLLM port {}: token={:?} encoded={:?}",
+                    "vLLM top_logprobs token must map to exactly one token id on vLLM port {}: token={:?} encoded={:?}, json object: {:?}",
                     vllm_port,
                     token,
-                    encoded
+                    encoded,
+                    value
                 );
                 TokenLogprobCandidate {
                     token_id: encoded[0],
