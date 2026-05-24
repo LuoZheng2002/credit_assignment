@@ -116,6 +116,9 @@ impl LlmModelMarker for Qwen35_4B {
             QwenApiBackend::Vllm => QwenBackend::Vllm {
                 vllm_port: llm_cli_args.qwen_vllm_port(),
             },
+            QwenApiBackend::Sglang => QwenBackend::Sglang {
+                sglang_port: llm_cli_args.qwen_sglang_port(),
+            },
             QwenApiBackend::VllmWrapper => QwenBackend::VllmWrapper {
                 vllm_wrapper_port: llm_cli_args.vllm_wrapper_port(),
             },

@@ -45,6 +45,9 @@ pub(crate) enum QwenBackend {
     Vllm {
         vllm_port: u16,
     },
+    Sglang {
+        sglang_port: u16,
+    },
     VllmWrapper {
         vllm_wrapper_port: u16,
     },
@@ -83,6 +86,9 @@ impl SharedQwenLlmCallable {
         );
         if let QwenBackend::Vllm { vllm_port } = backend {
             assert!(vllm_port > 0, "vLLM port must be greater than 0");
+        }
+        if let QwenBackend::Sglang { sglang_port } = backend {
+            assert!(sglang_port > 0, "SGLang port must be greater than 0");
         }
         if let QwenBackend::VllmWrapper { vllm_wrapper_port } = backend {
             assert!(
@@ -129,6 +135,24 @@ impl SharedQwenLlmCallable {
 
                 self.post_json(
                     &format!("http://localhost:{vllm_port}/v1/completions"),
+                    body,
+                )
+                .await
+            }
+            QwenBackend::Sglang { sglang_port } => {
+                let prompt = (self.decode_tokens)(&tokens);
+                let mut body = serde_json::json!({
+                    "model": self.api_name,
+                    "prompt": prompt,
+                    "max_tokens": 2048,
+                    "include_stop_str_in_output": true,
+                });
+                if passes_in_stop {
+                    body["stop"] = serde_json::json!(["</tool_wait>"]);
+                }
+
+                self.post_json(
+                    &format!("http://localhost:{sglang_port}/v1/completions"),
                     body,
                 )
                 .await
@@ -180,6 +204,15 @@ impl SharedQwenLlmCallable {
                     )
                 })
                 .to_string(),
+            QwenBackend::Sglang { sglang_port } => response["choices"][0]["text"]
+                .as_str()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Qwen SGLang response is invalid (port {}): {:?}",
+                        sglang_port, response
+                    )
+                })
+                .to_string(),
             QwenBackend::OpenRouter { .. } => parse_openrouter_message_content(&response)
                 .unwrap_or_else(|| panic!("Qwen OpenRouter response is invalid: {:?}", response)),
             QwenBackend::VllmWrapper { .. } => {
@@ -223,7 +256,36 @@ impl SharedQwenLlmCallable {
                         body,
                     )
                     .await;
-                parse_vllm_response_with_logprobs(vllm_port, &json, self.encode_text)
+                parse_completion_response_with_logprobs(
+                    &format!("vLLM port {}", vllm_port),
+                    &json,
+                    self.encode_text,
+                )
+            }
+            QwenBackend::Sglang { sglang_port } => {
+                let prompt = (self.decode_tokens)(&tokens);
+                let mut body = serde_json::json!({
+                    "model": self.api_name,
+                    "prompt": prompt,
+                    "max_tokens": 2048,
+                    "include_stop_str_in_output": true,
+                    "logprobs": 8,
+                });
+                if passes_in_stop {
+                    body["stop"] = serde_json::json!(["</tool_wait>"]);
+                }
+
+                let json = self
+                    .post_json(
+                        &format!("http://localhost:{sglang_port}/v1/completions"),
+                        body,
+                    )
+                    .await;
+                parse_completion_response_with_logprobs(
+                    &format!("SGLang port {}", sglang_port),
+                    &json,
+                    self.encode_text,
+                )
             }
             QwenBackend::VllmWrapper { vllm_wrapper_port } => {
                 self.generate_tokens_with_logprobs_with_vllm_wrapper(
@@ -431,15 +493,15 @@ fn is_context_length_error(error_message: &str) -> bool {
         || error_message.contains("context length")
 }
 
-fn parse_vllm_response_with_logprobs(
-    vllm_port: &u16,
+fn parse_completion_response_with_logprobs(
+    backend_label: &str,
     json: &Value,
     encode_text: fn(&str) -> Vec<i32>,
 ) -> TokenArrayWithLogprob {
     if let Some(error_message) = json["error"]["message"].as_str() {
         panic!(
-            "Qwen completion with logprobs failed on vLLM port {}: {}. Full response: {:?}",
-            vllm_port, error_message, json
+            "Qwen completion with logprobs failed on {}: {}. Full response: {:?}",
+            backend_label, error_message, json
         );
     }
 
@@ -448,16 +510,16 @@ fn parse_vllm_response_with_logprobs(
         .as_str()
         .unwrap_or_else(|| {
             panic!(
-                "Qwen completion response missing choices[0].text on vLLM port {}: {:?}",
-                vllm_port, json
+                "Qwen completion response missing choices[0].text on {}: {:?}",
+                backend_label, json
             )
         })
         .to_string();
 
     let token_strings = choice["logprobs"]["tokens"].as_array().unwrap_or_else(|| {
         panic!(
-            "Qwen completion response missing choices[0].logprobs.tokens on vLLM port {}: {:?}",
-            vllm_port, json
+            "Qwen completion response missing choices[0].logprobs.tokens on {}: {:?}",
+            backend_label, json
         )
     });
 
@@ -466,15 +528,15 @@ fn parse_vllm_response_with_logprobs(
         .map(|token| {
             let token = token.as_str().unwrap_or_else(|| {
                 panic!(
-                    "Qwen completion logprobs.tokens entry must be a string on vLLM port {}: {:?}",
-                    vllm_port, token
+                    "Qwen completion logprobs.tokens entry must be a string on {}: {:?}",
+                    backend_label, token
                 )
             });
             let encoded = encode_text(token);
             assert!(
                 encoded.len() == 1,
-                "Qwen completion logprobs.tokens entry must map to exactly one token id on vLLM port {}: token={:?} encoded={:?}",
-                vllm_port,
+                "Qwen completion logprobs.tokens entry must map to exactly one token id on {}: token={:?} encoded={:?}",
+                backend_label,
                 token,
                 encoded
             );
@@ -488,8 +550,8 @@ fn parse_vllm_response_with_logprobs(
     if let Some(values) = token_logprobs {
         assert!(
             values.len() == generated_tokens.len(),
-            "Qwen completion token_logprobs length mismatch on vLLM port {}: token_logprobs={} generated_tokens={}. Full response: {:?}",
-            vllm_port,
+            "Qwen completion token_logprobs length mismatch on {}: token_logprobs={} generated_tokens={}. Full response: {:?}",
+            backend_label,
             values.len(),
             generated_tokens.len(),
             json
@@ -498,8 +560,8 @@ fn parse_vllm_response_with_logprobs(
     if let Some(values) = top_logprobs {
         assert!(
             values.len() == generated_tokens.len(),
-            "Qwen completion top_logprobs length mismatch on vLLM port {}: top_logprobs={} generated_tokens={}. Full response: {:?}",
-            vllm_port,
+            "Qwen completion top_logprobs length mismatch on {}: top_logprobs={} generated_tokens={}. Full response: {:?}",
+            backend_label,
             values.len(),
             generated_tokens.len(),
             json
@@ -516,7 +578,7 @@ fn parse_vllm_response_with_logprobs(
 
         let mut candidates = top_logprobs
             .and_then(|vals| vals.get(idx))
-            .map(|value| parse_vllm_candidates(value, vllm_port, encode_text))
+            .map(|value| parse_completion_candidates(value, backend_label, encode_text))
             .unwrap_or_default();
 
         if !candidates
@@ -673,9 +735,9 @@ fn try_token_to_single_id(encode_text: fn(&str) -> Vec<i32>, token: &str) -> Opt
     }
 }
 
-fn parse_vllm_candidates(
+fn parse_completion_candidates(
     value: &Value,
-    vllm_port: &u16,
+    backend_label: &str,
     encode_text: fn(&str) -> Vec<i32>,
 ) -> Vec<TokenLogprobCandidate> {
     if let Some(map) = value.as_object() {
@@ -684,15 +746,15 @@ fn parse_vllm_candidates(
             .map(|(token, logprob)| {
                 let logprob = logprob.as_f64().unwrap_or_else(|| {
                     panic!(
-                        "vLLM top_logprobs value must be f64-compatible on vLLM port {}: token={:?} value={:?}",
-                        vllm_port, token, logprob
+                        "Completion top_logprobs value must be f64-compatible on {}: token={:?} value={:?}",
+                        backend_label, token, logprob
                     )
                 }) as f32;
                 let encoded = encode_text(token);
                 assert!(
                     encoded.len() == 1,
-                    "vLLM top_logprobs token must map to exactly one token id on vLLM port {}: token={:?} encoded={:?}, json object: {:?}",
-                    vllm_port,
+                    "Completion top_logprobs token must map to exactly one token id on {}: token={:?} encoded={:?}, json object: {:?}",
+                    backend_label,
                     token,
                     encoded,
                     value
@@ -706,7 +768,7 @@ fn parse_vllm_candidates(
     }
 
     panic!(
-        "Unexpected vLLM top_logprobs shape on vLLM port {}; expected object mapping token string -> logprob. Got: {:?}",
-        vllm_port, value
+        "Unexpected completion top_logprobs shape on {}; expected object mapping token string -> logprob. Got: {:?}",
+        backend_label, value
     )
 }
