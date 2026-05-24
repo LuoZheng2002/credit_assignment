@@ -109,7 +109,6 @@ impl SharedQwenLlmCallable {
                 let mut body = serde_json::json!({
                     "model": self.api_name,
                     "prompt": prompt,
-                    "prompt_token_ids": tokens,
                     "max_tokens": 2048,
                     "include_stop_str_in_output": true,
                 });
@@ -191,11 +190,9 @@ impl SharedQwenLlmCallable {
                 let mut body = serde_json::json!({
                     "model": self.api_name,
                     "prompt": prompt,
-                    "prompt_token_ids": tokens,
                     "max_tokens": 2048,
                     "include_stop_str_in_output": true,
                     "logprobs": 8,
-                    "return_tokens_as_token_ids": true,
                 });
                 if passes_in_stop {
                     body["stop"] = serde_json::json!(["</tool_wait>"]);
@@ -207,7 +204,7 @@ impl SharedQwenLlmCallable {
                         body,
                     )
                     .await;
-                parse_vllm_response_with_logprobs(vllm_port, &json)
+                parse_vllm_response_with_logprobs(vllm_port, &json, self.encode_text)
             }
             QwenBackend::OpenRouter {
                 base_url,
@@ -280,7 +277,11 @@ impl SharedQwenLlmCallable {
     }
 }
 
-fn parse_vllm_response_with_logprobs(vllm_port: &u16, json: &Value) -> TokenArrayWithLogprob {
+fn parse_vllm_response_with_logprobs(
+    vllm_port: &u16,
+    json: &Value,
+    encode_text: fn(&str) -> Vec<i32>,
+) -> TokenArrayWithLogprob {
     if let Some(error_message) = json["error"]["message"].as_str() {
         panic!(
             "Qwen completion with logprobs failed on vLLM port {}: {}. Full response: {:?}",
@@ -299,24 +300,7 @@ fn parse_vllm_response_with_logprobs(vllm_port: &u16, json: &Value) -> TokenArra
         })
         .to_string();
 
-    let generated_tokens: Vec<i32> = choice["token_ids"]
-        .as_array()
-        .unwrap_or_else(|| {
-            panic!(
-                "Qwen completion response missing choices[0].token_ids on vLLM port {}: {:?}",
-                vllm_port, json
-            )
-        })
-        .iter()
-        .map(|token| {
-            i32::try_from(
-                token
-                    .as_i64()
-                    .unwrap_or_else(|| panic!("token id must be i64-compatible: {token:?}")),
-            )
-            .expect("token id must fit in i32")
-        })
-        .collect();
+    let generated_tokens = encode_text(&decoded_string);
 
     let token_logprobs = choice["logprobs"]["token_logprobs"].as_array();
     let top_logprobs = choice["logprobs"]["top_logprobs"].as_array();
