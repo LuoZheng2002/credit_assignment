@@ -11,7 +11,7 @@ use crate::{
         hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
-    json_line_util::read_json,
+    json_line_util::{read_json, write_json},
     llm_model::LlmModelName,
 };
 
@@ -145,11 +145,8 @@ impl AssetFileDirectTreeActionLogs {
             posterior_calculation_config: self.posterior_calculation_config.clone(),
             action_log_schema_version: ACTION_LOG_SCHEMA_VERSION,
         };
-        std::fs::write(
-            self.version_tracking_path(),
-            serde_json::to_string_pretty(&tracking_content).unwrap(),
-        )
-        .expect("Failed to write tracking file for direct action log");
+        write_json(self.version_tracking_path(), &tracking_content)
+            .unwrap();
     }
 }
 

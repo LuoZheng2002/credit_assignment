@@ -10,6 +10,7 @@ dependencies = [
     "openai>=2.37.0",
     "research-utility",
     "sympy>=1.14.0",
+    "transformers<5",
 ]
 
 [project.optional-dependencies]
@@ -44,4 +45,5 @@ torch = [
     { index = "pytorch-cpu", extra = "cpu" },
     { index = "pytorch-cu128", extra = "gpu" },
 ]
+
 research-utility = { path = "../research-utility", editable = true }
