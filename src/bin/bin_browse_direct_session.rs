@@ -83,6 +83,8 @@ struct TreeSnapshot {
     leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
     segment_posterior_stats: BTreeMap<SegmentId, SegmentPosteriorStats>,
     segment_posterior_signal_scaled: BTreeMap<SegmentId, f32>,
+    segment_posterior_mean_scaled: BTreeMap<SegmentId, f32>,
+    segment_posterior_std_scaled: BTreeMap<SegmentId, f32>,
     segment_branching_score_display: BTreeMap<SegmentId, Vec<Option<f32>>>,
     segment_display_widths: BTreeMap<SegmentId, usize>,
 }
@@ -103,6 +105,10 @@ impl TreeSnapshot {
         let segment_posterior_stats = segment_posterior_stats(&tree);
         let segment_posterior_signal_scaled =
             scaled_segment_posterior_signal(&tree, &segment_posterior_stats);
+        let segment_posterior_mean_scaled =
+            scaled_segment_posterior_mean(&tree, &segment_posterior_stats);
+        let segment_posterior_std_scaled =
+            scaled_segment_posterior_std(&tree, &segment_posterior_stats);
         let effective_width_division_ratio = width_division_ratio
             .unwrap_or_else(|| width_division_ratio_for_tree(&tree))
             .max(1);
@@ -120,6 +126,8 @@ impl TreeSnapshot {
             leaf_segment_judgments: tree.leaf_segment_judgments,
             segment_posterior_stats,
             segment_posterior_signal_scaled,
+            segment_posterior_mean_scaled,
+            segment_posterior_std_scaled,
             segment_branching_score_display,
             segment_display_widths,
         }
@@ -134,6 +142,7 @@ enum Mode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TreePaneFocus {
+    Summary,
     Conversation,
     Tree,
 }
@@ -162,6 +171,8 @@ enum TreeScrollMode {
 enum TreeColorMode {
     SignalToNoise,
     BranchingScore,
+    PosteriorMean,
+    PosteriorStd,
 }
 
 impl TreeColorMode {
@@ -169,6 +180,8 @@ impl TreeColorMode {
         match self {
             Self::SignalToNoise => "SignalToNoise",
             Self::BranchingScore => "BranchingScore",
+            Self::PosteriorMean => "PosteriorMean",
+            Self::PosteriorStd => "PosteriorStd",
         }
     }
 }
@@ -276,12 +289,16 @@ struct App {
     mode: Mode,
     home_selected_index: usize,
     home_list_area: Option<Rect>,
+    summary_area: Option<Rect>,
     conversation_area: Option<Rect>,
     tree_page: Option<TreePage>,
     tree_focus: TreePaneFocus,
     tree_scroll_mode: TreeScrollMode,
     tree_color_mode: TreeColorMode,
     tree_horizontal_scroll: usize,
+    summary_scroll: usize,
+    summary_max_scroll: usize,
+    summary_metrics: Option<PaneMetrics>,
     conversation_scroll: usize,
     conversation_max_scroll: usize,
     conversation_metrics: Option<PaneMetrics>,
@@ -295,12 +312,16 @@ impl App {
             mode: Mode::Home,
             home_selected_index: 0,
             home_list_area: None,
+            summary_area: None,
             conversation_area: None,
             tree_page: None,
             tree_focus: TreePaneFocus::Tree,
             tree_scroll_mode: TreeScrollMode::Scaling,
             tree_color_mode: TreeColorMode::SignalToNoise,
             tree_horizontal_scroll: 0,
+            summary_scroll: 0,
+            summary_max_scroll: 0,
+            summary_metrics: None,
             conversation_scroll: 0,
             conversation_max_scroll: 0,
             conversation_metrics: None,
@@ -329,6 +350,7 @@ impl App {
     }
 
     fn draw_home(&mut self, frame: &mut ratatui::Frame<'_>) {
+        self.summary_area = None;
         self.conversation_area = None;
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -466,6 +488,42 @@ impl App {
             posterior_std_text,
             signal_to_noise_text,
         );
+        match self.tree_color_mode {
+            TreeColorMode::SignalToNoise => {
+                if let Some((min_value, max_value)) = posterior_stat_min_max(
+                    &tree_page.snapshot.segment_posterior_stats,
+                    |stats| stats.signal_to_noise,
+                ) {
+                    summary.push_str(&format!(
+                        "\n[signal_to_noise range] min: {:.6}, max: {:.6}",
+                        min_value, max_value
+                    ));
+                }
+            }
+            TreeColorMode::PosteriorMean => {
+                if let Some((min_value, max_value)) = posterior_stat_min_max(
+                    &tree_page.snapshot.segment_posterior_stats,
+                    |stats| stats.posterior_mean,
+                ) {
+                    summary.push_str(&format!(
+                        "\n[posterior_mean range] min: {:.6}, max: {:.6}",
+                        min_value, max_value
+                    ));
+                }
+            }
+            TreeColorMode::PosteriorStd => {
+                if let Some((min_value, max_value)) = posterior_stat_min_max(
+                    &tree_page.snapshot.segment_posterior_stats,
+                    |stats| stats.posterior_std,
+                ) {
+                    summary.push_str(&format!(
+                        "\n[posterior_std range] min: {:.6}, max: {:.6}",
+                        min_value, max_value
+                    ));
+                }
+            }
+            TreeColorMode::BranchingScore => {}
+        }
         if let Some(judgment) = judgment {
             let model_answer = model_answer_text(&judgment.model_answer);
             summary.push_str(&format!(
@@ -479,10 +537,26 @@ impl App {
             ));
         }
 
+        self.summary_area = Some(chunks[0]);
+        let summary_block = Block::default()
+            .borders(Borders::ALL)
+            .title("Summary")
+            .border_style(if self.tree_focus == TreePaneFocus::Summary {
+                Style::default()
+                    .fg(Color::LightGreen)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            });
+        let summary_inner = summary_block.inner(chunks[0]);
+        let summary_height = summary_inner.height as usize;
+        let summary_lines = compute_wrapped_line_count(&summary, summary_inner, &mut self.summary_metrics);
+        self.summary_max_scroll = bottom_scroll_limit(summary_lines, summary_height.max(1));
         frame.render_widget(
             Paragraph::new(summary)
                 .wrap(Wrap { trim: false })
-                .block(Block::default().borders(Borders::ALL).title("Summary")),
+                .block(summary_block)
+                .scroll((clamp_scroll(self.summary_scroll), 0)),
             chunks[0],
         );
 
@@ -534,7 +608,7 @@ impl App {
             .borders(Borders::ALL)
             .title(
                 format!(
-                    "Segment tree [scroll:{} color:{} ratio:{} hscroll:{} actions:{}/{}] (1:scale 2:pan 3:evolve, 4:snr 5:branch, wheel follows scroll mode)",
+                    "Segment tree [scroll:{} color:{} ratio:{} hscroll:{} actions:{}/{}] (1:scale 2:pan 3:evolve, 4:snr 5:branch 6:mean 7:std, wheel follows scroll mode)",
                     self.tree_scroll_mode.label(),
                     self.tree_color_mode.label(),
                     tree_page.width_division_ratio,
@@ -605,6 +679,10 @@ impl App {
                 self.tree_scroll_mode = TreeScrollMode::Scaling;
                 self.tree_color_mode = TreeColorMode::SignalToNoise;
                 self.tree_horizontal_scroll = 0;
+                self.summary_area = None;
+                self.summary_scroll = 0;
+                self.summary_max_scroll = 0;
+                self.summary_metrics = None;
                 self.conversation_area = None;
                 self.conversation_scroll = 0;
                 self.conversation_max_scroll = 0;
@@ -620,39 +698,58 @@ impl App {
                 false
             }
             KeyCode::Up => {
-                if self.tree_focus == TreePaneFocus::Conversation {
-                    self.scroll_conversation_up(1);
+                match self.tree_focus {
+                    TreePaneFocus::Summary => self.scroll_summary_up(1),
+                    TreePaneFocus::Conversation => self.scroll_conversation_up(1),
+                    TreePaneFocus::Tree => {}
                 }
                 false
             }
             KeyCode::Down => {
-                if self.tree_focus == TreePaneFocus::Conversation {
-                    self.conversation_scroll = self.conversation_scroll.saturating_add(1);
+                match self.tree_focus {
+                    TreePaneFocus::Summary => {
+                        self.summary_scroll = self.summary_scroll.saturating_add(1)
+                    }
+                    TreePaneFocus::Conversation => {
+                        self.conversation_scroll = self.conversation_scroll.saturating_add(1)
+                    }
+                    TreePaneFocus::Tree => {}
                 }
                 false
             }
             KeyCode::PageUp => {
-                if self.tree_focus == TreePaneFocus::Conversation {
-                    self.scroll_conversation_up(10);
+                match self.tree_focus {
+                    TreePaneFocus::Summary => self.scroll_summary_up(10),
+                    TreePaneFocus::Conversation => self.scroll_conversation_up(10),
+                    TreePaneFocus::Tree => {}
                 }
                 false
             }
             KeyCode::PageDown => {
-                if self.tree_focus == TreePaneFocus::Conversation {
-                    self.conversation_scroll = self.conversation_scroll.saturating_add(10);
+                match self.tree_focus {
+                    TreePaneFocus::Summary => {
+                        self.summary_scroll = self.summary_scroll.saturating_add(10)
+                    }
+                    TreePaneFocus::Conversation => {
+                        self.conversation_scroll = self.conversation_scroll.saturating_add(10)
+                    }
+                    TreePaneFocus::Tree => {}
                 }
                 false
             }
             KeyCode::Home => {
-                if self.tree_focus == TreePaneFocus::Conversation {
-                    self.conversation_scroll = 0;
+                match self.tree_focus {
+                    TreePaneFocus::Summary => self.summary_scroll = 0,
+                    TreePaneFocus::Conversation => self.conversation_scroll = 0,
+                    TreePaneFocus::Tree => {}
                 }
                 false
             }
             KeyCode::Tab => {
                 self.tree_focus = match self.tree_focus {
+                    TreePaneFocus::Summary => TreePaneFocus::Conversation,
                     TreePaneFocus::Conversation => TreePaneFocus::Tree,
-                    TreePaneFocus::Tree => TreePaneFocus::Conversation,
+                    TreePaneFocus::Tree => TreePaneFocus::Summary,
                 };
                 false
             }
@@ -674,6 +771,14 @@ impl App {
             }
             KeyCode::Char('5') => {
                 self.tree_color_mode = TreeColorMode::BranchingScore;
+                false
+            }
+            KeyCode::Char('6') => {
+                self.tree_color_mode = TreeColorMode::PosteriorMean;
+                false
+            }
+            KeyCode::Char('7') => {
+                self.tree_color_mode = TreeColorMode::PosteriorStd;
                 false
             }
             _ => false,
@@ -702,12 +807,16 @@ impl App {
         let Some(tree_page) = self.tree_page.as_mut() else {
             return;
         };
-        if let Some(conversation_area) = self.conversation_area {
-            if contains_point(conversation_area, mouse.column, mouse.row) {
-                self.tree_focus = TreePaneFocus::Conversation;
-            } else if let Some(tree_area) = tree_page.tree_area {
-                if contains_point(tree_area, mouse.column, mouse.row) {
-                    self.tree_focus = TreePaneFocus::Tree;
+        if let Some(summary_area) = self.summary_area {
+            if contains_point(summary_area, mouse.column, mouse.row) {
+                self.tree_focus = TreePaneFocus::Summary;
+            } else if let Some(conversation_area) = self.conversation_area {
+                if contains_point(conversation_area, mouse.column, mouse.row) {
+                    self.tree_focus = TreePaneFocus::Conversation;
+                } else if let Some(tree_area) = tree_page.tree_area {
+                    if contains_point(tree_area, mouse.column, mouse.row) {
+                        self.tree_focus = TreePaneFocus::Tree;
+                    }
                 }
             }
         }
@@ -729,15 +838,50 @@ impl App {
                 }
             }
             MouseEventKind::ScrollUp => {
-                if self.tree_focus == TreePaneFocus::Conversation {
-                    self.scroll_conversation_up(1);
-                } else if self.tree_focus == TreePaneFocus::Tree {
-                    let entry = &self.entries[tree_page.entry_index];
-                    match self.tree_scroll_mode {
-                        TreeScrollMode::Scaling => {
-                            let old_ratio = tree_page.width_division_ratio;
-                            let new_ratio = old_ratio.saturating_sub(1).max(1);
-                            if old_ratio != new_ratio {
+                match self.tree_focus {
+                    TreePaneFocus::Summary => self.scroll_summary_up(1),
+                    TreePaneFocus::Conversation => self.scroll_conversation_up(1),
+                    TreePaneFocus::Tree => {
+                        let entry = &self.entries[tree_page.entry_index];
+                        match self.tree_scroll_mode {
+                            TreeScrollMode::Scaling => {
+                                let old_ratio = tree_page.width_division_ratio;
+                                let new_ratio = old_ratio.saturating_sub(1).max(1);
+                                if old_ratio != new_ratio {
+                                    self.tree_horizontal_scroll = scale_horizontal_scroll(
+                                        self.tree_horizontal_scroll,
+                                        old_ratio,
+                                        new_ratio,
+                                    );
+                                    tree_page.set_width_division_ratio(self.model, entry, new_ratio);
+                                }
+                            }
+                            TreeScrollMode::Panning => {
+                                self.tree_horizontal_scroll =
+                                    self.tree_horizontal_scroll.saturating_sub(4);
+                            }
+                            TreeScrollMode::Evolution => {
+                                let next = tree_page.action_limit.saturating_sub(1);
+                                tree_page.set_action_limit(self.model, entry, next);
+                            }
+                        }
+                    }
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                match self.tree_focus {
+                    TreePaneFocus::Summary => {
+                        self.summary_scroll = self.summary_scroll.saturating_add(1)
+                    }
+                    TreePaneFocus::Conversation => {
+                        self.conversation_scroll = self.conversation_scroll.saturating_add(1)
+                    }
+                    TreePaneFocus::Tree => {
+                        let entry = &self.entries[tree_page.entry_index];
+                        match self.tree_scroll_mode {
+                            TreeScrollMode::Scaling => {
+                                let old_ratio = tree_page.width_division_ratio;
+                                let new_ratio = old_ratio.saturating_add(1);
                                 self.tree_horizontal_scroll = scale_horizontal_scroll(
                                     self.tree_horizontal_scroll,
                                     old_ratio,
@@ -745,41 +889,14 @@ impl App {
                                 );
                                 tree_page.set_width_division_ratio(self.model, entry, new_ratio);
                             }
-                        }
-                        TreeScrollMode::Panning => {
-                            self.tree_horizontal_scroll =
-                                self.tree_horizontal_scroll.saturating_sub(4);
-                        }
-                        TreeScrollMode::Evolution => {
-                            let next = tree_page.action_limit.saturating_sub(1);
-                            tree_page.set_action_limit(self.model, entry, next);
-                        }
-                    }
-                }
-            }
-            MouseEventKind::ScrollDown => {
-                if self.tree_focus == TreePaneFocus::Conversation {
-                    self.conversation_scroll = self.conversation_scroll.saturating_add(1);
-                } else if self.tree_focus == TreePaneFocus::Tree {
-                    let entry = &self.entries[tree_page.entry_index];
-                    match self.tree_scroll_mode {
-                        TreeScrollMode::Scaling => {
-                            let old_ratio = tree_page.width_division_ratio;
-                            let new_ratio = old_ratio.saturating_add(1);
-                            self.tree_horizontal_scroll = scale_horizontal_scroll(
-                                self.tree_horizontal_scroll,
-                                old_ratio,
-                                new_ratio,
-                            );
-                            tree_page.set_width_division_ratio(self.model, entry, new_ratio);
-                        }
-                        TreeScrollMode::Panning => {
-                            self.tree_horizontal_scroll =
-                                self.tree_horizontal_scroll.saturating_add(4);
-                        }
-                        TreeScrollMode::Evolution => {
-                            let next = (tree_page.action_limit + 1).min(tree_page.total_actions);
-                            tree_page.set_action_limit(self.model, entry, next);
+                            TreeScrollMode::Panning => {
+                                self.tree_horizontal_scroll =
+                                    self.tree_horizontal_scroll.saturating_add(4);
+                            }
+                            TreeScrollMode::Evolution => {
+                                let next = (tree_page.action_limit + 1).min(tree_page.total_actions);
+                                tree_page.set_action_limit(self.model, entry, next);
+                            }
                         }
                     }
                 }
@@ -799,10 +916,22 @@ impl App {
         self.tree_scroll_mode = TreeScrollMode::Scaling;
         self.tree_color_mode = TreeColorMode::SignalToNoise;
         self.tree_horizontal_scroll = 0;
+        self.summary_area = None;
+        self.summary_scroll = 0;
+        self.summary_max_scroll = 0;
+        self.summary_metrics = None;
         self.conversation_scroll = 0;
         self.conversation_max_scroll = 0;
         self.conversation_metrics = None;
         self.conversation_area = None;
+    }
+
+    fn scroll_summary_up(&mut self, magnitude: usize) {
+        if self.summary_scroll > self.summary_max_scroll {
+            self.summary_scroll = self.summary_max_scroll;
+            return;
+        }
+        self.summary_scroll = self.summary_scroll.saturating_sub(magnitude);
     }
 
     fn scroll_conversation_up(&mut self, magnitude: usize) {
@@ -1042,27 +1171,49 @@ fn scaled_segment_posterior_signal<M: credit_assignment::llm_model::LlmModelMark
     tree: &DirectTree<M>,
     stats_by_segment: &BTreeMap<SegmentId, SegmentPosteriorStats>,
 ) -> BTreeMap<SegmentId, f32> {
-    let mut raw_signal = BTreeMap::new();
+    scaled_segment_posterior_value(tree, stats_by_segment, |stats| stats.signal_to_noise)
+}
+
+fn scaled_segment_posterior_mean<M: credit_assignment::llm_model::LlmModelMarker>(
+    tree: &DirectTree<M>,
+    stats_by_segment: &BTreeMap<SegmentId, SegmentPosteriorStats>,
+) -> BTreeMap<SegmentId, f32> {
+    scaled_segment_posterior_value(tree, stats_by_segment, |stats| stats.posterior_mean)
+}
+
+fn scaled_segment_posterior_std<M: credit_assignment::llm_model::LlmModelMarker>(
+    tree: &DirectTree<M>,
+    stats_by_segment: &BTreeMap<SegmentId, SegmentPosteriorStats>,
+) -> BTreeMap<SegmentId, f32> {
+    scaled_segment_posterior_value(tree, stats_by_segment, |stats| stats.posterior_std)
+}
+
+fn scaled_segment_posterior_value<M: credit_assignment::llm_model::LlmModelMarker>(
+    tree: &DirectTree<M>,
+    stats_by_segment: &BTreeMap<SegmentId, SegmentPosteriorStats>,
+    value_selector: impl Fn(SegmentPosteriorStats) -> f32,
+) -> BTreeMap<SegmentId, f32> {
+    let mut raw_values = BTreeMap::new();
     for segment_id in tree.segments.keys().copied() {
-        raw_signal.insert(segment_id, 0.0);
+        raw_values.insert(segment_id, 0.0);
     }
     if tree.segments.is_empty() || stats_by_segment.is_empty() {
-        return raw_signal;
+        return raw_values;
     }
 
     for (segment_id, stats) in stats_by_segment {
-        raw_signal.insert(*segment_id, stats.signal_to_noise);
+        raw_values.insert(*segment_id, value_selector(*stats));
     }
 
     let mut max_abs = 0.0_f32;
-    for value in raw_signal.values().copied() {
+    for value in raw_values.values().copied() {
         max_abs = max_abs.max(value.abs());
     }
     if max_abs <= 0.0 {
-        return raw_signal;
+        return raw_values;
     }
 
-    raw_signal
+    raw_values
         .into_iter()
         .map(|(segment_id, value)| (segment_id, value / max_abs))
         .collect()
@@ -1076,6 +1227,24 @@ fn signed_posterior_to_color(signed_position: f32) -> Color {
         (255, ((1.0 + x) * 255.0).round() as u8)
     };
     Color::Rgb(red, green, 0)
+}
+
+fn posterior_stat_min_max(
+    stats_by_segment: &BTreeMap<SegmentId, SegmentPosteriorStats>,
+    selector: impl Fn(SegmentPosteriorStats) -> f32,
+) -> Option<(f32, f32)> {
+    let mut min_value = f32::INFINITY;
+    let mut max_value = f32::NEG_INFINITY;
+    for stats in stats_by_segment.values().copied() {
+        let value = selector(stats);
+        min_value = min_value.min(value);
+        max_value = max_value.max(value);
+    }
+    if min_value.is_finite() && max_value.is_finite() {
+        Some((min_value, max_value))
+    } else {
+        None
+    }
 }
 
 fn branching_score_to_color(score: f32) -> Color {
@@ -1461,6 +1630,46 @@ fn render_tree_line(
                     .copied()
                     .unwrap_or(0.0);
                 let mut style = Style::default().fg(signed_posterior_to_color(posterior_signal));
+                if is_selected {
+                    style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+                }
+                if is_hovered {
+                    style = style.bg(Color::DarkGray);
+                }
+                for idx in rendered.col..(rendered.col + rendered.width) {
+                    if idx < styles.len() {
+                        styles[idx] = Some(style);
+                    }
+                }
+            }
+            TreeColorMode::PosteriorMean => {
+                let posterior_mean = tree_page
+                    .snapshot
+                    .segment_posterior_mean_scaled
+                    .get(&rendered.segment_id)
+                    .copied()
+                    .unwrap_or(0.0);
+                let mut style = Style::default().fg(signed_posterior_to_color(posterior_mean));
+                if is_selected {
+                    style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+                }
+                if is_hovered {
+                    style = style.bg(Color::DarkGray);
+                }
+                for idx in rendered.col..(rendered.col + rendered.width) {
+                    if idx < styles.len() {
+                        styles[idx] = Some(style);
+                    }
+                }
+            }
+            TreeColorMode::PosteriorStd => {
+                let posterior_std = tree_page
+                    .snapshot
+                    .segment_posterior_std_scaled
+                    .get(&rendered.segment_id)
+                    .copied()
+                    .unwrap_or(0.0);
+                let mut style = Style::default().fg(signed_posterior_to_color(posterior_std));
                 if is_selected {
                     style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
                 }
