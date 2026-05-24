@@ -5,7 +5,7 @@ OUT_DIR="src_py/vllm_wrapper_proto"
 
 mkdir -p "${OUT_DIR}"
 
-uv run -m grpc_tools.protoc \
+uv run --extra gpu -m grpc_tools.protoc \
   -I"${PROTO_DIR}" \
   --python_out="${OUT_DIR}" \
   --grpc_python_out="${OUT_DIR}" \

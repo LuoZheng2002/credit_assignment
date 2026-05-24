@@ -1,7 +1,7 @@
 source activate_environment.sh
 RUST_BACKTRACE=1 cargo run --bin bin_direct_tree -- \
     --model-cli-name qwen2.5-7b \
-    --qwen-api-backend vllm_wrapper \
+    --qwen-api-backend vllm-wrapper \
     --vllm-wrapper-port 50051 \
     --max-concurrent-requests 100 \
     --config-nickname qwen_test \
