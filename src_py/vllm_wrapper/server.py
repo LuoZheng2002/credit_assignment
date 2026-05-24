@@ -1,13 +1,19 @@
 import argparse
 import logging
+import sys
 from concurrent import futures
+from pathlib import Path
 
 import grpc
 from vllm import LLM, SamplingParams
 
 try:
-    from vllm_wrapper_proto import vllm_wrapper_pb2 as pb2
-    from vllm_wrapper_proto import vllm_wrapper_pb2_grpc as pb2_grpc
+    proto_dir = Path(__file__).resolve().parents[1] / "vllm_wrapper_proto"
+    if str(proto_dir) not in sys.path:
+        sys.path.insert(0, str(proto_dir))
+
+    import vllm_wrapper_pb2 as pb2
+    import vllm_wrapper_pb2_grpc as pb2_grpc
 except ModuleNotFoundError as error:
     raise RuntimeError(
         "Missing generated protobuf modules. Run scripts/gen_vllm_wrapper_proto.sh first."

@@ -12,7 +12,7 @@
 # fi
 # cd "${ROOT_DIR}"
 
-uv run --extra gpu python -m src_py.vllm_wrapper.server \
+uv run python -m src_py.vllm_wrapper.server \
   --host 127.0.0.1 \
   --port 50051 \
   --model "Qwen/Qwen2.5-7B-Instruct" \
