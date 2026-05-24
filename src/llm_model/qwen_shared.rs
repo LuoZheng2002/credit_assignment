@@ -300,10 +300,57 @@ fn parse_vllm_response_with_logprobs(
         })
         .to_string();
 
-    let generated_tokens = encode_text(&decoded_string);
+    let token_strings = choice["logprobs"]["tokens"].as_array().unwrap_or_else(|| {
+        panic!(
+            "Qwen completion response missing choices[0].logprobs.tokens on vLLM port {}: {:?}",
+            vllm_port, json
+        )
+    });
+
+    let generated_tokens: Vec<i32> = token_strings
+        .iter()
+        .map(|token| {
+            let token = token.as_str().unwrap_or_else(|| {
+                panic!(
+                    "Qwen completion logprobs.tokens entry must be a string on vLLM port {}: {:?}",
+                    vllm_port, token
+                )
+            });
+            let encoded = encode_text(token);
+            assert!(
+                encoded.len() == 1,
+                "Qwen completion logprobs.tokens entry must map to exactly one token id on vLLM port {}: token={:?} encoded={:?}",
+                vllm_port,
+                token,
+                encoded
+            );
+            encoded[0]
+        })
+        .collect();
 
     let token_logprobs = choice["logprobs"]["token_logprobs"].as_array();
     let top_logprobs = choice["logprobs"]["top_logprobs"].as_array();
+
+    if let Some(values) = token_logprobs {
+        assert!(
+            values.len() == generated_tokens.len(),
+            "Qwen completion token_logprobs length mismatch on vLLM port {}: token_logprobs={} generated_tokens={}. Full response: {:?}",
+            vllm_port,
+            values.len(),
+            generated_tokens.len(),
+            json
+        );
+    }
+    if let Some(values) = top_logprobs {
+        assert!(
+            values.len() == generated_tokens.len(),
+            "Qwen completion top_logprobs length mismatch on vLLM port {}: top_logprobs={} generated_tokens={}. Full response: {:?}",
+            vllm_port,
+            values.len(),
+            generated_tokens.len(),
+            json
+        );
+    }
 
     let mut aligned_logprobs = Vec::with_capacity(generated_tokens.len());
     for (idx, generated_token_id) in generated_tokens.iter().copied().enumerate() {
@@ -315,7 +362,7 @@ fn parse_vllm_response_with_logprobs(
 
         let mut candidates = top_logprobs
             .and_then(|vals| vals.get(idx))
-            .map(parse_vllm_candidates)
+            .map(|value| parse_vllm_candidates(value, vllm_port, encode_text))
             .unwrap_or_default();
 
         if !candidates
@@ -472,24 +519,39 @@ fn try_token_to_single_id(encode_text: fn(&str) -> Vec<i32>, token: &str) -> Opt
     }
 }
 
-fn parse_vllm_candidates(value: &Value) -> Vec<TokenLogprobCandidate> {
-    if let Some(array) = value.as_array() {
-        return array
+fn parse_vllm_candidates(
+    value: &Value,
+    vllm_port: &u16,
+    encode_text: fn(&str) -> Vec<i32>,
+) -> Vec<TokenLogprobCandidate> {
+    if let Some(map) = value.as_object() {
+        return map
             .iter()
-            .filter_map(|entry| {
-                let map = entry.as_object()?;
-                let token_id = map.get("token_id")?.as_i64()?;
-                let logprob = map.get("logprob")?.as_f64()? as f32;
-                Some(TokenLogprobCandidate {
-                    token_id: i32::try_from(token_id).ok()?,
+            .map(|(token, logprob)| {
+                let logprob = logprob.as_f64().unwrap_or_else(|| {
+                    panic!(
+                        "vLLM top_logprobs value must be f64-compatible on vLLM port {}: token={:?} value={:?}",
+                        vllm_port, token, logprob
+                    )
+                }) as f32;
+                let encoded = encode_text(token);
+                assert!(
+                    encoded.len() == 1,
+                    "vLLM top_logprobs token must map to exactly one token id on vLLM port {}: token={:?} encoded={:?}",
+                    vllm_port,
+                    token,
+                    encoded
+                );
+                TokenLogprobCandidate {
+                    token_id: encoded[0],
                     logprob,
-                })
+                }
             })
             .collect();
     }
 
     panic!(
-        "Unexpected vLLM top_logprobs shape; expected array entries with token_id/logprob. Got: {:?}",
-        value
+        "Unexpected vLLM top_logprobs shape on vLLM port {}; expected object mapping token string -> logprob. Got: {:?}",
+        vllm_port, value
     )
 }
