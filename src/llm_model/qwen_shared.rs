@@ -269,7 +269,7 @@ impl SharedQwenLlmCallable {
                         "max_new_tokens": 2048,
                     },
                     "return_logprob": true,
-                    "logprob_start_len": 0,
+                    "logprob_start_len": -1,
                     "top_logprobs_num": 8,
                     "stream": false,
                 });
