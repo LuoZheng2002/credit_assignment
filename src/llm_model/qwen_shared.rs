@@ -542,7 +542,7 @@ fn parse_sglang_generated_token_ids(
 fn parse_sglang_response_with_logprobs(
     backend_label: &str,
     json: &Value,
-    input_tokens: &[i32],
+    _input_tokens: &[i32],
     decode_tokens: fn(&[i32]) -> String,
 ) -> TokenArrayWithLogprob {
     if let Some(error_message) = json["error"]["message"].as_str() {
@@ -553,8 +553,6 @@ fn parse_sglang_response_with_logprobs(
             json_compact(json)
         );
     }
-
-    let generated_tokens = parse_sglang_generated_token_ids(json, input_tokens, backend_label);
 
     let token_logprobs = json["meta_info"]["output_token_logprobs"]
         .as_array()
@@ -576,17 +574,7 @@ fn parse_sglang_response_with_logprobs(
             )
         });
 
-    let token_logprob_token_ids =
-        parse_sglang_output_token_ids_from_token_logprobs(token_logprobs, backend_label);
-    assert!(
-        token_logprobs.len() == generated_tokens.len(),
-        "Qwen SGLang output_token_logprobs length mismatch on {}: output_token_logprobs={} generated_tokens={} generated_token_ids={:?} output_token_logprob_token_ids={:?}",
-        backend_label,
-        token_logprobs.len(),
-        generated_tokens.len(),
-        generated_tokens,
-        token_logprob_token_ids,
-    );
+    let generated_tokens = parse_sglang_output_token_ids_from_token_logprobs(token_logprobs, backend_label);
     assert!(
         top_logprobs.len() == generated_tokens.len(),
         "Qwen SGLang output_top_logprobs length mismatch on {}: output_top_logprobs={} generated_tokens={} generated_token_ids={:?}",
