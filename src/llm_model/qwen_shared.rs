@@ -140,22 +140,20 @@ impl SharedQwenLlmCallable {
                 .await
             }
             QwenBackend::Sglang { sglang_port } => {
-                let prompt = (self.decode_tokens)(&tokens);
                 let mut body = serde_json::json!({
-                    "model": self.api_name,
-                    "prompt": prompt,
-                    "max_tokens": 2048,
-                    "include_stop_str_in_output": true,
+                    "input_ids": tokens.clone(),
+                    "sampling_params": {
+                        "temperature": 0.0,
+                        "max_new_tokens": 2048,
+                    },
+                    "stream": false,
                 });
                 if passes_in_stop {
-                    body["stop"] = serde_json::json!(["</tool_wait>"]);
+                    body["sampling_params"]["stop"] = serde_json::json!(["</tool_wait>"]);
                 }
 
-                self.post_json(
-                    &format!("http://localhost:{sglang_port}/v1/completions"),
-                    body,
-                )
-                .await
+                self.post_json(&format!("http://localhost:{sglang_port}/generate"), body)
+                    .await
             }
             QwenBackend::VllmWrapper { vllm_wrapper_port } => {
                 return self
@@ -204,15 +202,14 @@ impl SharedQwenLlmCallable {
                     )
                 })
                 .to_string(),
-            QwenBackend::Sglang { sglang_port } => response["choices"][0]["text"]
-                .as_str()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "Qwen SGLang response is invalid (port {}): {:?}",
-                        sglang_port, response
-                    )
-                })
-                .to_string(),
+            QwenBackend::Sglang { sglang_port } => {
+                let generated_tokens = parse_sglang_generated_token_ids(
+                    &response,
+                    tokens.len(),
+                    &format!("SGLang port {}", sglang_port),
+                );
+                (self.decode_tokens)(&generated_tokens)
+            }
             QwenBackend::OpenRouter { .. } => parse_openrouter_message_content(&response)
                 .unwrap_or_else(|| panic!("Qwen OpenRouter response is invalid: {:?}", response)),
             QwenBackend::VllmWrapper { .. } => {
@@ -228,6 +225,7 @@ impl SharedQwenLlmCallable {
         &self,
         tokens: Vec<i32>,
         passes_in_stop: bool,
+        temperature: f32,
     ) -> TokenArrayWithLogprob {
         let _permit = self
             .request_semaphore
@@ -243,6 +241,7 @@ impl SharedQwenLlmCallable {
                     "model": self.api_name,
                     "prompt": prompt,
                     "max_tokens": 2048,
+                    "temperature": temperature,
                     "include_stop_str_in_output": true,
                     "logprobs": 8,
                 });
@@ -263,28 +262,29 @@ impl SharedQwenLlmCallable {
                 )
             }
             QwenBackend::Sglang { sglang_port } => {
-                let prompt = (self.decode_tokens)(&tokens);
                 let mut body = serde_json::json!({
-                    "model": self.api_name,
-                    "prompt": prompt,
-                    "max_tokens": 2048,
-                    "include_stop_str_in_output": true,
-                    "logprobs": 8,
+                    "input_ids": tokens.clone(),
+                    "sampling_params": {
+                        "temperature": temperature,
+                        "max_new_tokens": 2048,
+                    },
+                    "return_logprob": true,
+                    "logprob_start_len": 0,
+                    "top_logprobs_num": 8,
+                    "stream": false,
                 });
                 if passes_in_stop {
-                    body["stop"] = serde_json::json!(["</tool_wait>"]);
+                    body["sampling_params"]["stop"] = serde_json::json!(["</tool_wait>"]);
                 }
 
                 let json = self
-                    .post_json(
-                        &format!("http://localhost:{sglang_port}/v1/completions"),
-                        body,
-                    )
+                    .post_json(&format!("http://localhost:{sglang_port}/generate"), body)
                     .await;
-                parse_completion_response_with_logprobs(
+                parse_sglang_response_with_logprobs(
                     &format!("SGLang port {}", sglang_port),
                     &json,
-                    self.encode_text,
+                    tokens.len(),
+                    self.decode_tokens,
                 )
             }
             QwenBackend::VllmWrapper { vllm_wrapper_port } => {
@@ -292,6 +292,7 @@ impl SharedQwenLlmCallable {
                     tokens,
                     *vllm_wrapper_port,
                     passes_in_stop,
+                    temperature,
                 )
                 .await
             }
@@ -307,6 +308,7 @@ impl SharedQwenLlmCallable {
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 2048,
+                    "temperature": temperature,
                     "logprobs": true,
                     "top_logprobs": 8,
                     "provider": {
@@ -409,6 +411,7 @@ impl SharedQwenLlmCallable {
         tokens: Vec<i32>,
         vllm_wrapper_port: u16,
         passes_in_stop: bool,
+        temperature: f32,
     ) -> TokenArrayWithLogprob {
         let request = WrapperRequest {
             model_name: self.api_name.to_string(),
@@ -421,7 +424,7 @@ impl SharedQwenLlmCallable {
             } else {
                 Vec::new()
             },
-            temperature: 0.0,
+            temperature,
         };
 
         let response = self
@@ -491,6 +494,188 @@ fn is_context_length_error(error_message: &str) -> bool {
         || error_message.contains("Please reduce the length of the input prompt")
         || error_message.contains("parameter=input_tokens")
         || error_message.contains("context length")
+}
+
+fn parse_sglang_generated_token_ids(json: &Value, input_len: usize, backend_label: &str) -> Vec<i32> {
+    let output_ids = json["output_ids"].as_array().unwrap_or_else(|| {
+        panic!(
+            "Qwen SGLang response missing output_ids on {}: {:?}",
+            backend_label, json
+        )
+    });
+
+    let all_ids: Vec<i32> = output_ids
+        .iter()
+        .map(|token| {
+            let raw = token.as_i64().unwrap_or_else(|| {
+                panic!(
+                    "Qwen SGLang output_ids entry must be an integer on {}: {:?}",
+                    backend_label, token
+                )
+            });
+            i32::try_from(raw).unwrap_or_else(|_| {
+                panic!(
+                    "Qwen SGLang token id must fit in i32 on {}: {:?}",
+                    backend_label, token
+                )
+            })
+        })
+        .collect();
+
+    assert!(
+        all_ids.len() >= input_len,
+        "Qwen SGLang output_ids shorter than input on {}: output_ids={} input_len={} response={:?}",
+        backend_label,
+        all_ids.len(),
+        input_len,
+        json
+    );
+
+    all_ids[input_len..].to_vec()
+}
+
+fn parse_sglang_response_with_logprobs(
+    backend_label: &str,
+    json: &Value,
+    input_len: usize,
+    decode_tokens: fn(&[i32]) -> String,
+) -> TokenArrayWithLogprob {
+    if let Some(error_message) = json["error"]["message"].as_str() {
+        panic!(
+            "Qwen completion with logprobs failed on {}: {}. Full response: {:?}",
+            backend_label, error_message, json
+        );
+    }
+
+    let generated_tokens = parse_sglang_generated_token_ids(json, input_len, backend_label);
+    let decoded_string = decode_tokens(&generated_tokens);
+
+    let token_logprobs = json["meta_info"]["output_token_logprobs"]
+        .as_array()
+        .unwrap_or_else(|| {
+            panic!(
+                "Qwen SGLang response missing meta_info.output_token_logprobs on {}: {:?}",
+                backend_label, json
+            )
+        });
+
+    let top_logprobs = json["meta_info"]["output_top_logprobs"]
+        .as_array()
+        .unwrap_or_else(|| {
+            panic!(
+                "Qwen SGLang response missing meta_info.output_top_logprobs on {}: {:?}",
+                backend_label, json
+            )
+        });
+
+    assert!(
+        token_logprobs.len() == generated_tokens.len(),
+        "Qwen SGLang output_token_logprobs length mismatch on {}: output_token_logprobs={} generated_tokens={} response={:?}",
+        backend_label,
+        token_logprobs.len(),
+        generated_tokens.len(),
+        json
+    );
+    assert!(
+        top_logprobs.len() == generated_tokens.len(),
+        "Qwen SGLang output_top_logprobs length mismatch on {}: output_top_logprobs={} generated_tokens={} response={:?}",
+        backend_label,
+        top_logprobs.len(),
+        generated_tokens.len(),
+        json
+    );
+
+    let mut aligned_logprobs = Vec::with_capacity(generated_tokens.len());
+    for (idx, generated_token_id) in generated_tokens.iter().copied().enumerate() {
+        let generated_logprob = token_logprobs[idx][0]
+            .as_f64()
+            .map(|value| value as f32)
+            .unwrap_or(f32::NEG_INFINITY);
+
+        let mut candidates = parse_sglang_top_logprob_candidates(
+            &top_logprobs[idx],
+            backend_label,
+            generated_token_id,
+        );
+
+        if !candidates
+            .iter()
+            .any(|candidate| candidate.token_id == generated_token_id)
+        {
+            candidates.push(TokenLogprobCandidate {
+                token_id: generated_token_id,
+                logprob: generated_logprob,
+            });
+        }
+
+        candidates.sort_by(|a, b| b.logprob.total_cmp(&a.logprob));
+        candidates.dedup_by(|a, b| a.token_id == b.token_id);
+
+        let mut top8 = [TokenLogprobCandidate {
+            token_id: generated_token_id,
+            logprob: f32::NEG_INFINITY,
+        }; 8];
+
+        for (slot, candidate) in candidates.into_iter().take(8).enumerate() {
+            top8[slot] = candidate;
+        }
+        aligned_logprobs.push(top8);
+    }
+
+    TokenArrayWithLogprob {
+        tokens: generated_tokens,
+        decoded_string,
+        logprobs: aligned_logprobs,
+    }
+}
+
+fn parse_sglang_top_logprob_candidates(
+    value: &Value,
+    backend_label: &str,
+    fallback_token_id: i32,
+) -> Vec<TokenLogprobCandidate> {
+    let Some(candidates) = value.as_array() else {
+        return vec![TokenLogprobCandidate {
+            token_id: fallback_token_id,
+            logprob: f32::NEG_INFINITY,
+        }];
+    };
+
+    candidates
+        .iter()
+        .filter_map(|entry| {
+            let entry_items = entry.as_array().unwrap_or_else(|| {
+                panic!(
+                    "Qwen SGLang top_logprob entry must be an array on {}: {:?}",
+                    backend_label, entry
+                )
+            });
+            assert!(
+                entry_items.len() >= 2,
+                "Qwen SGLang top_logprob entry must have at least 2 fields on {}: {:?}",
+                backend_label,
+                entry
+            );
+
+            let logprob = entry_items[0].as_f64().unwrap_or_else(|| {
+                panic!(
+                    "Qwen SGLang top_logprob value must be f64-compatible on {}: {:?}",
+                    backend_label, entry
+                )
+            }) as f32;
+
+            let token_id_raw = entry_items[1].as_i64().unwrap_or_else(|| {
+                panic!(
+                    "Qwen SGLang top_logprob token id must be an integer on {}: {:?}",
+                    backend_label, entry
+                )
+            });
+
+            i32::try_from(token_id_raw)
+                .ok()
+                .map(|token_id| TokenLogprobCandidate { token_id, logprob })
+        })
+        .collect()
 }
 
 fn parse_completion_response_with_logprobs(

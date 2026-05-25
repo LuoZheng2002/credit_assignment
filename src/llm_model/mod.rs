@@ -49,6 +49,7 @@ pub trait LlmCallable<M: LlmModelMarker>: Clone + Send + Sync {
         &self,
         _tokens: Vec<i32>,
         _passes_in_stop: bool,
+        _temperature: f32,
     ) -> TokenArrayWithLogprob {
         panic!("generate_tokens_with_logprobs is only implemented for vLLM-backed callables")
     }

@@ -100,6 +100,7 @@ impl LlmCallable<Gpt5Mini> for Gpt5MiniLlmCallable {
         &self,
         prompt_or_tokens: Vec<i32>,
         passes_in_stop: bool,
+        temperature: f32,
     ) -> TokenArrayWithLogprob {
         let prompt = <Gpt5Mini as LlmModelMarker>::Tokenizer::decode_i32_ids(&prompt_or_tokens);
         let body = if passes_in_stop {
@@ -108,6 +109,7 @@ impl LlmCallable<Gpt5Mini> for Gpt5MiniLlmCallable {
                 "messages": [{"role": "user", "content": prompt}],
                 "max_completion_tokens": 2048,
                 "stop": ["</tool_wait>"],
+                "temperature": temperature,
                 "logprobs": true,
                 "top_logprobs": 8,
             })
@@ -116,6 +118,7 @@ impl LlmCallable<Gpt5Mini> for Gpt5MiniLlmCallable {
                 "model": Gpt5Mini::API_NAME,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_completion_tokens": 2048,
+                "temperature": temperature,
                 "logprobs": true,
                 "top_logprobs": 8,
             })

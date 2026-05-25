@@ -62,9 +62,10 @@ impl LlmCallable<Qwen3_4B> for Qwen3_4BLlmCallable {
         &self,
         prompt_or_tokens: Vec<i32>,
         passes_in_stop: bool,
+        temperature: f32,
     ) -> TokenArrayWithLogprob {
         self.shared
-            .generate_tokens_with_logprobs_from_tokens(prompt_or_tokens, passes_in_stop)
+            .generate_tokens_with_logprobs_from_tokens(prompt_or_tokens, passes_in_stop, temperature)
             .await
     }
 }

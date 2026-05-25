@@ -501,7 +501,7 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
 ) -> SegmentContent {
     let prompt_tokens = direct_trajectory_to_prompt_tokens(trajectory);
     let response = llm_callable
-        .generate_tokens_with_logprobs(prompt_tokens.clone(), true)
+        .generate_tokens_with_logprobs(prompt_tokens.clone(), true, 1.0)
         .await;
     if response.tokens.is_empty() || response.decoded_string.trim().is_empty() {
         panic!(
