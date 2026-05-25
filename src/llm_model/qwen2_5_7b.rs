@@ -109,6 +109,11 @@ impl MyTokenizer<Qwen25> for Qwen25Tokenizer {
         }
     }
 
+    fn tokenize_prompt_for_generation(prompt: String) -> TokenArray {
+        let prompt_with_template = build_qwen25_prefix(&prompt, false);
+        Self::tokenize(prompt_with_template)
+    }
+
     fn encode_to_i32_ids(text: &str) -> Vec<i32> {
         encode_to_i32_ids(&QWEN25_TOKENIZER, text)
     }

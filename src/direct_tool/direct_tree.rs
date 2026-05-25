@@ -102,7 +102,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
             true => prompt_with_tool_call(question),
             false => prompt_without_tool_call(question),
         };
-        let tokenized = M::Tokenizer::tokenize(prompt_string);
+        let tokenized = M::Tokenizer::tokenize_prompt_for_generation(prompt_string);
         Segment {
             segment_id,
             content: vec![SegmentContent::Prompt(tokenized)],

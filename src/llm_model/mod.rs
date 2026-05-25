@@ -36,6 +36,9 @@ pub enum QwenApiBackend {
 
 pub trait MyTokenizer<M: LlmModelMarker>: Send + Sync + 'static {
     fn tokenize(prompt: String) -> TokenArray;
+    fn tokenize_prompt_for_generation(prompt: String) -> TokenArray {
+        Self::tokenize(prompt)
+    }
     fn encode_to_i32_ids(text: &str) -> Vec<i32>;
     fn decode_i32_ids(token_ids: &[i32]) -> String;
     fn token_to_id(token: &str) -> i32;

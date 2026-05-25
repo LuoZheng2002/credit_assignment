@@ -80,6 +80,11 @@ impl MyTokenizer<Qwen3_4B> for Qwen3_4BTokenizer {
         }
     }
 
+    fn tokenize_prompt_for_generation(prompt: String) -> TokenArray {
+        let prompt_with_template = build_simple_qwen_chatml_prefix(&prompt, true);
+        Self::tokenize(prompt_with_template)
+    }
+
     fn encode_to_i32_ids(text: &str) -> Vec<i32> {
         encode_to_i32_ids(&QWEN3_4B_TOKENIZER, text)
     }
