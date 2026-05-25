@@ -1,8 +1,11 @@
 source activate_environment.sh
-RUST_BACKTRACE=1 cargo run --bin bin_direct_tree -- \
+source .venv/bin/activate
+LIBDIR=$(python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')
+
+RUSTFLAGS="-C link-arg=-Wl,-rpath,$LIBDIR" RUST_BACKTRACE=1 cargo run --bin bin_direct_tree -- \
     --model-cli-name qwen2.5-7b \
-    --qwen-api-backend vllm-wrapper \
-    --vllm-wrapper-port 50051 \
+    --qwen-api-backend sglang \
+    --qwen-sglang-port 30000 \
     --max-concurrent-requests 100 \
     --config-nickname qwen_test \
     --rollout-config-path config/rollout_config.json \
