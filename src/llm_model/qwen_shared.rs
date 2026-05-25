@@ -205,7 +205,7 @@ impl SharedQwenLlmCallable {
             QwenBackend::Sglang { sglang_port } => {
                 let generated_tokens = parse_sglang_generated_token_ids(
                     &response,
-                    tokens.len(),
+                    &tokens,
                     &format!("SGLang port {}", sglang_port),
                 );
                 (self.decode_tokens)(&generated_tokens)
@@ -283,7 +283,7 @@ impl SharedQwenLlmCallable {
                 parse_sglang_response_with_logprobs(
                     &format!("SGLang port {}", sglang_port),
                     &json,
-                    tokens.len(),
+                    &tokens,
                     self.decode_tokens,
                 )
             }
@@ -496,11 +496,21 @@ fn is_context_length_error(error_message: &str) -> bool {
         || error_message.contains("context length")
 }
 
-fn parse_sglang_generated_token_ids(json: &Value, input_len: usize, backend_label: &str) -> Vec<i32> {
+fn json_compact(value: &Value) -> String {
+    serde_json::to_string(value)
+        .unwrap_or_else(|err| format!("{{\"json_serialize_error\":\"{}\"}}", err))
+}
+
+fn parse_sglang_generated_token_ids(
+    json: &Value,
+    input_tokens: &[i32],
+    backend_label: &str,
+) -> Vec<i32> {
     let output_ids = json["output_ids"].as_array().unwrap_or_else(|| {
         panic!(
-            "Qwen SGLang response missing output_ids on {}: {:?}",
-            backend_label, json
+            "Qwen SGLang response missing output_ids on {}: {}",
+            backend_label,
+            json_compact(json)
         )
     });
 
@@ -522,40 +532,38 @@ fn parse_sglang_generated_token_ids(json: &Value, input_len: usize, backend_labe
         })
         .collect();
 
-    assert!(
-        all_ids.len() >= input_len,
-        "Qwen SGLang output_ids shorter than input on {}: output_ids={} input_len={} response={:?}",
-        backend_label,
-        all_ids.len(),
-        input_len,
-        json
-    );
+    if all_ids.starts_with(input_tokens) {
+        return all_ids[input_tokens.len()..].to_vec();
+    }
 
-    all_ids[input_len..].to_vec()
+    all_ids
 }
 
 fn parse_sglang_response_with_logprobs(
     backend_label: &str,
     json: &Value,
-    input_len: usize,
+    input_tokens: &[i32],
     decode_tokens: fn(&[i32]) -> String,
 ) -> TokenArrayWithLogprob {
     if let Some(error_message) = json["error"]["message"].as_str() {
         panic!(
-            "Qwen completion with logprobs failed on {}: {}. Full response: {:?}",
-            backend_label, error_message, json
+            "Qwen completion with logprobs failed on {}: {}. Full response: {}",
+            backend_label,
+            error_message,
+            json_compact(json)
         );
     }
 
-    let generated_tokens = parse_sglang_generated_token_ids(json, input_len, backend_label);
+    let generated_tokens = parse_sglang_generated_token_ids(json, input_tokens, backend_label);
     let decoded_string = decode_tokens(&generated_tokens);
 
     let token_logprobs = json["meta_info"]["output_token_logprobs"]
         .as_array()
         .unwrap_or_else(|| {
             panic!(
-                "Qwen SGLang response missing meta_info.output_token_logprobs on {}: {:?}",
-                backend_label, json
+                "Qwen SGLang response missing meta_info.output_token_logprobs on {}: {}",
+                backend_label,
+                json_compact(json)
             )
         });
 
@@ -563,26 +571,27 @@ fn parse_sglang_response_with_logprobs(
         .as_array()
         .unwrap_or_else(|| {
             panic!(
-                "Qwen SGLang response missing meta_info.output_top_logprobs on {}: {:?}",
-                backend_label, json
+                "Qwen SGLang response missing meta_info.output_top_logprobs on {}: {}",
+                backend_label,
+                json_compact(json)
             )
         });
 
     assert!(
         token_logprobs.len() == generated_tokens.len(),
-        "Qwen SGLang output_token_logprobs length mismatch on {}: output_token_logprobs={} generated_tokens={} response={:?}",
+        "Qwen SGLang output_token_logprobs length mismatch on {}: output_token_logprobs={} generated_tokens={} response={}",
         backend_label,
         token_logprobs.len(),
         generated_tokens.len(),
-        json
+        json_compact(json)
     );
     assert!(
         top_logprobs.len() == generated_tokens.len(),
-        "Qwen SGLang output_top_logprobs length mismatch on {}: output_top_logprobs={} generated_tokens={} response={:?}",
+        "Qwen SGLang output_top_logprobs length mismatch on {}: output_top_logprobs={} generated_tokens={} response={}",
         backend_label,
         top_logprobs.len(),
         generated_tokens.len(),
-        json
+        json_compact(json)
     );
 
     let mut aligned_logprobs = Vec::with_capacity(generated_tokens.len());
