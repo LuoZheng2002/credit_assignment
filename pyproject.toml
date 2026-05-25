@@ -13,16 +13,16 @@ dependencies = [
     "research-utility",
     "sympy>=1.14.0",
     "torch",
-    "transformers<5",
-    "vllm",
+    "transformers",
+    "sglang[all]"
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
+torch = { index = "pytorch-cu126" }
 
 research-utility = { path = "../research-utility", editable = true }
