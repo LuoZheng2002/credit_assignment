@@ -555,7 +555,6 @@ fn parse_sglang_response_with_logprobs(
     }
 
     let generated_tokens = parse_sglang_generated_token_ids(json, input_tokens, backend_label);
-    let decoded_string = decode_tokens(&generated_tokens);
 
     let token_logprobs = json["meta_info"]["output_token_logprobs"]
         .as_array()
@@ -577,22 +576,27 @@ fn parse_sglang_response_with_logprobs(
             )
         });
 
+    let token_logprob_token_ids =
+        parse_sglang_output_token_ids_from_token_logprobs(token_logprobs, backend_label);
     assert!(
         token_logprobs.len() == generated_tokens.len(),
-        "Qwen SGLang output_token_logprobs length mismatch on {}: output_token_logprobs={} generated_tokens={} response={}",
+        "Qwen SGLang output_token_logprobs length mismatch on {}: output_token_logprobs={} generated_tokens={} generated_token_ids={:?} output_token_logprob_token_ids={:?}",
         backend_label,
         token_logprobs.len(),
         generated_tokens.len(),
-        json_compact(json)
+        generated_tokens,
+        token_logprob_token_ids,
     );
     assert!(
         top_logprobs.len() == generated_tokens.len(),
-        "Qwen SGLang output_top_logprobs length mismatch on {}: output_top_logprobs={} generated_tokens={} response={}",
+        "Qwen SGLang output_top_logprobs length mismatch on {}: output_top_logprobs={} generated_tokens={} generated_token_ids={:?}",
         backend_label,
         top_logprobs.len(),
         generated_tokens.len(),
-        json_compact(json)
+        generated_tokens,
     );
+
+    let decoded_string = decode_tokens(&generated_tokens);
 
     let mut aligned_logprobs = Vec::with_capacity(generated_tokens.len());
     for (idx, generated_token_id) in generated_tokens.iter().copied().enumerate() {
@@ -636,6 +640,41 @@ fn parse_sglang_response_with_logprobs(
         decoded_string,
         logprobs: aligned_logprobs,
     }
+}
+
+fn parse_sglang_output_token_ids_from_token_logprobs(
+    token_logprobs: &[Value],
+    backend_label: &str,
+) -> Vec<i32> {
+    token_logprobs
+        .iter()
+        .map(|entry| {
+            let entry_items = entry.as_array().unwrap_or_else(|| {
+                panic!(
+                    "Qwen SGLang output_token_logprob entry must be an array on {}: {:?}",
+                    backend_label, entry
+                )
+            });
+            assert!(
+                entry_items.len() >= 2,
+                "Qwen SGLang output_token_logprob entry must have at least 2 fields on {}: {:?}",
+                backend_label,
+                entry
+            );
+            let token_id_raw = entry_items[1].as_i64().unwrap_or_else(|| {
+                panic!(
+                    "Qwen SGLang output_token_logprob token id must be an integer on {}: {:?}",
+                    backend_label, entry
+                )
+            });
+            i32::try_from(token_id_raw).unwrap_or_else(|_| {
+                panic!(
+                    "Qwen SGLang output_token_logprob token id must fit in i32 on {}: {:?}",
+                    backend_label, entry
+                )
+            })
+        })
+        .collect()
 }
 
 fn parse_sglang_top_logprob_candidates(
