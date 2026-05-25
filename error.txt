@@ -1,0 +1,75 @@
+[zluo8@gpua086 credit_assignment]$ bash scripts/serve_sglang_qwen25_7b.sh
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.9.1
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+/usr/local/lib/python3.12/dist-packages/torchao/quantization/quant_api.py:1731: SyntaxWarning: invalid escape sequence '\.'
+  """Configuration class for applying different quantization configs to modules or parameters based on their fully qualified names (FQNs).
+/sgl-workspace/sglang/python/sglang/launch_server.py:54: UserWarning: 'python -m sglang.launch_server' is still supported, but 'sglang serve' is the recommended entrypoint.
+  Example: sglang serve --model-path <model> [options]
+  warnings.warn(
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/sgl-workspace/sglang/python/sglang/launch_server.py", line 66, in <module>
+    server_args = prepare_server_args(sys.argv[1:])
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/server_args.py", line 7757, in prepare_server_args
+    return ServerArgs.from_cli_args(raw_args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/server_args.py", line 7141, in from_cli_args
+    return cls(**{attr: getattr(args, attr) for attr in attrs})
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 384, in __init__
+  File "/sgl-workspace/sglang/python/sglang/srt/server_args.py", line 914, in __post_init__
+    self._handle_piecewise_cuda_graph()
+  File "/sgl-workspace/sglang/python/sglang/srt/server_args.py", line 1309, in _handle_piecewise_cuda_graph
+    if self.get_model_config().is_piecewise_cuda_graph_disabled_model:
+       ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/server_args.py", line 7187, in get_model_config
+    from sglang.srt.configs.model_config import ModelConfig
+  File "/sgl-workspace/sglang/python/sglang/srt/configs/model_config.py", line 27, in <module>
+    from sglang.srt.layers.quantization import QUANTIZATION_METHODS
+  File "/sgl-workspace/sglang/python/sglang/srt/layers/quantization/__init__.py", line 21, in <module>
+    from sglang.srt.layers.quantization.auto_round import AutoRoundConfig
+  File "/sgl-workspace/sglang/python/sglang/srt/layers/quantization/auto_round.py", line 12, in <module>
+    from sglang.srt.layers.quantization.utils import get_scalar_types
+  File "/sgl-workspace/sglang/python/sglang/srt/layers/quantization/utils.py", line 15, in <module>
+    from sglang.srt.layers.quantization.fp8_kernel import scaled_fp8_quant
+  File "/sgl-workspace/sglang/python/sglang/srt/layers/quantization/fp8_kernel.py", line 57, in <module>
+    from sgl_kernel import sgl_per_token_quant_fp8
+  File "/usr/local/lib/python3.12/dist-packages/sgl_kernel/__init__.py", line 19, in <module>
+    common_ops = _load_architecture_specific_ops()
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/sgl_kernel/load_utils.py", line 197, in _load_architecture_specific_ops
+    raise ImportError(error_msg)
+ImportError: 
+[sgl_kernel] CRITICAL: Could not load any common_ops library!
+
+Attempted locations:
+1. Architecture-specific pattern: /usr/local/lib/python3.12/dist-packages/sgl_kernel/sm100/common_ops.* - found files: ['/usr/local/lib/python3.12/dist-packages/sgl_kernel/sm100/common_ops.abi3.so']
+2. Fallback pattern: /usr/local/lib/python3.12/dist-packages/sgl_kernel/common_ops.* - found files: []
+3. Standard Python import: common_ops - failed
+
+GPU Info:
+- Compute capability: 80
+- Expected variant: SM80 (precise math for compatibility)
+- CUDA version: 12.8
+
+Please ensure sgl_kernel is properly installed with:
+pip install sglang-kernel --index-url https://docs.sglang.ai/whl/cu129/
+
+Error details from previous import attempts:
+- ImportError: /usr/local/lib/python3.12/dist-packages/sgl_kernel/sm100/common_ops.abi3.so: undefined symbol: _ZN3c104cuda29c10_cuda_check_implementationEiPKcS2_jb
+- ModuleNotFoundError: No module named 'common_ops'
