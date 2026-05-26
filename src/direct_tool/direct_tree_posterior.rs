@@ -42,7 +42,20 @@ impl<M: LlmModelMarker> DirectTree<M> {
             return BTreeMap::new();
         }
 
-        let segment_ids: Vec<SegmentId> = self.segments.keys().copied().collect();
+        let root_segment_id = self
+            .root_segment_id
+            .expect("DirectTree must have root_segment_id when segments are non-empty");
+
+        let segment_ids: Vec<SegmentId> = self
+            .segments
+            .keys()
+            .copied()
+            .filter(|segment_id| *segment_id != root_segment_id)
+            .collect();
+        if segment_ids.is_empty() {
+            return BTreeMap::new();
+        }
+
         if self.rollout_config.accuracy_under_temperature.is_none() {
             return segment_ids
                 .iter()
@@ -114,20 +127,18 @@ impl<M: LlmModelMarker> DirectTree<M> {
             let mut path_segment_indices: Vec<usize> = Vec::new();
             let mut current_segment_id = Some(*leaf_segment_id);
             while let Some(segment_id) = current_segment_id {
-                let idx = *segment_index
-                    .get(&segment_id)
-                    .expect("Every traversed segment must be indexable");
-                path_segment_indices.push(idx);
+                if let Some(idx) = segment_index.get(&segment_id).copied() {
+                    path_segment_indices.push(idx);
+                }
                 let segment = self
                     .segments
                     .get(&segment_id)
                     .expect("Traversed segment id must exist in tree");
                 current_segment_id = segment.parent_id;
             }
-            assert!(
-                !path_segment_indices.is_empty(),
-                "Each leaf path must contain at least one segment"
-            );
+            if path_segment_indices.is_empty() {
+                continue;
+            }
 
             let y_label_sign = if judgment.is_correct { 1.0 } else { -1.0 };
             leaf_paths.push(LeafPathObservation {

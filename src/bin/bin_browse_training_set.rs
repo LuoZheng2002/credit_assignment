@@ -186,6 +186,11 @@ impl<M: LlmModelMarker> App<M> {
                 loaded.trajectory.input_ids.len(),
                 trainable_tokens,
             );
+            let trajectory_advantage_values = compress_advantage_changes(&loaded.trajectory.advantages);
+            text.push_str(&format!(
+                "\nAdvantage values (change points): {:?}",
+                trajectory_advantage_values
+            ));
             if let Some(statistics) = &self.statistics {
                 text.push_str(&format!(
                     "\n\n[training set stats] total: {}  adopted: {}\nmax avg advantage: {:.6}  cutoff: {:.6}  min avg advantage: {:.6}",
@@ -423,6 +428,16 @@ fn advantage_to_color(advantage: f32) -> Color {
         (255, ((1.0 + x) * 255.0).round() as u8)
     };
     Color::Rgb(red, green, 0)
+}
+
+fn compress_advantage_changes(advantages: &[f32]) -> Vec<f32> {
+    let mut compressed = Vec::new();
+    for &value in advantages {
+        if compressed.last().is_none_or(|last| *last != value) {
+            compressed.push(value);
+        }
+    }
+    compressed
 }
 
 fn push_text_as_spans(

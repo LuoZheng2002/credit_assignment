@@ -299,9 +299,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
         child_segment_ids: &[SegmentId],
         segment_uncertainty_scores: &BTreeMap<SegmentId, f32>,
     ) -> f32 {
-        let parent_uncertainty_score = segment_uncertainty_scores
-            .get(&parent_segment_id)
-            .expect("Parent segment must have an uncertainty score");
+        let parent_uncertainty_score = segment_uncertainty_scores.get(&parent_segment_id).copied();
         let children_uncertainty_score: Vec<f32> = child_segment_ids
             .iter()
             .map(|child_id| {
@@ -311,10 +309,18 @@ impl<M: LlmModelMarker> DirectTree<M> {
             })
             .cloned()
             .collect();
-        Self::node_uncertainty_score_from_parent_and_children(
-            *parent_uncertainty_score,
-            &children_uncertainty_score,
-        )
+        if children_uncertainty_score.is_empty() {
+            return 0.0;
+        }
+
+        if let Some(parent_uncertainty_score) = parent_uncertainty_score {
+            return Self::node_uncertainty_score_from_parent_and_children(
+                parent_uncertainty_score,
+                &children_uncertainty_score,
+            );
+        }
+
+        children_uncertainty_score.iter().sum::<f32>() / children_uncertainty_score.len() as f32
     }
 
     fn best_token_and_relative_probability(

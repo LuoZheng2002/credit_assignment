@@ -26,6 +26,9 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 (segment_id, posterior.mean / posterior.log_std.exp()) // we use the mean/std as the unnormalized advantage
             })
             .collect::<Vec<(SegmentId, f32)>>();
+        if segment_advantages_unnormalized.is_empty() {
+            return BTreeMap::new();
+        }
         let segment_advantages_mean = segment_advantages_unnormalized
             .iter()
             .map(|(_, advantage)| *advantage)

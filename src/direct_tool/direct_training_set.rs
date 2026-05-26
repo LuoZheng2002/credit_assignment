@@ -167,6 +167,9 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
 ) -> Vec<DirectTrainingTrajectory<M>> {
     let tree = DirectTree::<M>::from_action_log(&action_log);
     let mut segment_advantages = tree.calculate_segment_advantages(None);
+    for segment_id in tree.segments.keys().copied() {
+        segment_advantages.entry(segment_id).or_insert(0.0);
+    }
     let mut trajectories: Vec<DirectTrainingTrajectory<M>> = Vec::new();
     let mut leaf_segment_ids: BTreeSet<SegmentId> =
         tree.leaf_segment_judgments.keys().cloned().collect();
