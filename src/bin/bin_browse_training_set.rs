@@ -14,17 +14,22 @@ use credit_assignment::{
     json_line_util::read_json,
     llm_model::{Gpt4o, Gpt5Mini, LlmModelMarker, LlmModelName, MyTokenizer, Qwen3_4B, Qwen25, Qwen35_4B},
 };
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseEvent,
+    MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
+use ratatui::prelude::Widget;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui_core::buffer::Buffer;
 use research_utility::{asset_file::AssetFile, sqlite_store::SqliteStore};
 
 #[derive(Parser, Debug)]
@@ -54,12 +59,34 @@ struct LoadedTrajectory<M: LlmModelMarker> {
     conversation_render: ConversationRender,
 }
 
+const CONVERSATION_SCROLL_SENSITIVITY: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneFocus {
+    Summary,
+    Conversation,
+}
+
+impl PaneFocus {
+    fn next(self) -> Self {
+        match self {
+            Self::Summary => Self::Conversation,
+            Self::Conversation => Self::Summary,
+        }
+    }
+}
+
 struct App<M: LlmModelMarker> {
     store: SqliteStore<usize, DirectTrainingTrajectory<M>>,
     keys: Vec<usize>,
     selected_index: usize,
+    focus: PaneFocus,
+    summary_scroll: usize,
+    summary_max_scroll: usize,
     conversation_scroll: usize,
     conversation_max_scroll: usize,
+    summary_area: Option<Rect>,
+    conversation_area: Option<Rect>,
     loaded: Option<LoadedTrajectory<M>>,
     statistics: Option<DirectTrainingSetStatistics>,
 }
@@ -74,8 +101,13 @@ impl<M: LlmModelMarker> App<M> {
             store,
             keys,
             selected_index: 0,
+            focus: PaneFocus::Conversation,
+            summary_scroll: 0,
+            summary_max_scroll: 0,
             conversation_scroll: 0,
             conversation_max_scroll: 0,
+            summary_area: None,
+            conversation_area: None,
             loaded: None,
             statistics,
         }
@@ -112,6 +144,7 @@ impl<M: LlmModelMarker> App<M> {
             trajectory,
             conversation_render,
         });
+        self.summary_scroll = 0;
         self.conversation_scroll = 0;
     }
 
@@ -166,12 +199,30 @@ impl<M: LlmModelMarker> App<M> {
             text
         };
 
+        let summary_block = Block::default()
+            .borders(Borders::ALL)
+            .title("Metadata")
+            .border_style(if self.focus == PaneFocus::Summary {
+                Style::default().fg(Color::LightGreen)
+            } else {
+                Style::default()
+            });
+        let summary_inner = summary_block.inner(chunks[0]);
+        let summary_line_count = count_wrapped_lines(&summary_text, summary_inner);
+        let summary_height = summary_inner.height.max(1) as usize;
+        self.summary_max_scroll = bottom_scroll_limit(summary_line_count, summary_height);
+        if self.summary_scroll > self.summary_max_scroll {
+            self.summary_scroll = self.summary_max_scroll;
+        }
+
         frame.render_widget(
             Paragraph::new(summary_text)
                 .wrap(Wrap { trim: false })
-                .block(Block::default().borders(Borders::ALL).title("Metadata")),
+                .scroll((clamp_scroll(self.summary_scroll), 0))
+                .block(summary_block),
             chunks[0],
         );
+        self.summary_area = Some(chunks[0]);
 
         if self.keys.is_empty() {
             frame.render_widget(
@@ -179,14 +230,27 @@ impl<M: LlmModelMarker> App<M> {
                     .block(Block::default().borders(Borders::ALL).title("Conversation")),
                 chunks[1],
             );
+            self.conversation_area = Some(chunks[1]);
         } else {
             let loaded = self
                 .loaded
                 .as_ref()
                 .expect("selected trajectory must be loaded");
-            let line_count = loaded.conversation_render.plain.lines().count().max(1);
-            let conversation_height = chunks[1].height.saturating_sub(2) as usize;
-            self.conversation_max_scroll = line_count.saturating_sub(conversation_height);
+            self.conversation_area = Some(chunks[1]);
+            let conversation_block = Block::default()
+                .borders(Borders::ALL)
+                .title("Conversation")
+                .border_style(if self.focus == PaneFocus::Conversation {
+                    Style::default().fg(Color::LightGreen)
+                } else {
+                    Style::default()
+                });
+            let conversation_inner = conversation_block.inner(chunks[1]);
+            let conversation_line_count =
+                count_wrapped_lines(&loaded.conversation_render.plain, conversation_inner);
+            let conversation_height = conversation_inner.height.max(1) as usize;
+            self.conversation_max_scroll =
+                bottom_scroll_limit(conversation_line_count, conversation_height);
             if self.conversation_scroll > self.conversation_max_scroll {
                 self.conversation_scroll = self.conversation_max_scroll;
             }
@@ -194,13 +258,13 @@ impl<M: LlmModelMarker> App<M> {
                 Paragraph::new(loaded.conversation_render.styled.clone())
                     .wrap(Wrap { trim: false })
                     .scroll((clamp_scroll(self.conversation_scroll), 0))
-                    .block(Block::default().borders(Borders::ALL).title("Conversation")),
+                    .block(conversation_block),
                 chunks[1],
             );
         }
 
         let controls = Paragraph::new(
-            "Left/Right: prev/next trajectory  Up/Down/PgUp/PgDn/Home/End: scroll conversation  q: quit",
+            "Left/Right: prev/next trajectory  Tab: switch focus  Up/Down/PgUp/PgDn/Home/End: scroll focused pane  Mouse wheel: scroll focused pane  q: quit",
         )
         .block(Block::default().borders(Borders::ALL).title("Controls"));
         frame.render_widget(controls, chunks[2]);
@@ -209,6 +273,10 @@ impl<M: LlmModelMarker> App<M> {
     fn handle_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => true,
+            KeyCode::Tab => {
+                self.focus = self.focus.next();
+                false
+            }
             KeyCode::Left => {
                 if !self.keys.is_empty() {
                     self.selected_index = self.selected_index.saturating_sub(1);
@@ -222,30 +290,81 @@ impl<M: LlmModelMarker> App<M> {
                 false
             }
             KeyCode::Up => {
-                self.conversation_scroll = self.conversation_scroll.saturating_sub(1);
+                self.scroll_focused_up(1);
                 false
             }
             KeyCode::Down => {
-                self.conversation_scroll = self.conversation_scroll.saturating_add(1);
+                self.scroll_focused_down(1);
                 false
             }
             KeyCode::PageUp => {
-                self.conversation_scroll = self.conversation_scroll.saturating_sub(10);
+                self.scroll_focused_up(10);
                 false
             }
             KeyCode::PageDown => {
-                self.conversation_scroll = self.conversation_scroll.saturating_add(10);
+                self.scroll_focused_down(10);
                 false
             }
             KeyCode::Home => {
-                self.conversation_scroll = 0;
+                match self.focus {
+                    PaneFocus::Summary => self.summary_scroll = 0,
+                    PaneFocus::Conversation => self.conversation_scroll = 0,
+                }
                 false
             }
             KeyCode::End => {
-                self.conversation_scroll = self.conversation_max_scroll;
+                match self.focus {
+                    PaneFocus::Summary => self.summary_scroll = self.summary_max_scroll,
+                    PaneFocus::Conversation => {
+                        self.conversation_scroll = self.conversation_max_scroll
+                    }
+                }
                 false
             }
             _ => false,
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if let Some(summary_area) = self.summary_area {
+            if contains_point(summary_area, mouse.column, mouse.row) {
+                self.focus = PaneFocus::Summary;
+            }
+        }
+        if let Some(conversation_area) = self.conversation_area {
+            if contains_point(conversation_area, mouse.column, mouse.row) {
+                self.focus = PaneFocus::Conversation;
+            }
+        }
+
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.scroll_focused_up(1),
+            MouseEventKind::ScrollDown => self.scroll_focused_down(1),
+            _ => {}
+        }
+    }
+
+    fn scroll_focused_up(&mut self, magnitude: usize) {
+        match self.focus {
+            PaneFocus::Summary => {
+                self.summary_scroll = self.summary_scroll.saturating_sub(magnitude)
+            }
+            PaneFocus::Conversation => {
+                let scaled = magnitude.saturating_mul(CONVERSATION_SCROLL_SENSITIVITY);
+                self.conversation_scroll = self.conversation_scroll.saturating_sub(scaled)
+            }
+        }
+    }
+
+    fn scroll_focused_down(&mut self, magnitude: usize) {
+        match self.focus {
+            PaneFocus::Summary => {
+                self.summary_scroll = self.summary_scroll.saturating_add(magnitude)
+            }
+            PaneFocus::Conversation => {
+                let scaled = magnitude.saturating_mul(CONVERSATION_SCROLL_SENSITIVITY);
+                self.conversation_scroll = self.conversation_scroll.saturating_add(scaled)
+            }
         }
     }
 }
@@ -256,6 +375,44 @@ fn clamp_scroll(value: usize) -> u16 {
     } else {
         value as u16
     }
+}
+
+fn contains_point(area: Rect, x: u16, y: u16) -> bool {
+    x >= area.x && x < area.x + area.width && y >= area.y && y < area.y + area.height
+}
+
+fn count_wrapped_lines(text: &str, area: Rect) -> usize {
+    if area.width == 0 {
+        return 0;
+    }
+    let height = area.height.max(1).saturating_add(1024).min(u16::MAX);
+    let mut buffer = Buffer::empty(Rect::new(0, 0, area.width, height));
+    Paragraph::new(text)
+        .wrap(Wrap { trim: false })
+        .render(buffer.area, &mut buffer);
+    let mut last_non_empty = None;
+    for y in 0..height {
+        let row_has_content = (0..area.width).any(|x| {
+            buffer
+                .cell(Position::new(x, y))
+                .is_some_and(|cell| !cell.symbol().trim().is_empty())
+        });
+        if row_has_content {
+            last_non_empty = Some(y);
+        }
+    }
+    last_non_empty
+        .map(|last| (last + 1) as usize)
+        .unwrap_or(0)
+        .max(1)
+}
+
+fn bottom_scroll_limit(lines: usize, height: usize) -> usize {
+    if height == 0 {
+        return lines + 2;
+    }
+    let extra = lines.saturating_add(2);
+    extra.saturating_sub(height)
 }
 
 fn advantage_to_color(advantage: f32) -> Color {
@@ -354,6 +511,7 @@ fn run_app<M: LlmModelMarker>(
                     break;
                 }
             }
+            Event::Mouse(mouse) => app.handle_mouse(mouse),
             _ => {}
         }
     }

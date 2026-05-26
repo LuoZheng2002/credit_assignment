@@ -70,6 +70,8 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
 
     // iterate through all action logs
     let mut keys = action_log_store.get_keys().await.unwrap();
+    let num_keys = keys.len();
+    let log_interval = std::cmp::max(num_keys / 200, 1);
     // we want to make a histogram
 
     keys.sort(); // ensure deterministic order
@@ -77,8 +79,11 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     let mut min_heap: BinaryHeap<Reverse<TrajectoryHeapItem<M>>> = BinaryHeap::new();
     let mut all_average_advantages: Vec<f32> = Vec::new();
     let mut total_trajectories = 0_usize;
-    for key in keys {
-        let action_log = action_log_store.get(key).await.unwrap().unwrap();
+    for (index, key) in keys.iter().enumerate() {
+        if index % log_interval == 0 {
+            println!("Processing action logs: {}/{}", index, num_keys);
+        }
+        let action_log = action_log_store.get(*key).await.unwrap().unwrap();
         let candidate_trajectories = action_log_to_candidate_trajectories::<M>(action_log);
         for trajectory in candidate_trajectories {
             total_trajectories += 1;
