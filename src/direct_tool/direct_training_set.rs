@@ -1,4 +1,8 @@
-use std::{cmp::Reverse, collections::{BTreeMap, BTreeSet, BinaryHeap}};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet, BinaryHeap},
+    sync::Arc,
+};
 
 use clap::ValueEnum;
 use ordered_float::NotNan;
@@ -7,6 +11,8 @@ use research_utility::{
     sqlite_store::SqliteStore,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use crate::{
     direct_tool::{
@@ -79,25 +85,56 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     let mut min_heap: BinaryHeap<Reverse<TrajectoryHeapItem<M>>> = BinaryHeap::new();
     let mut all_average_advantages: Vec<f32> = Vec::new();
     let mut total_trajectories = 0_usize;
+    let mut join_set = JoinSet::new();
+    let mut pending_trajectories_by_index: BTreeMap<usize, Vec<DirectTrainingTrajectory<M>>> =
+        BTreeMap::new();
+    let mut next_index_to_reduce = 0usize;
+    let task_semaphore = Arc::new(Semaphore::new(30));
+
     for (index, key) in keys.iter().enumerate() {
         if index % log_interval == 0 {
             println!("Processing action logs: {}/{}", index, num_keys);
         }
         let action_log = action_log_store.get(*key).await.unwrap().unwrap();
-        let candidate_trajectories = action_log_to_candidate_trajectories::<M>(action_log);
-        for trajectory in candidate_trajectories {
-            total_trajectories += 1;
-            let average_advantage = NotNan::new(trajectory.average_segment_advantage)
-                .expect("Average segment advantage must not be NaN");
-            all_average_advantages.push(*average_advantage);
+        let task_permit = task_semaphore.clone().acquire_owned().await.unwrap();
+        join_set.spawn_blocking(move || {
+            let _task_permit = task_permit;
+            (index, action_log_to_candidate_trajectories::<M>(action_log))
+        });
 
-            min_heap.push(Reverse(TrajectoryHeapItem {
-                trajectory,
-                average_advantage,
-            }));
-            if min_heap.len() > max_num_training_trajectories {
-                min_heap.pop();
+        while let Some(result) = join_set.try_join_next() {
+            let (finished_index, finished_trajectories) =
+                result.expect("action_log_to_candidate_trajectories task panicked");
+            pending_trajectories_by_index.insert(finished_index, finished_trajectories);
+
+            while let Some(trajectories) = pending_trajectories_by_index.remove(&next_index_to_reduce)
+            {
+                fold_candidate_trajectories(
+                    trajectories,
+                    &mut total_trajectories,
+                    &mut all_average_advantages,
+                    &mut min_heap,
+                    max_num_training_trajectories,
+                );
+                next_index_to_reduce += 1;
             }
+        }
+    }
+
+    while let Some(result) = join_set.join_next().await {
+        let (finished_index, finished_trajectories) =
+            result.expect("action_log_to_candidate_trajectories task panicked");
+        pending_trajectories_by_index.insert(finished_index, finished_trajectories);
+
+        while let Some(trajectories) = pending_trajectories_by_index.remove(&next_index_to_reduce) {
+            fold_candidate_trajectories(
+                trajectories,
+                &mut total_trajectories,
+                &mut all_average_advantages,
+                &mut min_heap,
+                max_num_training_trajectories,
+            );
+            next_index_to_reduce += 1;
         }
     }
 
@@ -152,6 +189,30 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     println!("adopted_trajectories: {}", statistics.adopted_trajectories);
     kept_trajectories
 }
+
+fn fold_candidate_trajectories<M: LlmModelMarker>(
+    candidate_trajectories: Vec<DirectTrainingTrajectory<M>>,
+    total_trajectories: &mut usize,
+    all_average_advantages: &mut Vec<f32>,
+    min_heap: &mut BinaryHeap<Reverse<TrajectoryHeapItem<M>>>,
+    max_num_training_trajectories: usize,
+) {
+    for trajectory in candidate_trajectories {
+        *total_trajectories += 1;
+        let average_advantage = NotNan::new(trajectory.average_segment_advantage)
+            .expect("Average segment advantage must not be NaN");
+        all_average_advantages.push(*average_advantage);
+
+        min_heap.push(Reverse(TrajectoryHeapItem {
+            trajectory,
+            average_advantage,
+        }));
+        if min_heap.len() > max_num_training_trajectories {
+            min_heap.pop();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectTrainingSetStatistics {
     pub average_advantages_sorted: Vec<f32>, // sorted from high to low
