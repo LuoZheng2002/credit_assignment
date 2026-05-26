@@ -82,6 +82,7 @@ struct TreeSnapshot {
     segments: BTreeMap<SegmentId, Segment>,
     root_segment_id: SegmentId,
     leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
+    segment_advantages: BTreeMap<SegmentId, f32>,
     segment_posterior_stats: BTreeMap<SegmentId, SegmentPosteriorStats>,
     segment_posterior_signal_scaled: BTreeMap<SegmentId, f32>,
     segment_posterior_mean_scaled: BTreeMap<SegmentId, f32>,
@@ -104,6 +105,10 @@ impl TreeSnapshot {
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> Self {
         let segment_display_widths = segment_display_widths(&tree, width_division_ratio);
+        let mut segment_advantages = tree.calculate_segment_advantages(override_hyperparameters);
+        for segment_id in tree.segments.keys().copied() {
+            segment_advantages.entry(segment_id).or_insert(0.0);
+        }
         let segment_posterior_stats = segment_posterior_stats(&tree, override_hyperparameters);
         let segment_posterior_signal_scaled =
             scaled_segment_posterior_signal(&tree, &segment_posterior_stats);
@@ -127,6 +132,7 @@ impl TreeSnapshot {
             segments: tree.segments,
             root_segment_id,
             leaf_segment_judgments: tree.leaf_segment_judgments,
+            segment_advantages,
             segment_posterior_stats,
             segment_posterior_signal_scaled,
             segment_posterior_mean_scaled,
@@ -176,6 +182,7 @@ enum TreeColorMode {
     BranchingScore,
     PosteriorMean,
     PosteriorStd,
+    Advantage,
 }
 
 impl TreeColorMode {
@@ -185,6 +192,7 @@ impl TreeColorMode {
             Self::BranchingScore => "BranchingScore",
             Self::PosteriorMean => "PosteriorMean",
             Self::PosteriorStd => "PosteriorStd",
+            Self::Advantage => "Advantage",
         }
     }
 }
@@ -561,9 +569,15 @@ impl App {
         let signal_to_noise_text = posterior_stats
             .map(|stats| format!("{:.6}", stats.signal_to_noise))
             .unwrap_or_else(|| "N/A".to_string());
+        let selected_advantage = tree_page
+            .snapshot
+            .segment_advantages
+            .get(&tree_page.selected_segment_id)
+            .copied()
+            .unwrap_or(0.0);
 
         let mut summary = format!(
-            "Question #{}\nQuestion: {}\nCorrect answer: {}\nActions applied: {}/{}\nSelected segment: S{} (children: {})\nposterior_mean: {}\nposterior_std: {}\nsignal_to_noise: {}",
+            "Question #{}\nQuestion: {}\nCorrect answer: {}\nActions applied: {}/{}\nSelected segment: S{} (children: {})\nposterior_mean: {}\nposterior_std: {}\nsignal_to_noise: {}\nadvantage: {:.6}",
             entry.key,
             entry.action_log.question.question,
             entry.action_log.question.correct_answer,
@@ -574,6 +588,7 @@ impl App {
             posterior_mean_text,
             posterior_std_text,
             signal_to_noise_text,
+            selected_advantage,
         );
         match self.tree_color_mode {
             TreeColorMode::SignalToNoise => {
@@ -613,6 +628,9 @@ impl App {
                 }
             }
             TreeColorMode::BranchingScore => {}
+            TreeColorMode::Advantage => {
+                summary.push_str("\n[advantage range] min: -3.000000, max: 3.000000 (clamped)");
+            }
         }
         if let Some(judgment) = judgment {
             let model_answer = model_answer_text(&judgment.model_answer);
@@ -699,7 +717,7 @@ impl App {
             .borders(Borders::ALL)
             .title(
                 format!(
-                    "Segment tree [scroll:{} color:{} ratio:{} hscroll:{} actions:{}/{}] (1:scale 2:pan 3:evolve, 4:snr 5:branch 6:mean 7:std, wheel follows scroll mode)",
+                    "Segment tree [scroll:{} color:{} ratio:{} hscroll:{} actions:{}/{}] (1:scale 2:pan 3:evolve, 4:snr 5:branch 6:mean 7:std 8:advantage, wheel follows scroll mode)",
                     self.tree_scroll_mode.label(),
                     self.tree_color_mode.label(),
                     tree_page.width_division_ratio,
@@ -867,6 +885,10 @@ impl App {
             }
             KeyCode::Char('7') => {
                 self.tree_color_mode = TreeColorMode::PosteriorStd;
+                false
+            }
+            KeyCode::Char('8') => {
+                self.tree_color_mode = TreeColorMode::Advantage;
                 false
             }
             _ => false,
@@ -1402,6 +1424,11 @@ fn branching_score_to_color(score: f32) -> Color {
     }
 }
 
+fn advantage_to_color(advantage: f32) -> Color {
+    let clamped = advantage.clamp(-3.0, 3.0);
+    signed_posterior_to_color(clamped / 3.0)
+}
+
 fn count_wrapped_lines(text: &str, area: Rect) -> usize {
     if area.width == 0 {
         return 0;
@@ -1850,6 +1877,26 @@ fn render_tree_line(
                         style = style.bg(Color::DarkGray);
                     }
                     styles[idx] = Some(style);
+                }
+            }
+            TreeColorMode::Advantage => {
+                let advantage = tree_page
+                    .snapshot
+                    .segment_advantages
+                    .get(&rendered.segment_id)
+                    .copied()
+                    .unwrap_or(0.0);
+                let mut style = Style::default().fg(advantage_to_color(advantage));
+                if is_selected {
+                    style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+                }
+                if is_hovered {
+                    style = style.bg(Color::DarkGray);
+                }
+                for idx in rendered.col..(rendered.col + rendered.width) {
+                    if idx < styles.len() {
+                        styles[idx] = Some(style);
+                    }
                 }
             }
         }
