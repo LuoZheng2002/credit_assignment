@@ -15,3 +15,4 @@ pub mod posterior_schema;
 pub mod prompt;
 pub mod test_set_entry;
 pub mod direct_training_set;
+pub mod direct_tree_advantage;

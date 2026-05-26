@@ -94,27 +94,39 @@ impl TrajectoryContent {
 }
 
 impl<M: LlmModelMarker> DirectTree<M> {
+    pub fn get_trajectory_segments_till_id(&self, segment_id: SegmentId) -> Vec<SegmentId> {
+        let mut segments: Vec<SegmentId> = Vec::new();
+        let mut current_segment_id = Some(segment_id);
+        while let Some(segment_id) = current_segment_id {
+            segments.push(segment_id);
+            let segment = self
+                .segments
+                .get(&segment_id)
+                .expect("Parent segment id must exist in segments");            
+            current_segment_id = segment.parent_id;
+        }
+        segments.reverse(); // reverse only the order of segments, but keep the content order within each segment
+        segments
+    }
     pub fn get_trajectory(
         &self,
         segment_id: SegmentId,
         additional_contents: &[SegmentContent],
     ) -> DirectTrajectory {
-        let mut contents: Vec<Vec<SegmentContent>> = Vec::new();
-        let mut current_segment_id = Some(segment_id);
-        while let Some(pid) = current_segment_id {
-            let parent_segment = self
-                .segments
-                .get(&pid)
-                .expect("Parent segment id must exist in segments");
-            contents.push(parent_segment.content.clone());
-            current_segment_id = parent_segment.parent_id;
-        }
-        contents.reverse(); // reverse only the order of segments, but keep the content order within each segment
-        let mut flattened_contents: Vec<SegmentContent> = contents.into_iter().flatten().collect();
-        flattened_contents.extend_from_slice(additional_contents);
+        let segment_ids = self.get_trajectory_segments_till_id(segment_id);
+        let mut contents = segment_ids
+            .into_iter()
+            .map(|id| {
+                let segment = self.segments.get(&id).expect("Segment id must exist in segments");
+                segment.content.clone()
+            })
+            .flatten()
+            .collect::<Vec<SegmentContent>>();
+        // let mut flattened_contents: Vec<SegmentContent> = contents.into_iter().flatten().collect();
+        contents.extend_from_slice(additional_contents);
         let mut trajectory_contents = vec![];
         let mut unpaired_incomplete_reasoning_or_tool_call: Option<TokenArrayWithLogprob> = None;
-        for content in flattened_contents.iter() {
+        for content in contents.iter() {
             match content {
                 SegmentContent::Prompt(token_array) => {
                     assert!(unpaired_incomplete_reasoning_or_tool_call.is_none());

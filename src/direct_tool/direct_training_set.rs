@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use clap::ValueEnum;
 use research_utility::{
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     direct_tool::{
         direct_rollout_config::DirectRolloutConfig,
-        direct_tree::{DirectTree, Segment, SegmentContent, SegmentId},
+        direct_tree::{DirectTree, SegmentContent, SegmentId},
         direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
         hybrid_dataset::HybridDatasetQuestion,
         posterior_calculation_config::PosteriorCalculationConfig,
@@ -21,13 +21,17 @@ use crate::{
 
 pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     action_log_store: SqliteStore<usize, DirectTreeActionLog>,
+    max_num_training_trajectories: usize,
 ) -> Vec<DirectTrainingTrajectory<M>> {
     // iterate through all action logs
     let mut keys = action_log_store.get_keys().await.unwrap();
     keys.sort(); // ensure deterministic order
+    // we need a min heap to collect the top n trajectories with the highest average segment advantage across all action logs, where n is the number of trajectories we want to train on in total.
+    
     for key in keys {
         let action_log = action_log_store.get(key).await.unwrap().unwrap();
-        // convert each action log into a training trajectory
+        let candidat_trajectories = action_log_to_candidate_trajectories::<M>(action_log);
+        
     }
 
     todo!()
@@ -37,71 +41,42 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
     action_log: DirectTreeActionLog,
 ) -> Vec<DirectTrainingTrajectory<M>> {
     let tree = DirectTree::<M>::from_action_log(&action_log);
-    let segment_posteriors = tree.calculate_segment_posteriors(None);
-    let segment_advantages_unnormalized = segment_posteriors
-        .into_iter()
-        .map(|(segment_id, posterior)| {
-            (segment_id, posterior.mean / posterior.log_std.exp()) // we use the mean/std as the unnormalized advantage
-        })
-        .collect::<Vec<(SegmentId, f32)>>();
-    let segment_advantages_mean = segment_advantages_unnormalized
-        .iter()
-        .map(|(_, advantage)| *advantage)
-        .sum::<f32>()
-        / segment_advantages_unnormalized.len() as f32;
-    let segment_advantages_std = (segment_advantages_unnormalized
-        .iter()
-        .map(|(_, advantage)| {
-            let diff = *advantage - segment_advantages_mean;
-            diff * diff
-        })
-        .sum::<f32>()
-        / segment_advantages_unnormalized.len() as f32)
-        .sqrt();
-    let mut segment_advantages = segment_advantages_unnormalized
-        .into_iter()
-        .map(|(segment_id, advantage)| {
-            let normalized_advantage = if segment_advantages_std > 0.0 {
-                let mut shifted_advantage = advantage - segment_advantages_mean;
-                if shifted_advantage * advantage < 0.0 {
-                    shifted_advantage = 0.0; // if the advantage is on the opposite side of the mean compared to the unnormalized advantage, we set it to 0 to avoid hurting the training
-                }
-                shifted_advantage / segment_advantages_std
-            } else {
-                0.0
-            };
-            (segment_id, normalized_advantage)
-        })
-        .collect::<BTreeMap<SegmentId, f32>>();
-    // to do: we need to first find the trajectories with the most average advantage
-    // after taking it, we need to set advantages for taken segments to be 0.0
-    // then we find the trajectory with the most average advantage among the remaining ones
-    
+    let mut segment_advantages = tree.calculate_segment_advantages(None);
     let mut trajectories: Vec<DirectTrainingTrajectory<M>> = Vec::new();
-    // for each leaf segment, we create a trajectory and calculate the advantage
-    for leaf_segment_id in tree.trunk_leaf_segments.iter() {
-        let mut current_segment_id: Option<SegmentId> = Some(*leaf_segment_id);
-        let mut segments: Vec<Segment> = Vec::new();
-        while let Some(segment_id) = current_segment_id {
-            let segment = tree.segments.get(&segment_id).unwrap();
-            segments.push(segment.clone());
-            current_segment_id = segment.parent_id;
+    let mut leaf_segment_ids: BTreeSet<SegmentId> =
+        tree.leaf_segment_judgments.keys().cloned().collect();
+    while !leaf_segment_ids.is_empty() {
+        let mut leaf_to_average_advantage = BTreeMap::new();
+        for leaf in leaf_segment_ids.iter() {
+            let segment_ids = tree.get_trajectory_segments_till_id(*leaf);
+            let average_advantage = segment_ids
+                .iter()
+                .map(|id| segment_advantages.get(id).unwrap())
+                .sum::<f32>()
+                / segment_ids.len() as f32;
+            leaf_to_average_advantage.insert(*leaf, average_advantage);
         }
-        segments.reverse(); // we want the segments to be in the order from root to leaf
-        let mut advantage_sum = 0.0;
+        let (best_leaf, best_average_advantage) = leaf_to_average_advantage
+            .into_iter()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .unwrap();
+        let segment_ids = tree.get_trajectory_segments_till_id(best_leaf);
         let mut input_ids: Vec<i32> = Vec::new();
         let mut labels: Vec<i32> = Vec::new();
         let mut advantages: Vec<f32> = Vec::new();
-        for segment in segments.iter() {
-            let segment_advantage = segment_advantages.get(&segment.segment_id).unwrap();
-            advantage_sum += segment_advantage;
+        let mut sum_advantage = 0.0;
+        for segment_id in segment_ids.iter() {
+            let segment = tree.segments.get(segment_id).unwrap();
+            let segment_advantage = segment_advantages.get_mut(segment_id).unwrap();
+            sum_advantage += *segment_advantage;
             for content in segment.content.iter() {
                 match content {
-                    SegmentContent::Prompt(token_array) | SegmentContent::ToolResponse(token_array) => {
+                    SegmentContent::Prompt(token_array)
+                    | SegmentContent::ToolResponse(token_array) => {
                         input_ids.extend(token_array.tokens.iter());
                         labels.extend(vec![-100; token_array.tokens.len()]); // we set the labels for the prompt tokens to -100 so that they will be ignored in the loss calculation
                         advantages.extend(vec![*segment_advantage; token_array.tokens.len()]); // we assign the same advantage to all tokens in the segment
-                    },
+                    }
                     SegmentContent::ReasoningOrToolCall { tokens, complete } => {
                         input_ids.extend(tokens.tokens.iter());
                         labels.extend(tokens.tokens.iter());
@@ -109,16 +84,19 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
                     }
                 }
             }
+            *segment_advantage = 0.0; // we set the advantage of the taken segments to 0
         }
-        let average_segment_advantage = advantage_sum / segments.len() as f32;
+        let average_advantage = sum_advantage / segment_ids.len() as f32;
+        assert_eq!(average_advantage, best_average_advantage);
         trajectories.push(DirectTrainingTrajectory {
             question: tree.question.clone(),
             input_ids,
             labels,
             advantages,
-            average_segment_advantage,
+            average_segment_advantage: average_advantage,
             _phantom: std::marker::PhantomData::<M>,
         });
+        leaf_segment_ids.remove(&best_leaf);
     }
     trajectories
 }
