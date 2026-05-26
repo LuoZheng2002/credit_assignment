@@ -322,6 +322,9 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             true
         };
         if stale {
+            println!(
+                "Training trajectories file is stale or does not exist. Regenerating...",
+            );
             // if so, we first delete the target file
             if std::path::Path::new(&self.file_path()).exists() {
                 std::fs::remove_file(&self.file_path()).unwrap();
@@ -340,6 +343,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             for (i, trajectory) in training_trajectories.into_iter().enumerate() {
                 db.upsert(i, &trajectory).await.unwrap();
             }
+            println!("Finished generating training trajectories file.");
         }
         write_json(self.version_tracking_path(), &new_tracking_content).unwrap();
         hash_file(self.file_path()).expect("Failed to hash training trajectories file")
