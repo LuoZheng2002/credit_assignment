@@ -8,7 +8,7 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
-    llm_model::{Gpt4o, Gpt5Mini, LlmCliArgs, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B},
+    llm_model::{Gpt4o, Gpt5Mini, LlmCliArgs, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B}, print_python_path::print_python_path,
 };
 use pyo3::Python;
 use reqwest::Client;
@@ -42,6 +42,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
+    let python_path = print_python_path().unwrap();
+    println!("{}", python_path);
     println!("Starting direct rollout evaluation pipeline...");
     std::panic::set_hook(Box::new(|info| {
         eprintln!("panic occurred: {}", info);
