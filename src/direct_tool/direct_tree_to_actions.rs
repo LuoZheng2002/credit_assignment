@@ -16,7 +16,9 @@ use crate::{
         direct_tree_posterior::Posterior,
         direct_tree_status::DirectTreeStatus,
     },
-    llm_model::{LlmCallable, LlmModelMarker, TokenLogprobCandidate, Top8Candidates},
+    llm_model::{
+        LlmCallable, LlmModelMarker, TokenArrayWithLogprob, TokenLogprobCandidate, Top8Candidates,
+    },
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -494,6 +496,107 @@ fn direct_trajectory_to_prompt_tokens(trajectory: &DirectTrajectory) -> Vec<i32>
     prompt_tokens
 }
 
+fn find_subsequence(tokens: &[i32], needle: &[i32], start: usize) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(start.min(tokens.len()));
+    }
+    if start > tokens.len() || needle.len() > tokens.len().saturating_sub(start) {
+        return None;
+    }
+
+    (start..=(tokens.len() - needle.len())).find(|&idx| tokens[idx..idx + needle.len()] == *needle)
+}
+
+fn fallback_top8_for_token(token_id: i32) -> Top8Candidates {
+    let mut top8 = [TokenLogprobCandidate {
+        token_id,
+        logprob: f32::NEG_INFINITY,
+    }; 8];
+    top8[0] = TokenLogprobCandidate {
+        token_id,
+        logprob: 0.0,
+    };
+    top8
+}
+
+fn patch_unclosed_python_tool_wait<M: LlmModelMarker>(
+    mut response: TokenArrayWithLogprob,
+) -> TokenArrayWithLogprob {
+    if response.tokens.len() != response.logprobs.len() {
+        panic!(
+            "Response token/logprob length mismatch before tool_wait patching: tokens={}, logprobs={}",
+            response.tokens.len(),
+            response.logprobs.len()
+        );
+    }
+
+    let open_tool_wait = <M::Tokenizer as MyTokenizer<M>>::encode_to_i32_ids("<tool_wait>");
+    let python_fence = <M::Tokenizer as MyTokenizer<M>>::encode_to_i32_ids("```python");
+    let close_fence = <M::Tokenizer as MyTokenizer<M>>::encode_to_i32_ids("```");
+    let close_fence_with_newline = <M::Tokenizer as MyTokenizer<M>>::encode_to_i32_ids("```\n");
+    let close_tool_wait = <M::Tokenizer as MyTokenizer<M>>::encode_to_i32_ids("</tool_wait>");
+
+    if open_tool_wait.is_empty()
+        || python_fence.is_empty()
+        || close_fence.is_empty()
+        || close_tool_wait.is_empty()
+    {
+        return response;
+    }
+
+    let Some(open_start) = find_subsequence(&response.tokens, &open_tool_wait, 0) else {
+        return response;
+    };
+    let after_open = open_start + open_tool_wait.len();
+
+    let Some(python_start) = find_subsequence(&response.tokens, &python_fence, after_open) else {
+        return response;
+    };
+    let after_python = python_start + python_fence.len();
+
+    let close_plain_start = find_subsequence(&response.tokens, &close_fence, after_python);
+    let close_newline_start = if close_fence_with_newline.is_empty() {
+        None
+    } else {
+        find_subsequence(&response.tokens, &close_fence_with_newline, after_python)
+    };
+
+    let (close_end, append_text) = match (close_plain_start, close_newline_start) {
+        (None, None) => return response,
+        (Some(plain_start), None) => (plain_start + close_fence.len(), "\n</tool_wait>"),
+        (None, Some(newline_start)) => (
+            newline_start + close_fence_with_newline.len(),
+            "</tool_wait>",
+        ),
+        (Some(plain_start), Some(newline_start)) => {
+            if newline_start <= plain_start {
+                (
+                    newline_start + close_fence_with_newline.len(),
+                    "</tool_wait>",
+                )
+            } else {
+                (plain_start + close_fence.len(), "\n</tool_wait>")
+            }
+        }
+    };
+
+    if find_subsequence(&response.tokens, &close_tool_wait, close_end).is_some() {
+        return response;
+    }
+
+    response.tokens.truncate(close_end);
+    response.logprobs.truncate(close_end);
+
+    let append_tokens = <M::Tokenizer as MyTokenizer<M>>::encode_to_i32_ids(append_text);
+    for token_id in append_tokens {
+        response.tokens.push(token_id);
+        response.logprobs.push(fallback_top8_for_token(token_id));
+    }
+
+    response.decoded_string = <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(&response.tokens);
+    response
+}
+
 async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     // current_content: &[SegmentContent],
     trajectory: &DirectTrajectory,
@@ -501,8 +604,9 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
 ) -> SegmentContent {
     let prompt_tokens = direct_trajectory_to_prompt_tokens(trajectory);
     let response = llm_callable
-        .generate_tokens_with_logprobs(prompt_tokens.clone(), true, 1.0)
+        .generate_tokens_with_logprobs(prompt_tokens.clone(), true, 1.0, true)
         .await;
+    let response = patch_unclosed_python_tool_wait::<M>(response);
     if response.tokens.is_empty() || response.decoded_string.trim().is_empty() {
         panic!(
             "LLM returned empty response. Decoded string: '{}', tokens: {:?}",

@@ -7,7 +7,7 @@ use tiktoken_rs::{CoreBPE, bpe_for_model};
 
 use super::{
     LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArray,
-    TokenArrayWithLogprob, TokenLogprobCandidate,
+    TokenArrayWithLogprob, TokenLogprobCandidate, trim_tail_eos_if_needed,
 };
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
@@ -101,6 +101,7 @@ impl LlmCallable<Gpt5Mini> for Gpt5MiniLlmCallable {
         prompt_or_tokens: Vec<i32>,
         passes_in_stop: bool,
         temperature: f32,
+        trim_eos: bool,
     ) -> TokenArrayWithLogprob {
         let prompt = <Gpt5Mini as LlmModelMarker>::Tokenizer::decode_i32_ids(&prompt_or_tokens);
         let body = if passes_in_stop {
@@ -193,11 +194,12 @@ impl LlmCallable<Gpt5Mini> for Gpt5MiniLlmCallable {
             logprobs.push(top8);
         }
 
-        TokenArrayWithLogprob {
+        let output = TokenArrayWithLogprob {
             tokens,
             decoded_string,
             logprobs,
-        }
+        };
+        trim_tail_eos_if_needed::<Gpt5Mini>(output, trim_eos)
     }
 }
 
@@ -249,6 +251,10 @@ impl MyTokenizer<Gpt5Mini> for Gpt5MiniTokenizer {
             Gpt5Mini::API_NAME
         );
         i32::try_from(encoded[0]).expect("token id must fit in i32")
+    }
+
+    fn eos_token_id() -> i32 {
+        Self::token_to_id("<|endoftext|>")
     }
 }
 

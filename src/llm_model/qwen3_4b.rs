@@ -10,7 +10,7 @@ use super::qwen_shared::{
 };
 use super::{
     LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, QwenApiBackend,
-    TokenArrayWithLogprob, build_simple_qwen_chatml_prefix,
+    TokenArrayWithLogprob, build_simple_qwen_chatml_prefix, trim_tail_eos_if_needed,
 };
 
 static QWEN3_4B_TOKENIZER: LazyLock<Tokenizer> =
@@ -63,10 +63,13 @@ impl LlmCallable<Qwen3_4B> for Qwen3_4BLlmCallable {
         prompt_or_tokens: Vec<i32>,
         passes_in_stop: bool,
         temperature: f32,
+        trim_eos: bool,
     ) -> TokenArrayWithLogprob {
-        self.shared
+        let output = self
+            .shared
             .generate_tokens_with_logprobs_from_tokens(prompt_or_tokens, passes_in_stop, temperature)
-            .await
+            .await;
+        trim_tail_eos_if_needed::<Qwen3_4B>(output, trim_eos)
     }
 }
 
@@ -95,6 +98,10 @@ impl MyTokenizer<Qwen3_4B> for Qwen3_4BTokenizer {
 
     fn token_to_id(token: &str) -> i32 {
         token_to_i32_id(&QWEN3_4B_TOKENIZER, token, Qwen3_4B::API_NAME)
+    }
+
+    fn eos_token_id() -> i32 {
+        Self::token_to_id("<|im_end|>")
     }
 }
 

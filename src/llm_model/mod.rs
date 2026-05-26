@@ -42,6 +42,7 @@ pub trait MyTokenizer<M: LlmModelMarker>: Send + Sync + 'static {
     fn encode_to_i32_ids(text: &str) -> Vec<i32>;
     fn decode_i32_ids(token_ids: &[i32]) -> String;
     fn token_to_id(token: &str) -> i32;
+    fn eos_token_id() -> i32;
 }
 
 #[async_trait]
@@ -53,6 +54,7 @@ pub trait LlmCallable<M: LlmModelMarker>: Clone + Send + Sync {
         _tokens: Vec<i32>,
         _passes_in_stop: bool,
         _temperature: f32,
+        _trim_eos: bool,
     ) -> TokenArrayWithLogprob {
         panic!("generate_tokens_with_logprobs is only implemented for vLLM-backed callables")
     }
@@ -73,6 +75,39 @@ pub trait LlmCallable<M: LlmModelMarker>: Clone + Send + Sync {
         let input = M::tokenize(prompt).tokens;
         self.generate_text(input, true).await
     }
+}
+
+pub(crate) fn trim_tail_eos_if_needed<M: LlmModelMarker>(
+    mut output: TokenArrayWithLogprob,
+    trim_eos: bool,
+) -> TokenArrayWithLogprob {
+    if !trim_eos {
+        return output;
+    }
+
+    let eos_token_id = <M::Tokenizer as MyTokenizer<M>>::eos_token_id();
+    let last_token_id = *output
+        .tokens
+        .last()
+        .expect("trim_eos=true requires at least one generated token");
+    assert!(
+        last_token_id == eos_token_id,
+        "trim_eos=true requires the generated tail token to be EOS; got tail token id {} while EOS token id is {}",
+        last_token_id,
+        eos_token_id,
+    );
+
+    assert!(
+        output.tokens[..output.tokens.len() - 1]
+            .iter()
+            .all(|&token_id| token_id != eos_token_id),
+        "trim_eos=true requires non-tail generated tokens to all be non-EOS",
+    );
+
+    output.tokens.pop();
+    output.logprobs.pop();
+    output.decoded_string = <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(&output.tokens);
+    output
 }
 
 pub trait LlmModelMarker: Sized + Send + Sync + 'static {
