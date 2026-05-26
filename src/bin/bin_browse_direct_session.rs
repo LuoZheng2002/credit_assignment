@@ -66,6 +66,7 @@ struct Args {
 }
 
 const QUESTIONS_PER_PAGE: usize = 10;
+const CONVERSATION_SCROLL_SENSITIVITY: usize = 4;
 
 #[derive(Clone)]
 struct QuestionEntry {
@@ -801,9 +802,7 @@ impl App {
                     TreePaneFocus::Summary => {
                         self.summary_scroll = self.summary_scroll.saturating_add(1)
                     }
-                    TreePaneFocus::Conversation => {
-                        self.conversation_scroll = self.conversation_scroll.saturating_add(1)
-                    }
+                    TreePaneFocus::Conversation => self.scroll_conversation_down(1),
                     TreePaneFocus::Tree => {}
                 }
                 false
@@ -821,9 +820,7 @@ impl App {
                     TreePaneFocus::Summary => {
                         self.summary_scroll = self.summary_scroll.saturating_add(10)
                     }
-                    TreePaneFocus::Conversation => {
-                        self.conversation_scroll = self.conversation_scroll.saturating_add(10)
-                    }
+                    TreePaneFocus::Conversation => self.scroll_conversation_down(10),
                     TreePaneFocus::Tree => {}
                 }
                 false
@@ -987,9 +984,7 @@ impl App {
                 TreePaneFocus::Summary => {
                     self.summary_scroll = self.summary_scroll.saturating_add(1)
                 }
-                TreePaneFocus::Conversation => {
-                    self.conversation_scroll = self.conversation_scroll.saturating_add(1)
-                }
+                TreePaneFocus::Conversation => self.scroll_conversation_down(1),
                 TreePaneFocus::Tree => {
                     let entry_index = self
                         .tree_page
@@ -1074,11 +1069,17 @@ impl App {
     }
 
     fn scroll_conversation_up(&mut self, magnitude: usize) {
+        let scaled = magnitude.saturating_mul(CONVERSATION_SCROLL_SENSITIVITY);
         if self.conversation_scroll > self.conversation_max_scroll {
             self.conversation_scroll = self.conversation_max_scroll;
             return;
         }
-        self.conversation_scroll = self.conversation_scroll.saturating_sub(magnitude);
+        self.conversation_scroll = self.conversation_scroll.saturating_sub(scaled);
+    }
+
+    fn scroll_conversation_down(&mut self, magnitude: usize) {
+        let scaled = magnitude.saturating_mul(CONVERSATION_SCROLL_SENSITIVITY);
+        self.conversation_scroll = self.conversation_scroll.saturating_add(scaled);
     }
 
     fn home_index_from_mouse(&self, column: u16, row: u16) -> Option<usize> {
