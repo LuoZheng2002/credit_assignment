@@ -482,7 +482,7 @@ pub struct NodeCandidate {
 // 2. context length exceeded
 // 3. other scenarios that require termination
 
-fn direct_trajectory_to_prompt_tokens(trajectory: &DirectTrajectory) -> Vec<i32> {
+fn direct_trajectory_to_prompt_tokens<M: LlmModelMarker>(trajectory: &DirectTrajectory<M>) -> Vec<i32> {
     let mut prompt_tokens: Vec<i32> = Vec::new();
     for content in trajectory.trajectory_contents.iter() {
         let tokens = match content {
@@ -599,7 +599,7 @@ fn patch_unclosed_python_tool_wait<M: LlmModelMarker>(
 
 async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     // current_content: &[SegmentContent],
-    trajectory: &DirectTrajectory,
+    trajectory: &DirectTrajectory<M>,
     llm_callable: &M::Callable,
 ) -> SegmentContent {
     let prompt_tokens = direct_trajectory_to_prompt_tokens(trajectory);
@@ -619,8 +619,10 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     }
 }
 
+const SYSTEM_HINT: &str = "<system>You tried to end the sequence without providing a properly formatted tool call or an answer in \\boxed{}. Please either provide a tool call with <tool_wait></tool_wait> wrapper, or provide an answer in \\boxed{}.</system>";
+
 async fn generate_next_segment_content<M: LlmModelMarker>(
-    trajectory: &DirectTrajectory,
+    trajectory: &DirectTrajectory<M>,
     // current_content: &[SegmentContent],
     // client: Client,
     llm_callable: &M::Callable,
@@ -650,7 +652,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                 SegmentContent::ToolResponse(response_tokenized)
             } else {
                 log_key_value_pair("warning".to_string(), "The model neither produced an answer nor a tool call when the last content is a reasoning or tool call content.".to_string());
-                let tool_response_raw = "<system>You tried to end the sequence without providing a properly formatted tool call or an answer in \\boxed{}. Please either provide a tool call with <tool_wait></tool_wait> wrapper, or provide an answer in \\boxed{}.</system>".to_string();
+                let tool_response_raw = SYSTEM_HINT.to_string();
                 let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
                 SegmentContent::ToolResponse(response_tokenized)
             }

@@ -1,18 +1,21 @@
+use std::marker::PhantomData;
+
 use crate::{
     agent::{
         response_processing::split_reasoning_and_tool_call, trajectory_action_types::FinalAnswer,
     },
     direct_tool::direct_tree::{DirectTree, SegmentContent, SegmentId},
-    llm_model::{LlmModelMarker, TokenArrayWithLogprob},
+    llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob},
     token_array::TokenArray,
     util::extract_boxed_content,
 };
 
-pub struct DirectTrajectory {
+pub struct DirectTrajectory<M: LlmModelMarker> {
     pub trajectory_contents: Vec<TrajectoryContent>,
+    _marker: PhantomData<M>,
 }
 
-impl DirectTrajectory {
+impl<M: LlmModelMarker> DirectTrajectory<M> {
     pub fn try_get_answer(&self) -> Option<FinalAnswer> {
         let last_content = self
             .trajectory_contents
@@ -21,7 +24,15 @@ impl DirectTrajectory {
         let TrajectoryContent::ReasoningOrToolCallComplete(tokens) = last_content else {
             return None;
         };
+
         let mut final_answer: Option<FinalAnswer> = None;
+        let eos_token_id = <M::Tokenizer as MyTokenizer<M>>::eos_token_id();
+        if tokens.tokens.len() == 1 && tokens.tokens[0] == eos_token_id {
+            final_answer = Some(FinalAnswer::Failure(
+                "Model returned only EOS token.".to_string(),
+            ));
+        }
+
         if let Some(boxed_content) = extract_boxed_content(&tokens.decoded_string) {
             final_answer = Some(FinalAnswer::ModelProvided(boxed_content));
         }
@@ -112,7 +123,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
         &self,
         segment_id: SegmentId,
         additional_contents: &[SegmentContent],
-    ) -> DirectTrajectory {
+    ) -> DirectTrajectory<M> {
         let segment_ids = self.get_trajectory_segments_till_id(segment_id);
         let mut contents = segment_ids
             .into_iter()
@@ -202,6 +213,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
         }
         DirectTrajectory {
             trajectory_contents,
+            _marker: PhantomData,
         }
     }
 }

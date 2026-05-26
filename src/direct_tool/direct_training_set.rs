@@ -25,6 +25,8 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
 ) -> Vec<DirectTrainingTrajectory<M>> {
     // iterate through all action logs
     let mut keys = action_log_store.get_keys().await.unwrap();
+    // we want to make a histogram
+    
     keys.sort(); // ensure deterministic order
     // we need a min heap to collect the top n trajectories with the highest average segment advantage across all action logs, where n is the number of trajectories we want to train on in total.
 

@@ -91,6 +91,10 @@ pub(crate) fn trim_tail_eos_if_needed<M: LlmModelMarker>(
     };
 
     if last_token_id == eos_token_id {
+        if output.tokens.len() == 1 {
+            return output;
+        }
+
         assert!(
             output.tokens[..output.tokens.len() - 1]
                 .iter()
