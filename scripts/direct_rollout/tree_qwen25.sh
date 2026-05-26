@@ -1,8 +1,9 @@
-source activate_environment.sh
+
 source .venv/bin/activate
 LIBDIR=$(python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')
+export RUSTFLAGS="-C link-arg=-Wl,-rpath,$LIBDIR"
 
-RUSTFLAGS="-C link-arg=-Wl,-rpath,$LIBDIR" RUST_BACKTRACE=1 cargo run --bin bin_direct_tree -- \
+ RUST_BACKTRACE=1 cargo run --bin bin_direct_tree -- \
     --model-cli-name qwen2.5-7b \
     --qwen-api-backend sglang \
     --qwen-sglang-port 30000 \

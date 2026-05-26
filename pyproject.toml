@@ -3,18 +3,21 @@ name = "credit-assignment"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = "==3.12.*"
 dependencies = [
     "datasets>=4.8.5",
     "dotenv>=0.9.9",
     "grpcio>=1.74.0",
     "grpcio-tools>=1.74.0",
-    "openai>=2.37.0",
     "research-utility",
-    "sympy>=1.14.0",
     "torch",
     "transformers",
-    "sglang[all]"
+    "sglang==0.5.7",
+    # used for LLM python tool calling
+    "sympy>=1.14.0",
+    "numpy>=2.4.6",
+    "scipy>=1.17.1",
+    "numexpr>=2.14.1",
 ]
 
 [[tool.uv.index]]

@@ -41,10 +41,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() {
-    let python_path = print_python_path().unwrap();
-    println!("{}", python_path);
-    println!("Starting direct rollout evaluation pipeline...");
+async fn main() {    
     std::panic::set_hook(Box::new(|info| {
         eprintln!("panic occurred: {}", info);
         let rust_backtrace = std::env::var("RUST_BACKTRACE").ok();
@@ -64,6 +61,14 @@ async fn main() {
         first_n_samples,
     } = Args::parse();
     Python::initialize();
+    let python_path = print_python_path().unwrap();
+    println!("{}", python_path);
+    assert!(
+        python_path.contains(".venv"),
+        "Python path does not contain .venv, found: {}",
+        python_path
+    );
+    println!("Starting direct rollout evaluation pipeline...");
     let client = Client::new();
     let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();
     if rollout_config.accuracy_under_temperature.is_none() {
