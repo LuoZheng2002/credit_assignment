@@ -96,22 +96,38 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         }
     }
 
-    let mut kept_items: Vec<TrajectoryHeapItem<M>> =
-        min_heap.into_iter().map(|item| item.0).collect();
-    kept_items.sort_by(|a, b| b.cmp(a));
-    let kept_trajectories: Vec<DirectTrainingTrajectory<M>> =
+    let kept_items: Vec<TrajectoryHeapItem<M>> = min_heap.into_iter().map(|item| item.0).collect();
+    let average_advantage_cutoff = kept_items
+        .iter()
+        .map(|item| item.trajectory.average_segment_advantage)
+        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap_or(0.0);
+
+    let mut kept_trajectories: Vec<DirectTrainingTrajectory<M>> =
         kept_items.into_iter().map(|item| item.trajectory).collect();
+
+    for trajectory in kept_trajectories.iter() {
+        assert_eq!(
+            trajectory.input_ids.len(),
+            trajectory.labels.len(),
+            "kept trajectory must satisfy input_ids.len() == labels.len(); question_flat_id={}",
+            trajectory.question.flat_id
+        );
+        assert_eq!(
+            trajectory.input_ids.len(),
+            trajectory.advantages.len(),
+            "kept trajectory must satisfy input_ids.len() == advantages.len(); question_flat_id={}",
+            trajectory.question.flat_id
+        );
+    }
+
+    kept_trajectories.sort_by_key(|trajectory| trajectory.input_ids.len());
 
     all_average_advantages.sort_by(|a, b| b.partial_cmp(a).unwrap());
 
     let adopted_trajectories = kept_trajectories.len();
     let max_average_advantage = *all_average_advantages.first().unwrap_or(&0.0);
     let min_average_advantage = *all_average_advantages.last().unwrap_or(&0.0);
-    let average_advantage_cutoff = kept_trajectories
-        .last()
-        .map(|trajectory| trajectory.average_segment_advantage)
-        .unwrap_or(0.0);
-
     // we want to output a histogram and the advantage cutoff
     // and total samples and adopted samples
 
@@ -181,7 +197,7 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
                         labels.extend(vec![-100; token_array.tokens.len()]); // we set the labels for the prompt tokens to -100 so that they will be ignored in the loss calculation
                         advantages.extend(vec![*segment_advantage; token_array.tokens.len()]); // we assign the same advantage to all tokens in the segment
                     }
-                    SegmentContent::ReasoningOrToolCall { tokens, complete } => {
+                    SegmentContent::ReasoningOrToolCall { tokens, complete: _ } => {
                         input_ids.extend(tokens.tokens.iter());
                         labels.extend(tokens.tokens.iter());
                         advantages.extend(vec![*segment_advantage; tokens.tokens.len()]);
