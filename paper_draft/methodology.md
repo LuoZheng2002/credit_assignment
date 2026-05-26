@@ -41,19 +41,14 @@ where `len_i in [1, +inf)` is reasoning-token length for segment `i`, `b_n in [1
 
 These penalties encourage balanced exploration across the full tree.
 
-### Adaptive Branching Temperature
+### Decoding Temperature Policy
 
-When creating a new branch, we adapt decoding temperature based on the current empirical tree accuracy.
+In the current implementation, decoding temperature is fixed within a rollout tree.
 
-- Let `acc_tree` be the fraction of judged leaves in the current tree that are correct.
-- Let `T_prev` be the decoding temperature used by the most recently completed branch.
-- If `acc_tree > 0.65` (overly favorable regime), increase temperature to encourage more challenging and diverse continuations.
-- If `acc_tree < 0.35` (overly unfavorable regime), decrease temperature to improve branch solvability.
-- Otherwise, keep temperature near `T_prev`.
+- A single value `T_fixed` is specified in rollout config and reused for prompt continuation, trunk trajectories, and all branch expansions.
+- We do not currently apply adaptive per-branch temperature updates.
 
-This policy counteracts accuracy saturation at either extreme and improves information gain from new branches.
-
-Because segment prior means are calibrated as a function of temperature (Empirical Bayes calibration), segments generated at adjusted temperatures receive temperature-consistent priors. In principle, this reduces potential bias propagation to ancestor segments and preserves fairness in credit assignment across mixed-temperature branches.
+This keeps tree construction and posterior estimation behavior consistent across all segments in a tree.
 
 ## Segment and Node Scoring
 
@@ -76,7 +71,7 @@ For each judged leaf trajectory `l`:
 
 - `y_l in {+1, -1}` denotes correctness (+1 correct, -1 incorrect).
 - `x_{l,i} in {0,1}` indicates whether segment `i` is on the path to leaf `l`.
-- Each segment `i` has parameters `m_i` (mean contribution), `u_i` (log standard deviation), and `T_i` (decoding temperature tag).
+- Each segment `i` has parameters `m_i` (mean contribution) and `u_i` (log standard deviation).
 
 Leaf-level moments are:
 
@@ -92,25 +87,22 @@ and probit likelihood:
 
 - `p(y_l | params) = Phi(z_l)` where `Phi` is the standard normal CDF.
 
-### Temperature-Conditioned Prior (Empirical Bayes)
+### Accuracy-Conditioned Prior (Empirical Bayes)
 
-Let `A(T)` be model accuracy on a held-out evaluation set at decoding temperature `T`. We calibrate prior mean as:
+We use one optional scalar accuracy calibration value from rollout config, denoted `A_cfg in (0,1)`.
 
-- `mu_0(T) = c * Phi^{-1}(clip(A(T), delta, 1-delta))`
+- If `A_cfg` is provided, we set a shared prior mean:
+  - `mu_0 = c * Phi^{-1}(clip(A_cfg, delta, 1-delta))`
+  where `c > 0` is a scale factor and `delta` is a small clipping constant.
+- All segments in the tree use the same mean prior center:
+  - `m_i ~ N(mu_0, sigma_mean^2)`.
 
-where `c > 0` is a scale factor and `delta` is a small clipping constant.
+If `A_cfg` is not provided (`None`), we disable posterior fitting for branch scoring and return neutral posteriors for all segments:
 
-This is an **Empirical Bayes** (Type-II Empirical Bayes) calibration procedure: the prior hyperparameter `mu_0(T)` is estimated from data.
+- `m_i = 0`
+- `u_i = 0` (thus `std_i = 1`)
 
-Each segment prior is temperature-dependent:
-
-- `m_i ~ N(mu_0(T_i), sigma_mean^2)`
-
-Interpretation:
-
-- `A(T) > 0.5` implies positive prior center.
-- `A(T) < 0.5` implies negative prior center.
-- Larger distance from `0.5` yields larger `|mu_0(T)|`.
+This retains a valid uncertainty scale while avoiding unintended directional prior bias.
 
 ### MAP Objective
 
@@ -121,7 +113,7 @@ We minimize negative log posterior:
 with:
 
 - `J_likelihood = -sum_l log Phi(z_l)`
-- `J_mean_prior = (1 / (2 * sigma_mean^2)) * sum_i (m_i - mu_0(T_i))^2`
+- `J_mean_prior = (1 / (2 * sigma_mean^2)) * sum_i (m_i - mu_0)^2`
 - `J_log_std_prior = (1 / (2 * sigma_log_std^2)) * sum_i u_i^2`
 
 This objective encourages the signed trajectory contribution sum (`mu_l`) to move away from zero in the direction implied by outcome label `y_l`, while uncertainty regularization prevents degenerate variance inflation.
@@ -137,10 +129,10 @@ Numerical and optimization settings:
 
 Calibration workflow:
 
-1. Choose temperature grid `T in {T_1, ..., T_K}`.
-2. Evaluate base-model accuracy `A(T_k)` on a fixed held-out set for each `T_k`.
-3. Compute `mu_0(T_k)` from the probit mapping.
-4. For each segment, use lookup/interpolation to obtain `mu_0(T_i)`.
+1. Choose a rollout temperature `T_fixed` for tree generation.
+2. Optionally estimate a single held-out accuracy scalar `A_cfg` under that temperature.
+3. If `A_cfg` is provided, compute `mu_0` with the probit mapping above and fit posteriors.
+4. If `A_cfg` is omitted, use neutral posteriors (`m_i=0, u_i=0`) for all segments.
 
 ### Branching Scores from Segment Estimates
 

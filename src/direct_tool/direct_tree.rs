@@ -67,7 +67,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
             leaf_segment_judgments: BTreeMap::new(),
             current_num_trunks: 0,
             next_segment_id: 0,
-            next_segment_temperature: 1.0,
+            next_segment_temperature: action_log.rollout_config.fixed_temperature.into_inner(),
             focused_parent_segment_id: None,
             new_branch_start_token: None,
             completed: false,

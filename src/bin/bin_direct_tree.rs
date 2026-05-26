@@ -4,9 +4,8 @@ use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
     direct_tool::{
         direct_rollout::direct_rollout_all_with_config,
-        posterior_calculation_config::{
-            PosteriorCalculationConfig, PosteriorHyperparameters, TemperatureAccuracyPair,
-        },
+        direct_rollout_config::DirectRolloutConfig,
+        posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
     llm_model::{Gpt4o, Gpt5Mini, LlmCliArgs, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B},
@@ -34,8 +33,6 @@ struct Args {
     #[arg(long)]
     rollout_config_path: String,
     #[arg(long)]
-    temperature_to_accuracy_path: String,
-    #[arg(long)]
     posterior_hyperparameters_path: String,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
@@ -60,20 +57,21 @@ async fn main() {
         config_nickname,
         llm_cli_args,
         rollout_config_path,
-        temperature_to_accuracy_path,
         posterior_hyperparameters_path,
         ui,
         first_n_samples,
     } = Args::parse();
     Python::initialize();
     let client = Client::new();
-    let rollout_config = read_json(rollout_config_path).unwrap();
-    let temperature_to_accuracy =
-        read_json::<Vec<TemperatureAccuracyPair>>(temperature_to_accuracy_path).unwrap();
+    let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();
+    if rollout_config.accuracy_under_temperature.is_none() {
+        eprintln!(
+            "WARNING: rollout_config.accuracy_under_temperature is None; all segment posteriors will use mean=0 and std=1."
+        );
+    }
     let posterior_hyperparameters =
         read_json::<PosteriorHyperparameters>(posterior_hyperparameters_path).unwrap();
     let posterior_calculation_config = PosteriorCalculationConfig {
-        temperature_to_accuracy,
         hyperparameters: posterior_hyperparameters,
     };
 

@@ -3,14 +3,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PosteriorCalculationConfig {
-    pub temperature_to_accuracy: Vec<TemperatureAccuracyPair>,
     pub hyperparameters: PosteriorHyperparameters,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TemperatureAccuracyPair {
-    pub temperature: NotNan<f32>,
-    pub accuracy: NotNan<f32>,
 }
 
 pub const DEFAULT_SIGMA_MEAN: f64 = 1.0;

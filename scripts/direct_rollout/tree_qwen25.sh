@@ -9,7 +9,6 @@ RUSTFLAGS="-C link-arg=-Wl,-rpath,$LIBDIR" RUST_BACKTRACE=1 cargo run --bin bin_
     --max-concurrent-requests 100 \
     --config-nickname qwen_test \
     --rollout-config-path config/rollout_config.json \
-    --temperature-to-accuracy-path config/temperature_to_accuracy_placeholder.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --ui false \
     --first-n-samples 10

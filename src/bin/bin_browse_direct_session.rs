@@ -8,12 +8,11 @@ use clap::Parser;
 use credit_assignment::{
     agent::{trajectory_action_types::FinalAnswer, tree::CorrectnessJudgment},
     direct_tool::{
+        direct_rollout_config::DirectRolloutConfig,
         direct_tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
         direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
         direct_tree_to_actions::TokenBranchingScore,
-        posterior_calculation_config::{
-            PosteriorCalculationConfig, PosteriorHyperparameters, TemperatureAccuracyPair,
-        },
+        posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
     llm_model::{Gpt4o, Gpt5Mini, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B},
@@ -59,8 +58,6 @@ struct Args {
     config_nickname: String,
     #[arg(long)]
     rollout_config_path: String,
-    #[arg(long)]
-    temperature_to_accuracy_path: String,
     #[arg(long)]
     posterior_hyperparameters_path: String,
     #[arg(long)]
@@ -2066,19 +2063,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         model,
         config_nickname,
         rollout_config_path,
-        temperature_to_accuracy_path,
         posterior_hyperparameters_path,
         override_hyperparameters_path,
     } = Args::parse();
-    let rollout_config = read_json(rollout_config_path).unwrap();
-    let temperature_to_accuracy =
-        read_json::<Vec<TemperatureAccuracyPair>>(temperature_to_accuracy_path).unwrap();
+    let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();
     let posterior_hyperparameters =
         read_json::<PosteriorHyperparameters>(posterior_hyperparameters_path).unwrap();
     let override_hyperparameters = override_hyperparameters_path
         .map(|path| read_json::<PosteriorHyperparameters>(path).unwrap());
     let posterior_calculation_config = PosteriorCalculationConfig {
-        temperature_to_accuracy,
         hyperparameters: posterior_hyperparameters,
     };
     let asset_file_action_logs = AssetFileDirectTreeActionLogs {
