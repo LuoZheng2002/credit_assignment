@@ -28,12 +28,12 @@ use crate::{
 
 pub struct TrajectoryHeapItem<M: LlmModelMarker> {
     pub trajectory: DirectTrainingTrajectory<M>,
-    pub average_advantage: NotNan<f32>,
+    pub average_absolute_advantage: NotNan<f32>,
 }
 
 impl<M: LlmModelMarker> PartialEq for TrajectoryHeapItem<M> {
     fn eq(&self, other: &Self) -> bool {
-        self.average_advantage == other.average_advantage
+        self.average_absolute_advantage == other.average_absolute_advantage
     }
 }
 
@@ -47,7 +47,8 @@ impl<M: LlmModelMarker> PartialOrd for TrajectoryHeapItem<M> {
 
 impl<M: LlmModelMarker> Ord for TrajectoryHeapItem<M> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.average_advantage.cmp(&other.average_advantage)
+        self.average_absolute_advantage
+            .cmp(&other.average_absolute_advantage)
     }
 }
 
@@ -58,17 +59,26 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
 ) -> Vec<DirectTrainingTrajectory<M>> {
     if max_num_training_trajectories == 0 {
         let statistics = DirectTrainingSetStatistics {
-            average_advantages_sorted: Vec::new(),
-            max_average_advantage: 0.0,
-            min_average_advantage: 0.0,
-            average_advantage_cutoff: 0.0,
+            average_absolute_advantages_sorted: Vec::new(),
+            max_average_absolute_advantage: 0.0,
+            min_average_absolute_advantage: 0.0,
+            average_absolute_advantage_cutoff: 0.0,
             total_trajectories: 0,
             adopted_trajectories: 0,
         };
         write_json(statistics_file_path.clone(), &statistics).unwrap();
-        println!("max_average_advantage: {}", statistics.max_average_advantage);
-        println!("min_average_advantage: {}", statistics.min_average_advantage);
-        println!("average_advantage_cutoff: {}", statistics.average_advantage_cutoff);
+        println!(
+            "max_average_absolute_advantage: {}",
+            statistics.max_average_absolute_advantage
+        );
+        println!(
+            "min_average_absolute_advantage: {}",
+            statistics.min_average_absolute_advantage
+        );
+        println!(
+            "average_absolute_advantage_cutoff: {}",
+            statistics.average_absolute_advantage_cutoff
+        );
         println!("total_trajectories: {}", statistics.total_trajectories);
         println!("adopted_trajectories: {}", statistics.adopted_trajectories);
         return Vec::new();
@@ -81,9 +91,11 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     // we want to make a histogram
 
     keys.sort(); // ensure deterministic order
-    // we need a min heap to collect the top n trajectories with the highest average segment advantage across all action logs, where n is the number of trajectories we want to train on in total.
+    // we need a min heap to collect the top n trajectories with the highest
+    // average absolute segment advantage across all action logs, where n is
+    // the number of trajectories we want to train on in total.
     let mut min_heap: BinaryHeap<Reverse<TrajectoryHeapItem<M>>> = BinaryHeap::new();
-    let mut all_average_advantages: Vec<f32> = Vec::new();
+    let mut all_average_absolute_advantages: Vec<f32> = Vec::new();
     let mut total_trajectories = 0_usize;
     let mut join_set = JoinSet::new();
     let mut pending_trajectories_by_index: BTreeMap<usize, Vec<DirectTrainingTrajectory<M>>> =
@@ -112,7 +124,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
                 fold_candidate_trajectories(
                     trajectories,
                     &mut total_trajectories,
-                    &mut all_average_advantages,
+                    &mut all_average_absolute_advantages,
                     &mut min_heap,
                     max_num_training_trajectories,
                 );
@@ -130,7 +142,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
             fold_candidate_trajectories(
                 trajectories,
                 &mut total_trajectories,
-                &mut all_average_advantages,
+                &mut all_average_absolute_advantages,
                 &mut min_heap,
                 max_num_training_trajectories,
             );
@@ -139,9 +151,9 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     }
 
     let kept_items: Vec<TrajectoryHeapItem<M>> = min_heap.into_iter().map(|item| item.0).collect();
-    let average_advantage_cutoff = kept_items
+    let average_absolute_advantage_cutoff = kept_items
         .iter()
-        .map(|item| item.trajectory.average_segment_advantage)
+        .map(|item| item.trajectory.average_absolute_segment_advantage)
         .min_by(|a, b| a.partial_cmp(b).unwrap())
         .unwrap_or(0.0);
 
@@ -165,26 +177,35 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
 
     kept_trajectories.sort_by_key(|trajectory| trajectory.input_ids.len());
 
-    all_average_advantages.sort_by(|a, b| b.partial_cmp(a).unwrap());
+    all_average_absolute_advantages.sort_by(|a, b| b.partial_cmp(a).unwrap());
 
     let adopted_trajectories = kept_trajectories.len();
-    let max_average_advantage = *all_average_advantages.first().unwrap_or(&0.0);
-    let min_average_advantage = *all_average_advantages.last().unwrap_or(&0.0);
+    let max_average_absolute_advantage = *all_average_absolute_advantages.first().unwrap_or(&0.0);
+    let min_average_absolute_advantage = *all_average_absolute_advantages.last().unwrap_or(&0.0);
     // we want to output a histogram and the advantage cutoff
     // and total samples and adopted samples
 
     let statistics = DirectTrainingSetStatistics {
-        average_advantages_sorted: all_average_advantages,
-        max_average_advantage,
-        min_average_advantage,
-        average_advantage_cutoff,
+        average_absolute_advantages_sorted: all_average_absolute_advantages,
+        max_average_absolute_advantage,
+        min_average_absolute_advantage,
+        average_absolute_advantage_cutoff,
         total_trajectories,
         adopted_trajectories,
     };
     write_json(statistics_file_path.clone(), &statistics).unwrap();
-    println!("max_average_advantage: {}", statistics.max_average_advantage);
-    println!("min_average_advantage: {}", statistics.min_average_advantage);
-    println!("average_advantage_cutoff: {}", statistics.average_advantage_cutoff);
+    println!(
+        "max_average_absolute_advantage: {}",
+        statistics.max_average_absolute_advantage
+    );
+    println!(
+        "min_average_absolute_advantage: {}",
+        statistics.min_average_absolute_advantage
+    );
+    println!(
+        "average_absolute_advantage_cutoff: {}",
+        statistics.average_absolute_advantage_cutoff
+    );
     println!("total_trajectories: {}", statistics.total_trajectories);
     println!("adopted_trajectories: {}", statistics.adopted_trajectories);
     kept_trajectories
@@ -193,19 +214,19 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
 fn fold_candidate_trajectories<M: LlmModelMarker>(
     candidate_trajectories: Vec<DirectTrainingTrajectory<M>>,
     total_trajectories: &mut usize,
-    all_average_advantages: &mut Vec<f32>,
+    all_average_absolute_advantages: &mut Vec<f32>,
     min_heap: &mut BinaryHeap<Reverse<TrajectoryHeapItem<M>>>,
     max_num_training_trajectories: usize,
 ) {
     for trajectory in candidate_trajectories {
         *total_trajectories += 1;
-        let average_advantage = NotNan::new(trajectory.average_segment_advantage)
-            .expect("Average segment advantage must not be NaN");
-        all_average_advantages.push(*average_advantage);
+        let average_absolute_advantage = NotNan::new(trajectory.average_absolute_segment_advantage)
+            .expect("Average absolute segment advantage must not be NaN");
+        all_average_absolute_advantages.push(*average_absolute_advantage);
 
         min_heap.push(Reverse(TrajectoryHeapItem {
             trajectory,
-            average_advantage,
+            average_absolute_advantage,
         }));
         if min_heap.len() > max_num_training_trajectories {
             min_heap.pop();
@@ -215,10 +236,10 @@ fn fold_candidate_trajectories<M: LlmModelMarker>(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectTrainingSetStatistics {
-    pub average_advantages_sorted: Vec<f32>, // sorted from high to low
-    pub max_average_advantage: f32,
-    pub min_average_advantage: f32,
-    pub average_advantage_cutoff: f32,
+    pub average_absolute_advantages_sorted: Vec<f32>, // sorted from high to low
+    pub max_average_absolute_advantage: f32,
+    pub min_average_absolute_advantage: f32,
+    pub average_absolute_advantage_cutoff: f32,
     pub total_trajectories: usize,
     pub adopted_trajectories: usize,
 }
@@ -238,22 +259,22 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
     let mut leaf_segment_ids: BTreeSet<SegmentId> =
         tree.leaf_segment_judgments.keys().cloned().collect();
     while !leaf_segment_ids.is_empty() {
-        let mut leaf_to_average_advantage = BTreeMap::new();
+        let mut leaf_to_average_absolute_advantage = BTreeMap::new();
         for leaf in leaf_segment_ids.iter() {
             let segment_ids = tree.get_trajectory_segments_till_id(*leaf);
             let non_root_segment_count = segment_ids
                 .iter()
                 .filter(|&&id| id != root_segment_id)
                 .count();
-            let average_advantage = segment_ids
+            let average_absolute_advantage = segment_ids
                 .iter()
                 .filter(|&&id| id != root_segment_id)
-                .map(|id| segment_advantages.get(id).unwrap())
+                .map(|id| segment_advantages.get(id).unwrap().abs())
                 .sum::<f32>()
                 / non_root_segment_count.max(1) as f32;
-            leaf_to_average_advantage.insert(*leaf, average_advantage);
+            leaf_to_average_absolute_advantage.insert(*leaf, average_absolute_advantage);
         }
-        let (best_leaf, best_average_advantage) = leaf_to_average_advantage
+        let (best_leaf, best_average_absolute_advantage) = leaf_to_average_absolute_advantage
             .into_iter()
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
             .unwrap();
@@ -261,13 +282,13 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
         let mut input_ids: Vec<i32> = Vec::new();
         let mut labels: Vec<i32> = Vec::new();
         let mut advantages: Vec<f32> = Vec::new();
-        let mut sum_advantage = 0.0;
+        let mut sum_absolute_advantage = 0.0;
         let mut non_root_segment_count = 0usize;
         for segment_id in segment_ids.iter() {
             let segment = tree.segments.get(segment_id).unwrap();
             let segment_advantage = segment_advantages.get_mut(segment_id).unwrap();
             if *segment_id != root_segment_id {
-                sum_advantage += *segment_advantage;
+                sum_absolute_advantage += segment_advantage.abs();
                 non_root_segment_count += 1;
             }
             for content in segment.content.iter() {
@@ -287,14 +308,14 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
             }
             *segment_advantage = 0.0; // we set the advantage of the taken segments to 0
         }
-        let average_advantage = sum_advantage / non_root_segment_count.max(1) as f32;
-        assert_eq!(average_advantage, best_average_advantage);
+        let average_absolute_advantage = sum_absolute_advantage / non_root_segment_count.max(1) as f32;
+        assert_eq!(average_absolute_advantage, best_average_absolute_advantage);
         trajectories.push(DirectTrainingTrajectory {
             question: tree.question.clone(),
             input_ids,
             labels,
             advantages,
-            average_segment_advantage: average_advantage,
+            average_absolute_segment_advantage: average_absolute_advantage,
             _phantom: std::marker::PhantomData::<M>,
         });
         leaf_segment_ids.remove(&best_leaf);
@@ -308,7 +329,7 @@ pub struct DirectTrainingTrajectory<M: LlmModelMarker> {
     pub input_ids: Vec<i32>,
     pub labels: Vec<i32>, // we may not need to let model learn to stop after tool_wait or end since our framework already handled this
     pub advantages: Vec<f32>,
-    pub average_segment_advantage: f32,
+    pub average_absolute_segment_advantage: f32,
     #[serde(skip)]
     pub _phantom: std::marker::PhantomData<M>,
 }

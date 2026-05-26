@@ -174,7 +174,7 @@ impl<M: LlmModelMarker> App<M> {
                 .filter(|&&label| label != -100)
                 .count();
             let mut text = format!(
-                "Model: {}\nTrajectory: {}/{} (key #{})\nQuestion #{} [{}:{}]\nAverage segment advantage: {:.6}\nToken count: {}  Trainable tokens: {}",
+                "Model: {}\nTrajectory: {}/{} (key #{})\nQuestion #{} [{}:{}]\nAverage absolute segment advantage: {:.6}\nToken count: {}  Trainable tokens: {}",
                 M::CLI_NAME,
                 loaded.index + 1,
                 self.keys.len(),
@@ -182,7 +182,7 @@ impl<M: LlmModelMarker> App<M> {
                 loaded.trajectory.question.flat_id,
                 loaded.trajectory.question.dataset_name,
                 loaded.trajectory.question.question_id,
-                loaded.trajectory.average_segment_advantage,
+                loaded.trajectory.average_absolute_segment_advantage,
                 loaded.trajectory.input_ids.len(),
                 trainable_tokens,
             );
@@ -193,12 +193,12 @@ impl<M: LlmModelMarker> App<M> {
             ));
             if let Some(statistics) = &self.statistics {
                 text.push_str(&format!(
-                    "\n\n[training set stats] total: {}  adopted: {}\nmax avg advantage: {:.6}  cutoff: {:.6}  min avg advantage: {:.6}",
+                    "\n\n[training set stats] total: {}  adopted: {}\nmax avg absolute advantage: {:.6}  cutoff: {:.6}  min avg absolute advantage: {:.6}",
                     statistics.total_trajectories,
                     statistics.adopted_trajectories,
-                    statistics.max_average_advantage,
-                    statistics.average_advantage_cutoff,
-                    statistics.min_average_advantage,
+                    statistics.max_average_absolute_advantage,
+                    statistics.average_absolute_advantage_cutoff,
+                    statistics.min_average_absolute_advantage,
                 ));
             }
             text
