@@ -34,6 +34,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui_core::buffer::Buffer;
 use research_utility::asset_file::AssetFile;
+use research_utility::sqlite_store::SqliteStore;
 use std::collections::hash_map::DefaultHasher;
 
 // home page: view the questions and win rate
@@ -306,7 +307,9 @@ impl TreePage {
 struct App {
     model: LlmModelName,
     override_hyperparameters: Option<PosteriorHyperparameters>,
-    entries: Vec<QuestionEntry>,
+    action_log_store: SqliteStore<usize, DirectTreeActionLog>,
+    entry_keys: Vec<usize>,
+    entry_cache: Vec<Option<QuestionEntry>>,
     mode: Mode,
     home_selected_index: usize,
     home_list_area: Option<Rect>,
@@ -328,13 +331,17 @@ struct App {
 impl App {
     fn new(
         model: LlmModelName,
-        entries: Vec<QuestionEntry>,
+        action_log_store: SqliteStore<usize, DirectTreeActionLog>,
+        entry_keys: Vec<usize>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> Self {
+        let entry_cache = vec![None; entry_keys.len()];
         Self {
             model,
             override_hyperparameters,
-            entries,
+            action_log_store,
+            entry_keys,
+            entry_cache,
             mode: Mode::Home,
             home_selected_index: 0,
             home_list_area: None,
@@ -352,6 +359,51 @@ impl App {
             conversation_max_scroll: 0,
             conversation_metrics: None,
         }
+    }
+
+    fn total_entries(&self) -> usize {
+        self.entry_keys.len()
+    }
+
+    fn ensure_entry_loaded(&mut self, index: usize) {
+        if index >= self.total_entries() || self.entry_cache[index].is_some() {
+            return;
+        }
+        let key = self.entry_keys[index];
+        let action_log = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                self.action_log_store
+                    .get(key)
+                    .await
+                    .unwrap()
+                    .expect("key from sqlite key set must exist")
+            })
+        });
+        let (num_correct, num_leaves, win_rate) = question_stats_from_action_log(self.model, &action_log);
+        self.entry_cache[index] = Some(QuestionEntry {
+            key,
+            action_log,
+            win_rate,
+            num_correct,
+            num_leaves,
+        });
+    }
+
+    fn ensure_visible_home_page_loaded(&mut self) {
+        if self.total_entries() == 0 {
+            return;
+        }
+        let page_start = (self.home_selected_index / QUESTIONS_PER_PAGE) * QUESTIONS_PER_PAGE;
+        let page_end = (page_start + QUESTIONS_PER_PAGE).min(self.total_entries());
+        for index in page_start..page_end {
+            self.ensure_entry_loaded(index);
+        }
+    }
+
+    fn loaded_entry(&self, index: usize) -> &QuestionEntry {
+        self.entry_cache[index]
+            .as_ref()
+            .expect("entry must be loaded before use")
     }
 
     fn draw(&mut self, frame: &mut ratatui::Frame<'_>) {
@@ -388,12 +440,12 @@ impl App {
             .split(frame.area());
         self.home_list_area = Some(chunks[1]);
 
-        let total_pages = if self.entries.is_empty() {
+        let total_pages = if self.total_entries() == 0 {
             1
         } else {
-            self.entries.len().div_ceil(QUESTIONS_PER_PAGE)
+            self.total_entries().div_ceil(QUESTIONS_PER_PAGE)
         };
-        let current_page = if self.entries.is_empty() {
+        let current_page = if self.total_entries() == 0 {
             1
         } else {
             self.home_selected_index / QUESTIONS_PER_PAGE + 1
@@ -401,19 +453,22 @@ impl App {
 
         let title = Paragraph::new(format!(
             "Questions and win rate (page {current_page}/{total_pages}, total {})",
-            self.entries.len()
+            self.total_entries()
         ))
         .block(Block::default().borders(Borders::ALL).title("Home"));
         frame.render_widget(title, chunks[0]);
 
-        if self.entries.is_empty() {
+        if self.total_entries() == 0 {
             let empty = Paragraph::new("No direct session logs found")
                 .block(Block::default().borders(Borders::ALL).title("Questions"));
             frame.render_widget(empty, chunks[1]);
         } else {
+            self.ensure_visible_home_page_loaded();
             let page_start = (self.home_selected_index / QUESTIONS_PER_PAGE) * QUESTIONS_PER_PAGE;
-            let page_end = (page_start + QUESTIONS_PER_PAGE).min(self.entries.len());
-            let page_entries = &self.entries[page_start..page_end];
+            let page_end = (page_start + QUESTIONS_PER_PAGE).min(self.total_entries());
+            let page_entries: Vec<&QuestionEntry> = (page_start..page_end)
+                .map(|index| self.loaded_entry(index))
+                .collect();
 
             let items: Vec<ListItem> = page_entries
                 .iter()
@@ -455,10 +510,15 @@ impl App {
     }
 
     fn draw_tree(&mut self, frame: &mut ratatui::Frame<'_>) {
+        let Some(entry_index) = self.tree_page.as_ref().map(|page| page.entry_index) else {
+            return;
+        };
+        self.ensure_entry_loaded(entry_index);
+        let entry = self.loaded_entry(entry_index).clone();
+
         let Some(tree_page) = self.tree_page.as_mut() else {
             return;
         };
-        let entry = &self.entries[tree_page.entry_index];
         let selected_segment = tree_page
             .snapshot
             .segments
@@ -672,9 +732,9 @@ impl App {
                 false
             }
             KeyCode::Down => {
-                if !self.entries.is_empty() {
+                if self.total_entries() > 0 {
                     self.home_selected_index =
-                        (self.home_selected_index + 1).min(self.entries.len() - 1);
+                        (self.home_selected_index + 1).min(self.total_entries() - 1);
                 }
                 false
             }
@@ -684,9 +744,10 @@ impl App {
                 false
             }
             KeyCode::Right => {
-                if !self.entries.is_empty() {
+                if self.total_entries() > 0 {
                     self.home_selected_index =
-                        (self.home_selected_index + QUESTIONS_PER_PAGE).min(self.entries.len() - 1);
+                        (self.home_selected_index + QUESTIONS_PER_PAGE)
+                            .min(self.total_entries() - 1);
                 }
                 false
             }
@@ -834,16 +895,17 @@ impl App {
     }
 
     fn handle_tree_mouse(&mut self, mouse: MouseEvent) {
-        let Some(tree_page) = self.tree_page.as_mut() else {
+        if self.tree_page.is_none() {
             return;
-        };
+        }
         if let Some(summary_area) = self.summary_area {
             if contains_point(summary_area, mouse.column, mouse.row) {
                 self.tree_focus = TreePaneFocus::Summary;
             } else if let Some(conversation_area) = self.conversation_area {
                 if contains_point(conversation_area, mouse.column, mouse.row) {
                     self.tree_focus = TreePaneFocus::Conversation;
-                } else if let Some(tree_area) = tree_page.tree_area {
+                } else if let Some(tree_area) = self.tree_page.as_ref().and_then(|page| page.tree_area)
+                {
                     if contains_point(tree_area, mouse.column, mouse.row) {
                         self.tree_focus = TreePaneFocus::Tree;
                     }
@@ -851,27 +913,42 @@ impl App {
             }
         }
 
-        let hovered = tree_segment_at_mouse(
-            tree_page,
-            mouse.column,
-            mouse.row,
-            self.tree_horizontal_scroll,
-        );
+        let hovered = {
+            let tree_page = self
+                .tree_page
+                .as_ref()
+                .expect("tree page must exist in tree mode");
+            tree_segment_at_mouse(tree_page, mouse.column, mouse.row, self.tree_horizontal_scroll)
+        };
         match mouse.kind {
             MouseEventKind::Moved => {
-                tree_page.hovered_segment_id = hovered;
+                if let Some(tree_page) = self.tree_page.as_mut() {
+                    tree_page.hovered_segment_id = hovered;
+                }
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                tree_page.hovered_segment_id = hovered;
-                if let Some(segment_id) = hovered {
-                    tree_page.selected_segment_id = segment_id;
+                if let Some(tree_page) = self.tree_page.as_mut() {
+                    tree_page.hovered_segment_id = hovered;
+                    if let Some(segment_id) = hovered {
+                        tree_page.selected_segment_id = segment_id;
+                    }
                 }
             }
             MouseEventKind::ScrollUp => match self.tree_focus {
                 TreePaneFocus::Summary => self.scroll_summary_up(1),
                 TreePaneFocus::Conversation => self.scroll_conversation_up(1),
                 TreePaneFocus::Tree => {
-                    let entry = &self.entries[tree_page.entry_index];
+                    let entry_index = self
+                        .tree_page
+                        .as_ref()
+                        .expect("tree page must exist in tree mode")
+                        .entry_index;
+                    self.ensure_entry_loaded(entry_index);
+                    let entry = self.loaded_entry(entry_index).clone();
+                    let tree_page = self
+                        .tree_page
+                        .as_mut()
+                        .expect("tree page must exist in tree mode");
                     match self.tree_scroll_mode {
                         TreeScrollMode::Scaling => {
                             let old_ratio = tree_page.width_division_ratio;
@@ -884,7 +961,7 @@ impl App {
                                 );
                                 tree_page.set_width_division_ratio(
                                     self.model,
-                                    entry,
+                                    &entry,
                                     new_ratio,
                                     self.override_hyperparameters,
                                 );
@@ -898,7 +975,7 @@ impl App {
                             let next = tree_page.action_limit.saturating_sub(1);
                             tree_page.set_action_limit(
                                 self.model,
-                                entry,
+                                &entry,
                                 next,
                                 self.override_hyperparameters,
                             );
@@ -914,7 +991,17 @@ impl App {
                     self.conversation_scroll = self.conversation_scroll.saturating_add(1)
                 }
                 TreePaneFocus::Tree => {
-                    let entry = &self.entries[tree_page.entry_index];
+                    let entry_index = self
+                        .tree_page
+                        .as_ref()
+                        .expect("tree page must exist in tree mode")
+                        .entry_index;
+                    self.ensure_entry_loaded(entry_index);
+                    let entry = self.loaded_entry(entry_index).clone();
+                    let tree_page = self
+                        .tree_page
+                        .as_mut()
+                        .expect("tree page must exist in tree mode");
                     match self.tree_scroll_mode {
                         TreeScrollMode::Scaling => {
                             let old_ratio = tree_page.width_division_ratio;
@@ -926,7 +1013,7 @@ impl App {
                             );
                             tree_page.set_width_division_ratio(
                                 self.model,
-                                entry,
+                                &entry,
                                 new_ratio,
                                 self.override_hyperparameters,
                             );
@@ -939,7 +1026,7 @@ impl App {
                             let next = (tree_page.action_limit + 1).min(tree_page.total_actions);
                             tree_page.set_action_limit(
                                 self.model,
-                                entry,
+                                &entry,
                                 next,
                                 self.override_hyperparameters,
                             );
@@ -952,14 +1039,15 @@ impl App {
     }
 
     fn open_selected_home_entry(&mut self) {
-        if self.entries.is_empty() {
+        if self.total_entries() == 0 {
             return;
         }
-        let entry = &self.entries[self.home_selected_index];
+        self.ensure_entry_loaded(self.home_selected_index);
+        let entry = self.loaded_entry(self.home_selected_index).clone();
         self.tree_page = Some(TreePage::new(
             self.model,
             self.home_selected_index,
-            entry,
+            &entry,
             self.override_hyperparameters,
         ));
         self.mode = Mode::Tree;
@@ -1003,7 +1091,7 @@ impl App {
         }
         let local_row = (row - area.y - 1) as usize;
         let page_start = (self.home_selected_index / QUESTIONS_PER_PAGE) * QUESTIONS_PER_PAGE;
-        let page_end = (page_start + QUESTIONS_PER_PAGE).min(self.entries.len());
+        let page_end = (page_start + QUESTIONS_PER_PAGE).min(self.total_entries());
         let count = page_end.saturating_sub(page_start);
         if local_row < count {
             Some(page_start + local_row)
@@ -2084,30 +2172,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut keys = action_log_store.get_keys().await.unwrap();
     keys.sort();
 
-    let mut entries = Vec::with_capacity(keys.len());
-    for key in keys {
-        let action_log = action_log_store
-            .get(key)
-            .await
-            .unwrap()
-            .expect("key from sqlite key set must exist");
-        let (num_correct, num_leaves, win_rate) =
-            question_stats_from_action_log(model, &action_log);
-        entries.push(QuestionEntry {
-            key,
-            action_log,
-            win_rate,
-            num_correct,
-            num_leaves,
-        });
-    }
-
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let app = App::new(model, entries, override_hyperparameters);
+    let app = App::new(model, action_log_store, keys, override_hyperparameters);
     let result = run_app(&mut terminal, app);
     disable_raw_mode()?;
     execute!(
