@@ -45,9 +45,7 @@ pub struct DirectTree<M: LlmModelMarker> {
 // pub const NUM_TRUNKS: usize = 4;
 
 impl<M: LlmModelMarker> DirectTree<M> {
-    pub fn from_action_log(
-        action_log: &DirectTreeActionLog,
-    ) -> Self {
+    pub fn from_action_log(action_log: &DirectTreeActionLog) -> Self {
         let mut tree = Self {
             question: action_log.question.clone(),
             rollout_config: action_log.rollout_config.clone(),

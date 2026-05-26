@@ -65,7 +65,11 @@ impl LlmCallable<Qwen35_4B> for Qwen35_4BLlmCallable {
     ) -> TokenArrayWithLogprob {
         let output = self
             .shared
-            .generate_tokens_with_logprobs_from_tokens(prompt_or_tokens, passes_in_stop, temperature)
+            .generate_tokens_with_logprobs_from_tokens(
+                prompt_or_tokens,
+                passes_in_stop,
+                temperature,
+            )
             .await;
         trim_tail_eos_if_needed::<Qwen35_4B>(output, trim_eos)
     }

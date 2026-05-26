@@ -574,7 +574,8 @@ fn parse_sglang_response_with_logprobs(
             )
         });
 
-    let generated_tokens = parse_sglang_output_token_ids_from_token_logprobs(token_logprobs, backend_label);
+    let generated_tokens =
+        parse_sglang_output_token_ids_from_token_logprobs(token_logprobs, backend_label);
     assert!(
         top_logprobs.len() == generated_tokens.len(),
         "Qwen SGLang output_top_logprobs length mismatch on {}: output_top_logprobs={} generated_tokens={} generated_token_ids={:?}",

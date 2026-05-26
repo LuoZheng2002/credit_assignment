@@ -102,7 +102,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
             let segment = self
                 .segments
                 .get(&segment_id)
-                .expect("Parent segment id must exist in segments");            
+                .expect("Parent segment id must exist in segments");
             current_segment_id = segment.parent_id;
         }
         segments.reverse(); // reverse only the order of segments, but keep the content order within each segment
@@ -117,7 +117,10 @@ impl<M: LlmModelMarker> DirectTree<M> {
         let mut contents = segment_ids
             .into_iter()
             .map(|id| {
-                let segment = self.segments.get(&id).expect("Segment id must exist in segments");
+                let segment = self
+                    .segments
+                    .get(&id)
+                    .expect("Segment id must exist in segments");
                 segment.content.clone()
             })
             .flatten()

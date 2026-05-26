@@ -2,13 +2,14 @@ use std::{backtrace::Backtrace, sync::Arc};
 
 use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
+    check_python::check_sympy_availability,
     direct_tool::{
         direct_rollout::direct_rollout_all_with_config,
         direct_rollout_config::DirectRolloutConfig,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
-    llm_model::{Gpt4o, Gpt5Mini, LlmCliArgs, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B}, check_python::check_sympy_availability,
+    llm_model::{Gpt4o, Gpt5Mini, LlmCliArgs, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B},
 };
 use pyo3::Python;
 use reqwest::Client;
@@ -41,7 +42,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() {    
+async fn main() {
     std::panic::set_hook(Box::new(|info| {
         eprintln!("panic occurred: {}", info);
         let rust_backtrace = std::env::var("RUST_BACKTRACE").ok();

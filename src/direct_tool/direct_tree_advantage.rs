@@ -1,9 +1,13 @@
 use std::collections::BTreeMap;
 
-use crate::{direct_tool::{
-    direct_tree::{DirectTree, SegmentId}, direct_tree_posterior::Posterior,
-    posterior_calculation_config::PosteriorHyperparameters,
-}, llm_model::LlmModelMarker};
+use crate::{
+    direct_tool::{
+        direct_tree::{DirectTree, SegmentId},
+        direct_tree_posterior::Posterior,
+        posterior_calculation_config::PosteriorHyperparameters,
+    },
+    llm_model::LlmModelMarker,
+};
 
 impl<M: LlmModelMarker> DirectTree<M> {
     pub fn calculate_segment_advantages(

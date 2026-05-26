@@ -149,12 +149,10 @@ impl<M: LlmModelMarker> DirectTree<M> {
             hyperparameters.prior_clip_delta.into_inner(),
             1.0 - hyperparameters.prior_clip_delta.into_inner(),
         );
-        let prior_mean = hyperparameters.prior_scale.into_inner() * standard_normal_inverse_cdf(clipped);
+        let prior_mean =
+            hyperparameters.prior_scale.into_inner() * standard_normal_inverse_cdf(clipped);
 
-        segment_ids
-            .iter()
-            .map(|_| prior_mean)
-            .collect()
+        segment_ids.iter().map(|_| prior_mean).collect()
     }
 
     fn optimize_posteriors(

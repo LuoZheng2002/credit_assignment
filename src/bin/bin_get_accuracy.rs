@@ -1,9 +1,17 @@
 use std::backtrace::Backtrace;
 
 use clap::{Parser, ValueEnum};
-use credit_assignment::{direct_tool::{direct_rollout_config::DirectRolloutConfig, direct_tree::DirectTree, direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog}, posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters}}, json_line_util::read_json, llm_model::{Gpt4o, Gpt5Mini, LlmModelMarker, LlmModelName, Qwen3, Qwen25, Qwen35}};
+use credit_assignment::{
+    direct_tool::{
+        direct_rollout_config::DirectRolloutConfig,
+        direct_tree::DirectTree,
+        direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
+        posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+    },
+    json_line_util::read_json,
+    llm_model::{Gpt4o, Gpt5Mini, LlmModelMarker, LlmModelName, Qwen3, Qwen25, Qwen35},
+};
 use research_utility::asset_file::AssetFile;
-
 
 #[derive(Parser, Debug)]
 #[command(
@@ -24,13 +32,16 @@ struct Args {
 
 pub fn question_is_correct<M: LlmModelMarker>(action_log: &DirectTreeActionLog) -> bool {
     let tree = DirectTree::<M>::from_action_log(action_log);
-    assert!(tree.leaf_segment_judgments.len() == 1, "There should be exactly one leaf segment judgment for accuracy calculation");
+    assert!(
+        tree.leaf_segment_judgments.len() == 1,
+        "There should be exactly one leaf segment judgment for accuracy calculation"
+    );
     let judgment = tree.leaf_segment_judgments.values().next().unwrap();
     judgment.is_correct
 }
 
 #[tokio::main]
-async fn main(){
+async fn main() {
     std::panic::set_hook(Box::new(|info| {
         eprintln!("panic occurred: {}", info);
         let rust_backtrace = std::env::var("RUST_BACKTRACE").ok();

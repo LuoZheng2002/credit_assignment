@@ -27,11 +27,10 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     let mut keys = action_log_store.get_keys().await.unwrap();
     keys.sort(); // ensure deterministic order
     // we need a min heap to collect the top n trajectories with the highest average segment advantage across all action logs, where n is the number of trajectories we want to train on in total.
-    
+
     for key in keys {
         let action_log = action_log_store.get(key).await.unwrap().unwrap();
         let candidat_trajectories = action_log_to_candidate_trajectories::<M>(action_log);
-        
     }
 
     todo!()
@@ -117,6 +116,7 @@ pub struct AssetFileTrainingTrajectories<M: LlmModelMarker> {
     pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub max_num_training_trajectories: usize,
     pub _phantom: std::marker::PhantomData<M>,
 }
 
@@ -126,6 +126,7 @@ pub struct AssetFileTrainingTrajectoriesTracking {
     pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub max_num_training_trajectories: usize,
 }
 
 impl<M: LlmModelMarker> AssetFileTrainingTrajectories<M> {
@@ -182,6 +183,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             config_nickname: self.config_nickname.clone(),
             rollout_config: self.rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
+            max_num_training_trajectories: self.max_num_training_trajectories,
         };
         let stale = if let Ok(tracking_content) =
             read_json::<AssetFileTrainingTrajectoriesTracking>(self.version_tracking_path())
@@ -200,8 +202,11 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
                 SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(self.file_path())
                     .await;
             let rollout_logs = asset_file_rollout_logs.fetch().await;
-            let training_trajectories =
-                rollout_logs_to_training_trajectories::<M>(rollout_logs).await;
+            let training_trajectories = rollout_logs_to_training_trajectories::<M>(
+                rollout_logs,
+                self.max_num_training_trajectories,
+            )
+            .await;
             for (i, trajectory) in training_trajectories.into_iter().enumerate() {
                 db.upsert(i, &trajectory).await.unwrap();
             }

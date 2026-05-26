@@ -1,9 +1,11 @@
 pub mod direct_rollout;
 pub mod direct_rollout_config;
+pub mod direct_training_set;
 pub mod direct_trajectory;
 pub mod direct_tree;
 pub mod direct_tree_action;
 pub mod direct_tree_action_log;
+pub mod direct_tree_advantage;
 pub mod direct_tree_apply_action;
 pub mod direct_tree_experiment;
 pub mod direct_tree_posterior;
@@ -14,5 +16,3 @@ pub mod posterior_calculation_config;
 pub mod posterior_schema;
 pub mod prompt;
 pub mod test_set_entry;
-pub mod direct_training_set;
-pub mod direct_tree_advantage;
