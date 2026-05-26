@@ -419,7 +419,15 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
         let stale = if let Ok(tracking_content) =
             read_json::<AssetFileTrainingTrajectoriesTracking>(self.version_tracking_path())
         {
-            tracking_content != new_tracking_content
+            let mut is_stale = false;
+            if tracking_content != new_tracking_content {
+                is_stale = true;
+            }
+            // check if file exists
+            if !std::path::Path::new(&self.file_path()).exists() {
+                is_stale = true;
+            }
+            is_stale
         } else {
             true
         };
