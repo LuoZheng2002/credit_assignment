@@ -8,7 +8,7 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
-    llm_model::{Gpt4o, Gpt5Mini, LlmCliArgs, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B}, print_python_path::print_python_path,
+    llm_model::{Gpt4o, Gpt5Mini, LlmCliArgs, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B}, check_python::check_sympy_availability,
 };
 use pyo3::Python;
 use reqwest::Client;
@@ -61,13 +61,8 @@ async fn main() {
         first_n_samples,
     } = Args::parse();
     Python::initialize();
-    let python_path = print_python_path().unwrap();
-    println!("{}", python_path);
-    assert!(
-        python_path.contains(".venv"),
-        "Python path does not contain .venv, found: {}",
-        python_path
-    );
+    check_sympy_availability().unwrap();
+
     println!("Starting direct rollout evaluation pipeline...");
     let client = Client::new();
     let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();

@@ -4,7 +4,7 @@ pub mod direct_tool;
 pub mod em;
 pub mod json_line_util;
 pub mod llm_model;
-pub mod print_python_path;
+pub mod check_python;
 pub mod status_prompts;
 pub mod token_array;
 pub mod training_set;
