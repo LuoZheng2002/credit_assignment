@@ -166,6 +166,9 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
     action_log: DirectTreeActionLog,
 ) -> Vec<DirectTrainingTrajectory<M>> {
     let tree = DirectTree::<M>::from_action_log(&action_log);
+    let root_segment_id = tree
+        .root_segment_id
+        .expect("DirectTree must have root_segment_id");
     let mut segment_advantages = tree.calculate_segment_advantages(None);
     for segment_id in tree.segments.keys().copied() {
         segment_advantages.entry(segment_id).or_insert(0.0);
@@ -177,11 +180,16 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
         let mut leaf_to_average_advantage = BTreeMap::new();
         for leaf in leaf_segment_ids.iter() {
             let segment_ids = tree.get_trajectory_segments_till_id(*leaf);
+            let non_root_segment_count = segment_ids
+                .iter()
+                .filter(|&&id| id != root_segment_id)
+                .count();
             let average_advantage = segment_ids
                 .iter()
+                .filter(|&&id| id != root_segment_id)
                 .map(|id| segment_advantages.get(id).unwrap())
                 .sum::<f32>()
-                / segment_ids.len() as f32;
+                / non_root_segment_count.max(1) as f32;
             leaf_to_average_advantage.insert(*leaf, average_advantage);
         }
         let (best_leaf, best_average_advantage) = leaf_to_average_advantage
@@ -193,10 +201,14 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
         let mut labels: Vec<i32> = Vec::new();
         let mut advantages: Vec<f32> = Vec::new();
         let mut sum_advantage = 0.0;
+        let mut non_root_segment_count = 0usize;
         for segment_id in segment_ids.iter() {
             let segment = tree.segments.get(segment_id).unwrap();
             let segment_advantage = segment_advantages.get_mut(segment_id).unwrap();
-            sum_advantage += *segment_advantage;
+            if *segment_id != root_segment_id {
+                sum_advantage += *segment_advantage;
+                non_root_segment_count += 1;
+            }
             for content in segment.content.iter() {
                 match content {
                     SegmentContent::Prompt(token_array)
@@ -214,7 +226,7 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
             }
             *segment_advantage = 0.0; // we set the advantage of the taken segments to 0
         }
-        let average_advantage = sum_advantage / segment_ids.len() as f32;
+        let average_advantage = sum_advantage / non_root_segment_count.max(1) as f32;
         assert_eq!(average_advantage, best_average_advantage);
         trajectories.push(DirectTrainingTrajectory {
             question: tree.question.clone(),
