@@ -39,11 +39,6 @@ pub struct DirectTree<M: LlmModelMarker> {
     pub focused_parent_segment_id: Option<SegmentId>, // the segment after which we create a new branch and rollout until finding the answer
     pub new_branch_start_token: Option<i32>, // the token id for the next branching point, which is determined when we create a branch and will be used in the rollout after branching to determine when to stop and judge the trajectory
     pub completed: bool,
-    // hyperparameters
-    // pub max_num_trunks: usize,
-    // pub max_num_total_trajectories: usize,
-    // pub use_tool: bool,
-    // #[serde(skip)]
     _phantom: std::marker::PhantomData<M>, // for tokenizer utility
 }
 
@@ -52,8 +47,6 @@ pub struct DirectTree<M: LlmModelMarker> {
 impl<M: LlmModelMarker> DirectTree<M> {
     pub fn from_action_log(
         action_log: &DirectTreeActionLog,
-        // max_num_total_trajectories: usize,
-        // use_tool: bool,
     ) -> Self {
         let mut tree = Self {
             question: action_log.question.clone(),
@@ -71,9 +64,6 @@ impl<M: LlmModelMarker> DirectTree<M> {
             focused_parent_segment_id: None,
             new_branch_start_token: None,
             completed: false,
-            // max_num_trunks: NUM_TRUNKS, // default value, will not affect the tree structure
-            // max_num_total_trajectories,
-            // use_tool,
             _phantom: std::marker::PhantomData::<M>,
         };
         // we push the prompt segment to the tree before applying any action
