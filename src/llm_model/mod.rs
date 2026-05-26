@@ -86,27 +86,28 @@ pub(crate) fn trim_tail_eos_if_needed<M: LlmModelMarker>(
     }
 
     let eos_token_id = <M::Tokenizer as MyTokenizer<M>>::eos_token_id();
-    let last_token_id = *output
-        .tokens
-        .last()
-        .expect("trim_eos=true requires at least one generated token");
-    assert!(
-        last_token_id == eos_token_id,
-        "trim_eos=true requires the generated tail token to be EOS; got tail token id {} while EOS token id is {}",
-        last_token_id,
-        eos_token_id,
-    );
+    let Some(&last_token_id) = output.tokens.last() else {
+        return output;
+    };
+
+    if last_token_id == eos_token_id {
+        assert!(
+            output.tokens[..output.tokens.len() - 1]
+                .iter()
+                .all(|&token_id| token_id != eos_token_id),
+            "trim_eos=true requires non-tail generated tokens to all be non-EOS",
+        );
+
+        output.tokens.pop();
+        output.logprobs.pop();
+        output.decoded_string = <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(&output.tokens);
+        return output;
+    }
 
     assert!(
-        output.tokens[..output.tokens.len() - 1]
-            .iter()
-            .all(|&token_id| token_id != eos_token_id),
-        "trim_eos=true requires non-tail generated tokens to all be non-EOS",
+        output.tokens.iter().all(|&token_id| token_id != eos_token_id),
+        "trim_eos=true requires EOS to appear only as an optional tail token",
     );
-
-    output.tokens.pop();
-    output.logprobs.pop();
-    output.decoded_string = <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(&output.tokens);
     output
 }
 
