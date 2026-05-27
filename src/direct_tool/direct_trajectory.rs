@@ -1,8 +1,12 @@
-use std::marker::PhantomData;
 use serde::{Deserialize, Serialize};
+use std::marker::PhantomData;
 
 use crate::{
-    direct_tool::direct_tree::{DirectTree, SegmentContent, SegmentId}, llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob}, token_array::TokenArray, tool_call_python::extract_python_tool_call, util::extract_boxed_content
+    direct_tool::direct_tree::{DirectTree, SegmentContent, SegmentId},
+    llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob},
+    token_array::TokenArray,
+    tool_call_python::extract_python_tool_call,
+    util::extract_boxed_content,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,8 +23,6 @@ impl FinalAnswer {
         }
     }
 }
-
-
 
 pub struct DirectTrajectory<M: LlmModelMarker> {
     pub trajectory_contents: Vec<TrajectoryContent>,
@@ -129,6 +131,18 @@ impl<M: LlmModelMarker> DirectTree<M> {
         }
         segments.reverse(); // reverse only the order of segments, but keep the content order within each segment
         segments
+    }
+    pub fn get_trajectory_length_till_id(&self, segment_id: SegmentId) -> usize {
+        let segment_ids = self.get_trajectory_segments_till_id(segment_id);
+        let mut total_length = 0;
+        for id in segment_ids {
+            let segment = self
+                .segments
+                .get(&id)
+                .expect("Segment id must exist in segments");
+            total_length += segment.token_length();
+        }
+        total_length
     }
     pub fn get_trajectory(
         &self,

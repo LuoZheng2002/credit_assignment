@@ -3,19 +3,20 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Stdout};
+use std::marker::PhantomData;
 
 use clap::Parser;
 use credit_assignment::judge_correctness::CorrectnessJudgment;
 use credit_assignment::{
     direct_tool::{
         direct_rollout_config::DirectRolloutConfig,
-        direct_tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
+        direct_tree::{ContentIndex, DirectTree, SegmentContent, SegmentId},
         direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
         direct_tree_to_actions::TokenBranchingScore,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
-    llm_model::{Gpt4o, Gpt5Mini, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B},
+    llm_model::{Gpt4o, Gpt5Mini, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B},
 };
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseButton,
@@ -77,70 +78,11 @@ struct QuestionEntry {
     num_leaves: usize,
 }
 
-#[derive(Clone)]
-struct TreeSnapshot {
-    segments: BTreeMap<SegmentId, Segment>,
-    root_segment_id: SegmentId,
-    leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
-    segment_advantages: BTreeMap<SegmentId, f32>,
-    segment_posterior_stats: BTreeMap<SegmentId, SegmentPosteriorStats>,
-    segment_posterior_signal_scaled: BTreeMap<SegmentId, f32>,
-    segment_posterior_mean_scaled: BTreeMap<SegmentId, f32>,
-    segment_posterior_std_scaled: BTreeMap<SegmentId, f32>,
-    segment_branching_score_display: BTreeMap<SegmentId, Vec<Option<f32>>>,
-    segment_display_widths: BTreeMap<SegmentId, usize>,
-}
-
 #[derive(Clone, Copy)]
 struct SegmentPosteriorStats {
     posterior_mean: f32,
     posterior_std: f32,
     signal_to_noise: f32,
-}
-
-impl TreeSnapshot {
-    fn from_tree<M: credit_assignment::llm_model::LlmModelMarker>(
-        tree: DirectTree<M>,
-        width_division_ratio: Option<usize>,
-        override_hyperparameters: Option<PosteriorHyperparameters>,
-    ) -> Self {
-        let segment_display_widths = segment_display_widths(&tree, width_division_ratio);
-        let mut segment_advantages = tree.calculate_segment_advantages(override_hyperparameters);
-        for segment_id in tree.segments.keys().copied() {
-            segment_advantages.entry(segment_id).or_insert(0.0);
-        }
-        let segment_posterior_stats = segment_posterior_stats(&tree, override_hyperparameters);
-        let segment_posterior_signal_scaled =
-            scaled_segment_posterior_signal(&tree, &segment_posterior_stats);
-        let segment_posterior_mean_scaled =
-            scaled_segment_posterior_mean(&tree, &segment_posterior_stats);
-        let segment_posterior_std_scaled =
-            scaled_segment_posterior_std(&tree, &segment_posterior_stats);
-        let effective_width_division_ratio = width_division_ratio
-            .unwrap_or_else(|| width_division_ratio_for_tree(&tree))
-            .max(1);
-        let segment_branching_score_display = segment_branching_score_display(
-            &tree,
-            effective_width_division_ratio,
-            &segment_display_widths,
-            override_hyperparameters,
-        );
-        let root_segment_id = tree
-            .root_segment_id
-            .expect("Direct tree browser requires root segment");
-        Self {
-            segments: tree.segments,
-            root_segment_id,
-            leaf_segment_judgments: tree.leaf_segment_judgments,
-            segment_advantages,
-            segment_posterior_stats,
-            segment_posterior_signal_scaled,
-            segment_posterior_mean_scaled,
-            segment_posterior_std_scaled,
-            segment_branching_score_display,
-            segment_display_widths,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,12 +98,20 @@ enum TreePaneFocus {
     Tree,
 }
 
-struct TreePage {
+struct TreePage<M: LlmModelMarker> {
     entry_index: usize,
     total_actions: usize,
     action_limit: usize,
     width_division_ratio: usize,
-    snapshot: TreeSnapshot,
+    tree: DirectTree<M>,
+    root_segment_id: SegmentId,
+    segment_advantages: BTreeMap<SegmentId, f32>,
+    segment_posterior_stats: BTreeMap<SegmentId, SegmentPosteriorStats>,
+    segment_posterior_signal_scaled: BTreeMap<SegmentId, f32>,
+    segment_posterior_mean_scaled: BTreeMap<SegmentId, f32>,
+    segment_posterior_std_scaled: BTreeMap<SegmentId, f32>,
+    segment_branching_score_display: BTreeMap<SegmentId, Vec<Option<f32>>>,
+    segment_display_widths: BTreeMap<SegmentId, usize>,
     selected_segment_id: SegmentId,
     tree_lines: Vec<String>,
     rendered_segments: Vec<TreeRenderedSegment>,
@@ -220,34 +170,53 @@ struct ConversationRender {
     styled: Text<'static>,
 }
 
-impl TreePage {
+struct TreePageState<M: LlmModelMarker> {
+    tree: DirectTree<M>,
+    root_segment_id: SegmentId,
+    segment_advantages: BTreeMap<SegmentId, f32>,
+    segment_posterior_stats: BTreeMap<SegmentId, SegmentPosteriorStats>,
+    segment_posterior_signal_scaled: BTreeMap<SegmentId, f32>,
+    segment_posterior_mean_scaled: BTreeMap<SegmentId, f32>,
+    segment_posterior_std_scaled: BTreeMap<SegmentId, f32>,
+    segment_branching_score_display: BTreeMap<SegmentId, Vec<Option<f32>>>,
+    segment_display_widths: BTreeMap<SegmentId, usize>,
+    tree_lines: Vec<String>,
+    rendered_segments: Vec<TreeRenderedSegment>,
+}
+
+impl<M: LlmModelMarker> TreePage<M> {
     fn new(
-        model: LlmModelName,
         entry_index: usize,
         entry: &QuestionEntry,
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> Self {
         let total_actions = entry.action_log.actions.len();
         let action_limit = total_actions;
-        let width_division_ratio = width_division_ratio_for_model(model, &entry.action_log);
-        let snapshot = snapshot_for_model(
-            model,
+        let width_division_ratio = width_division_ratio_for_action_log::<M>(&entry.action_log);
+        let state = tree_page_state_from_action_log::<M>(
             &entry.action_log,
             action_limit,
-            Some(width_division_ratio),
+            width_division_ratio,
             override_hyperparameters,
         );
-        let selected_segment_id = snapshot.root_segment_id;
-        let (tree_lines, rendered_segments) = build_segment_graph_lines(&snapshot);
+        let selected_segment_id = state.root_segment_id;
         Self {
             entry_index,
             total_actions,
             action_limit,
             width_division_ratio,
-            snapshot,
+            tree: state.tree,
+            root_segment_id: state.root_segment_id,
+            segment_advantages: state.segment_advantages,
+            segment_posterior_stats: state.segment_posterior_stats,
+            segment_posterior_signal_scaled: state.segment_posterior_signal_scaled,
+            segment_posterior_mean_scaled: state.segment_posterior_mean_scaled,
+            segment_posterior_std_scaled: state.segment_posterior_std_scaled,
+            segment_branching_score_display: state.segment_branching_score_display,
+            segment_display_widths: state.segment_display_widths,
             selected_segment_id,
-            tree_lines,
-            rendered_segments,
+            tree_lines: state.tree_lines,
+            rendered_segments: state.rendered_segments,
             hovered_segment_id: None,
             tree_area: None,
         }
@@ -255,30 +224,32 @@ impl TreePage {
 
     fn rebuild_snapshot(
         &mut self,
-        model: LlmModelName,
         entry: &QuestionEntry,
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) {
-        self.snapshot = snapshot_for_model(
-            model,
+        let state = tree_page_state_from_action_log::<M>(
             &entry.action_log,
             self.action_limit,
-            Some(self.width_division_ratio),
+            self.width_division_ratio,
             override_hyperparameters,
         );
-        let (tree_lines, rendered_segments) = build_segment_graph_lines(&self.snapshot);
-        self.tree_lines = tree_lines;
-        self.rendered_segments = rendered_segments;
-        if !self
-            .snapshot
-            .segments
-            .contains_key(&self.selected_segment_id)
-        {
-            self.selected_segment_id = self.snapshot.root_segment_id;
+        self.tree = state.tree;
+        self.root_segment_id = state.root_segment_id;
+        self.segment_advantages = state.segment_advantages;
+        self.segment_posterior_stats = state.segment_posterior_stats;
+        self.segment_posterior_signal_scaled = state.segment_posterior_signal_scaled;
+        self.segment_posterior_mean_scaled = state.segment_posterior_mean_scaled;
+        self.segment_posterior_std_scaled = state.segment_posterior_std_scaled;
+        self.segment_branching_score_display = state.segment_branching_score_display;
+        self.segment_display_widths = state.segment_display_widths;
+        self.tree_lines = state.tree_lines;
+        self.rendered_segments = state.rendered_segments;
+        if !self.tree.segments.contains_key(&self.selected_segment_id) {
+            self.selected_segment_id = self.root_segment_id;
         }
         if self
             .hovered_segment_id
-            .is_some_and(|id| !self.snapshot.segments.contains_key(&id))
+            .is_some_and(|id| !self.tree.segments.contains_key(&id))
         {
             self.hovered_segment_id = None;
         }
@@ -286,7 +257,6 @@ impl TreePage {
 
     fn set_action_limit(
         &mut self,
-        model: LlmModelName,
         entry: &QuestionEntry,
         new_limit: usize,
         override_hyperparameters: Option<PosteriorHyperparameters>,
@@ -295,12 +265,11 @@ impl TreePage {
             return;
         }
         self.action_limit = new_limit;
-        self.rebuild_snapshot(model, entry, override_hyperparameters);
+        self.rebuild_snapshot(entry, override_hyperparameters);
     }
 
     fn set_width_division_ratio(
         &mut self,
-        model: LlmModelName,
         entry: &QuestionEntry,
         new_ratio: usize,
         override_hyperparameters: Option<PosteriorHyperparameters>,
@@ -309,12 +278,56 @@ impl TreePage {
             return;
         }
         self.width_division_ratio = new_ratio.max(1);
-        self.rebuild_snapshot(model, entry, override_hyperparameters);
+        self.rebuild_snapshot(entry, override_hyperparameters);
     }
 }
 
-struct App {
-    model: LlmModelName,
+fn tree_page_state_from_action_log<M: LlmModelMarker>(
+    action_log: &DirectTreeActionLog,
+    action_limit: usize,
+    width_division_ratio: usize,
+    override_hyperparameters: Option<PosteriorHyperparameters>,
+) -> TreePageState<M> {
+    let tree = tree_from_action_log_with_limit::<M>(action_log, action_limit);
+    let root_segment_id = tree_root_segment_id(&tree);
+    let segment_display_widths = segment_display_widths(&tree, Some(width_division_ratio));
+    let segment_advantages = segment_advantages(&tree, override_hyperparameters);
+    let segment_posterior_stats = segment_posterior_stats(&tree, override_hyperparameters);
+    let segment_posterior_signal_scaled =
+        scaled_segment_posterior_signal(&tree, &segment_posterior_stats);
+    let segment_posterior_mean_scaled =
+        scaled_segment_posterior_mean(&tree, &segment_posterior_stats);
+    let segment_posterior_std_scaled =
+        scaled_segment_posterior_std(&tree, &segment_posterior_stats);
+    let segment_branching_score_display = segment_branching_score_display(
+        &tree,
+        width_division_ratio,
+        &segment_display_widths,
+        override_hyperparameters,
+    );
+    let (tree_lines, rendered_segments) = build_segment_graph_lines(
+        &tree,
+        root_segment_id,
+        &tree.leaf_segment_judgments,
+        &segment_display_widths,
+    );
+    TreePageState {
+        tree,
+        root_segment_id,
+        segment_advantages,
+        segment_posterior_stats,
+        segment_posterior_signal_scaled,
+        segment_posterior_mean_scaled,
+        segment_posterior_std_scaled,
+        segment_branching_score_display,
+        segment_display_widths,
+        tree_lines,
+        rendered_segments,
+    }
+}
+
+struct App<M: LlmModelMarker> {
+    _model_marker: PhantomData<M>,
     override_hyperparameters: Option<PosteriorHyperparameters>,
     action_log_store: SqliteStore<usize, DirectTreeActionLog>,
     entry_keys: Vec<usize>,
@@ -324,7 +337,7 @@ struct App {
     home_list_area: Option<Rect>,
     summary_area: Option<Rect>,
     conversation_area: Option<Rect>,
-    tree_page: Option<TreePage>,
+    tree_page: Option<TreePage<M>>,
     tree_focus: TreePaneFocus,
     tree_scroll_mode: TreeScrollMode,
     tree_color_mode: TreeColorMode,
@@ -337,16 +350,15 @@ struct App {
     conversation_metrics: Option<PaneMetrics>,
 }
 
-impl App {
+impl<M: LlmModelMarker> App<M> {
     fn new(
-        model: LlmModelName,
         action_log_store: SqliteStore<usize, DirectTreeActionLog>,
         entry_keys: Vec<usize>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> Self {
         let entry_cache = vec![None; entry_keys.len()];
         Self {
-            model,
+            _model_marker: PhantomData,
             override_hyperparameters,
             action_log_store,
             entry_keys,
@@ -388,8 +400,7 @@ impl App {
                     .expect("key from sqlite key set must exist")
             })
         });
-        let (num_correct, num_leaves, win_rate) =
-            question_stats_from_action_log(self.model, &action_log);
+        let (num_correct, num_leaves, win_rate) = question_stats_from_action_log::<M>(&action_log);
         self.entry_cache[index] = Some(QuestionEntry {
             key,
             action_log,
@@ -530,7 +541,7 @@ impl App {
             return;
         };
         let selected_segment = tree_page
-            .snapshot
+            .tree
             .segments
             .get(&tree_page.selected_segment_id)
             .expect("selected segment must exist");
@@ -552,11 +563,10 @@ impl App {
             .split(frame.area());
 
         let judgment = tree_page
-            .snapshot
+            .tree
             .leaf_segment_judgments
             .get(&tree_page.selected_segment_id);
         let posterior_stats = tree_page
-            .snapshot
             .segment_posterior_stats
             .get(&tree_page.selected_segment_id)
             .copied();
@@ -571,7 +581,6 @@ impl App {
             .map(|stats| format!("{:.6}", stats.signal_to_noise))
             .unwrap_or_else(|| "N/A".to_string());
         let selected_advantage = tree_page
-            .snapshot
             .segment_advantages
             .get(&tree_page.selected_segment_id)
             .copied()
@@ -594,7 +603,7 @@ impl App {
         match self.tree_color_mode {
             TreeColorMode::SignalToNoise => {
                 if let Some((min_value, max_value)) =
-                    posterior_stat_min_max(&tree_page.snapshot.segment_posterior_stats, |stats| {
+                    posterior_stat_min_max(&tree_page.segment_posterior_stats, |stats| {
                         stats.signal_to_noise
                     })
                 {
@@ -606,7 +615,7 @@ impl App {
             }
             TreeColorMode::PosteriorMean => {
                 if let Some((min_value, max_value)) =
-                    posterior_stat_min_max(&tree_page.snapshot.segment_posterior_stats, |stats| {
+                    posterior_stat_min_max(&tree_page.segment_posterior_stats, |stats| {
                         stats.posterior_mean
                     })
                 {
@@ -618,7 +627,7 @@ impl App {
             }
             TreeColorMode::PosteriorStd => {
                 if let Some((min_value, max_value)) =
-                    posterior_stat_min_max(&tree_page.snapshot.segment_posterior_stats, |stats| {
+                    posterior_stat_min_max(&tree_page.segment_posterior_stats, |stats| {
                         stats.posterior_std
                     })
                 {
@@ -670,8 +679,11 @@ impl App {
             chunks[0],
         );
 
-        let conversation_render =
-            build_conversation_render(&tree_page.snapshot, tree_page.selected_segment_id);
+        let conversation_render = build_conversation_render(
+            &tree_page.tree,
+            &tree_page.segment_posterior_signal_scaled,
+            tree_page.selected_segment_id,
+        );
         self.conversation_area = Some(chunks[1]);
         let conversation_block = Block::default()
             .borders(Borders::ALL)
@@ -985,7 +997,6 @@ impl App {
                                     new_ratio,
                                 );
                                 tree_page.set_width_division_ratio(
-                                    self.model,
                                     &entry,
                                     new_ratio,
                                     self.override_hyperparameters,
@@ -999,7 +1010,6 @@ impl App {
                         TreeScrollMode::Evolution => {
                             let next = tree_page.action_limit.saturating_sub(1);
                             tree_page.set_action_limit(
-                                self.model,
                                 &entry,
                                 next,
                                 self.override_hyperparameters,
@@ -1035,7 +1045,6 @@ impl App {
                                 new_ratio,
                             );
                             tree_page.set_width_division_ratio(
-                                self.model,
                                 &entry,
                                 new_ratio,
                                 self.override_hyperparameters,
@@ -1048,7 +1057,6 @@ impl App {
                         TreeScrollMode::Evolution => {
                             let next = (tree_page.action_limit + 1).min(tree_page.total_actions);
                             tree_page.set_action_limit(
-                                self.model,
                                 &entry,
                                 next,
                                 self.override_hyperparameters,
@@ -1068,7 +1076,6 @@ impl App {
         self.ensure_entry_loaded(self.home_selected_index);
         let entry = self.loaded_entry(self.home_selected_index).clone();
         self.tree_page = Some(TreePage::new(
-            self.model,
             self.home_selected_index,
             &entry,
             self.override_hyperparameters,
@@ -1148,48 +1155,14 @@ fn scale_horizontal_scroll(scroll: usize, old_ratio: usize, new_ratio: usize) ->
     ((scroll as f64) * safe_old / safe_new).round() as usize
 }
 
-fn segment_token_length(segment: &Segment) -> usize {
-    segment
-        .content
-        .iter()
-        .map(|content| match content {
-            SegmentContent::Prompt(tokens) => tokens.tokens.len(),
-            SegmentContent::ReasoningOrToolCall { tokens, .. } => tokens.tokens.len(),
-            SegmentContent::ToolResponse(tokens) => tokens.tokens.len(),
-        })
-        .sum()
-}
-
-fn trajectory_token_length_to_root<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<M>,
-    leaf_segment_id: SegmentId,
-) -> Option<usize> {
-    let mut total = 0usize;
-    let mut cursor = Some(leaf_segment_id);
-    while let Some(segment_id) = cursor {
-        let segment = tree.segments.get(&segment_id)?;
-        total = total.saturating_add(segment_token_length(segment));
-        cursor = segment.parent_id;
-    }
-    Some(total)
-}
-
 fn fixed_width_scale_ratio_for_tree<M: credit_assignment::llm_model::LlmModelMarker>(
     tree: &DirectTree<M>,
 ) -> f64 {
-    let mut trunk_trajectory_lengths: Vec<usize> = tree
+    let trunk_trajectory_lengths: Vec<usize> = tree
         .trunk_leaf_segments
         .iter()
-        .filter_map(|leaf_id| trajectory_token_length_to_root(tree, *leaf_id))
+        .map(|leaf_id| *&tree.get_trajectory_length_till_id(*leaf_id))
         .collect();
-    if trunk_trajectory_lengths.is_empty() {
-        trunk_trajectory_lengths = tree
-            .leaf_segment_judgments
-            .keys()
-            .copied()
-            .filter_map(|leaf_id| trajectory_token_length_to_root(tree, leaf_id))
-            .collect();
-    }
 
     let avg_trunk_trajectory_len = if trunk_trajectory_lengths.is_empty() {
         1.0
@@ -1200,12 +1173,8 @@ fn fixed_width_scale_ratio_for_tree<M: credit_assignment::llm_model::LlmModelMar
             .sum::<f64>()
             / trunk_trajectory_lengths.len() as f64
     };
-    let safe_avg = if avg_trunk_trajectory_len <= 0.0 {
-        1.0
-    } else {
-        avg_trunk_trajectory_len
-    };
-    100.0_f64 / safe_avg
+    assert!(avg_trunk_trajectory_len > 0.0);
+    100.0_f64 / avg_trunk_trajectory_len
 }
 
 fn segment_display_widths<M: credit_assignment::llm_model::LlmModelMarker>(
@@ -1221,7 +1190,7 @@ fn segment_display_widths<M: credit_assignment::llm_model::LlmModelMarker>(
         width_division_ratio.unwrap_or_else(|| width_division_ratio_for_tree(tree));
 
     for (segment_id, segment) in &tree.segments {
-        let token_len = segment_token_length(segment);
+        let token_len = segment.token_length();
         let scaled = token_len / division_ratio.max(1);
         widths.insert(*segment_id, scaled.max(1));
     }
@@ -1251,20 +1220,10 @@ fn segment_branching_score_display<M: credit_assignment::llm_model::LlmModelMark
     for segment_id in tree.segments.keys().copied() {
         segment_uncertainty_scores.entry(segment_id).or_insert(0.0);
     }
-    let average_trunk_token_length = if tree.trunk_token_lengths.is_empty() {
-        1.0
-    } else {
-        tree.trunk_token_lengths.values().sum::<usize>() as f32
-            / tree.trunk_token_lengths.len() as f32
-    };
     let per_token_branching_scores: BTreeMap<
         SegmentId,
         BTreeMap<ContentIndex, BTreeMap<usize, TokenBranchingScore>>,
-    > = tree.calculate_per_token_branching_scores(
-        &segment_uncertainty_scores,
-        average_trunk_token_length,
-    );
-
+    > = tree.calculate_per_token_branching_scores(&segment_uncertainty_scores);
     for (segment_id, segment) in &tree.segments {
         let mut token_level_scores: Vec<Option<f32>> = Vec::new();
         for (content_index, content) in segment.content.iter().enumerate() {
@@ -1533,14 +1492,17 @@ fn write_pattern(canvas: &mut [Vec<char>], row: usize, col: usize, pattern: &str
     }
 }
 
-fn collect_leaf_order(snapshot: &TreeSnapshot) -> Vec<SegmentId> {
+fn collect_leaf_order<M: LlmModelMarker>(
+    tree: &DirectTree<M>,
+    root_segment_id: SegmentId,
+) -> Vec<SegmentId> {
     let mut leaves = Vec::new();
-    let mut stack = vec![snapshot.root_segment_id];
+    let mut stack = vec![root_segment_id];
     while let Some(segment_id) = stack.pop() {
-        let segment = snapshot
+        let segment = tree
             .segments
             .get(&segment_id)
-            .expect("segment in snapshot must exist");
+            .expect("segment in tree must exist");
         if segment.child_ids.is_empty() {
             leaves.push(segment_id);
         } else {
@@ -1552,12 +1514,12 @@ fn collect_leaf_order(snapshot: &TreeSnapshot) -> Vec<SegmentId> {
     leaves
 }
 
-fn path_root_to_segment(snapshot: &TreeSnapshot, segment_id: SegmentId) -> Vec<SegmentId> {
+fn path_root_to_segment<M: LlmModelMarker>(tree: &DirectTree<M>, segment_id: SegmentId) -> Vec<SegmentId> {
     let mut path = Vec::new();
     let mut cursor = Some(segment_id);
     while let Some(current_id) = cursor {
         path.push(current_id);
-        cursor = snapshot
+        cursor = tree
             .segments
             .get(&current_id)
             .expect("segment in path must exist")
@@ -1567,26 +1529,30 @@ fn path_root_to_segment(snapshot: &TreeSnapshot, segment_id: SegmentId) -> Vec<S
     path
 }
 
-fn build_segment_graph_lines(snapshot: &TreeSnapshot) -> (Vec<String>, Vec<TreeRenderedSegment>) {
-    let ordered_leaf_ids = collect_leaf_order(snapshot);
+fn build_segment_graph_lines<M: LlmModelMarker>(
+    tree: &DirectTree<M>,
+    root_segment_id: SegmentId,
+    leaf_segment_judgments: &BTreeMap<SegmentId, CorrectnessJudgment>,
+    segment_display_widths: &BTreeMap<SegmentId, usize>,
+) -> (Vec<String>, Vec<TreeRenderedSegment>) {
+    let ordered_leaf_ids = collect_leaf_order(tree, root_segment_id);
     let line_count = ordered_leaf_ids.len().max(1);
     let mut canvas: Vec<Vec<char>> = vec![Vec::new(); line_count];
 
     let mut row_by_segment: BTreeMap<SegmentId, usize> = BTreeMap::new();
     for (row, leaf_id) in ordered_leaf_ids.iter().copied().enumerate() {
-        for segment_id in path_root_to_segment(snapshot, leaf_id) {
+        for segment_id in path_root_to_segment(tree, leaf_id) {
             row_by_segment.entry(segment_id).or_insert(row);
         }
     }
 
     if row_by_segment.is_empty() {
-        row_by_segment.insert(snapshot.root_segment_id, 0);
+        row_by_segment.insert(root_segment_id, 0);
     }
 
     let mut width_by_segment: BTreeMap<SegmentId, usize> = BTreeMap::new();
-    for segment_id in snapshot.segments.keys().copied() {
-        let width = snapshot
-            .segment_display_widths
+    for segment_id in tree.segments.keys().copied() {
+        let width = segment_display_widths
             .get(&segment_id)
             .copied()
             .unwrap_or(1)
@@ -1595,8 +1561,8 @@ fn build_segment_graph_lines(snapshot: &TreeSnapshot) -> (Vec<String>, Vec<TreeR
     }
 
     let mut col_by_segment: BTreeMap<SegmentId, usize> = BTreeMap::new();
-    col_by_segment.insert(snapshot.root_segment_id, 0);
-    let mut stack = vec![snapshot.root_segment_id];
+    col_by_segment.insert(root_segment_id, 0);
+    let mut stack = vec![root_segment_id];
     while let Some(parent_id) = stack.pop() {
         let parent_col = *col_by_segment
             .get(&parent_id)
@@ -1605,10 +1571,10 @@ fn build_segment_graph_lines(snapshot: &TreeSnapshot) -> (Vec<String>, Vec<TreeR
             .get(&parent_id)
             .expect("parent width must exist");
         let child_col = parent_col + parent_width + 3;
-        let parent = snapshot
+        let parent = tree
             .segments
             .get(&parent_id)
-            .expect("parent segment must exist in snapshot");
+            .expect("parent segment must exist in tree");
         for child_id in parent.child_ids.iter().rev() {
             if col_by_segment.contains_key(child_id) {
                 continue;
@@ -1617,11 +1583,11 @@ fn build_segment_graph_lines(snapshot: &TreeSnapshot) -> (Vec<String>, Vec<TreeR
             stack.push(*child_id);
         }
     }
-    for segment_id in snapshot.segments.keys().copied() {
+    for segment_id in tree.segments.keys().copied() {
         if col_by_segment.contains_key(&segment_id) {
             continue;
         }
-        let path = path_root_to_segment(snapshot, segment_id);
+        let path = path_root_to_segment(tree, segment_id);
         let mut col = 0usize;
         for parent_id in path.iter().take(path.len().saturating_sub(1)) {
             col = col
@@ -1632,7 +1598,7 @@ fn build_segment_graph_lines(snapshot: &TreeSnapshot) -> (Vec<String>, Vec<TreeR
     }
 
     let mut rendered_segments = Vec::new();
-    for segment_id in snapshot.segments.keys().copied() {
+    for segment_id in tree.segments.keys().copied() {
         let Some(&row) = row_by_segment.get(&segment_id) else {
             continue;
         };
@@ -1651,7 +1617,7 @@ fn build_segment_graph_lines(snapshot: &TreeSnapshot) -> (Vec<String>, Vec<TreeR
         });
     }
 
-    for (parent_id, parent) in &snapshot.segments {
+    for (parent_id, parent) in &tree.segments {
         let Some(&parent_row) = row_by_segment.get(parent_id) else {
             continue;
         };
@@ -1747,7 +1713,7 @@ fn build_segment_graph_lines(snapshot: &TreeSnapshot) -> (Vec<String>, Vec<TreeR
                 .get(&leaf_id)
                 .copied()
                 .expect("leaf width must be available");
-        let suffix = if let Some(judgment) = snapshot.leaf_segment_judgments.get(&leaf_id) {
+        let suffix = if let Some(judgment) = leaf_segment_judgments.get(&leaf_id) {
             if judgment.is_correct {
                 "━━━✓"
             } else {
@@ -1769,8 +1735,8 @@ fn build_segment_graph_lines(snapshot: &TreeSnapshot) -> (Vec<String>, Vec<TreeR
     (lines, rendered_segments)
 }
 
-fn render_tree_line(
-    tree_page: &TreePage,
+fn render_tree_line<M: LlmModelMarker>(
+    tree_page: &TreePage<M>,
     row: usize,
     horizontal_scroll: usize,
     color_mode: TreeColorMode,
@@ -1794,7 +1760,6 @@ fn render_tree_line(
         match color_mode {
             TreeColorMode::SignalToNoise => {
                 let posterior_signal = tree_page
-                    .snapshot
                     .segment_posterior_signal_scaled
                     .get(&rendered.segment_id)
                     .copied()
@@ -1814,7 +1779,6 @@ fn render_tree_line(
             }
             TreeColorMode::PosteriorMean => {
                 let posterior_mean = tree_page
-                    .snapshot
                     .segment_posterior_mean_scaled
                     .get(&rendered.segment_id)
                     .copied()
@@ -1834,7 +1798,6 @@ fn render_tree_line(
             }
             TreeColorMode::PosteriorStd => {
                 let posterior_std = tree_page
-                    .snapshot
                     .segment_posterior_std_scaled
                     .get(&rendered.segment_id)
                     .copied()
@@ -1854,7 +1817,6 @@ fn render_tree_line(
             }
             TreeColorMode::BranchingScore => {
                 let score_by_display_token = tree_page
-                    .snapshot
                     .segment_branching_score_display
                     .get(&rendered.segment_id);
                 for display_offset in 0..rendered.width {
@@ -1880,7 +1842,6 @@ fn render_tree_line(
             }
             TreeColorMode::Advantage => {
                 let advantage = tree_page
-                    .snapshot
                     .segment_advantages
                     .get(&rendered.segment_id)
                     .copied()
@@ -1941,8 +1902,8 @@ fn render_tree_line(
     Line::from(spans)
 }
 
-fn tree_segment_at_mouse(
-    tree_page: &TreePage,
+fn tree_segment_at_mouse<M: LlmModelMarker>(
+    tree_page: &TreePage<M>,
     column: u16,
     row: u16,
     horizontal_scroll: usize,
@@ -2003,12 +1964,16 @@ fn push_text_as_spans(
     }
 }
 
-fn build_conversation_render(snapshot: &TreeSnapshot, segment_id: SegmentId) -> ConversationRender {
+fn build_conversation_render<M: LlmModelMarker>(
+    tree: &DirectTree<M>,
+    segment_posterior_signal_scaled: &BTreeMap<SegmentId, f32>,
+    segment_id: SegmentId,
+) -> ConversationRender {
     let mut path = Vec::new();
     let mut cursor = Some(segment_id);
     while let Some(current_id) = cursor {
         path.push(current_id);
-        cursor = snapshot
+        cursor = tree
             .segments
             .get(&current_id)
             .expect("path segment must exist")
@@ -2019,12 +1984,11 @@ fn build_conversation_render(snapshot: &TreeSnapshot, segment_id: SegmentId) -> 
     let mut plain = String::new();
     let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
     for sid in path {
-        let segment = snapshot
+        let segment = tree
             .segments
             .get(&sid)
             .expect("segment in path must exist");
-        let segment_color = snapshot
-            .segment_posterior_signal_scaled
+        let segment_color = segment_posterior_signal_scaled
             .get(&sid)
             .copied()
             .map(signed_posterior_to_color)
@@ -2071,13 +2035,10 @@ fn build_conversation_render(snapshot: &TreeSnapshot, segment_id: SegmentId) -> 
     }
 }
 
-fn snapshot_for_model(
-    model: LlmModelName,
+fn tree_from_action_log_with_limit<M: LlmModelMarker>(
     action_log: &DirectTreeActionLog,
     action_limit: usize,
-    width_division_ratio: Option<usize>,
-    override_hyperparameters: Option<PosteriorHyperparameters>,
-) -> TreeSnapshot {
+) -> DirectTree<M> {
     let mut partial_log = action_log.clone();
     partial_log.actions = action_log
         .actions
@@ -2085,58 +2046,32 @@ fn snapshot_for_model(
         .take(action_limit)
         .cloned()
         .collect();
-    match model {
-        LlmModelName::Qwen25_7b => TreeSnapshot::from_tree(
-            DirectTree::<Qwen25>::from_action_log(&partial_log),
-            width_division_ratio,
-            override_hyperparameters,
-        ),
-        LlmModelName::Qwen3_4b => TreeSnapshot::from_tree(
-            DirectTree::<Qwen3_4B>::from_action_log(&partial_log),
-            width_division_ratio,
-            override_hyperparameters,
-        ),
-        LlmModelName::Qwen35_4b => TreeSnapshot::from_tree(
-            DirectTree::<Qwen35_4B>::from_action_log(&partial_log),
-            width_division_ratio,
-            override_hyperparameters,
-        ),
-        LlmModelName::Gpt4o => TreeSnapshot::from_tree(
-            DirectTree::<Gpt4o>::from_action_log(&partial_log),
-            width_division_ratio,
-            override_hyperparameters,
-        ),
-        LlmModelName::Gpt5Mini => TreeSnapshot::from_tree(
-            DirectTree::<Gpt5Mini>::from_action_log(&partial_log),
-            width_division_ratio,
-            override_hyperparameters,
-        ),
-    }
+    DirectTree::<M>::from_action_log(&partial_log)
 }
 
-fn width_division_ratio_for_model(model: LlmModelName, action_log: &DirectTreeActionLog) -> usize {
-    match model {
-        LlmModelName::Qwen25_7b => {
-            width_division_ratio_for_tree(&DirectTree::<Qwen25>::from_action_log(action_log))
-        }
-        LlmModelName::Qwen3_4b => {
-            width_division_ratio_for_tree(&DirectTree::<Qwen3_4B>::from_action_log(action_log))
-        }
-        LlmModelName::Qwen35_4b => {
-            width_division_ratio_for_tree(&DirectTree::<Qwen35_4B>::from_action_log(action_log))
-        }
-        LlmModelName::Gpt4o => {
-            width_division_ratio_for_tree(&DirectTree::<Gpt4o>::from_action_log(action_log))
-        }
-        LlmModelName::Gpt5Mini => {
-            width_division_ratio_for_tree(&DirectTree::<Gpt5Mini>::from_action_log(action_log))
-        }
-    }
+fn tree_root_segment_id<M: LlmModelMarker>(tree: &DirectTree<M>) -> SegmentId {
+    tree.root_segment_id
+        .expect("Direct tree browser requires root segment")
 }
 
-fn width_division_ratio_for_tree<M: credit_assignment::llm_model::LlmModelMarker>(
+fn segment_advantages<M: LlmModelMarker>(
     tree: &DirectTree<M>,
+    override_hyperparameters: Option<PosteriorHyperparameters>,
+) -> BTreeMap<SegmentId, f32> {
+    let mut advantages = tree.calculate_segment_advantages(override_hyperparameters);
+    for segment_id in tree.segments.keys().copied() {
+        advantages.entry(segment_id).or_insert(0.0);
+    }
+    advantages
+}
+
+fn width_division_ratio_for_action_log<M: LlmModelMarker>(
+    action_log: &DirectTreeActionLog,
 ) -> usize {
+    width_division_ratio_for_tree(&DirectTree::<M>::from_action_log(action_log))
+}
+
+fn width_division_ratio_for_tree<M: LlmModelMarker>(tree: &DirectTree<M>) -> usize {
     let fixed_scale_ratio = fixed_width_scale_ratio_for_tree(tree);
     if fixed_scale_ratio <= 0.0 {
         return 1;
@@ -2144,14 +2079,12 @@ fn width_division_ratio_for_tree<M: credit_assignment::llm_model::LlmModelMarker
     ((1.0 / fixed_scale_ratio).round() as usize).max(1)
 }
 
-fn question_stats_from_action_log(
-    model: LlmModelName,
+fn question_stats_from_action_log<M: LlmModelMarker>(
     action_log: &DirectTreeActionLog,
 ) -> (usize, usize, f64) {
-    let final_snapshot =
-        snapshot_for_model(model, action_log, action_log.actions.len(), None, None);
-    let num_leaves = final_snapshot.leaf_segment_judgments.len();
-    let num_correct = final_snapshot
+    let final_tree = tree_from_action_log_with_limit::<M>(action_log, action_log.actions.len());
+    let num_leaves = final_tree.leaf_segment_judgments.len();
+    let num_correct = final_tree
         .leaf_segment_judgments
         .values()
         .filter(|judgment| judgment.is_correct)
@@ -2164,9 +2097,9 @@ fn question_stats_from_action_log(
     (num_correct, num_leaves, win_rate)
 }
 
-fn run_app(
+fn run_app<M: LlmModelMarker>(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    mut app: App,
+    mut app: App<M>,
 ) -> Result<(), Box<dyn Error>> {
     loop {
         terminal.draw(|frame| app.draw(frame))?;
@@ -2224,8 +2157,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let app = App::new(model, action_log_store, keys, override_hyperparameters);
-    let result = run_app(&mut terminal, app);
+    let result = match model {
+        LlmModelName::Qwen25_7b => {
+            let app = App::<Qwen25>::new(action_log_store, keys, override_hyperparameters);
+            run_app::<Qwen25>(&mut terminal, app)
+        }
+        LlmModelName::Qwen3_4b => {
+            let app = App::<Qwen3_4B>::new(action_log_store, keys, override_hyperparameters);
+            run_app::<Qwen3_4B>(&mut terminal, app)
+        }
+        LlmModelName::Qwen35_4b => {
+            let app = App::<Qwen35_4B>::new(action_log_store, keys, override_hyperparameters);
+            run_app::<Qwen35_4B>(&mut terminal, app)
+        }
+        LlmModelName::Gpt4o => {
+            let app = App::<Gpt4o>::new(action_log_store, keys, override_hyperparameters);
+            run_app::<Gpt4o>(&mut terminal, app)
+        }
+        LlmModelName::Gpt5Mini => {
+            let app = App::<Gpt5Mini>::new(action_log_store, keys, override_hyperparameters);
+            run_app::<Gpt5Mini>(&mut terminal, app)
+        }
+    };
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),

@@ -67,8 +67,23 @@ impl<M: LlmModelMarker> DirectTree<M> {
     pub fn calculate_per_token_branching_scores(
         &self,
         segment_uncertainty_scores: &BTreeMap<SegmentId, f32>,
-        average_trunk_token_length: f32,
     ) -> BTreeMap<SegmentId, BTreeMap<ContentIndex, BTreeMap<usize, TokenBranchingScore>>> {
+        assert!(
+            !self.trunk_leaf_segments.is_empty(),
+            "Trunk leaf segments must not be empty"
+        );
+        let trunk_reasoning_only_token_lengths = self
+            .trunk_leaf_segments
+            .iter()
+            .map(|leaf_id| self.trajectory_reasoning_token_length(*leaf_id))
+            .collect::<Vec<usize>>();
+        let average_trunk_token_length = trunk_reasoning_only_token_lengths.iter().sum::<usize>()
+            as f32
+            / trunk_reasoning_only_token_lengths.len() as f32;
+        assert!(
+            average_trunk_token_length > 0.0,
+            "Average trunk token length must be greater than zero"
+        );
         let mut per_token_branching_scores: BTreeMap<
             SegmentId,
             BTreeMap<ContentIndex, BTreeMap<usize, TokenBranchingScore>>,
@@ -215,21 +230,9 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 let posteriors = self.calculate_segment_posteriors(None);
                 let segment_uncertainty_scores =
                     self.posteriors_to_segment_uncertainty_scores(&posteriors);
-                assert!(
-                    !self.trunk_token_lengths.is_empty(),
-                    "Trunk token lengths must not be empty when creating or choosing branch point"
-                );
-                let average_trunk_token_length = self.trunk_token_lengths.values().sum::<usize>()
-                    as f32
-                    / self.trunk_token_lengths.len() as f32;
-                log_key_value_pair(
-                    "average_trunk_token_length".into(),
-                    average_trunk_token_length.to_string(),
-                );
 
                 let per_token_branching_scores = self.calculate_per_token_branching_scores(
                     &segment_uncertainty_scores,
-                    average_trunk_token_length,
                 );
 
                 let mut best_token_position: Option<TokenPositionInTree> = None;

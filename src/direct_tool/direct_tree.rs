@@ -31,7 +31,6 @@ pub struct DirectTree<M: LlmModelMarker> {
     // pub root_segment_ids: Vec<SegmentId>,
     pub root_segment_id: Option<SegmentId>, // all the trunks share the same root segment, which is the prompt segment
     pub trunk_leaf_segments: Vec<SegmentId>, // the leaf segments of the trunk trajectories
-    pub trunk_token_lengths: BTreeMap<SegmentId, usize>, // the token length of the trunk segments, which is used for calculating the reward and deciding when to branch
     pub leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
     pub current_num_trunks: usize,
     pub next_segment_id: usize,
@@ -54,7 +53,6 @@ impl<M: LlmModelMarker> DirectTree<M> {
             segments: BTreeMap::new(),
             root_segment_id: None, // all the trunks share the same root segment, which is the prompt segment
             trunk_leaf_segments: Vec::new(), // the leaf segments of the trunk trajectories
-            trunk_token_lengths: BTreeMap::new(), // the token length of the trunk segments, which is used for calculating the reward and deciding when to branch
             leaf_segment_judgments: BTreeMap::new(),
             current_num_trunks: 0,
             next_segment_id: 0,
@@ -125,6 +123,19 @@ pub struct ReasoningOnlyTokenView<'a> {
 }
 
 impl Segment {
+    pub fn token_length(&self) -> usize {
+        let mut total_length = 0;
+        for content in &self.content {
+            match content {
+                SegmentContent::Prompt(tokens) => total_length += tokens.tokens.len(),
+                SegmentContent::ReasoningOrToolCall { tokens, .. } => {
+                    total_length += tokens.tokens.len()
+                }
+                SegmentContent::ToolResponse(tokens) => total_length += tokens.tokens.len(),
+            }
+        }
+        total_length
+    }
     pub fn reasoning_only_tokens<'a>(&'a self) -> Vec<ReasoningOnlyTokenView<'a>> {
         let mut views = vec![];
         let mut flat_index = 0;
@@ -157,13 +168,6 @@ impl Segment {
         total_length
     }
     pub fn first_reasoning_token(&self) -> Option<i32> {
-        // for content in &self.content {
-        //     if let SegmentContent::ReasoningOrToolCall { tokens, .. } = content {
-        //         if let Some(&first_token) = tokens.tokens.first() {
-        //             return Some(first_token);
-        //         }
-        //     }
-        // }
         let Some(first_content) = self.content.first() else {
             return None;
         };
