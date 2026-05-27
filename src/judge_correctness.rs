@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     direct_tool::direct_trajectory::FinalAnswer,
-    llm_model::{Gpt4o, Gpt4oLlmCallable, LlmCallable, LlmModelMarker},
+    llm_model::{Gpt4o, Gpt4oLlmCallable, LlmCallable, LlmModelMarker, MyTokenizer},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,9 +27,11 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
         question, model_answer, correct_answer
     );
     let gpt_callable = Gpt4oLlmCallable::new(client);
-    let evaluation = gpt_callable
-        .generate_text(Gpt4o::tokenize(prompt).tokens, false)
+    let evaluation_tokens = gpt_callable
+        .generate_tokens(Gpt4o::tokenize(prompt).tokens, false)
         .await
+        .unwrap();
+    let evaluation = <Gpt4o as LlmModelMarker>::Tokenizer::decode_i32_ids(&evaluation_tokens)
         .trim()
         .to_lowercase();
     if evaluation.contains("incorrect") {

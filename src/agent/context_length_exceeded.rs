@@ -4,9 +4,10 @@ use crate::{
         tree_action::TreeAction,
     },
     constants::CONTEXT_LENGTH_EXCEEDED_ABORT_MESSAGE,
-    llm_model::CONTEXT_LENGTH_EXCEEDED_RESPONSE,
     worker_message_tx::log_key_value_pair,
 };
+
+const CONTEXT_LENGTH_EXCEEDED_RESPONSE: &str = "<error>QWEN_CONTEXT_LENGTH_EXCEEDED</error>";
 
 pub fn is_context_length_exceeded_response(response: &str) -> bool {
     response == CONTEXT_LENGTH_EXCEEDED_RESPONSE

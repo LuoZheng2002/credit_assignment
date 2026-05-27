@@ -63,7 +63,11 @@ impl Gpt4oLlmCallable {
 
 #[async_trait]
 impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
-    async fn generate_text(&self, prompt_or_tokens: Vec<i32>, passes_in_stop: bool) -> String {
+    async fn generate_tokens(
+        &self,
+        prompt_or_tokens: Vec<i32>,
+        passes_in_stop: bool,
+    ) -> Result<Vec<i32>, String> {
         let prompt = <Gpt4o as LlmModelMarker>::Tokenizer::decode_i32_ids(&prompt_or_tokens);
         let body = if passes_in_stop {
             serde_json::json!({
@@ -85,17 +89,23 @@ impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
             .await
             .bytes()
             .await
-            .unwrap();
-        let Ok(json) = serde_json::from_slice::<serde_json::Value>(&response) else {
-            panic!(
+            .map_err(|err| format!("Failed to read OpenAI response body: {}", err))?;
+        let json = serde_json::from_slice::<serde_json::Value>(&response).map_err(|_| {
+            format!(
                 "Failed to parse LLM response as JSON. Response text: {:?}",
                 String::from_utf8_lossy(&response)
-            );
-        };
-        json["choices"][0]["message"]["content"]
+            )
+        })?;
+        if let Some(error_message) = json["error"]["message"].as_str() {
+            return Err(error_message.to_string());
+        }
+        let content = json["choices"][0]["message"]["content"]
             .as_str()
-            .unwrap_or_else(|| panic!("LLM response is invalid: {:?}", json))
-            .to_string()
+            .ok_or_else(|| format!("LLM response is invalid: {:?}", json))?
+            .to_string();
+        Ok(<Gpt4o as LlmModelMarker>::Tokenizer::encode_to_i32_ids(
+            &content,
+        ))
     }
 
     async fn generate_tokens_with_logprobs(
@@ -104,7 +114,7 @@ impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
         passes_in_stop: bool,
         temperature: f32,
         trim_eos: bool,
-    ) -> TokenArrayWithLogprob<Gpt4o> {
+    ) -> Result<TokenArrayWithLogprob<Gpt4o>, String> {
         let prompt = <Gpt4o as LlmModelMarker>::Tokenizer::decode_i32_ids(&prompt_or_tokens);
         let body = if passes_in_stop {
             serde_json::json!({
@@ -132,13 +142,16 @@ impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
             .await
             .bytes()
             .await
-            .unwrap();
-        let Ok(json) = serde_json::from_slice::<Value>(&response) else {
-            panic!(
+            .map_err(|err| format!("Failed to read OpenAI response body: {}", err))?;
+        let json = serde_json::from_slice::<Value>(&response).map_err(|_| {
+            format!(
                 "Failed to parse LLM response as JSON. Response text: {:?}",
                 String::from_utf8_lossy(&response)
-            );
-        };
+            )
+        })?;
+        if let Some(error_message) = json["error"]["message"].as_str() {
+            return Err(error_message.to_string());
+        }
 
         let content_entries = json["choices"][0]["logprobs"]["content"]
             .as_array()
@@ -195,7 +208,7 @@ impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
         }
 
         let output = TokenArrayWithLogprob::from_tokens_and_logprobs(tokens, logprobs);
-        trim_tail_eos_if_needed::<Gpt4o>(output, trim_eos)
+        Ok(trim_tail_eos_if_needed::<Gpt4o>(output, trim_eos))
     }
 }
 

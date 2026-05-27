@@ -11,8 +11,8 @@ use super::qwen_shared::{
     QwenBackend, SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
 };
 use super::{
-    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, QwenApiBackend,
-    TokenArrayWithLogprob, trim_tail_eos_if_needed,
+    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
+    trim_tail_eos_if_needed,
 };
 
 static QWEN25_TOKENIZER: LazyLock<Tokenizer> =
@@ -59,31 +59,20 @@ impl Qwen25LlmCallable {
         max_concurrent_requests: usize,
     ) -> Self {
         Self {
-            shared: SharedQwenLlmCallable::new(
-                client,
-                Qwen25::API_NAME,
-                backend,
-                max_concurrent_requests,
-                decode_qwen25_tokens,
-                encode_qwen25_text,
-            ),
+            shared: SharedQwenLlmCallable::new(client, backend, max_concurrent_requests),
         }
     }
 }
 
-fn decode_qwen25_tokens(token_ids: &[i32]) -> String {
-    decode_from_i32_ids(&QWEN25_TOKENIZER, token_ids)
-}
-
-fn encode_qwen25_text(text: &str) -> Vec<i32> {
-    encode_to_i32_ids(&QWEN25_TOKENIZER, text)
-}
-
 #[async_trait]
 impl LlmCallable<Qwen25> for Qwen25LlmCallable {
-    async fn generate_text(&self, prompt_or_tokens: Vec<i32>, passes_in_stop: bool) -> String {
+    async fn generate_tokens(
+        &self,
+        prompt_or_tokens: Vec<i32>,
+        passes_in_stop: bool,
+    ) -> Result<Vec<i32>, String> {
         self.shared
-            .generate_from_tokens(prompt_or_tokens, passes_in_stop)
+            .generate_tokens_from_tokens(prompt_or_tokens, passes_in_stop)
             .await
     }
 
@@ -93,7 +82,7 @@ impl LlmCallable<Qwen25> for Qwen25LlmCallable {
         passes_in_stop: bool,
         temperature: f32,
         trim_eos: bool,
-    ) -> TokenArrayWithLogprob<Qwen25> {
+    ) -> Result<TokenArrayWithLogprob<Qwen25>, String> {
         let output = self
             .shared
             .generate_tokens_with_logprobs_from_tokens(
@@ -101,8 +90,8 @@ impl LlmCallable<Qwen25> for Qwen25LlmCallable {
                 passes_in_stop,
                 temperature,
             )
-            .await;
-        trim_tail_eos_if_needed::<Qwen25>(output, trim_eos)
+            .await?;
+        Ok(trim_tail_eos_if_needed::<Qwen25>(output, trim_eos))
     }
 }
 
@@ -157,23 +146,8 @@ impl LlmModelMarker for Qwen25 {
     }
 
     fn callable_from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self::Callable {
-        let backend = match llm_cli_args.qwen_api_backend {
-            QwenApiBackend::Vllm => QwenBackend::Vllm {
-                vllm_port: llm_cli_args.qwen_vllm_port(),
-            },
-            QwenApiBackend::Sglang => QwenBackend::Sglang {
-                sglang_port: llm_cli_args.qwen_sglang_port(),
-            },
-            QwenApiBackend::VllmWrapper => QwenBackend::VllmWrapper {
-                vllm_wrapper_port: llm_cli_args.vllm_wrapper_port(),
-            },
-            QwenApiBackend::Openrouter => QwenBackend::OpenRouter {
-                base_url: llm_cli_args.openrouter_base_url.clone(),
-                model: llm_cli_args.openrouter_model_or_default(Self::API_NAME),
-                api_key: llm_cli_args.openrouter_api_key(),
-                http_referer: llm_cli_args.openrouter_http_referer.clone(),
-                x_title: llm_cli_args.openrouter_x_title.clone(),
-            },
+        let backend = QwenBackend {
+            sglang_port: llm_cli_args.qwen_sglang_port(),
         };
 
         Qwen25LlmCallable::new(client, backend, llm_cli_args.max_concurrent_requests)

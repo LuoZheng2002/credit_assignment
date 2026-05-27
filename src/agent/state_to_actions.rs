@@ -2,9 +2,6 @@ use rand::RngExt;
 use reqwest::Client;
 
 use crate::agent::branching_node_selection::determine_branching_node;
-use crate::agent::context_length_exceeded::{
-    context_length_exceeded_result, is_context_length_exceeded_response,
-};
 use crate::agent::response_processing::{
     determine_chosen_mode, parse_compactor_response, parse_verifier_comment_response,
     split_reasoning_and_tool_call,
@@ -17,7 +14,7 @@ use crate::agent::trajectory_state::TrajectoryState;
 use crate::agent::trajectory_status::TrajectoryStatus;
 use crate::agent::tree::{CorrectnessJudgment, Tree};
 use crate::agent::tree_action::TreeAction;
-use crate::llm_model::{Gpt4o, Gpt4oLlmCallable, LlmCallable, LlmModelMarker};
+use crate::llm_model::{Gpt4o, Gpt4oLlmCallable, LlmCallable, LlmModelMarker, MyTokenizer};
 use crate::status_prompts::universal_prompt::get_prompt_according_to_session_status;
 use crate::util::extract_boxed_content;
 use crate::worker_message_tx::log_key_value_pair;
@@ -77,6 +74,18 @@ pub fn detect_repetition_five_times(response: &str) -> bool {
     }
 
     false
+}
+
+async fn call_with_prefix_thinking_disabled<M: LlmModelMarker, C: LlmCallable<M>>(
+    llm_callable: &C,
+    prompt_before_assistant: String,
+    prompt_after_assistant: String,
+) -> String {
+    let prompt =
+        M::build_prefix_thinking_disabled(&prompt_before_assistant, &prompt_after_assistant);
+    let input = M::tokenize(prompt).tokens;
+    let output_tokens = llm_callable.generate_tokens(input, true).await.unwrap();
+    <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(&output_tokens)
 }
 
 pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
@@ -160,25 +169,18 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
                     String::new(),
                     "Verifier commenting should not have prompt after assistant"
                 );
-                let response = llm_callable
-                    .call_with_prefix_thinking_disabled(
-                        prompt_before_assistant,
-                        prompt_after_assistant,
-                    )
-                    .await;
-                if is_context_length_exceeded_response(&response) {
-                    context_length_exceeded_result(
-                        question_id,
-                        session_state.final_answer.is_some(),
-                    )
-                } else {
-                    let action = TreeAction::AddTrajectoryAction {
-                        action: TrajectoryAction::VerifierComment(Some(
-                            parse_verifier_comment_response(response.clone()),
-                        )),
-                    };
-                    vec![action]
-                }
+                let response = call_with_prefix_thinking_disabled::<M, C>(
+                    llm_callable,
+                    prompt_before_assistant,
+                    prompt_after_assistant,
+                )
+                .await;
+                let action = TreeAction::AddTrajectoryAction {
+                    action: TrajectoryAction::VerifierComment(Some(parse_verifier_comment_response(
+                        response.clone(),
+                    ))),
+                };
+                vec![action]
             } else {
                 // if verifier is off, we still want to add a TrajectoryAction to record the verifier comment is off for the current step, which will be used for determining the node type in the next step
                 let action = TreeAction::AddTrajectoryAction {
@@ -206,32 +208,23 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
             if needs_to_make_or_change_plan {
                 let (prompt_before_assistant, prompt_after_assistant) =
                     get_prompt_according_to_session_status(&session_state);
-                let response = llm_callable
-                    .call_with_prefix_thinking_disabled(
-                        prompt_before_assistant,
-                        prompt_after_assistant,
-                    )
-                    .await;
-                if is_context_length_exceeded_response(&response) {
-                    context_length_exceeded_result(
-                        question_id,
-                        session_state.final_answer.is_some(),
-                    )
-                } else {
-                    let plan_content = match planner_chosen_mode {
-                        NextStepDecision::ChangePlan(reason) => {
-                            Some(MakeOrChangePlan::ChangePlan {
-                                plan: response,
-                                prev_failed_reason: reason.clone(),
-                            })
-                        }
-                        NextStepDecision::Continue => Some(MakeOrChangePlan::MakePlan(response)),
-                        NextStepDecision::OverwriteLastStep(_) => unreachable!(),
-                    }; // we change to not require the plan to be in a markdown code block
-                    vec![TreeAction::AddTrajectoryAction {
-                        action: TrajectoryAction::PlannerMakeOrChangePlan(plan_content),
-                    }]
-                }
+                let response = call_with_prefix_thinking_disabled::<M, C>(
+                    llm_callable,
+                    prompt_before_assistant,
+                    prompt_after_assistant,
+                )
+                .await;
+                let plan_content = match planner_chosen_mode {
+                    NextStepDecision::ChangePlan(reason) => Some(MakeOrChangePlan::ChangePlan {
+                        plan: response,
+                        prev_failed_reason: reason.clone(),
+                    }),
+                    NextStepDecision::Continue => Some(MakeOrChangePlan::MakePlan(response)),
+                    NextStepDecision::OverwriteLastStep(_) => unreachable!(),
+                }; // we change to not require the plan to be in a markdown code block
+                vec![TreeAction::AddTrajectoryAction {
+                    action: TrajectoryAction::PlannerMakeOrChangePlan(plan_content),
+                }]
             } else {
                 vec![TreeAction::AddTrajectoryAction {
                     action: TrajectoryAction::PlannerMakeOrChangePlan(None),
@@ -248,148 +241,129 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
         } => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(&session_state);
-            let mut response = llm_callable
-                .call_with_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
-                .await;
-            if is_context_length_exceeded_response(&response) {
-                context_length_exceeded_result(question_id, session_state.final_answer.is_some())
-            } else {
-                let mut actions: Vec<TreeAction> = Vec::new();
-                if session_state.final_answer.is_none()
-                    && let Some(boxed_content) = extract_boxed_content(&response)
-                {
-                    actions.push(TreeAction::AddTrajectoryAction {
-                        action: TrajectoryAction::SubmitFinalAnswer(FinalAnswer::ModelProvided(
-                            boxed_content,
-                        )),
-                    });
-                }
-                if response.trim().is_empty() {
-                    response = "<end_step>".to_string(); // if the model does not output anything, we treat it as if it outputs <end_step> to prevent getting stuck
-                }
-                let response_is_empty =
-                    response.trim() == "<end_step>" && step_content_raw.trim().is_empty();
-                if response_is_empty {
-                    log_key_value_pair(
-                        "warning".into(),
-                        "Model tries to end the step without providing any content for the step."
-                            .into(),
-                    );
-                }
-                let (reasoning, tool_call, tool_wait_violation) =
-                    split_reasoning_and_tool_call(response.clone());
-                let mut push_end_step = false;
-                let mut has_step_terminate_intervention = false;
+            let mut response = call_with_prefix_thinking_disabled::<M, C>(
+                llm_callable,
+                prompt_before_assistant,
+                prompt_after_assistant,
+            )
+            .await;
+            let mut actions: Vec<TreeAction> = Vec::new();
+            if session_state.final_answer.is_none()
+                && let Some(boxed_content) = extract_boxed_content(&response)
+            {
+                actions.push(TreeAction::AddTrajectoryAction {
+                    action: TrajectoryAction::SubmitFinalAnswer(FinalAnswer::ModelProvided(
+                        boxed_content,
+                    )),
+                });
+            }
+            if response.trim().is_empty() {
+                response = "<end_step>".to_string(); // if the model does not output anything, we treat it as if it outputs <end_step> to prevent getting stuck
+            }
+            let response_is_empty =
+                response.trim() == "<end_step>" && step_content_raw.trim().is_empty();
+            if response_is_empty {
+                log_key_value_pair(
+                    "warning".into(),
+                    "Model tries to end the step without providing any content for the step."
+                        .into(),
+                );
+            }
+            let (reasoning, tool_call, tool_wait_violation) =
+                split_reasoning_and_tool_call(response.clone());
+            let mut push_end_step = false;
+            let mut has_step_terminate_intervention = false;
 
-                if tool_wait_violation {
-                    actions.push(TreeAction::ToolWaitViolation);
+            if tool_wait_violation {
+                actions.push(TreeAction::ToolWaitViolation);
+            }
+            if let Some(reasoning) = reasoning {
+                if reasoning.contains("<end_step>") {
+                    push_end_step = true;
                 }
-                if let Some(reasoning) = reasoning {
-                    if reasoning.contains("<end_step>") {
-                        push_end_step = true;
-                    }
-                    actions.push(TreeAction::AddTrajectoryAction {
-                        action: TrajectoryAction::PlannerReasoning { reasoning },
-                    });
-                }
-                if let Some(tool_call) = tool_call {
-                    let tool_response = execute_planner_tool_call(&tool_call).await;
-                    let previous_python_error =
-                        session_state.current_step_last_python_error.clone();
-                    actions.push(TreeAction::AddTrajectoryAction {
-                        action: TrajectoryAction::PlannerToolCall(tool_call),
-                    });
-                    if let ToolResponse::PythonError(current_python_error) = &tool_response {
-                        if previous_python_error.is_some()
-                            && Some(current_python_error.clone()) == previous_python_error
-                        {
-                            log_key_value_pair(
-                                "warning".into(),
-                                "Identical python tool error detected. Aborting current step."
-                                    .into(),
-                            );
-                            actions.push(TreeAction::AddTrajectoryAction {
-                                action: TrajectoryAction::ToolCallResponse(tool_response),
-                            });
-                            actions.push(TreeAction::AddTrajectoryAction {
-                                // action: RolloutAction::ToolCallResponse(
-                                //     ToolResponse::Intervention(
-                                //         IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
-                                //     ),
-                                // ),
-                                action: TrajectoryAction::SystemInterrupt(
-                                    IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
-                                ),
-                            });
-                            has_step_terminate_intervention = true;
-                        } else {
-                            actions.push(TreeAction::AddTrajectoryAction {
-                                action: TrajectoryAction::ToolCallResponse(tool_response),
-                            });
-                        }
+                actions.push(TreeAction::AddTrajectoryAction {
+                    action: TrajectoryAction::PlannerReasoning { reasoning },
+                });
+            }
+            if let Some(tool_call) = tool_call {
+                let tool_response = execute_planner_tool_call(&tool_call).await;
+                let previous_python_error = session_state.current_step_last_python_error.clone();
+                actions.push(TreeAction::AddTrajectoryAction {
+                    action: TrajectoryAction::PlannerToolCall(tool_call),
+                });
+                if let ToolResponse::PythonError(current_python_error) = &tool_response {
+                    if previous_python_error.is_some()
+                        && Some(current_python_error.clone()) == previous_python_error
+                    {
+                        log_key_value_pair(
+                            "warning".into(),
+                            "Identical python tool error detected. Aborting current step.".into(),
+                        );
+                        actions.push(TreeAction::AddTrajectoryAction {
+                            action: TrajectoryAction::ToolCallResponse(tool_response),
+                        });
+                        actions.push(TreeAction::AddTrajectoryAction {
+                            action: TrajectoryAction::SystemInterrupt(
+                                IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE.to_string(),
+                            ),
+                        });
+                        has_step_terminate_intervention = true;
                     } else {
                         actions.push(TreeAction::AddTrajectoryAction {
                             action: TrajectoryAction::ToolCallResponse(tool_response),
                         });
                     }
-                }
-
-                if response_is_empty {
+                } else {
                     actions.push(TreeAction::AddTrajectoryAction {
-                        // action: RolloutAction::ToolCallResponse(ToolResponse::Intervention(
-                        //     SUBMIT_ANSWER_HINT.to_string(),
-                        // )),
-                        // action: TrajectoryAction::ToolCallResponse(ToolResponse::EmptyMessageHint),
-                        // action: TrajectoryAction::SystemInterrupt("Model tries to end the step at the beginning of a step.".into())
-                        action: TrajectoryAction::SubmitFinalAnswer(FinalAnswer::Failure(
-                            "Model tries to end the step at the beginning of a step.".into(),
-                        )),
-                    });
-                    has_step_terminate_intervention = true;
-                }
-                let num_additional_actions_allowed =
-                    session_state.num_additional_actions_allowed_in_current_step();
-                if actions.len() > num_additional_actions_allowed {
-                    log_key_value_pair(
-                        "warning".into(),
-                        format!(
-                            "Number of actions in the current step {} exceeds the limit {}. Only the first {} actions will be applied.",
-                            actions.len(),
-                            num_additional_actions_allowed,
-                            num_additional_actions_allowed
-                        ),
-                    );
-                    actions.truncate(num_additional_actions_allowed);
-                }
-                // detect repetition
-                let found_repetition_three_times = detect_repetition_five_times(&response);
-                if found_repetition_three_times {
-                    log_key_value_pair(
-                            "warning".into(),
-                            "Detected repetition of the same response at least five times. This may indicate that the model is stuck in a loop.".into(),
-                        );
-                    actions.push(TreeAction::AddTrajectoryAction {
-                        action: TrajectoryAction::SystemInterrupt(
-                            REPETITION_ABORT_MESSAGE.to_string(),
-                        ),
-                    });
-                    has_step_terminate_intervention = true;
-                }
-
-                let current_step_full = actions.len() == num_additional_actions_allowed;
-                if ((push_end_step && !response_is_empty) || current_step_full)
-                    && !has_step_terminate_intervention
-                {
-                    // assert!(
-                    //     !has_terminal_intervention,
-                    //     "PlannerEndStep should not be emitted after terminal intervention"
-                    // );
-                    actions.push(TreeAction::AddTrajectoryAction {
-                        action: TrajectoryAction::PlannerEndStep,
+                        action: TrajectoryAction::ToolCallResponse(tool_response),
                     });
                 }
-                actions
             }
+
+            if response_is_empty {
+                actions.push(TreeAction::AddTrajectoryAction {
+                    action: TrajectoryAction::SubmitFinalAnswer(FinalAnswer::Failure(
+                        "Model tries to end the step at the beginning of a step.".into(),
+                    )),
+                });
+                has_step_terminate_intervention = true;
+            }
+            let num_additional_actions_allowed =
+                session_state.num_additional_actions_allowed_in_current_step();
+            if actions.len() > num_additional_actions_allowed {
+                log_key_value_pair(
+                    "warning".into(),
+                    format!(
+                        "Number of actions in the current step {} exceeds the limit {}. Only the first {} actions will be applied.",
+                        actions.len(),
+                        num_additional_actions_allowed,
+                        num_additional_actions_allowed
+                    ),
+                );
+                actions.truncate(num_additional_actions_allowed);
+            }
+            // detect repetition
+            let found_repetition_three_times = detect_repetition_five_times(&response);
+            if found_repetition_three_times {
+                log_key_value_pair(
+                    "warning".into(),
+                    "Detected repetition of the same response at least five times. This may indicate that the model is stuck in a loop.".into(),
+                );
+                actions.push(TreeAction::AddTrajectoryAction {
+                    action: TrajectoryAction::SystemInterrupt(REPETITION_ABORT_MESSAGE.to_string()),
+                });
+                has_step_terminate_intervention = true;
+            }
+
+            let current_step_full = actions.len() == num_additional_actions_allowed;
+            if ((push_end_step && !response_is_empty) || current_step_full)
+                && !has_step_terminate_intervention
+            {
+                actions.push(TreeAction::AddTrajectoryAction {
+                    action: TrajectoryAction::PlannerEndStep,
+                });
+            }
+            actions
         }
         TrajectoryStatus::CompactorCompactingStep {
             planner_chosen_mode: _,
@@ -397,31 +371,30 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
         } => {
             let (prompt_before_assistant, prompt_after_assistant) =
                 get_prompt_according_to_session_status(&session_state);
-            let response = llm_callable
-                .call_with_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
-                .await;
-            if is_context_length_exceeded_response(&response) {
-                context_length_exceeded_result(question_id, session_state.final_answer.is_some())
-            } else {
-                let mut actions = Vec::new();
-                if session_state.final_answer.is_none()
-                    && let Some(boxed_content) = extract_boxed_content(&response)
-                {
-                    actions.push(TreeAction::AddTrajectoryAction {
-                        action: TrajectoryAction::SubmitFinalAnswer(FinalAnswer::ModelProvided(
-                            boxed_content,
-                        )),
-                    });
-                }
-                let (step_content_compacted, step_quality) = parse_compactor_response(response);
+            let response = call_with_prefix_thinking_disabled::<M, C>(
+                llm_callable,
+                prompt_before_assistant,
+                prompt_after_assistant,
+            )
+            .await;
+            let mut actions = Vec::new();
+            if session_state.final_answer.is_none()
+                && let Some(boxed_content) = extract_boxed_content(&response)
+            {
                 actions.push(TreeAction::AddTrajectoryAction {
-                    action: TrajectoryAction::CompactorCompactStep {
-                        step_content_compacted,
-                        step_quality,
-                    },
+                    action: TrajectoryAction::SubmitFinalAnswer(FinalAnswer::ModelProvided(
+                        boxed_content,
+                    )),
                 });
-                actions
             }
+            let (step_content_compacted, step_quality) = parse_compactor_response(response);
+            actions.push(TreeAction::AddTrajectoryAction {
+                action: TrajectoryAction::CompactorCompactStep {
+                    step_content_compacted,
+                    step_quality,
+                },
+            });
+            actions
         }
         TrajectoryStatus::PlannerUpdatingPlan {
             planner_chosen_mode: _,
@@ -431,23 +404,16 @@ pub async fn produce_actions_from_state<M: LlmModelMarker, C: LlmCallable<M>>(
             if session_state.final_answer.is_none() {
                 let (prompt_before_assistant, prompt_after_assistant) =
                     get_prompt_according_to_session_status(&session_state);
-                let response = llm_callable
-                    .call_with_prefix_thinking_disabled(
-                        prompt_before_assistant,
-                        prompt_after_assistant,
-                    )
-                    .await;
-                if is_context_length_exceeded_response(&response) {
-                    context_length_exceeded_result(
-                        question_id,
-                        session_state.final_answer.is_some(),
-                    )
-                } else {
-                    let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
-                    vec![TreeAction::AddTrajectoryAction {
-                        action: TrajectoryAction::PlannerUpdatePlan(Some(updated_plan_content)),
-                    }]
-                }
+                let response = call_with_prefix_thinking_disabled::<M, C>(
+                    llm_callable,
+                    prompt_before_assistant,
+                    prompt_after_assistant,
+                )
+                .await;
+                let updated_plan_content = response; // we change to not require the updated plan to be in a markdown code block
+                vec![TreeAction::AddTrajectoryAction {
+                    action: TrajectoryAction::PlannerUpdatePlan(Some(updated_plan_content)),
+                }]
             } else {
                 // if final answer already exists, we skip the plan updating and directly add a PlannerUpdatePlan action with None content, which will be treated as a signal to skip updating plan in the reducer
                 vec![TreeAction::AddTrajectoryAction {

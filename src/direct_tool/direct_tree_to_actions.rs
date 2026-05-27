@@ -643,7 +643,8 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     let prompt_tokens = direct_trajectory_to_prompt_tokens(trajectory);
     let response = llm_callable
         .generate_tokens_with_logprobs(prompt_tokens.clone(), true, 1.0, true)
-        .await;
+        .await
+        .unwrap();
     let response = patch_unclosed_python_tool_wait::<M>(response);
     let decoded_response = response.decode();
     if response.tokens.is_empty() || decoded_response.trim().is_empty() {
