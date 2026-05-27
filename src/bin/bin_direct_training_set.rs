@@ -23,6 +23,8 @@ struct Args {
     #[arg(long)]
     posterior_hyperparameters_path: String,
     #[arg(long)]
+    epoch: usize,
+    #[arg(long)]
     max_num_training_trajectories: usize,
 }
 
@@ -43,6 +45,7 @@ async fn main() {
         config_nickname,
         rollout_config_path,
         posterior_hyperparameters_path,
+        epoch,
         max_num_training_trajectories,
     } = Args::parse();
     let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();
@@ -51,65 +54,43 @@ async fn main() {
     let posterior_calculation_config = PosteriorCalculationConfig {
         hyperparameters: posterior_hyperparameters,
     };
+    let run_program_args = RunProgramArgs {
+        config_nickname,
+        rollout_config,
+        posterior_calculation_config,
+        epoch,
+        max_num_training_trajectories,
+    };
     match model {
-        LlmModelName::Gpt4o => {
-            run_program::<Gpt4o>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                max_num_training_trajectories,
-            )
-            .await
-        }
-        LlmModelName::Qwen3_4b => {
-            run_program::<Qwen3_4B>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                max_num_training_trajectories,
-            )
-            .await
-        }
-        LlmModelName::Qwen25_7b => {
-            run_program::<Qwen25>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                max_num_training_trajectories,
-            )
-            .await
-        }
-        LlmModelName::Qwen35_08b => {
-            run_program::<Qwen35_08B>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                max_num_training_trajectories,
-            )
-            .await
-        }
-        LlmModelName::Qwen35_4b => {
-            run_program::<Qwen35_4B>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                max_num_training_trajectories,
-            )
-            .await
-        }
+        LlmModelName::Gpt4o => run_program::<Gpt4o>(run_program_args).await,
+        LlmModelName::Qwen3_4b => run_program::<Qwen3_4B>(run_program_args).await,
+        LlmModelName::Qwen25_7b => run_program::<Qwen25>(run_program_args).await,
+        LlmModelName::Qwen35_08b => run_program::<Qwen35_08B>(run_program_args).await,
+        LlmModelName::Qwen35_4b => run_program::<Qwen35_4B>(run_program_args).await,
     }
 }
 
-pub async fn run_program<M: LlmModelMarker>(
+struct RunProgramArgs {
     config_nickname: String,
     rollout_config: DirectRolloutConfig,
     posterior_calculation_config: PosteriorCalculationConfig,
+    epoch: usize,
     max_num_training_trajectories: usize,
-) {
+}
+
+async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
+    let RunProgramArgs {
+        config_nickname,
+        rollout_config,
+        posterior_calculation_config,
+        epoch,
+        max_num_training_trajectories,
+    } = run_program_args;
     let asset_file_training_set = AssetFileTrainingTrajectories::<M> {
         config_nickname: config_nickname.clone(),
         rollout_config,
         posterior_calculation_config,
+        epoch,
         max_num_training_trajectories,
         _phantom: std::marker::PhantomData::<M>,
     };

@@ -24,14 +24,12 @@ Example setup:
 
 Only JSON-config launch is supported now.
 
-Use this wrapper; it takes exactly one argument:
-
-- `scripts/train/launch_4gpu.sh <config_json_path>`
+Use either the smoke-test helper or direct `torchrun`.
 
 Example:
 
 ```bash
-bash scripts/train/launch_4gpu.sh train_config/lora_qwen25.json
+bash scripts/train/smoke_test_lora_qwen25.sh
 ```
 
 Master port:
@@ -42,7 +40,7 @@ Master port:
 Example with custom port:
 
 ```bash
-MASTER_PORT=29502 bash scripts/train/launch_4gpu.sh train_config/lora_qwen25.json
+MASTER_PORT=29502 bash scripts/train/smoke_test_lora_qwen25.sh 2
 ```
 
 ## 3) Resume Behavior
@@ -71,7 +69,7 @@ Resume examples:
 #    auto | latest | none | global_step_100
 
 # 2) Launch using config-path-only entry
-bash scripts/train/launch_4gpu.sh train_config/lora_qwen25.json
+bash scripts/train/smoke_test_lora_qwen25.sh 1
 ```
 
 ## 4) JSON Config Entry details
@@ -85,13 +83,13 @@ Example config file:
 Launch with JSON script:
 
 ```bash
-bash scripts/train/launch_4gpu.sh train_config/lora_qwen25.json
+bash scripts/train/smoke_test_lora_qwen25.sh
 ```
 
 Direct `torchrun` with JSON:
 
 ```bash
-MASTER_PORT=29501 torchrun --nproc_per_node 4 --master_port "${MASTER_PORT}" src_py/train/main_from_config.py \
+MASTER_PORT=29501 torchrun --nproc_per_node 1 --master_port "${MASTER_PORT}" src_py/train/main_from_config.py \
   --config-json-path train_config/lora_qwen25.json
 ```
 

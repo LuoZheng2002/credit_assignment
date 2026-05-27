@@ -67,22 +67,36 @@ pub async fn rollout<M: LlmModelMarker>(
     );
 }
 
-pub async fn direct_rollout_all_with_config<M: LlmModelMarker>(
-    config_nickname: String,
-    rollout_config: DirectRolloutConfig,
-    posterior_calculation_config: PosteriorCalculationConfig,
-    client: Client,
-    question_semaphore: Arc<Semaphore>,
-    llm_cli_args: &LlmCliArgs,
-    first_n_samples: Option<usize>,
-) {
-    let llm_callable = M::Callable::from_cli_args(client.clone(), llm_cli_args);
+pub struct RolloutProgramConfig {
+    pub config_nickname: String,
+    pub rollout_config: DirectRolloutConfig,
+    pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub epoch: usize,
+    pub client: Client,
+    pub question_semaphore: Arc<Semaphore>,
+    pub llm_cli_args: LlmCliArgs,
+    pub first_n_samples: Option<usize>,
+}
+
+pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig) {
+    let RolloutProgramConfig {
+        config_nickname,
+        rollout_config,
+        posterior_calculation_config,
+        epoch,
+        client,
+        question_semaphore,
+        llm_cli_args,
+        first_n_samples,
+    } = program_config;
+    let llm_callable = M::Callable::from_cli_args(client.clone(), &llm_cli_args);
     let asset_file_dataset = AssetFileHybridDataset;
     let dataset = asset_file_dataset.fetch().await;
     let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
+        nickname: config_nickname,
         rollout_config: rollout_config.clone(),
         posterior_calculation_config: posterior_calculation_config.clone(),
-        nickname: config_nickname.clone(),
+        epoch,
         _phantom: std::marker::PhantomData,
     };
     asset_file_action_logs.delete_target_file_if_stale();

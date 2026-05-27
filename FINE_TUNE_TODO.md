@@ -33,7 +33,7 @@
 ### 1) Project scaffolding
 - [x] Create `src_py/train/` package and module layout.
 - [x] Add a CLI entrypoint in `src_py/train/main.py`.
-- [x] Add launcher script `scripts/train/launch_4gpu.sh`.
+- [x] Add smoke-test launcher script `scripts/train/smoke_test_lora_qwen25.sh`.
 
 ### 2) DeepSpeed configs
 - [x] Add `train_config/ds_zero3_7b.json`.

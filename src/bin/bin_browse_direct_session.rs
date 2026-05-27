@@ -63,6 +63,8 @@ struct Args {
     #[arg(long)]
     posterior_hyperparameters_path: String,
     #[arg(long)]
+    epoch: usize,
+    #[arg(long)]
     override_hyperparameters_path: Option<String>,
 }
 
@@ -2114,17 +2116,22 @@ fn run_app<M: LlmModelMarker>(
     Ok(())
 }
 
-async fn run_model_app<M: LlmModelMarker>(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    config_nickname: String,
-    rollout_config: DirectRolloutConfig,
-    posterior_calculation_config: PosteriorCalculationConfig,
-    override_hyperparameters: Option<PosteriorHyperparameters>,
+async fn run_model_app<'a, M: LlmModelMarker>(
+    run_model_app_args: RunModelAppArgs<'a>,
 ) -> Result<(), Box<dyn Error>> {
+    let RunModelAppArgs {
+        terminal,
+        config_nickname,
+        rollout_config,
+        posterior_calculation_config,
+        epoch,
+        override_hyperparameters,
+    } = run_model_app_args;
     let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
         nickname: config_nickname,
         rollout_config,
         posterior_calculation_config,
+        epoch,
         _phantom: std::marker::PhantomData,
     };
     let action_log_store = asset_file_action_logs.fetch().await;
@@ -2132,6 +2139,15 @@ async fn run_model_app<M: LlmModelMarker>(
     keys.sort();
     let app = App::<M>::new(action_log_store, keys, override_hyperparameters);
     run_app::<M>(terminal, app)
+}
+
+struct RunModelAppArgs<'a> {
+    terminal: &'a mut Terminal<CrosstermBackend<Stdout>>,
+    config_nickname: String,
+    rollout_config: DirectRolloutConfig,
+    posterior_calculation_config: PosteriorCalculationConfig,
+    epoch: usize,
+    override_hyperparameters: Option<PosteriorHyperparameters>,
 }
 
 #[tokio::main]
@@ -2150,6 +2166,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         config_nickname,
         rollout_config_path,
         posterior_hyperparameters_path,
+        epoch,
         override_hyperparameters_path,
     } = Args::parse();
     let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();
@@ -2165,57 +2182,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    let run_model_app_args = RunModelAppArgs {
+        terminal: &mut terminal,
+        config_nickname,
+        rollout_config,
+        posterior_calculation_config,
+        epoch,
+        override_hyperparameters,
+    };
     let result = match model {
-        LlmModelName::Qwen25_7b => {
-            run_model_app::<Qwen25>(
-                &mut terminal,
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                override_hyperparameters,
-            )
-            .await
-        }
-        LlmModelName::Qwen3_4b => {
-            run_model_app::<Qwen3_4B>(
-                &mut terminal,
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                override_hyperparameters,
-            )
-            .await
-        }
-        LlmModelName::Qwen35_4b => {
-            run_model_app::<Qwen35_4B>(
-                &mut terminal,
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                override_hyperparameters,
-            )
-            .await
-        }
-        LlmModelName::Qwen35_08b => {
-            run_model_app::<Qwen35_08B>(
-                &mut terminal,
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                override_hyperparameters,
-            )
-            .await
-        }
-        LlmModelName::Gpt4o => {
-            run_model_app::<Gpt4o>(
-                &mut terminal,
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                override_hyperparameters,
-            )
-            .await
-        }
+        LlmModelName::Qwen25_7b => run_model_app::<Qwen25>(run_model_app_args).await,
+        LlmModelName::Qwen3_4b => run_model_app::<Qwen3_4B>(run_model_app_args).await,
+        LlmModelName::Qwen35_4b => run_model_app::<Qwen35_4B>(run_model_app_args).await,
+        LlmModelName::Qwen35_08b => run_model_app::<Qwen35_08B>(run_model_app_args).await,
+        LlmModelName::Gpt4o => run_model_app::<Gpt4o>(run_model_app_args).await,
     };
     disable_raw_mode()?;
     execute!(

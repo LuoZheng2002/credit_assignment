@@ -346,6 +346,7 @@ pub struct AssetFileTrainingTrajectories<M: LlmModelMarker> {
     pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub epoch: usize,
     pub max_num_training_trajectories: usize,
     pub _phantom: std::marker::PhantomData<M>,
 }
@@ -356,6 +357,7 @@ pub struct AssetFileTrainingTrajectoriesTracking {
     pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub epoch: usize,
     pub max_num_training_trajectories: usize,
 }
 
@@ -365,6 +367,7 @@ impl<M: LlmModelMarker> AssetFileTrainingTrajectories<M> {
             &&self.config_nickname,
             &self.rollout_config,
             &self.posterior_calculation_config,
+            &self.epoch,
         ))
         .unwrap();
         let hash = blake3::hash(&serialized);
@@ -410,6 +413,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             nickname: self.config_nickname.clone(),
             rollout_config: self.rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
+            epoch: self.epoch,
             _phantom: std::marker::PhantomData,
         };
         let rollout_log_hash = asset_file_rollout_logs.synchronize().await;
@@ -418,6 +422,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             config_nickname: self.config_nickname.clone(),
             rollout_config: self.rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
+            epoch: self.epoch,
             max_num_training_trajectories: self.max_num_training_trajectories,
         };
         let stale = if let Ok(tracking_content) =

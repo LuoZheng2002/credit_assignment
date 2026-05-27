@@ -4,7 +4,7 @@ use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
     direct_tool::{
-        direct_rollout::direct_rollout_all_with_config,
+        direct_rollout::{RolloutProgramConfig, rollout_all},
         direct_rollout_config::DirectRolloutConfig,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
@@ -35,6 +35,8 @@ struct Args {
     rollout_config_path: String,
     #[arg(long)]
     posterior_hyperparameters_path: String,
+    #[arg(long)]
+    epoch: usize,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
     #[arg(long)]
@@ -58,6 +60,7 @@ async fn main() {
         llm_cli_args,
         rollout_config_path,
         posterior_hyperparameters_path,
+        epoch,
         ui,
         first_n_samples,
     } = Args::parse();
@@ -116,67 +119,22 @@ async fn main() {
             }
         }
     });
+    let program_config = RolloutProgramConfig {
+        config_nickname,
+        rollout_config,
+        posterior_calculation_config,
+        epoch,
+        client,
+        question_semaphore,
+        llm_cli_args,
+        first_n_samples,
+    };
     match model_name {
-        LlmModelName::Qwen25_7b => {
-            direct_rollout_all_with_config::<Qwen25>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                client,
-                question_semaphore,
-                &llm_cli_args,
-                first_n_samples,
-            )
-            .await;
-        }
-        LlmModelName::Qwen3_4b => {
-            direct_rollout_all_with_config::<Qwen3_4B>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                client,
-                question_semaphore,
-                &llm_cli_args,
-                first_n_samples,
-            )
-            .await;
-        }
-        LlmModelName::Qwen35_4b => {
-            direct_rollout_all_with_config::<Qwen35_4B>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                client,
-                question_semaphore,
-                &llm_cli_args,
-                first_n_samples,
-            )
-            .await;
-        }
-        LlmModelName::Qwen35_08b => {
-            direct_rollout_all_with_config::<Qwen35_08B>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                client,
-                question_semaphore,
-                &llm_cli_args,
-                first_n_samples,
-            )
-            .await;
-        }
-        LlmModelName::Gpt4o => {
-            direct_rollout_all_with_config::<Gpt4o>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                client,
-                question_semaphore,
-                &llm_cli_args,
-                first_n_samples,
-            )
-            .await;
-        }
+        LlmModelName::Qwen25_7b => rollout_all::<Qwen25>(program_config).await,
+        LlmModelName::Qwen3_4b => rollout_all::<Qwen3_4B>(program_config).await,
+        LlmModelName::Qwen35_4b => rollout_all::<Qwen35_4B>(program_config).await,
+        LlmModelName::Qwen35_08b => rollout_all::<Qwen35_08B>(program_config).await,
+        LlmModelName::Gpt4o => rollout_all::<Gpt4o>(program_config).await,
     }
     println!("All rollouts completed, shutting down worker message listener...");
     WORKER_MESSAGE_TX.store(None);

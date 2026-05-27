@@ -28,6 +28,8 @@ struct Args {
     rollout_config_path: String,
     #[arg(long)]
     posterior_hyperparameters_path: String,
+    #[arg(long)]
+    epoch: usize,
 }
 
 pub fn question_is_correct<M: LlmModelMarker>(action_log: &DirectTreeActionLog<M>) -> bool {
@@ -40,15 +42,25 @@ pub fn question_is_correct<M: LlmModelMarker>(action_log: &DirectTreeActionLog<M
     judgment.is_correct
 }
 
-async fn print_accuracy_for_model<M: LlmModelMarker>(
+struct PrintAccuracyArgs {
     config_nickname: String,
     rollout_config: DirectRolloutConfig,
     posterior_calculation_config: PosteriorCalculationConfig,
-) {
+    epoch: usize,
+}
+
+async fn print_accuracy<M: LlmModelMarker>(args: PrintAccuracyArgs) {
+    let PrintAccuracyArgs {
+        config_nickname,
+        rollout_config,
+        posterior_calculation_config,
+        epoch,
+    } = args;
     let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
         nickname: config_nickname,
         rollout_config,
         posterior_calculation_config,
+        epoch,
         _phantom: std::marker::PhantomData,
     };
     let action_log_store = asset_file_action_logs.fetch().await;
@@ -95,6 +107,7 @@ async fn main() {
         config_nickname,
         rollout_config_path,
         posterior_hyperparameters_path,
+        epoch,
     } = Args::parse();
     let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();
     let posterior_hyperparameters =
@@ -103,46 +116,17 @@ async fn main() {
         hyperparameters: posterior_hyperparameters,
     };
     let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
+    let program_args = PrintAccuracyArgs {
+        config_nickname,
+        rollout_config,
+        posterior_calculation_config,
+        epoch,
+    };
     match model_name {
-        LlmModelName::Gpt4o => {
-            print_accuracy_for_model::<Gpt4o>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-            )
-            .await;
-        }
-        LlmModelName::Qwen25_7b => {
-            print_accuracy_for_model::<Qwen25>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-            )
-            .await;
-        }
-        LlmModelName::Qwen3_4b => {
-            print_accuracy_for_model::<Qwen3_4B>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-            )
-            .await;
-        }
-        LlmModelName::Qwen35_08b => {
-            print_accuracy_for_model::<Qwen35_08B>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-            )
-            .await;
-        }
-        LlmModelName::Qwen35_4b => {
-            print_accuracy_for_model::<Qwen35_4B>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-            )
-            .await;
-        }
+        LlmModelName::Gpt4o => print_accuracy::<Gpt4o>(program_args).await,
+        LlmModelName::Qwen25_7b => print_accuracy::<Qwen25>(program_args).await,
+        LlmModelName::Qwen3_4b => print_accuracy::<Qwen3_4B>(program_args).await,
+        LlmModelName::Qwen35_08b => print_accuracy::<Qwen35_08B>(program_args).await,
+        LlmModelName::Qwen35_4b => print_accuracy::<Qwen35_4B>(program_args).await,
     }
 }

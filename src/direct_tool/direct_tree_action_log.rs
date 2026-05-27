@@ -52,6 +52,7 @@ pub struct AssetFileDirectTreeActionLogsTracking {
     pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub epoch: usize,
     pub action_log_schema_version: usize,
 }
 
@@ -60,6 +61,7 @@ pub struct AssetFileDirectTreeActionLogs<M: LlmModelMarker> {
     pub nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub epoch: usize,
     #[serde(skip)]
     pub _phantom: PhantomData<M>,
 }
@@ -77,7 +79,7 @@ impl<M: LlmModelMarker> AssetFileDirectTreeActionLogs<M> {
     }
     pub fn file_path(&self) -> String {
         format!(
-            "results/{}/direct_action_log_{}_{}.sqlite",
+            "results/{}/checkpoints_{}_{}/action_logs.sqlite",
             M::CLI_NAME,
             self.nickname,
             self.to_short_hash()
@@ -85,7 +87,7 @@ impl<M: LlmModelMarker> AssetFileDirectTreeActionLogs<M> {
     }
     fn version_tracking_path(&self) -> String {
         format!(
-            "results_version_tracking/{}/direct_action_log_{}_{}_tracking.json",
+            "results_version_tracking/{}/checkpoints_{}_{}/action_logs_tracking.json",
             M::CLI_NAME,
             self.nickname,
             self.to_short_hash()
@@ -158,6 +160,7 @@ impl<M: LlmModelMarker> AssetFileDirectTreeActionLogs<M> {
             rollout_config: self.rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
             action_log_schema_version: ACTION_LOG_SCHEMA_VERSION,
+            epoch: self.epoch,
         };
         write_json(self.version_tracking_path(), &tracking_content).unwrap();
     }
