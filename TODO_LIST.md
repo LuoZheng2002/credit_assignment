@@ -23,3 +23,14 @@ TODO:
 2. Training code
 3. Ablation study
 4. TBD
+
+
+We want a fully automated pipeline:
+
+We do the following in one epoch:
+1. We assume that a model is at the corresponding checkpoint position (Checkpoint 0 should have a model BEFORE the 0th epoch training)
+2. Do the validation and collect accuracy
+3. Collect training set through epochs with temperature = 0.7
+4. Run the training code (if this is not the last checkpoint)
+
+
