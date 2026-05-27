@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .data_sqlite import (
+    LazyTrainingTrajectoryStore,
     QuestionNodeId,
     TrainingSampleTokenized,
     iter_training_trajectories,
@@ -15,6 +16,12 @@ class ResolvedTrainingBatch:
     ids: list[QuestionNodeId]
     samples: list[TrainingSampleTokenized]
     model_official_name: str
+
+
+@dataclass(frozen=True)
+class LazyBatchWindow:
+    resolved_batch: ResolvedTrainingBatch
+    next_sample_index: int
 
 
 def _question_node_key(sample_id: QuestionNodeId) -> tuple[int, int]:
@@ -76,3 +83,53 @@ def load_resolved_training_batches(
     assert len(seen_ids) > 0, "at least one sample id must appear in batches"
 
     return resolved_batches
+
+
+class LazyResolvedBatchLoader:
+    def __init__(
+        self,
+        training_trajectory_sqlite_path: str,
+        model_official_name: str,
+        first_n_training_samples: int,
+    ):
+        assert len(model_official_name.strip()) > 0, "model_official_name cannot be empty"
+        self._store = LazyTrainingTrajectoryStore(
+            sqlite_path=training_trajectory_sqlite_path,
+            first_n_training_samples=first_n_training_samples,
+        )
+        self.sample_count = self._store.sample_count
+        self._model_official_name = model_official_name
+
+    def close(self) -> None:
+        self._store.close()
+
+    def resolve_batch(self, sample_index: int, batch_size: int, batch_index: int) -> LazyBatchWindow:
+        assert sample_index >= 0, "sample_index must be non-negative"
+        assert sample_index < self.sample_count, "sample_index out of range"
+        assert batch_size > 0, "batch_size must be positive"
+        assert batch_index >= 0, "batch_index must be non-negative"
+
+        end_sample_index = min(self.sample_count, sample_index + batch_size)
+        samples: list[TrainingSampleTokenized] = []
+        ids: list[QuestionNodeId] = []
+        previous_length = -1
+        for trajectory_id in range(sample_index, end_sample_index):
+            sample = self._store.get_sample(trajectory_id)
+            assert sample.input_length >= previous_length, (
+                "training trajectories must be sorted by input_ids length in ascending order"
+            )
+            previous_length = sample.input_length
+            samples.append(sample)
+            ids.append(sample.id)
+
+        assert len(samples) > 0, "resolved batch cannot be empty"
+
+        return LazyBatchWindow(
+            resolved_batch=ResolvedTrainingBatch(
+                batch_index=batch_index,
+                ids=ids,
+                samples=samples,
+                model_official_name=self._model_official_name,
+            ),
+            next_sample_index=end_sample_index,
+        )

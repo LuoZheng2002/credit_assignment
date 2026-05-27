@@ -1,7 +1,6 @@
 training_plan = "lora_current"
 model_name_or_path = "Qwen/Qwen3.5-0.8B"
 training_trajectory_sqlite_path = "" # to be determined
-batch_size = 64 # to be determined
 checkpoint_dir = "" # to be determined
 final_model_output_path = "" # to be determined
 advantage_clip = 3.0

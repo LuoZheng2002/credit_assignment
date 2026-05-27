@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import os
+import sqlite3
 from typing import Iterator
 
 from research_utility import SqliteStore
@@ -115,6 +116,12 @@ def _parse_direct_training_trajectory_payload(
     payload: object,
 ) -> TrainingSampleTokenized:
     payload_obj = _parse_payload_object(payload, "trajectory")
+    if "input_ids" not in payload_obj or "labels" not in payload_obj or "advantages" not in payload_obj:
+        if "question" in payload_obj and "tree" in payload_obj:
+            raise AssertionError(
+                "trajectory payload appears to be DirectTreeActionLog; expected DirectTrainingTrajectory "
+                "with input_ids/labels/advantages"
+            )
     assert "question" in payload_obj, "trajectory payload must contain question"
     assert "input_ids" in payload_obj, "trajectory payload must contain input_ids"
     assert "labels" in payload_obj, "trajectory payload must contain labels"
@@ -159,6 +166,57 @@ def _parse_direct_training_trajectory_payload(
     )
 
 
+def _read_store_entry_count(sqlite_path: str) -> int:
+    connection = sqlite3.connect(sqlite_path)
+    try:
+        cursor = connection.cursor()
+        row = cursor.execute(
+            "SELECT COUNT(*), MIN(CAST(id AS INTEGER)), MAX(CAST(id AS INTEGER)) FROM store_entries"
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert row is not None, "failed to query sqlite store_entries"
+    count = int(row[0])
+    if count == 0:
+        return 0
+
+    min_id = int(row[1])
+    max_id = int(row[2])
+    assert min_id == 0, f"trajectory ids must start at 0, got min id {min_id}"
+    assert max_id == count - 1, (
+        f"trajectory ids must be contiguous and end at count-1: max_id={max_id}, count={count}"
+    )
+    return count
+
+
+class LazyTrainingTrajectoryStore:
+    def __init__(self, sqlite_path: str, first_n_training_samples: int = 0):
+        _assert_sqlite_path_exists(sqlite_path)
+        assert first_n_training_samples >= 0, "first_n_training_samples must be non-negative"
+
+        self._store = SqliteStore[int, object](sqlite_path)
+        full_count = _read_store_entry_count(sqlite_path)
+        assert full_count > 0, "training trajectory database must be non-empty"
+        if first_n_training_samples > 0:
+            self.sample_count = min(full_count, first_n_training_samples)
+        else:
+            self.sample_count = full_count
+
+    def close(self) -> None:
+        self._store.close()
+
+    def get_sample(self, trajectory_id: int) -> TrainingSampleTokenized:
+        assert trajectory_id >= 0, "trajectory_id must be non-negative"
+        assert trajectory_id < self.sample_count, "trajectory_id out of bounds"
+
+        payload = self._store.get(trajectory_id)
+        assert payload is not None, (
+            f"trajectory index must be contiguous: expected {trajectory_id}, got missing id {trajectory_id}"
+        )
+        return _parse_direct_training_trajectory_payload(trajectory_id=trajectory_id, payload=payload)
+
+
 def iter_tokenized_samples(sqlite_path: str) -> Iterator[TrainingSampleTokenized]:
     _assert_sqlite_path_exists(sqlite_path)
     store = SqliteStore[str, object](sqlite_path)
@@ -174,16 +232,10 @@ def load_tokenized_samples(sqlite_path: str) -> list[TrainingSampleTokenized]:
 
 
 def iter_training_trajectories(sqlite_path: str) -> Iterator[TrainingSampleTokenized]:
-    _assert_sqlite_path_exists(sqlite_path)
-    store = SqliteStore[int, object](sqlite_path)
+    store = LazyTrainingTrajectoryStore(sqlite_path)
     try:
-        payload_count = len(store.load_all())
-        for trajectory_id in range(payload_count):
-            payload = store.get(trajectory_id)
-            assert payload is not None, (
-                f"trajectory index must be contiguous: expected {trajectory_id}, got missing id {trajectory_id}"
-            )
-            yield _parse_direct_training_trajectory_payload(trajectory_id=trajectory_id, payload=payload)
+        for trajectory_id in range(store.sample_count):
+            yield store.get_sample(trajectory_id)
     finally:
         store.close()
 

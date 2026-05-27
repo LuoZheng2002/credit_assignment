@@ -10,7 +10,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--training-plan", type=str, required=True)
     parser.add_argument("--model-name-or-path", type=str, required=True)
     parser.add_argument("--training-trajectory-sqlite-path", type=str, required=True)
-    parser.add_argument("--batch-size", type=int, required=True)
     parser.add_argument("--checkpoint-dir", type=str, required=True)
     parser.add_argument("--final-model-output-path", type=str, required=True)
     parser.add_argument("--advantage-clip", type=float, required=True)
@@ -38,7 +37,6 @@ def main() -> None:
         training_plan=args.training_plan,
         model_name_or_path=args.model_name_or_path,
         training_trajectory_sqlite_path=args.training_trajectory_sqlite_path,
-        batch_size=args.batch_size,
         checkpoint_dir=args.checkpoint_dir,
         final_model_output_path=args.final_model_output_path,
         advantage_clip=args.advantage_clip,
