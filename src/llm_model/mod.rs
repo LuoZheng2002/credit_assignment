@@ -3,20 +3,20 @@ use clap::Args;
 use reqwest::Client;
 
 pub mod gpt_4o;
-pub mod gpt_5_mini;
 pub mod llm_model_name;
 pub mod qwen2_5_7b;
 pub mod qwen3_4b;
+pub mod qwen3_5_0_8b;
 pub mod qwen3_5_4b;
 pub mod qwen_shared;
 
 use crate::token_array::TokenArray;
 pub use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate, Top8Candidates};
 pub use gpt_4o::{Gpt4o, Gpt4oLlmCallable, Gpt4oTokenizer};
-pub use gpt_5_mini::{Gpt5Mini, Gpt5MiniLlmCallable, Gpt5MiniTokenizer};
 pub use llm_model_name::LlmModelName;
 pub use qwen2_5_7b::{Qwen25, Qwen25LlmCallable, Qwen25Tokenizer};
 pub use qwen3_4b::{Qwen3_4B, Qwen3_4BLlmCallable, Qwen3_4BTokenizer};
+pub use qwen3_5_0_8b::{Qwen35_08B, Qwen35_08BLlmCallable, Qwen35_08BTokenizer};
 pub use qwen3_5_4b::{Qwen35_4B, Qwen35_4BLlmCallable, Qwen35_4BTokenizer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,12 +180,12 @@ pub fn build_prefix_thinking_disabled_by_model(
             prompt_before_assistant,
             prompt_after_assistant,
         ),
-        LlmModelName::Gpt4o => {
-            Gpt4o::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
-        }
-        LlmModelName::Gpt5Mini => Gpt5Mini::build_prefix_thinking_disabled(
+        LlmModelName::Qwen35_08b => Qwen35_08B::build_prefix_thinking_disabled(
             prompt_before_assistant,
             prompt_after_assistant,
         ),
+        LlmModelName::Gpt4o => {
+            Gpt4o::build_prefix_thinking_disabled(prompt_before_assistant, prompt_after_assistant)
+        }
     }
 }

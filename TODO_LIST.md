@@ -29,8 +29,9 @@ We want a fully automated pipeline:
 
 We do the following in one epoch:
 1. We assume that a model is at the corresponding checkpoint position (Checkpoint 0 should have a model BEFORE the 0th epoch training)
-2. Do the validation and collect accuracy
+2. Do the validation and collect accuracy (statistics: validation accuracy, etc.)
 3. Collect training set through epochs with temperature = 0.7
-4. Run the training code (if this is not the last checkpoint)
+4. Run the training code (if this is not the last checkpoint), and put the trained model to the next checkpoint
 
 
+We first need to build the components before orchestrating them.

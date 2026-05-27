@@ -1,8 +1,6 @@
 use reqwest::Client;
 use serde_json::Value;
-use std::sync::{
-    Arc,
-};
+use std::sync::Arc;
 use tokenizers::Tokenizer;
 use tokio::sync::Semaphore;
 

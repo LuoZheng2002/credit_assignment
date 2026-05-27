@@ -16,7 +16,7 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
-    llm_model::{Gpt4o, Gpt5Mini, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B},
+    llm_model::{Gpt4o, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B, Qwen35_08B},
 };
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseButton,
@@ -2196,8 +2196,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             )
             .await
         }
-        LlmModelName::Gpt4o => {
-            run_model_app::<Gpt4o>(
+        LlmModelName::Qwen35_08b => {
+            run_model_app::<Qwen35_08B>(
                 &mut terminal,
                 config_nickname,
                 rollout_config,
@@ -2206,8 +2206,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             )
             .await
         }
-        LlmModelName::Gpt5Mini => {
-            run_model_app::<Gpt5Mini>(
+        LlmModelName::Gpt4o => {
+            run_model_app::<Gpt4o>(
                 &mut terminal,
                 config_nickname,
                 rollout_config,

@@ -9,7 +9,7 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
-    llm_model::{Gpt4o, Gpt5Mini, LlmCliArgs, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B},
+    llm_model::{Gpt4o, LlmCliArgs, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B, Qwen35_08B},
 };
 use pyo3::Python;
 use reqwest::Client;
@@ -153,8 +153,8 @@ async fn main() {
             )
             .await;
         }
-        LlmModelName::Gpt4o => {
-            direct_rollout_all_with_config::<Gpt4o>(
+        LlmModelName::Qwen35_08b => {
+            direct_rollout_all_with_config::<Qwen35_08B>(
                 config_nickname,
                 rollout_config,
                 posterior_calculation_config,
@@ -165,8 +165,8 @@ async fn main() {
             )
             .await;
         }
-        LlmModelName::Gpt5Mini => {
-            direct_rollout_all_with_config::<Gpt5Mini>(
+        LlmModelName::Gpt4o => {
+            direct_rollout_all_with_config::<Gpt4o>(
                 config_nickname,
                 rollout_config,
                 posterior_calculation_config,

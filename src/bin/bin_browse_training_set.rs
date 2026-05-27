@@ -13,7 +13,7 @@ use credit_assignment::{
     },
     json_line_util::read_json,
     llm_model::{
-        Gpt4o, Gpt5Mini, LlmModelMarker, LlmModelName, MyTokenizer, Qwen3_4B, Qwen25, Qwen35_4B,
+        Gpt4o, LlmModelMarker, LlmModelName, MyTokenizer, Qwen3_4B, Qwen25, Qwen35_4B, Qwen35_08B,
     },
 };
 use crossterm::event::{
@@ -681,15 +681,6 @@ async fn main() {
             )
             .await
         }
-        LlmModelName::Gpt5Mini => {
-            run_program::<Gpt5Mini>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                max_num_training_trajectories,
-            )
-            .await
-        }
         LlmModelName::Qwen3_4b => {
             run_program::<Qwen3_4B>(
                 config_nickname,
@@ -701,6 +692,15 @@ async fn main() {
         }
         LlmModelName::Qwen25_7b => {
             run_program::<Qwen25>(
+                config_nickname,
+                rollout_config,
+                posterior_calculation_config,
+                max_num_training_trajectories,
+            )
+            .await
+        }
+        LlmModelName::Qwen35_08b => {
+            run_program::<Qwen35_08B>(
                 config_nickname,
                 rollout_config,
                 posterior_calculation_config,

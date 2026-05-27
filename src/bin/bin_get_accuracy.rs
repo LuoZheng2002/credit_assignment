@@ -9,7 +9,7 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
-    llm_model::{Gpt4o, Gpt5Mini, LlmModelMarker, LlmModelName, Qwen3, Qwen25, Qwen35},
+    llm_model::{Gpt4o, LlmModelMarker, LlmModelName, Qwen3, Qwen25, Qwen35, Qwen35_08B},
 };
 use research_utility::asset_file::AssetFile;
 
@@ -112,14 +112,6 @@ async fn main() {
             )
             .await;
         }
-        LlmModelName::Gpt5Mini => {
-            print_accuracy_for_model::<Gpt5Mini>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-            )
-            .await;
-        }
         LlmModelName::Qwen25_7b => {
             print_accuracy_for_model::<Qwen25>(
                 config_nickname,
@@ -130,6 +122,14 @@ async fn main() {
         }
         LlmModelName::Qwen3_4b => {
             print_accuracy_for_model::<Qwen3>(
+                config_nickname,
+                rollout_config,
+                posterior_calculation_config,
+            )
+            .await;
+        }
+        LlmModelName::Qwen35_08b => {
+            print_accuracy_for_model::<Qwen35_08B>(
                 config_nickname,
                 rollout_config,
                 posterior_calculation_config,
