@@ -1,13 +1,24 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from src_py.train.main_from_config import _load_train_config_from_json
+from src_py.train.main_from_config import _load_train_config_from_toml
+
+
+def _to_toml(payload: dict[str, object]) -> str:
+    lines: list[str] = []
+    for key, value in payload.items():
+        if isinstance(value, str):
+            lines.append(f'{key} = "{value}"')
+        elif isinstance(value, bool):
+            lines.append(f"{key} = {'true' if value else 'false'}")
+        else:
+            lines.append(f"{key} = {value}")
+    return "\n".join(lines) + "\n"
 
 
 class TestMainFromConfig(unittest.TestCase):
-    def test_load_train_config_from_json_success(self) -> None:
+    def test_load_train_config_from_toml_success(self) -> None:
         payload = {
             "training_plan": "lora_current",
             "model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
@@ -29,13 +40,13 @@ class TestMainFromConfig(unittest.TestCase):
             "seed": 42,
         }
         with tempfile.TemporaryDirectory() as tmp_dir:
-            config_path = Path(tmp_dir) / "config.json"
-            config_path.write_text(json.dumps(payload), encoding="utf-8")
-            config = _load_train_config_from_json(str(config_path))
+            config_path = Path(tmp_dir) / "config.toml"
+            config_path.write_text(_to_toml(payload), encoding="utf-8")
+            config = _load_train_config_from_toml(str(config_path))
             self.assertEqual("lora_current", config.training_plan)
             self.assertEqual("auto", config.resume_checkpoint_tag)
 
-    def test_load_train_config_from_json_rejects_missing_or_extra_keys(self) -> None:
+    def test_load_train_config_from_toml_rejects_missing_or_extra_keys(self) -> None:
         payload = {
             "training_plan": "lora_current",
             "model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
@@ -57,10 +68,10 @@ class TestMainFromConfig(unittest.TestCase):
             "unexpected": 123,
         }
         with tempfile.TemporaryDirectory() as tmp_dir:
-            config_path = Path(tmp_dir) / "bad_config.json"
-            config_path.write_text(json.dumps(payload), encoding="utf-8")
+            config_path = Path(tmp_dir) / "bad_config.toml"
+            config_path.write_text(_to_toml(payload), encoding="utf-8")
             with self.assertRaises(AssertionError):
-                _load_train_config_from_json(str(config_path))
+                _load_train_config_from_toml(str(config_path))
 
 
 if __name__ == "__main__":

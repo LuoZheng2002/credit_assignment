@@ -20,16 +20,16 @@ Example setup:
 - `lora_current`: current default plan (LoRA adapters).
 - `full_fsdp_backup`: backup plan (full-model FSDP).
 
-## 2) Start Training (JSON config path only)
+## 2) Start Training (TOML config path only)
 
-Only JSON-config launch is supported now.
+Only TOML-config launch is supported now.
 
 Use either the smoke-test helper or direct `torchrun`.
 
 Example:
 
 ```bash
-bash scripts/train/smoke_test_lora_qwen25.sh
+bash scripts/train/smoke_test_lora.sh 1 train_config/lora_qwen25.toml
 ```
 
 Master port:
@@ -40,7 +40,7 @@ Master port:
 Example with custom port:
 
 ```bash
-MASTER_PORT=29502 bash scripts/train/smoke_test_lora_qwen25.sh 2
+MASTER_PORT=29502 bash scripts/train/smoke_test_lora.sh 2 train_config/lora_qwen25.toml
 ```
 
 ## 3) Resume Behavior
@@ -69,38 +69,38 @@ Resume examples:
 #    auto | latest | none | global_step_100
 
 # 2) Launch using config-path-only entry
-bash scripts/train/smoke_test_lora_qwen25.sh 1
+bash scripts/train/smoke_test_lora.sh 1 train_config/lora_qwen25.toml
 ```
 
-## 4) JSON Config Entry details
+## 4) TOML Config Entry details
 
-You can keep all training fields in a JSON file and launch with a minimal command.
+You can keep all training fields in a TOML file and launch with a minimal command.
 
 Example config file:
 
-- `train_config/lora_qwen25.json`
+- `train_config/lora_qwen25.toml`
 
 Launch with JSON script:
 
 ```bash
-bash scripts/train/smoke_test_lora_qwen25.sh
+bash scripts/train/smoke_test_lora.sh 1 train_config/lora_qwen25.toml
 ```
 
-Direct `torchrun` with JSON:
+Direct `torchrun` with TOML:
 
 ```bash
 MASTER_PORT=29501 torchrun --nproc_per_node 1 --master_port "${MASTER_PORT}" src_py/train/main_from_config.py \
-  --config-json-path train_config/lora_qwen25.json
+  --config-toml-path train_config/lora_qwen25.toml
 ```
 
-JSON schema rule:
+TOML schema rule:
 
-- The JSON object must contain exactly all `TrainConfig` keys (no missing keys, no extra keys).
+- The TOML root table must contain exactly all `TrainConfig` keys (no missing keys, no extra keys).
 - Resume mode in JSON uses the same `resume_checkpoint_tag` values: `auto`, `latest`, `none`, or an explicit checkpoint tag.
 
 Padding note:
 
-- `pad_token_id` is no longer passed via CLI or JSON config.
+- `pad_token_id` is no longer passed via CLI or TOML config.
 - The trainer reads `tokenizer.pad_token_id` from the tokenizer loaded by `model_name_or_path` and asserts it is defined.
 
 ## 5) Outputs to Watch

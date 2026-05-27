@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import json
+import tomllib
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
@@ -10,17 +10,19 @@ from .engine import TrainConfig, train_with_deepspeed
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train causal LM from JSON config")
-    parser.add_argument("--config-json-path", type=str, required=True)
+    parser = argparse.ArgumentParser(description="Train causal LM from TOML config")
+    parser.add_argument("--config-toml-path", type=str, required=True)
     return parser
 
 
-def _load_train_config_from_json(config_json_path: str) -> TrainConfig:
-    config_path = Path(config_json_path)
+def _load_train_config_from_toml(config_toml_path: str) -> TrainConfig:
+    config_path = Path(config_toml_path)
     assert config_path.exists(), f"config file not found: {config_path}"
 
-    payload: Any = json.loads(config_path.read_text(encoding="utf-8"))
-    assert isinstance(payload, dict), "config json root must be an object"
+    payload: Any
+    with config_path.open("rb") as handle:
+        payload = tomllib.load(handle)
+    assert isinstance(payload, dict), "config toml root must be a table"
 
     expected_keys = {field.name for field in fields(TrainConfig)}
     actual_keys = set(payload.keys())
@@ -36,7 +38,7 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    config = _load_train_config_from_json(config_json_path=args.config_json_path)
+    config = _load_train_config_from_toml(config_toml_path=args.config_toml_path)
     train_with_deepspeed(config)
 
 
