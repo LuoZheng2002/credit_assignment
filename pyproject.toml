@@ -11,8 +11,9 @@ dependencies = [
     "grpcio-tools>=1.74.0",
     "research-utility",
     "torch",
+    # "transformers",
     "transformers",
-    "sglang==0.5.7",
+    "sglang==0.5.10",
     # used for LLM python tool calling
     "sympy>=1.14.0",
     "numpy>=2.4.6",
@@ -28,5 +29,8 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu126" }
-
 research-utility = { path = "../research-utility", editable = true }
+
+[tool.uv]
+environments = ["sys_platform == 'linux'"]
+prerelease = "allow"
