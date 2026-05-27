@@ -248,6 +248,9 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
     action_log: DirectTreeActionLog,
 ) -> Vec<DirectTrainingTrajectory<M>> {
     let tree = DirectTree::<M>::from_action_log(&action_log);
+    if !tree.completed {
+        return Vec::new();
+    }
     let root_segment_id = tree
         .root_segment_id
         .expect("DirectTree must have root_segment_id");
