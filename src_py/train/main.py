@@ -11,11 +11,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-name-or-path", type=str, required=True)
     parser.add_argument("--training-trajectory-sqlite-path", type=str, required=True)
     parser.add_argument("--batch-size", type=int, required=True)
-    parser.add_argument("--output-dir", type=str, required=True)
+    parser.add_argument("--checkpoint-dir", type=str, required=True)
+    parser.add_argument("--final-model-output-path", type=str, required=True)
     parser.add_argument("--advantage-clip", type=float, required=True)
     parser.add_argument("--learning-rate", type=float, required=True)
     parser.add_argument("--weight-decay", type=float, required=True)
-    parser.add_argument("--num-epochs", type=int, required=True)
+    parser.add_argument("--num-iterations", type=int, required=True)
     parser.add_argument("--grad-accum-steps", type=int, required=True)
     parser.add_argument("--log-interval-steps", type=int, required=True)
     parser.add_argument("--save-interval-steps", type=int, required=True)
@@ -25,6 +26,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lora-target-modules-csv", type=str, required=True)
     parser.add_argument("--resume-checkpoint-tag", type=str, required=False, default="auto")
     parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--first-n-training-samples", type=int, required=False, default=0)
     return parser
 
 
@@ -37,11 +39,12 @@ def main() -> None:
         model_name_or_path=args.model_name_or_path,
         training_trajectory_sqlite_path=args.training_trajectory_sqlite_path,
         batch_size=args.batch_size,
-        output_dir=args.output_dir,
+        checkpoint_dir=args.checkpoint_dir,
+        final_model_output_path=args.final_model_output_path,
         advantage_clip=args.advantage_clip,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
-        num_epochs=args.num_epochs,
+        num_iterations=args.num_iterations,
         grad_accum_steps=args.grad_accum_steps,
         log_interval_steps=args.log_interval_steps,
         save_interval_steps=args.save_interval_steps,
@@ -51,6 +54,7 @@ def main() -> None:
         lora_target_modules_csv=args.lora_target_modules_csv,
         resume_checkpoint_tag=args.resume_checkpoint_tag,
         seed=args.seed,
+        first_n_training_samples=args.first_n_training_samples,
     )
     train_with_deepspeed(config)
 

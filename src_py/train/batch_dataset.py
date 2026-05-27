@@ -25,9 +25,11 @@ def load_resolved_training_batches(
     training_trajectory_sqlite_path: str,
     batch_size: int,
     model_official_name: str,
+    first_n_training_samples: int,
 ) -> list[ResolvedTrainingBatch]:
     assert batch_size > 0, "batch_size must be positive"
     assert len(model_official_name.strip()) > 0, "model_official_name cannot be empty"
+    assert first_n_training_samples >= 0, "first_n_training_samples must be non-negative"
 
     trajectories: list[TrainingSampleTokenized] = []
     tokenized_by_id: dict[tuple[int, int], TrainingSampleTokenized] = {}
@@ -41,6 +43,9 @@ def load_resolved_training_batches(
         previous_input_length = sample.input_length
         tokenized_by_id[key] = sample
         trajectories.append(sample)
+
+        if first_n_training_samples > 0 and len(trajectories) == first_n_training_samples:
+            break
 
     assert len(trajectories) > 0, "training trajectory database must be non-empty"
 

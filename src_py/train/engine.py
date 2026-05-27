@@ -21,11 +21,12 @@ class TrainConfig:
     model_name_or_path: str
     training_trajectory_sqlite_path: str
     batch_size: int
-    output_dir: str
+    checkpoint_dir: str
+    final_model_output_path: str
     advantage_clip: float
     learning_rate: float
     weight_decay: float
-    num_epochs: int
+    num_iterations: int
     grad_accum_steps: int
     log_interval_steps: int
     save_interval_steps: int
@@ -35,12 +36,13 @@ class TrainConfig:
     lora_target_modules_csv: str
     resume_checkpoint_tag: str
     seed: int
+    first_n_training_samples: int
 
 
 @dataclass(frozen=True)
 class ResumeState:
     global_step: int
-    next_epoch_index: int
+    next_iteration_index: int
     next_batch_cursor: int
     accumulation_step: int
 
@@ -118,12 +120,12 @@ def _save_checkpoint(
     checkpoint_tag: str,
     training_plan: str,
     global_step: int,
-    next_epoch_index: int,
+    next_iteration_index: int,
     next_batch_cursor: int,
     accumulation_step: int,
 ) -> None:
     assert global_step >= 0, "global_step must be non-negative"
-    assert next_epoch_index >= 0, "next_epoch_index must be non-negative"
+    assert next_iteration_index >= 0, "next_iteration_index must be non-negative"
     assert next_batch_cursor >= 0, "next_batch_cursor must be non-negative"
     assert accumulation_step == 0, "checkpointing with partial gradient accumulation is not supported"
 
@@ -132,7 +134,7 @@ def _save_checkpoint(
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     metadata_payload = {
         "global_step": global_step,
-        "next_epoch_index": next_epoch_index,
+        "next_iteration_index": next_iteration_index,
         "next_batch_cursor": next_batch_cursor,
         "accumulation_step": accumulation_step,
         "training_plan": training_plan,
@@ -144,7 +146,7 @@ def _save_checkpoint(
     if training_plan == "lora_current":
         if rank == 0:
             unwrapped = model.module if hasattr(model, "module") else model
-            torch.save(unwrapped.state_dict(), checkpoint_dir / "model_state.pt")
+            torch.save(_extract_lora_checkpoint_state_dict(unwrapped), checkpoint_dir / "model_state.pt")
             _write_latest_checkpoint_pointer(output_dir=output_dir, checkpoint_tag=checkpoint_tag)
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             torch.distributed.barrier()
@@ -175,6 +177,39 @@ def _write_latest_checkpoint_pointer(output_dir: Path, checkpoint_tag: str) -> N
     latest_path.write_text(checkpoint_tag.strip() + "\n", encoding="utf-8")
 
 
+def _save_final_model_weights(
+    model: torch.nn.Module,
+    training_plan: str,
+    final_model_output_path: Path,
+) -> None:
+    rank, _ = _get_rank_world_size()
+    final_model_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if training_plan == "lora_current":
+        if rank == 0:
+            unwrapped = model.module if hasattr(model, "module") else model
+            torch.save(_extract_full_model_state_dict_for_export(unwrapped), final_model_output_path)
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+        return
+
+    assert training_plan == "full_fsdp_backup", "unknown training plan for final model export"
+    from torch.distributed.fsdp import (
+        FullyShardedDataParallel as FSDP,
+        FullStateDictConfig,
+        StateDictType,
+    )
+
+    assert isinstance(model, FSDP), "full_fsdp_backup final export expects FSDP model"
+    save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
+        state_dict = model.state_dict()
+    if rank == 0:
+        torch.save(state_dict, final_model_output_path)
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.barrier()
+
+
 def _read_latest_checkpoint_pointer(output_dir: Path) -> str:
     latest_path = output_dir / "latest_checkpoint.txt"
     assert latest_path.exists(), f"latest checkpoint pointer not found: {latest_path}"
@@ -196,6 +231,39 @@ def _resolve_resume_checkpoint_tag(output_dir: Path, resume_checkpoint_tag: str)
             assert latest_path.exists(), f"latest checkpoint pointer not found: {latest_path}"
         return _read_latest_checkpoint_pointer(output_dir=output_dir)
     return normalized_tag
+
+
+def _extract_lora_checkpoint_state_dict(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    if hasattr(model, "peft_config"):
+        try:
+            from peft import get_peft_model_state_dict
+
+            return get_peft_model_state_dict(model)
+        except ImportError:
+            pass
+    return model.state_dict()
+
+
+def _load_lora_checkpoint_state_dict(model: torch.nn.Module, state_dict: dict[str, torch.Tensor]) -> None:
+    if hasattr(model, "peft_config"):
+        try:
+            from peft import set_peft_model_state_dict
+
+            set_peft_model_state_dict(model, state_dict)
+            return
+        except ImportError:
+            pass
+
+    incompatible = model.load_state_dict(state_dict, strict=True)
+    assert len(incompatible.missing_keys) == 0, "checkpoint model state is missing keys"
+    assert len(incompatible.unexpected_keys) == 0, "checkpoint model state has unexpected keys"
+
+
+def _extract_full_model_state_dict_for_export(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    if hasattr(model, "merge_and_unload"):
+        merged_model = model.merge_and_unload()
+        return merged_model.state_dict()
+    return model.state_dict()
 
 
 def _load_checkpoint(
@@ -221,7 +289,8 @@ def _load_checkpoint(
     model_state_dict = torch.load(model_state_path, map_location="cpu")
     if training_plan == "lora_current":
         unwrapped = model.module if hasattr(model, "module") else model
-        incompatible = unwrapped.load_state_dict(model_state_dict, strict=True)
+        assert isinstance(model_state_dict, dict), "checkpoint model state must be a state_dict"
+        _load_lora_checkpoint_state_dict(unwrapped, model_state_dict)
     else:
         assert training_plan == "full_fsdp_backup", "unknown training plan for checkpoint loading"
         from torch.distributed.fsdp import (
@@ -235,22 +304,27 @@ def _load_checkpoint(
         with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, load_policy):
             incompatible = model.load_state_dict(model_state_dict, strict=True)
 
-    assert len(incompatible.missing_keys) == 0, "checkpoint model state is missing keys"
-    assert len(incompatible.unexpected_keys) == 0, "checkpoint model state has unexpected keys"
+    if training_plan != "lora_current":
+        assert len(incompatible.missing_keys) == 0, "checkpoint model state is missing keys"
+        assert len(incompatible.unexpected_keys) == 0, "checkpoint model state has unexpected keys"
 
     optimizer_state = torch.load(optimizer_state_path, map_location="cpu")
     optimizer.load_state_dict(optimizer_state)
 
     training_state = torch.load(training_state_path, map_location="cpu")
     assert training_state["training_plan"] == training_plan, "checkpoint training plan mismatch"
+    next_iteration_index_obj = training_state.get("next_iteration_index")
+    if next_iteration_index_obj is None:
+        next_iteration_index_obj = training_state.get("next_epoch_index")
+    assert next_iteration_index_obj is not None, "checkpoint missing next_iteration_index"
     resume_state = ResumeState(
         global_step=int(training_state["global_step"]),
-        next_epoch_index=int(training_state["next_epoch_index"]),
+        next_iteration_index=int(next_iteration_index_obj),
         next_batch_cursor=int(training_state["next_batch_cursor"]),
         accumulation_step=int(training_state["accumulation_step"]),
     )
     assert resume_state.global_step >= 0, "resume global_step must be non-negative"
-    assert resume_state.next_epoch_index >= 0, "resume epoch index must be non-negative"
+    assert resume_state.next_iteration_index >= 0, "resume iteration index must be non-negative"
     assert resume_state.next_batch_cursor >= 0, "resume batch cursor must be non-negative"
     assert (
         resume_state.accumulation_step == 0
@@ -261,21 +335,21 @@ def _load_checkpoint(
 
 
 def _compute_next_position(
-    epoch_index: int,
+    iteration_index: int,
     local_batch_cursor: int,
     local_batch_count: int,
 ) -> tuple[int, int]:
-    assert epoch_index >= 0, "epoch_index must be non-negative"
+    assert iteration_index >= 0, "iteration_index must be non-negative"
     assert local_batch_cursor >= 0, "local_batch_cursor must be non-negative"
     assert local_batch_count > 0, "local_batch_count must be positive"
     assert local_batch_cursor < local_batch_count, "local_batch_cursor must be in range"
 
-    next_epoch_index = epoch_index
+    next_iteration_index = iteration_index
     next_batch_cursor = local_batch_cursor + 1
     if next_batch_cursor == local_batch_count:
-        next_epoch_index += 1
+        next_iteration_index += 1
         next_batch_cursor = 0
-    return next_epoch_index, next_batch_cursor
+    return next_iteration_index, next_batch_cursor
 
 
 def _resolve_pad_token_id(tokenizer_pad_token_id: int | None) -> int:
@@ -412,12 +486,15 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     assert config.advantage_clip > 0.0, "advantage_clip must be positive"
     assert config.learning_rate > 0.0, "learning_rate must be positive"
     assert config.weight_decay >= 0.0, "weight_decay must be non-negative"
-    assert config.num_epochs > 0, "num_epochs must be positive"
+    assert config.num_iterations > 0, "num_iterations must be positive"
     assert config.batch_size > 0, "batch_size must be positive"
     assert config.grad_accum_steps > 0, "grad_accum_steps must be positive"
     assert config.log_interval_steps > 0, "log_interval_steps must be positive"
     assert config.save_interval_steps > 0, "save_interval_steps must be positive"
     assert len(config.resume_checkpoint_tag.strip()) > 0, "resume_checkpoint_tag cannot be empty"
+    assert len(config.checkpoint_dir.strip()) > 0, "checkpoint_dir cannot be empty"
+    assert len(config.final_model_output_path.strip()) > 0, "final_model_output_path cannot be empty"
+    assert config.first_n_training_samples >= 0, "first_n_training_samples must be non-negative"
 
     from transformers import AutoTokenizer
 
@@ -429,6 +506,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         training_trajectory_sqlite_path=config.training_trajectory_sqlite_path,
         batch_size=config.batch_size,
         model_official_name=config.model_name_or_path,
+        first_n_training_samples=config.first_n_training_samples,
     )
     local_batches = _shard_batches_for_rank(ordered_batches=ordered_batches, rank=rank, world_size=world_size)
 
@@ -474,9 +552,10 @@ def train_with_deepspeed(config: TrainConfig) -> None:
             find_unused_parameters=False,
         )
 
-    output_dir = Path(config.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    logs_path = output_dir / "train_metrics.jsonl"
+    checkpoint_dir = Path(config.checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    final_model_output_path = Path(config.final_model_output_path)
+    logs_path = checkpoint_dir / "train_metrics.jsonl"
 
     if _is_primary_rank():
         print(
@@ -487,7 +566,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
             logs_path,
             {
                 "step": 0,
-                "epoch": -1,
+                "iteration": -1,
                 "batch_index": -1,
                 "model_vocab_size": int(verification["model_vocab_size"]),
                 "max_input_token_id": int(verification["max_input_token_id"]),
@@ -502,13 +581,13 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         )
 
     resolved_resume_tag = _resolve_resume_checkpoint_tag(
-        output_dir=output_dir,
+        output_dir=checkpoint_dir,
         resume_checkpoint_tag=config.resume_checkpoint_tag,
     )
 
     resume_state = ResumeState(
         global_step=0,
-        next_epoch_index=0,
+        next_iteration_index=0,
         next_batch_cursor=0,
         accumulation_step=0,
     )
@@ -516,26 +595,28 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         resume_state = _load_checkpoint(
             model=model,
             optimizer=optimizer,
-            output_dir=output_dir,
+            output_dir=checkpoint_dir,
             checkpoint_tag=resolved_resume_tag,
             training_plan=config.training_plan,
         )
 
     assert resume_state.next_batch_cursor < len(local_batches) or (
-        resume_state.next_epoch_index >= config.num_epochs and resume_state.next_batch_cursor == 0
+        resume_state.next_iteration_index >= config.num_iterations and resume_state.next_batch_cursor == 0
     ), "resume batch cursor is out of local batch range"
 
     global_step = resume_state.global_step
     accumulation_step = resume_state.accumulation_step
     optimizer.zero_grad(set_to_none=True)
 
-    if resume_state.next_epoch_index >= config.num_epochs:
+    if resume_state.next_iteration_index >= config.num_iterations:
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             torch.distributed.barrier()
         return
 
-    for epoch_index in range(resume_state.next_epoch_index, config.num_epochs):
-        batch_start_cursor = resume_state.next_batch_cursor if epoch_index == resume_state.next_epoch_index else 0
+    for iteration_index in range(resume_state.next_iteration_index, config.num_iterations):
+        batch_start_cursor = (
+            resume_state.next_batch_cursor if iteration_index == resume_state.next_iteration_index else 0
+        )
         for local_batch_cursor in range(batch_start_cursor, len(local_batches)):
             resolved_batch = local_batches[local_batch_cursor]
             collated = collate_training_samples(
@@ -581,7 +662,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                 if _is_primary_rank() and global_step % config.log_interval_steps == 0:
                     log_payload: dict[str, float | int] = {
                         "step": global_step,
-                        "epoch": epoch_index,
+                        "iteration": iteration_index,
                         "batch_index": resolved_batch.batch_index,
                     }
                     for key, value in loss_output.stats.items():
@@ -589,8 +670,8 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                     _log_json_line(logs_path, log_payload)
 
                 if global_step % config.save_interval_steps == 0:
-                    next_epoch_index, next_batch_cursor = _compute_next_position(
-                        epoch_index=epoch_index,
+                    next_iteration_index, next_batch_cursor = _compute_next_position(
+                        iteration_index=iteration_index,
                         local_batch_cursor=local_batch_cursor,
                         local_batch_count=len(local_batches),
                     )
@@ -598,11 +679,11 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                     _save_checkpoint(
                         model=model,
                         optimizer=optimizer,
-                        output_dir=output_dir,
+                        output_dir=checkpoint_dir,
                         checkpoint_tag=checkpoint_tag,
                         training_plan=config.training_plan,
                         global_step=global_step,
-                        next_epoch_index=next_epoch_index,
+                        next_iteration_index=next_iteration_index,
                         next_batch_cursor=next_batch_cursor,
                         accumulation_step=accumulation_step,
                     )
@@ -616,13 +697,18 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     _save_checkpoint(
         model=model,
         optimizer=optimizer,
-        output_dir=output_dir,
+        output_dir=checkpoint_dir,
         checkpoint_tag="final",
         training_plan=config.training_plan,
         global_step=global_step,
-        next_epoch_index=config.num_epochs,
+        next_iteration_index=config.num_iterations,
         next_batch_cursor=0,
         accumulation_step=accumulation_step,
+    )
+    _save_final_model_weights(
+        model=model,
+        training_plan=config.training_plan,
+        final_model_output_path=final_model_output_path,
     )
 
     if torch.distributed.is_available() and torch.distributed.is_initialized():

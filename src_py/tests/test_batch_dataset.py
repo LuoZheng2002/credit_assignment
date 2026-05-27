@@ -73,6 +73,7 @@ class TestBatchDataset(unittest.TestCase):
                 training_trajectory_sqlite_path=trajectory_db.name,
                 batch_size=2,
                 model_official_name="Qwen/Qwen2.5-7B-Instruct",
+                first_n_training_samples=0,
             )
 
             self.assertEqual(2, len(batches))
@@ -118,7 +119,43 @@ class TestBatchDataset(unittest.TestCase):
                     training_trajectory_sqlite_path=trajectory_db.name,
                     batch_size=2,
                     model_official_name="Qwen/Qwen2.5-7B-Instruct",
+                    first_n_training_samples=0,
                 )
+
+    def test_load_resolved_training_batches_honors_first_n_training_samples(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".sqlite") as trajectory_db:
+            trajectory_entries: list[tuple[int, object]] = []
+            for index in range(4):
+                trajectory_entries.append(
+                    (
+                        index,
+                        {
+                            "question": {
+                                "flat_id": 100 + index,
+                                "dataset_name": "deepmath",
+                                "question_id": index,
+                                "question": f"q{index}",
+                                "correct_answer": f"a{index}",
+                            },
+                            "input_ids": [10 + index, 20 + index],
+                            "labels": [-100, 20 + index],
+                            "advantages": [0.1, 0.2],
+                            "average_absolute_segment_advantage": 0.15,
+                        },
+                    )
+                )
+            _write_entries(trajectory_db.name, trajectory_entries)
+
+            batches = load_resolved_training_batches(
+                training_trajectory_sqlite_path=trajectory_db.name,
+                batch_size=2,
+                model_official_name="Qwen/Qwen2.5-7B-Instruct",
+                first_n_training_samples=3,
+            )
+
+            self.assertEqual(2, len(batches))
+            self.assertEqual(2, len(batches[0].samples))
+            self.assertEqual(1, len(batches[1].samples))
 
 
 if __name__ == "__main__":

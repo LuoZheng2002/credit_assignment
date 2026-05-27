@@ -35,7 +35,7 @@ class TestEngineCheckpoint(unittest.TestCase):
                 checkpoint_tag="step_3",
                 training_plan="lora_current",
                 global_step=3,
-                next_epoch_index=1,
+                next_iteration_index=1,
                 next_batch_cursor=2,
                 accumulation_step=0,
             )
@@ -55,7 +55,7 @@ class TestEngineCheckpoint(unittest.TestCase):
             self.assertTrue(torch.allclose(expected_weight, model.weight.detach()))
             self.assertTrue(torch.allclose(expected_bias, model.bias.detach()))
             self.assertEqual(3, resumed.global_step)
-            self.assertEqual(1, resumed.next_epoch_index)
+            self.assertEqual(1, resumed.next_iteration_index)
             self.assertEqual(2, resumed.next_batch_cursor)
             self.assertEqual(0, resumed.accumulation_step)
             self.assertEqual("step_3", _read_latest_checkpoint_pointer(output_dir))
@@ -74,7 +74,7 @@ class TestEngineCheckpoint(unittest.TestCase):
                     checkpoint_tag="bad",
                     training_plan="lora_current",
                     global_step=1,
-                    next_epoch_index=0,
+                    next_iteration_index=0,
                     next_batch_cursor=1,
                     accumulation_step=1,
                 )

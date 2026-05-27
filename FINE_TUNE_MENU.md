@@ -47,11 +47,11 @@ MASTER_PORT=29502 bash scripts/train/smoke_test_lora.sh 2 train_config/lora_qwen
 
 Checkpoint pointer file:
 
-- `output_dir/latest_checkpoint.txt`
+- `checkpoint_dir/latest_checkpoint.txt`
 
 Each checkpoint directory (for example `global_step_100/`) includes:
 
-- `model_state.pt`
+- `model_state.pt` (LoRA adapter state dict for `lora_current`; full model state dict for `full_fsdp_backup`)
 - `optimizer_state.rank{rank}.pt`
 - `training_state.rank{rank}.pt`
 
@@ -80,7 +80,7 @@ Example config file:
 
 - `train_config/lora_qwen25.toml`
 
-Launch with JSON script:
+Launch with script:
 
 ```bash
 bash scripts/train/smoke_test_lora.sh 1 train_config/lora_qwen25.toml
@@ -96,7 +96,9 @@ MASTER_PORT=29501 torchrun --nproc_per_node 1 --master_port "${MASTER_PORT}" src
 TOML schema rule:
 
 - The TOML root table must contain exactly all `TrainConfig` keys (no missing keys, no extra keys).
-- Resume mode in JSON uses the same `resume_checkpoint_tag` values: `auto`, `latest`, `none`, or an explicit checkpoint tag.
+- Resume mode in TOML uses the same `resume_checkpoint_tag` values: `auto`, `latest`, `none`, or an explicit checkpoint tag.
+- Use `num_iterations` for the number of passes over loaded training batches.
+- Optional sample limit for smoke tests: set `first_n_training_samples > 0` to cap visible trajectories; `0` means no limit.
 
 Padding note:
 
@@ -105,7 +107,8 @@ Padding note:
 
 ## 5) Outputs to Watch
 
-- Train logs: `output_dir/train_metrics.jsonl`
-- Latest pointer: `output_dir/latest_checkpoint.txt`
-- Periodic checkpoints: `output_dir/global_step_*`
-- Final checkpoint: `output_dir/final`
+- Train logs: `checkpoint_dir/train_metrics.jsonl`
+- Latest pointer: `checkpoint_dir/latest_checkpoint.txt`
+- Periodic checkpoints: `checkpoint_dir/global_step_*`
+- Final checkpoint: `checkpoint_dir/final`
+- Final exported model weights: `final_model_output_path` (single `.pt` file; for `lora_current` this is merged full-model weights)

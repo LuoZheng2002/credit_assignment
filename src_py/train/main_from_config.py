@@ -26,6 +26,9 @@ def _load_train_config_from_toml(config_toml_path: str) -> TrainConfig:
 
     expected_keys = {field.name for field in fields(TrainConfig)}
     actual_keys = set(payload.keys())
+    if "first_n_training_samples" not in actual_keys:
+        payload["first_n_training_samples"] = 0
+        actual_keys.add("first_n_training_samples")
     missing = expected_keys - actual_keys
     extra = actual_keys - expected_keys
     assert len(missing) == 0, f"config missing keys: {sorted(missing)}"
