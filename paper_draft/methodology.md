@@ -216,7 +216,7 @@ Selected trajectories are ordered by sequence length to improve batch efficiency
 Each training sample provides:
 
 1. `input_ids`: token IDs.
-2. `labels`: token IDs for trainable positions and `-100` for masked positions; the first tool-response token may use EOS depending on generation termination handling in vLLM.
+2. `labels`: token IDs for trainable positions and `-100` for masked positions; the first tool-response token may use EOS depending on generation termination handling in SgLang.
 3. `attention_mask`: padding mask.
 4. `advantages`: normalized token-level advantage values aligned with `input_ids`.
 

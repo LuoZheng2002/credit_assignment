@@ -15,7 +15,6 @@ dotenvy = "0.15.7"
 futures = "0.3.32"
 hex = "0.4.3"
 indexmap = "2.13.1"
-kdtree = "0.8.0"
 minijinja = "2.19.0"
 pyo3 = {version="0.28.3", features=["abi3"]}
 rand = "0.10.0"
@@ -30,10 +29,3 @@ tokenizers = {version="0.22.2", features=["http"]}
 tiktoken-rs = "0.11.0"
 tokio = {version="1.50.0", features=["full"]}
 ordered-float = {version="5.3.0", features=["serde"]}
-tonic = {version="0.14.6", features=["transport"]}
-prost = "0.14.3"
-tonic-prost = "0.14.6"
-
-[build-dependencies]
-protoc-bin-vendored = "3.2.0"
-tonic-prost-build = "0.14.6"
