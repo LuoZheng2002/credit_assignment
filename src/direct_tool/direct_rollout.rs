@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use clap::ValueEnum;
 use reqwest::Client;
 use research_utility::{
     asset_file::AssetFile, sqlite_store::SqliteStore, worker_message_tx::log_key_value_pair,
@@ -16,14 +15,14 @@ use crate::{
         hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
-    llm_model::{LlmCliArgs, LlmModelMarker, LlmModelName},
+    llm_model::{LlmCliArgs, LlmModelMarker},
 };
 
 pub async fn rollout<M: LlmModelMarker>(
     question: HybridDatasetQuestion,
     rollout_config: DirectRolloutConfig,
     posterior_calculation_config: PosteriorCalculationConfig,
-    rollout_store: SqliteStore<usize, DirectTreeActionLog>,
+    rollout_store: SqliteStore<usize, DirectTreeActionLog<M>>,
     llm_callable: M::Callable,
     client: Client,
     // rng: &mut StdRng,
@@ -55,7 +54,7 @@ pub async fn rollout<M: LlmModelMarker>(
             .produce_actions_from_direct_tree(&llm_callable, client.clone())
             .await;
         for action in new_actions {
-            action_log.actions.push(action.clone());
+            action_log.actions.push(action);
         }
         rollout_store
             .upsert(question.flat_id, &action_log)
@@ -80,15 +79,15 @@ pub async fn direct_rollout_all_with_config<M: LlmModelMarker>(
     let llm_callable = M::callable_from_cli_args(client.clone(), llm_cli_args);
     let asset_file_dataset = AssetFileHybridDataset;
     let dataset = asset_file_dataset.fetch().await;
-    let asset_file_action_logs = AssetFileDirectTreeActionLogs {
-        model: LlmModelName::from_str(M::CLI_NAME, true).unwrap(),
+    let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
         rollout_config: rollout_config.clone(),
         posterior_calculation_config: posterior_calculation_config.clone(),
         nickname: config_nickname.clone(),
+        _phantom: std::marker::PhantomData,
     };
     asset_file_action_logs.delete_target_file_if_stale();
     asset_file_action_logs.create_tracking_file();
-    let rollout_store = SqliteStore::<usize, DirectTreeActionLog>::initialize_if_missing(
+    let rollout_store = SqliteStore::<usize, DirectTreeActionLog<M>>::initialize_if_missing(
         asset_file_action_logs.file_path(),
     )
     .await;

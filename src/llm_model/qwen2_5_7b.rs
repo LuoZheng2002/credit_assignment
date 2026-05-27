@@ -93,7 +93,7 @@ impl LlmCallable<Qwen25> for Qwen25LlmCallable {
         passes_in_stop: bool,
         temperature: f32,
         trim_eos: bool,
-    ) -> TokenArrayWithLogprob {
+    ) -> TokenArrayWithLogprob<Qwen25> {
         let output = self
             .shared
             .generate_tokens_with_logprobs_from_tokens(
@@ -108,15 +108,12 @@ impl LlmCallable<Qwen25> for Qwen25LlmCallable {
 
 pub struct Qwen25Tokenizer;
 impl MyTokenizer<Qwen25> for Qwen25Tokenizer {
-    fn tokenize(prompt: String) -> TokenArray {
+    fn tokenize(prompt: String) -> TokenArray<Qwen25> {
         let tokens = Self::encode_to_i32_ids(&prompt);
-        TokenArray {
-            tokens,
-            decoded_string: prompt,
-        }
+        TokenArray::from_tokens(tokens)
     }
 
-    fn tokenize_prompt_for_generation(prompt: String) -> TokenArray {
+    fn tokenize_prompt_for_generation(prompt: String) -> TokenArray<Qwen25> {
         let prompt_with_template = build_qwen25_prefix(&prompt, false);
         Self::tokenize(prompt_with_template)
     }

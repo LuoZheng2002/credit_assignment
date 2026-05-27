@@ -102,7 +102,7 @@ impl LlmCallable<Gpt5Mini> for Gpt5MiniLlmCallable {
         passes_in_stop: bool,
         temperature: f32,
         trim_eos: bool,
-    ) -> TokenArrayWithLogprob {
+    ) -> TokenArrayWithLogprob<Gpt5Mini> {
         let prompt = <Gpt5Mini as LlmModelMarker>::Tokenizer::decode_i32_ids(&prompt_or_tokens);
         let body = if passes_in_stop {
             serde_json::json!({
@@ -145,7 +145,6 @@ impl LlmCallable<Gpt5Mini> for Gpt5MiniLlmCallable {
             });
 
         let mut tokens = Vec::with_capacity(content_entries.len());
-        let mut decoded_string = String::new();
         let mut logprobs = Vec::with_capacity(content_entries.len());
 
         for entry in content_entries {
@@ -155,7 +154,6 @@ impl LlmCallable<Gpt5Mini> for Gpt5MiniLlmCallable {
             let Some(sampled_token_id) = try_token_to_single_id::<Gpt5Mini>(sampled_token) else {
                 continue;
             };
-            decoded_string.push_str(sampled_token);
             tokens.push(sampled_token_id);
             let sampled_logprob = entry["logprob"].as_f64().unwrap_or(f64::NEG_INFINITY) as f32;
 
@@ -194,11 +192,7 @@ impl LlmCallable<Gpt5Mini> for Gpt5MiniLlmCallable {
             logprobs.push(top8);
         }
 
-        let output = TokenArrayWithLogprob {
-            tokens,
-            decoded_string,
-            logprobs,
-        };
+        let output = TokenArrayWithLogprob::from_tokens_and_logprobs(tokens, logprobs);
         trim_tail_eos_if_needed::<Gpt5Mini>(output, trim_eos)
     }
 }
@@ -216,12 +210,9 @@ pub struct Gpt5Mini;
 
 pub struct Gpt5MiniTokenizer;
 impl MyTokenizer<Gpt5Mini> for Gpt5MiniTokenizer {
-    fn tokenize(prompt: String) -> TokenArray {
+    fn tokenize(prompt: String) -> TokenArray<Gpt5Mini> {
         let tokens = Self::encode_to_i32_ids(&prompt);
-        TokenArray {
-            tokens,
-            decoded_string: prompt,
-        }
+        TokenArray::from_tokens(tokens)
     }
 
     fn encode_to_i32_ids(text: &str) -> Vec<i32> {

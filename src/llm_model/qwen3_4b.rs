@@ -64,7 +64,7 @@ impl LlmCallable<Qwen3_4B> for Qwen3_4BLlmCallable {
         passes_in_stop: bool,
         temperature: f32,
         trim_eos: bool,
-    ) -> TokenArrayWithLogprob {
+    ) -> TokenArrayWithLogprob<Qwen3_4B> {
         let output = self
             .shared
             .generate_tokens_with_logprobs_from_tokens(
@@ -79,15 +79,12 @@ impl LlmCallable<Qwen3_4B> for Qwen3_4BLlmCallable {
 
 pub struct Qwen3_4BTokenizer;
 impl MyTokenizer<Qwen3_4B> for Qwen3_4BTokenizer {
-    fn tokenize(prompt: String) -> TokenArray {
+    fn tokenize(prompt: String) -> TokenArray<Qwen3_4B> {
         let tokens = Self::encode_to_i32_ids(&prompt);
-        TokenArray {
-            tokens,
-            decoded_string: prompt,
-        }
+        TokenArray::from_tokens(tokens)
     }
 
-    fn tokenize_prompt_for_generation(prompt: String) -> TokenArray {
+    fn tokenize_prompt_for_generation(prompt: String) -> TokenArray<Qwen3_4B> {
         let prompt_with_template = build_simple_qwen_chatml_prefix(&prompt, true);
         Self::tokenize(prompt_with_template)
     }

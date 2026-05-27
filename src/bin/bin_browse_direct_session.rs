@@ -69,13 +69,24 @@ struct Args {
 const QUESTIONS_PER_PAGE: usize = 10;
 const CONVERSATION_SCROLL_SENSITIVITY: usize = 4;
 
-#[derive(Clone)]
-struct QuestionEntry {
+struct QuestionEntry<M: LlmModelMarker> {
     key: usize,
-    action_log: DirectTreeActionLog,
+    action_log: DirectTreeActionLog<M>,
     win_rate: f64,
     num_correct: usize,
     num_leaves: usize,
+}
+
+impl<M: LlmModelMarker> Clone for QuestionEntry<M> {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key,
+            action_log: self.action_log.clone(),
+            win_rate: self.win_rate,
+            num_correct: self.num_correct,
+            num_leaves: self.num_leaves,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -187,7 +198,7 @@ struct TreePageState<M: LlmModelMarker> {
 impl<M: LlmModelMarker> TreePage<M> {
     fn new(
         entry_index: usize,
-        entry: &QuestionEntry,
+        entry: &QuestionEntry<M>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> Self {
         let total_actions = entry.action_log.actions.len();
@@ -224,7 +235,7 @@ impl<M: LlmModelMarker> TreePage<M> {
 
     fn rebuild_snapshot(
         &mut self,
-        entry: &QuestionEntry,
+        entry: &QuestionEntry<M>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) {
         let state = tree_page_state_from_action_log::<M>(
@@ -257,7 +268,7 @@ impl<M: LlmModelMarker> TreePage<M> {
 
     fn set_action_limit(
         &mut self,
-        entry: &QuestionEntry,
+        entry: &QuestionEntry<M>,
         new_limit: usize,
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) {
@@ -270,7 +281,7 @@ impl<M: LlmModelMarker> TreePage<M> {
 
     fn set_width_division_ratio(
         &mut self,
-        entry: &QuestionEntry,
+        entry: &QuestionEntry<M>,
         new_ratio: usize,
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) {
@@ -283,7 +294,7 @@ impl<M: LlmModelMarker> TreePage<M> {
 }
 
 fn tree_page_state_from_action_log<M: LlmModelMarker>(
-    action_log: &DirectTreeActionLog,
+    action_log: &DirectTreeActionLog<M>,
     action_limit: usize,
     width_division_ratio: usize,
     override_hyperparameters: Option<PosteriorHyperparameters>,
@@ -329,9 +340,9 @@ fn tree_page_state_from_action_log<M: LlmModelMarker>(
 struct App<M: LlmModelMarker> {
     _model_marker: PhantomData<M>,
     override_hyperparameters: Option<PosteriorHyperparameters>,
-    action_log_store: SqliteStore<usize, DirectTreeActionLog>,
+    action_log_store: SqliteStore<usize, DirectTreeActionLog<M>>,
     entry_keys: Vec<usize>,
-    entry_cache: Vec<Option<QuestionEntry>>,
+    entry_cache: Vec<Option<QuestionEntry<M>>>,
     mode: Mode,
     home_selected_index: usize,
     home_list_area: Option<Rect>,
@@ -352,7 +363,7 @@ struct App<M: LlmModelMarker> {
 
 impl<M: LlmModelMarker> App<M> {
     fn new(
-        action_log_store: SqliteStore<usize, DirectTreeActionLog>,
+        action_log_store: SqliteStore<usize, DirectTreeActionLog<M>>,
         entry_keys: Vec<usize>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> Self {
@@ -421,7 +432,7 @@ impl<M: LlmModelMarker> App<M> {
         }
     }
 
-    fn loaded_entry(&self, index: usize) -> &QuestionEntry {
+    fn loaded_entry(&self, index: usize) -> &QuestionEntry<M> {
         self.entry_cache[index]
             .as_ref()
             .expect("entry must be loaded before use")
@@ -487,7 +498,7 @@ impl<M: LlmModelMarker> App<M> {
             self.ensure_visible_home_page_loaded();
             let page_start = (self.home_selected_index / QUESTIONS_PER_PAGE) * QUESTIONS_PER_PAGE;
             let page_end = (page_start + QUESTIONS_PER_PAGE).min(self.total_entries());
-            let page_entries: Vec<&QuestionEntry> = (page_start..page_end)
+            let page_entries: Vec<&QuestionEntry<M>> = (page_start..page_end)
                 .map(|index| self.loaded_entry(index))
                 .collect();
 
@@ -1009,11 +1020,7 @@ impl<M: LlmModelMarker> App<M> {
                         }
                         TreeScrollMode::Evolution => {
                             let next = tree_page.action_limit.saturating_sub(1);
-                            tree_page.set_action_limit(
-                                &entry,
-                                next,
-                                self.override_hyperparameters,
-                            );
+                            tree_page.set_action_limit(&entry, next, self.override_hyperparameters);
                         }
                     }
                 }
@@ -1056,11 +1063,7 @@ impl<M: LlmModelMarker> App<M> {
                         }
                         TreeScrollMode::Evolution => {
                             let next = (tree_page.action_limit + 1).min(tree_page.total_actions);
-                            tree_page.set_action_limit(
-                                &entry,
-                                next,
-                                self.override_hyperparameters,
-                            );
+                            tree_page.set_action_limit(&entry, next, self.override_hyperparameters);
                         }
                     }
                 }
@@ -1514,7 +1517,10 @@ fn collect_leaf_order<M: LlmModelMarker>(
     leaves
 }
 
-fn path_root_to_segment<M: LlmModelMarker>(tree: &DirectTree<M>, segment_id: SegmentId) -> Vec<SegmentId> {
+fn path_root_to_segment<M: LlmModelMarker>(
+    tree: &DirectTree<M>,
+    segment_id: SegmentId,
+) -> Vec<SegmentId> {
     let mut path = Vec::new();
     let mut cursor = Some(segment_id);
     while let Some(current_id) = cursor {
@@ -1984,10 +1990,7 @@ fn build_conversation_render<M: LlmModelMarker>(
     let mut plain = String::new();
     let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
     for sid in path {
-        let segment = tree
-            .segments
-            .get(&sid)
-            .expect("segment in path must exist");
+        let segment = tree.segments.get(&sid).expect("segment in path must exist");
         let segment_color = segment_posterior_signal_scaled
             .get(&sid)
             .copied()
@@ -1997,21 +2000,16 @@ fn build_conversation_render<M: LlmModelMarker>(
         for content in &segment.content {
             match content {
                 SegmentContent::Prompt(tokens) => {
-                    push_text_as_spans(&mut lines, &tokens.decoded_string, None, &mut plain);
+                    push_text_as_spans(&mut lines, &tokens.decode(), None, &mut plain);
                 }
                 SegmentContent::ReasoningOrToolCall {
                     tokens,
                     complete: _,
                 } => {
-                    push_text_as_spans(
-                        &mut lines,
-                        &tokens.decoded_string,
-                        reasoning_style,
-                        &mut plain,
-                    );
+                    push_text_as_spans(&mut lines, &tokens.decode(), reasoning_style, &mut plain);
                 }
                 SegmentContent::ToolResponse(tokens) => {
-                    push_text_as_spans(&mut lines, &tokens.decoded_string, None, &mut plain);
+                    push_text_as_spans(&mut lines, &tokens.decode(), None, &mut plain);
                 }
             }
         }
@@ -2036,7 +2034,7 @@ fn build_conversation_render<M: LlmModelMarker>(
 }
 
 fn tree_from_action_log_with_limit<M: LlmModelMarker>(
-    action_log: &DirectTreeActionLog,
+    action_log: &DirectTreeActionLog<M>,
     action_limit: usize,
 ) -> DirectTree<M> {
     let mut partial_log = action_log.clone();
@@ -2066,7 +2064,7 @@ fn segment_advantages<M: LlmModelMarker>(
 }
 
 fn width_division_ratio_for_action_log<M: LlmModelMarker>(
-    action_log: &DirectTreeActionLog,
+    action_log: &DirectTreeActionLog<M>,
 ) -> usize {
     width_division_ratio_for_tree(&DirectTree::<M>::from_action_log(action_log))
 }
@@ -2080,7 +2078,7 @@ fn width_division_ratio_for_tree<M: LlmModelMarker>(tree: &DirectTree<M>) -> usi
 }
 
 fn question_stats_from_action_log<M: LlmModelMarker>(
-    action_log: &DirectTreeActionLog,
+    action_log: &DirectTreeActionLog<M>,
 ) -> (usize, usize, f64) {
     let final_tree = tree_from_action_log_with_limit::<M>(action_log, action_log.actions.len());
     let num_leaves = final_tree.leaf_segment_judgments.len();
@@ -2116,6 +2114,26 @@ fn run_app<M: LlmModelMarker>(
     Ok(())
 }
 
+async fn run_model_app<M: LlmModelMarker>(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    config_nickname: String,
+    rollout_config: DirectRolloutConfig,
+    posterior_calculation_config: PosteriorCalculationConfig,
+    override_hyperparameters: Option<PosteriorHyperparameters>,
+) -> Result<(), Box<dyn Error>> {
+    let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
+        nickname: config_nickname,
+        rollout_config,
+        posterior_calculation_config,
+        _phantom: std::marker::PhantomData,
+    };
+    let action_log_store = asset_file_action_logs.fetch().await;
+    let mut keys = action_log_store.get_keys().await.unwrap();
+    keys.sort();
+    let app = App::<M>::new(action_log_store, keys, override_hyperparameters);
+    run_app::<M>(terminal, app)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     std::panic::set_hook(Box::new(|info| {
@@ -2142,16 +2160,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let posterior_calculation_config = PosteriorCalculationConfig {
         hyperparameters: posterior_hyperparameters,
     };
-    let asset_file_action_logs = AssetFileDirectTreeActionLogs {
-        model,
-        nickname: config_nickname,
-        rollout_config,
-        posterior_calculation_config,
-    };
-    let action_log_store = asset_file_action_logs.fetch().await;
-    let mut keys = action_log_store.get_keys().await.unwrap();
-    keys.sort();
-
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -2159,24 +2167,54 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut terminal = Terminal::new(backend)?;
     let result = match model {
         LlmModelName::Qwen25_7b => {
-            let app = App::<Qwen25>::new(action_log_store, keys, override_hyperparameters);
-            run_app::<Qwen25>(&mut terminal, app)
+            run_model_app::<Qwen25>(
+                &mut terminal,
+                config_nickname,
+                rollout_config,
+                posterior_calculation_config,
+                override_hyperparameters,
+            )
+            .await
         }
         LlmModelName::Qwen3_4b => {
-            let app = App::<Qwen3_4B>::new(action_log_store, keys, override_hyperparameters);
-            run_app::<Qwen3_4B>(&mut terminal, app)
+            run_model_app::<Qwen3_4B>(
+                &mut terminal,
+                config_nickname,
+                rollout_config,
+                posterior_calculation_config,
+                override_hyperparameters,
+            )
+            .await
         }
         LlmModelName::Qwen35_4b => {
-            let app = App::<Qwen35_4B>::new(action_log_store, keys, override_hyperparameters);
-            run_app::<Qwen35_4B>(&mut terminal, app)
+            run_model_app::<Qwen35_4B>(
+                &mut terminal,
+                config_nickname,
+                rollout_config,
+                posterior_calculation_config,
+                override_hyperparameters,
+            )
+            .await
         }
         LlmModelName::Gpt4o => {
-            let app = App::<Gpt4o>::new(action_log_store, keys, override_hyperparameters);
-            run_app::<Gpt4o>(&mut terminal, app)
+            run_model_app::<Gpt4o>(
+                &mut terminal,
+                config_nickname,
+                rollout_config,
+                posterior_calculation_config,
+                override_hyperparameters,
+            )
+            .await
         }
         LlmModelName::Gpt5Mini => {
-            let app = App::<Gpt5Mini>::new(action_log_store, keys, override_hyperparameters);
-            run_app::<Gpt5Mini>(&mut terminal, app)
+            run_model_app::<Gpt5Mini>(
+                &mut terminal,
+                config_nickname,
+                rollout_config,
+                posterior_calculation_config,
+                override_hyperparameters,
+            )
+            .await
         }
     };
     disable_raw_mode()?;

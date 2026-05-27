@@ -118,7 +118,7 @@ impl VllmResponse {
         }
     }
 
-    pub fn into_token_array_with_logprob(self) -> Result<TokenArrayWithLogprob, String> {
+    pub fn into_token_array_with_logprob<M>(self) -> Result<TokenArrayWithLogprob<M>, String> {
         match self {
             VllmResponse::Error { error_message } => Err(error_message),
             VllmResponse::Success {
@@ -156,11 +156,11 @@ impl VllmResponse {
                     })
                     .collect();
 
-                Ok(TokenArrayWithLogprob {
+                let _response_text = response_text;
+                Ok(TokenArrayWithLogprob::from_tokens_and_logprobs(
                     tokens,
-                    decoded_string: response_text,
-                    logprobs: mapped_logprobs,
-                })
+                    mapped_logprobs,
+                ))
             }
         }
     }

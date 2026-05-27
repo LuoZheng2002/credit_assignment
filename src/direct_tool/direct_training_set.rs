@@ -4,7 +4,6 @@ use std::{
     sync::Arc,
 };
 
-use clap::ValueEnum;
 use ordered_float::NotNan;
 use research_utility::{
     asset_file::{AssetFile, Base64Hash, hash_file},
@@ -23,7 +22,7 @@ use crate::{
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     json_line_util::{read_json, write_json},
-    llm_model::{LlmModelMarker, LlmModelName},
+    llm_model::LlmModelMarker,
 };
 
 pub struct TrajectoryHeapItem<M: LlmModelMarker> {
@@ -53,7 +52,7 @@ impl<M: LlmModelMarker> Ord for TrajectoryHeapItem<M> {
 }
 
 pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
-    action_log_store: SqliteStore<usize, DirectTreeActionLog>,
+    action_log_store: SqliteStore<usize, DirectTreeActionLog<M>>,
     max_num_training_trajectories: usize,
     statistics_file_path: String,
 ) -> Vec<DirectTrainingTrajectory<M>> {
@@ -246,7 +245,7 @@ pub struct DirectTrainingSetStatistics {
 }
 
 fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
-    action_log: DirectTreeActionLog,
+    action_log: DirectTreeActionLog<M>,
 ) -> Vec<DirectTrainingTrajectory<M>> {
     let tree = DirectTree::<M>::from_action_log(&action_log);
     if !tree.completed {
@@ -372,9 +371,6 @@ impl<M: LlmModelMarker> AssetFileTrainingTrajectories<M> {
         let short_hash = hex::encode(&hash.as_bytes()[..4]); // Take the first 4 bytes for a shorter hash
         short_hash
     }
-    fn model_name(&self) -> LlmModelName {
-        LlmModelName::from_str(M::CLI_NAME, true).unwrap()
-    }
     pub fn file_path(&self) -> String {
         format!(
             "results/{}/training_trajectories_{}_{}.sqlite",
@@ -410,11 +406,11 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             .await
     }
     async fn synchronize(&self) -> Base64Hash {
-        let asset_file_rollout_logs = AssetFileDirectTreeActionLogs {
-            model: self.model_name(),
+        let asset_file_rollout_logs = AssetFileDirectTreeActionLogs::<M> {
             nickname: self.config_nickname.clone(),
             rollout_config: self.rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
+            _phantom: std::marker::PhantomData,
         };
         let rollout_log_hash = asset_file_rollout_logs.synchronize().await;
         let new_tracking_content = AssetFileTrainingTrajectoriesTracking {

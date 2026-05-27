@@ -221,12 +221,12 @@ impl SharedQwenLlmCallable {
         content
     }
 
-    pub(crate) async fn generate_tokens_with_logprobs_from_tokens(
+    pub(crate) async fn generate_tokens_with_logprobs_from_tokens<M>(
         &self,
         tokens: Vec<i32>,
         passes_in_stop: bool,
         temperature: f32,
-    ) -> TokenArrayWithLogprob {
+    ) -> TokenArrayWithLogprob<M> {
         let _permit = self
             .request_semaphore
             .clone()
@@ -284,7 +284,6 @@ impl SharedQwenLlmCallable {
                     &format!("SGLang port {}", sglang_port),
                     &json,
                     &tokens,
-                    self.decode_tokens,
                 )
             }
             QwenBackend::VllmWrapper { vllm_wrapper_port } => {
@@ -406,13 +405,13 @@ impl SharedQwenLlmCallable {
         }
     }
 
-    async fn generate_tokens_with_logprobs_with_vllm_wrapper(
+    async fn generate_tokens_with_logprobs_with_vllm_wrapper<M>(
         &self,
         tokens: Vec<i32>,
         vllm_wrapper_port: u16,
         passes_in_stop: bool,
         temperature: f32,
-    ) -> TokenArrayWithLogprob {
+    ) -> TokenArrayWithLogprob<M> {
         let request = WrapperRequest {
             model_name: self.api_name.to_string(),
             prompt: VllmPrompt::TokenIds(tokens),
@@ -539,12 +538,11 @@ fn parse_sglang_generated_token_ids(
     all_ids
 }
 
-fn parse_sglang_response_with_logprobs(
+fn parse_sglang_response_with_logprobs<M>(
     backend_label: &str,
     json: &Value,
     _input_tokens: &[i32],
-    decode_tokens: fn(&[i32]) -> String,
-) -> TokenArrayWithLogprob {
+) -> TokenArrayWithLogprob<M> {
     if let Some(error_message) = json["error"]["message"].as_str() {
         panic!(
             "Qwen completion with logprobs failed on {}: {}. Full response: {}",
@@ -585,8 +583,6 @@ fn parse_sglang_response_with_logprobs(
         generated_tokens,
     );
 
-    let decoded_string = decode_tokens(&generated_tokens);
-
     let mut aligned_logprobs = Vec::with_capacity(generated_tokens.len());
     for (idx, generated_token_id) in generated_tokens.iter().copied().enumerate() {
         let generated_logprob = token_logprobs[idx][0]
@@ -624,11 +620,7 @@ fn parse_sglang_response_with_logprobs(
         aligned_logprobs.push(top8);
     }
 
-    TokenArrayWithLogprob {
-        tokens: generated_tokens,
-        decoded_string,
-        logprobs: aligned_logprobs,
-    }
+    TokenArrayWithLogprob::from_tokens_and_logprobs(generated_tokens, aligned_logprobs)
 }
 
 fn parse_sglang_output_token_ids_from_token_logprobs(
@@ -715,11 +707,11 @@ fn parse_sglang_top_logprob_candidates(
         .collect()
 }
 
-fn parse_completion_response_with_logprobs(
+fn parse_completion_response_with_logprobs<M>(
     backend_label: &str,
     json: &Value,
     encode_text: fn(&str) -> Vec<i32>,
-) -> TokenArrayWithLogprob {
+) -> TokenArrayWithLogprob<M> {
     if let Some(error_message) = json["error"]["message"].as_str() {
         panic!(
             "Qwen completion with logprobs failed on {}: {}. Full response: {:?}",
@@ -728,7 +720,7 @@ fn parse_completion_response_with_logprobs(
     }
 
     let choice = &json["choices"][0];
-    let decoded_string = choice["text"]
+    let _decoded_string = choice["text"]
         .as_str()
         .unwrap_or_else(|| {
             panic!(
@@ -827,17 +819,13 @@ fn parse_completion_response_with_logprobs(
         aligned_logprobs.push(top8);
     }
 
-    TokenArrayWithLogprob {
-        tokens: generated_tokens,
-        decoded_string,
-        logprobs: aligned_logprobs,
-    }
+    TokenArrayWithLogprob::from_tokens_and_logprobs(generated_tokens, aligned_logprobs)
 }
 
-fn parse_openrouter_response_with_logprobs(
+fn parse_openrouter_response_with_logprobs<M>(
     json: &Value,
     encode_text: fn(&str) -> Vec<i32>,
-) -> TokenArrayWithLogprob {
+) -> TokenArrayWithLogprob<M> {
     if let Some(error_message) = json["error"]["message"].as_str() {
         panic!(
             "Qwen completion with logprobs failed on OpenRouter: {}. Full response: {:?}",
@@ -864,7 +852,6 @@ Try a different OpenRouter model/provider. Full response: {:?}",
         });
 
     let mut tokens = Vec::with_capacity(content_entries.len());
-    let mut decoded_string = String::new();
     let mut logprobs = Vec::with_capacity(content_entries.len());
 
     for entry in content_entries {
@@ -875,7 +862,6 @@ Try a different OpenRouter model/provider. Full response: {:?}",
             continue;
         };
 
-        decoded_string.push_str(sampled_token);
         tokens.push(sampled_token_id);
         let sampled_logprob = entry["logprob"].as_f64().unwrap_or(f64::NEG_INFINITY) as f32;
 
@@ -921,11 +907,7 @@ Try a different OpenRouter model/provider. Full response: {:?}",
         );
     }
 
-    TokenArrayWithLogprob {
-        tokens,
-        decoded_string,
-        logprobs,
-    }
+    TokenArrayWithLogprob::from_tokens_and_logprobs(tokens, logprobs)
 }
 
 fn parse_openrouter_message_content(json: &Value) -> Option<String> {

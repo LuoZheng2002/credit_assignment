@@ -30,7 +30,7 @@ struct Args {
     posterior_hyperparameters_path: String,
 }
 
-pub fn question_is_correct<M: LlmModelMarker>(action_log: &DirectTreeActionLog) -> bool {
+pub fn question_is_correct<M: LlmModelMarker>(action_log: &DirectTreeActionLog<M>) -> bool {
     let tree = DirectTree::<M>::from_action_log(action_log);
     assert!(
         tree.leaf_segment_judgments.len() == 1,
@@ -38,6 +38,45 @@ pub fn question_is_correct<M: LlmModelMarker>(action_log: &DirectTreeActionLog) 
     );
     let judgment = tree.leaf_segment_judgments.values().next().unwrap();
     judgment.is_correct
+}
+
+async fn print_accuracy_for_model<M: LlmModelMarker>(
+    config_nickname: String,
+    rollout_config: DirectRolloutConfig,
+    posterior_calculation_config: PosteriorCalculationConfig,
+) {
+    let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
+        nickname: config_nickname,
+        rollout_config,
+        posterior_calculation_config,
+        _phantom: std::marker::PhantomData,
+    };
+    let action_log_store = asset_file_action_logs.fetch().await;
+    let mut keys = action_log_store.get_keys().await.unwrap();
+    keys.sort();
+    let mut total = 0;
+    let mut correct = 0;
+    let mut incorrect = 0;
+    for key in keys {
+        let action_log = action_log_store
+            .get(key)
+            .await
+            .unwrap()
+            .expect("key from sqlite key set must exist");
+        let is_correct = question_is_correct::<M>(&action_log);
+        total += 1;
+        if is_correct {
+            correct += 1;
+        } else {
+            incorrect += 1;
+        }
+    }
+    assert_eq!(total, correct + incorrect);
+    let accuracy = correct as f64 / total as f64;
+    println!("Total questions: {}", total);
+    println!("Correct questions: {}", correct);
+    println!("Incorrect questions: {}", incorrect);
+    println!("Accuracy: {:.2}%", accuracy * 100.0);
 }
 
 #[tokio::main]
@@ -64,42 +103,46 @@ async fn main() {
         hyperparameters: posterior_hyperparameters,
     };
     let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
-    let asset_file_action_logs = AssetFileDirectTreeActionLogs {
-        model: model_name,
-        nickname: config_nickname,
-        rollout_config,
-        posterior_calculation_config,
-    };
-    let action_log_store = asset_file_action_logs.fetch().await;
-    let mut keys = action_log_store.get_keys().await.unwrap();
-    keys.sort();
-    let mut total = 0;
-    let mut correct = 0;
-    let mut incorrect = 0;
-    for key in keys {
-        let action_log = action_log_store
-            .get(key)
-            .await
-            .unwrap()
-            .expect("key from sqlite key set must exist");
-        let is_correct = match model_name {
-            LlmModelName::Gpt4o => question_is_correct::<Gpt4o>(&action_log),
-            LlmModelName::Gpt5Mini => question_is_correct::<Gpt5Mini>(&action_log),
-            LlmModelName::Qwen25_7b => question_is_correct::<Qwen25>(&action_log),
-            LlmModelName::Qwen3_4b => question_is_correct::<Qwen3>(&action_log),
-            LlmModelName::Qwen35_4b => question_is_correct::<Qwen35>(&action_log),
-        };
-        total += 1;
-        if is_correct {
-            correct += 1;
-        } else {
-            incorrect += 1;
+    match model_name {
+        LlmModelName::Gpt4o => {
+            print_accuracy_for_model::<Gpt4o>(
+                config_nickname,
+                rollout_config,
+                posterior_calculation_config,
+            )
+            .await;
+        }
+        LlmModelName::Gpt5Mini => {
+            print_accuracy_for_model::<Gpt5Mini>(
+                config_nickname,
+                rollout_config,
+                posterior_calculation_config,
+            )
+            .await;
+        }
+        LlmModelName::Qwen25_7b => {
+            print_accuracy_for_model::<Qwen25>(
+                config_nickname,
+                rollout_config,
+                posterior_calculation_config,
+            )
+            .await;
+        }
+        LlmModelName::Qwen3_4b => {
+            print_accuracy_for_model::<Qwen3>(
+                config_nickname,
+                rollout_config,
+                posterior_calculation_config,
+            )
+            .await;
+        }
+        LlmModelName::Qwen35_4b => {
+            print_accuracy_for_model::<Qwen35>(
+                config_nickname,
+                rollout_config,
+                posterior_calculation_config,
+            )
+            .await;
         }
     }
-    assert_eq!(total, correct + incorrect);
-    let accuracy = correct as f64 / total as f64;
-    println!("Total questions: {}", total);
-    println!("Correct questions: {}", correct);
-    println!("Incorrect questions: {}", incorrect);
-    println!("Accuracy: {:.2}%", accuracy * 100.0);
 }

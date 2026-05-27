@@ -25,7 +25,7 @@ impl FinalAnswer {
 }
 
 pub struct DirectTrajectory<M: LlmModelMarker> {
-    pub trajectory_contents: Vec<TrajectoryContent>,
+    pub trajectory_contents: Vec<TrajectoryContent<M>>,
     _marker: PhantomData<M>,
 }
 
@@ -47,7 +47,7 @@ impl<M: LlmModelMarker> DirectTrajectory<M> {
             ));
         }
 
-        if let Some(boxed_content) = extract_boxed_content(&tokens.decoded_string) {
+        if let Some(boxed_content) = extract_boxed_content(&tokens.decode()) {
             final_answer = Some(FinalAnswer::ModelProvided(boxed_content));
         }
         // check for problematic repetition
@@ -72,7 +72,7 @@ impl<M: LlmModelMarker> DirectTrajectory<M> {
         let TrajectoryContent::ReasoningOrToolCallComplete(tokens) = last_content else {
             return None;
         };
-        extract_python_tool_call(tokens.decoded_string.clone())
+        extract_python_tool_call(tokens.decode())
     }
     pub fn to_decoded_string(&self) -> String {
         self.trajectory_contents
@@ -84,19 +84,19 @@ impl<M: LlmModelMarker> DirectTrajectory<M> {
 }
 
 #[derive(Debug, Clone)]
-pub enum TrajectoryContent {
-    Prompt(TokenArray),
-    ReasoningOrToolCallIncomplete(TokenArrayWithLogprob),
+pub enum TrajectoryContent<M: LlmModelMarker> {
+    Prompt(TokenArray<M>),
+    ReasoningOrToolCallIncomplete(TokenArrayWithLogprob<M>),
     // ReasoningOrToolCallComplete{
     //     tokens: TokenArrayWithLogprob,
     //     answer: Option<FinalAnswer>,
     //     tool_call: Option<String>, // the tool call string if this is a tool call, which can be used for better interpretability and debugging, but should not be used for any logic in the code to avoid sneaky bugs where the tool call string is not correctly recorded
     // },
-    ReasoningOrToolCallComplete(TokenArrayWithLogprob),
-    ToolResponse(TokenArray),
+    ReasoningOrToolCallComplete(TokenArrayWithLogprob<M>),
+    ToolResponse(TokenArray<M>),
 }
 
-impl TrajectoryContent {
+impl<M: LlmModelMarker> TrajectoryContent<M> {
     pub fn tokens(&self) -> &[i32] {
         match self {
             TrajectoryContent::ReasoningOrToolCallIncomplete(tokens) => &tokens.tokens,
@@ -107,12 +107,10 @@ impl TrajectoryContent {
     }
     pub fn decoded_string(&self) -> String {
         match self {
-            TrajectoryContent::ReasoningOrToolCallIncomplete(tokens) => {
-                tokens.decoded_string.clone()
-            }
-            TrajectoryContent::ReasoningOrToolCallComplete(tokens) => tokens.decoded_string.clone(),
-            TrajectoryContent::Prompt(tokens) => tokens.decoded_string.clone(),
-            TrajectoryContent::ToolResponse(tokens) => tokens.decoded_string.clone(),
+            TrajectoryContent::ReasoningOrToolCallIncomplete(tokens) => tokens.decode(),
+            TrajectoryContent::ReasoningOrToolCallComplete(tokens) => tokens.decode(),
+            TrajectoryContent::Prompt(tokens) => tokens.decode(),
+            TrajectoryContent::ToolResponse(tokens) => tokens.decode(),
         }
     }
 }
@@ -147,7 +145,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
     pub fn get_trajectory(
         &self,
         segment_id: SegmentId,
-        additional_contents: &[SegmentContent],
+        additional_contents: &[SegmentContent<M>],
     ) -> DirectTrajectory<M> {
         let segment_ids = self.get_trajectory_segments_till_id(segment_id);
         let mut contents = segment_ids
@@ -160,11 +158,11 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 segment.content.clone()
             })
             .flatten()
-            .collect::<Vec<SegmentContent>>();
+            .collect::<Vec<SegmentContent<M>>>();
         // let mut flattened_contents: Vec<SegmentContent> = contents.into_iter().flatten().collect();
         contents.extend_from_slice(additional_contents);
         let mut trajectory_contents = vec![];
-        let mut unpaired_incomplete_reasoning_or_tool_call: Option<TokenArrayWithLogprob> = None;
+        let mut unpaired_incomplete_reasoning_or_tool_call: Option<TokenArrayWithLogprob<M>> = None;
         for content in contents.iter() {
             match content {
                 SegmentContent::Prompt(token_array) => {
@@ -177,7 +175,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 }
                 SegmentContent::ReasoningOrToolCall { tokens, complete } => {
                     let has_unpaired = unpaired_incomplete_reasoning_or_tool_call.is_some();
-                    match (has_unpaired, *complete) {
+                    match (has_unpaired, complete) {
                         (false, false) => {
                             unpaired_incomplete_reasoning_or_tool_call = Some(tokens.clone());
                         }
@@ -191,13 +189,10 @@ impl<M: LlmModelMarker> DirectTree<M> {
                             new_tokens.extend_from_slice(&tokens.tokens);
                             let mut new_logprobs = unpaired.logprobs.clone();
                             new_logprobs.extend_from_slice(&tokens.logprobs);
-                            let new_decoded_string =
-                                format!("{}{}", unpaired.decoded_string, tokens.decoded_string);
-                            *unpaired = TokenArrayWithLogprob {
-                                tokens: new_tokens,
-                                logprobs: new_logprobs,
-                                decoded_string: new_decoded_string,
-                            };
+                            *unpaired = TokenArrayWithLogprob::from_tokens_and_logprobs(
+                                new_tokens,
+                                new_logprobs,
+                            );
                         }
                         (false, true) => {
                             // push a complete content directly
@@ -215,15 +210,12 @@ impl<M: LlmModelMarker> DirectTree<M> {
                             new_tokens.extend_from_slice(&tokens.tokens);
                             let mut new_logprobs = unpaired.logprobs.clone();
                             new_logprobs.extend_from_slice(&tokens.logprobs);
-                            let new_decoded_string =
-                                format!("{}{}", unpaired.decoded_string, tokens.decoded_string);
                             trajectory_contents.push(
                                 TrajectoryContent::ReasoningOrToolCallComplete(
-                                    TokenArrayWithLogprob {
-                                        tokens: new_tokens,
-                                        logprobs: new_logprobs,
-                                        decoded_string: new_decoded_string,
-                                    },
+                                    TokenArrayWithLogprob::from_tokens_and_logprobs(
+                                        new_tokens,
+                                        new_logprobs,
+                                    ),
                                 ),
                             );
                             unpaired_incomplete_reasoning_or_tool_call = None;

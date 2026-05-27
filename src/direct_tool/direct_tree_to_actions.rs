@@ -187,7 +187,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
         llm_callable: &M::Callable,
         client: Client,
         // rng: &mut StdRng,
-    ) -> Vec<DirectTreeAction> {
+    ) -> Vec<DirectTreeAction<M>> {
         match self.status {
             DirectTreeStatus::CreatingTrunkTrajectory => {
                 assert!(self.current_num_trunks < self.rollout_config.max_num_trunks);
@@ -231,9 +231,8 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 let segment_uncertainty_scores =
                     self.posteriors_to_segment_uncertainty_scores(&posteriors);
 
-                let per_token_branching_scores = self.calculate_per_token_branching_scores(
-                    &segment_uncertainty_scores,
-                );
+                let per_token_branching_scores =
+                    self.calculate_per_token_branching_scores(&segment_uncertainty_scores);
 
                 let mut best_token_position: Option<TokenPositionInTree> = None;
                 let mut best_token_branching_score: Option<TokenBranchingScore> = None;
@@ -459,7 +458,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
         // client: Client,
         llm_callable: &M::Callable,
         // rng: &mut StdRng,
-    ) -> (Vec<SegmentContent>, FinalAnswer) {
+    ) -> (Vec<SegmentContent<M>>, FinalAnswer) {
         let mut continuing_contents = Vec::new();
         loop {
             let trajectory = self.get_trajectory(target_segment_id, &continuing_contents);
@@ -560,8 +559,8 @@ fn fallback_top8_for_token(token_id: i32) -> Top8Candidates {
 }
 
 fn patch_unclosed_python_tool_wait<M: LlmModelMarker>(
-    mut response: TokenArrayWithLogprob,
-) -> TokenArrayWithLogprob {
+    mut response: TokenArrayWithLogprob<M>,
+) -> TokenArrayWithLogprob<M> {
     if response.tokens.len() != response.logprobs.len() {
         panic!(
             "Response token/logprob length mismatch before tool_wait patching: tokens={}, logprobs={}",
@@ -633,7 +632,6 @@ fn patch_unclosed_python_tool_wait<M: LlmModelMarker>(
         response.logprobs.push(fallback_top8_for_token(token_id));
     }
 
-    response.decoded_string = <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(&response.tokens);
     response
 }
 
@@ -641,16 +639,17 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     // current_content: &[SegmentContent],
     trajectory: &DirectTrajectory<M>,
     llm_callable: &M::Callable,
-) -> SegmentContent {
+) -> SegmentContent<M> {
     let prompt_tokens = direct_trajectory_to_prompt_tokens(trajectory);
     let response = llm_callable
         .generate_tokens_with_logprobs(prompt_tokens.clone(), true, 1.0, true)
         .await;
     let response = patch_unclosed_python_tool_wait::<M>(response);
-    if response.tokens.is_empty() || response.decoded_string.trim().is_empty() {
+    let decoded_response = response.decode();
+    if response.tokens.is_empty() || decoded_response.trim().is_empty() {
         panic!(
             "LLM returned empty response. Decoded string: '{}', tokens: {:?}",
-            response.decoded_string, response.tokens
+            decoded_response, response.tokens
         );
     }
     SegmentContent::ReasoningOrToolCall {
@@ -667,7 +666,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
     // client: Client,
     llm_callable: &M::Callable,
     // rng: &mut StdRng,
-) -> SegmentContent {
+) -> SegmentContent<M> {
     let last_trajectory_content = trajectory
         .trajectory_contents
         .last()

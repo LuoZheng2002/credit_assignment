@@ -35,8 +35,8 @@ pub enum QwenApiBackend {
 }
 
 pub trait MyTokenizer<M: LlmModelMarker>: Send + Sync + 'static {
-    fn tokenize(prompt: String) -> TokenArray;
-    fn tokenize_prompt_for_generation(prompt: String) -> TokenArray {
+    fn tokenize(prompt: String) -> TokenArray<M>;
+    fn tokenize_prompt_for_generation(prompt: String) -> TokenArray<M> {
         Self::tokenize(prompt)
     }
     fn encode_to_i32_ids(text: &str) -> Vec<i32>;
@@ -55,7 +55,7 @@ pub trait LlmCallable<M: LlmModelMarker>: Clone + Send + Sync {
         _passes_in_stop: bool,
         _temperature: f32,
         _trim_eos: bool,
-    ) -> TokenArrayWithLogprob {
+    ) -> TokenArrayWithLogprob<M> {
         panic!("generate_tokens_with_logprobs is only implemented for vLLM-backed callables")
     }
 
@@ -78,9 +78,9 @@ pub trait LlmCallable<M: LlmModelMarker>: Clone + Send + Sync {
 }
 
 pub(crate) fn trim_tail_eos_if_needed<M: LlmModelMarker>(
-    mut output: TokenArrayWithLogprob,
+    mut output: TokenArrayWithLogprob<M>,
     trim_eos: bool,
-) -> TokenArrayWithLogprob {
+) -> TokenArrayWithLogprob<M> {
     if !trim_eos {
         return output;
     }
@@ -104,7 +104,6 @@ pub(crate) fn trim_tail_eos_if_needed<M: LlmModelMarker>(
 
         output.tokens.pop();
         output.logprobs.pop();
-        output.decoded_string = <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(&output.tokens);
         return output;
     }
 
@@ -141,7 +140,7 @@ pub trait LlmModelMarker: Sized + Send + Sync + 'static {
 
     fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String;
 
-    fn tokenize(prompt: String) -> TokenArray {
+    fn tokenize(prompt: String) -> TokenArray<Self> {
         <Self::Tokenizer as MyTokenizer<Self>>::tokenize(prompt)
     }
 

@@ -27,7 +27,7 @@ pub struct DirectTree<M: LlmModelMarker> {
     pub posterior_calculation_config: PosteriorCalculationConfig,
     // states
     pub status: DirectTreeStatus,
-    pub segments: BTreeMap<SegmentId, Segment>, // segment_id -> segment. A segment branched from the middle is destroyed and its id is not reused to avoid hiding sneaky bugs
+    pub segments: BTreeMap<SegmentId, Segment<M>>, // segment_id -> segment. A segment branched from the middle is destroyed and its id is not reused to avoid hiding sneaky bugs
     // pub root_segment_ids: Vec<SegmentId>,
     pub root_segment_id: Option<SegmentId>, // all the trunks share the same root segment, which is the prompt segment
     pub trunk_leaf_segments: Vec<SegmentId>, // the leaf segments of the trunk trajectories
@@ -44,7 +44,7 @@ pub struct DirectTree<M: LlmModelMarker> {
 // pub const NUM_TRUNKS: usize = 4;
 
 impl<M: LlmModelMarker> DirectTree<M> {
-    pub fn from_action_log(action_log: &DirectTreeActionLog) -> Self {
+    pub fn from_action_log(action_log: &DirectTreeActionLog<M>) -> Self {
         let mut tree = Self {
             question: action_log.question.clone(),
             rollout_config: action_log.rollout_config.clone(),
@@ -83,7 +83,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
         use_tool: bool,
         segment_id: SegmentId,
         temperature: f32,
-    ) -> Segment {
+    ) -> Segment<M> {
         let prompt_string = match use_tool {
             true => prompt_with_tool_call(question),
             false => prompt_without_tool_call(question),
@@ -105,24 +105,24 @@ pub struct SegmentId(pub usize);
 pub type ContentIndex = usize;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Segment {
+pub struct Segment<M> {
     pub segment_id: SegmentId,
-    pub content: Vec<SegmentContent>,
+    pub content: Vec<SegmentContent<M>>,
     pub llm_temperature: f32,
     pub child_ids: Vec<SegmentId>,
     pub parent_id: Option<SegmentId>,
 }
 
-pub struct ReasoningOnlyTokenView<'a> {
+pub struct ReasoningOnlyTokenView<'a, M> {
     pub flat_index: usize, // the index of the token in the flattened reasoning-only token sequence of the segment
     pub token: i32,
     pub logprobs: Top8Candidates,
     pub content_index_in_segment: ContentIndex, // the index of the content in the original segment content array that this token belongs to
     pub token_offset_in_content: usize, // the offset of the token in the original content tokens
-    pub corresponding_segment: &'a Segment,
+    pub corresponding_segment: &'a Segment<M>,
 }
 
-impl Segment {
+impl<M: LlmModelMarker> Segment<M> {
     pub fn token_length(&self) -> usize {
         let mut total_length = 0;
         for content in &self.content {
@@ -136,7 +136,7 @@ impl Segment {
         }
         total_length
     }
-    pub fn reasoning_only_tokens<'a>(&'a self) -> Vec<ReasoningOnlyTokenView<'a>> {
+    pub fn reasoning_only_tokens<'a>(&'a self) -> Vec<ReasoningOnlyTokenView<'a, M>> {
         let mut views = vec![];
         let mut flat_index = 0;
         for (content_index, content) in self.content.iter().enumerate() {
@@ -180,25 +180,42 @@ impl Segment {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum SegmentContent {
-    Prompt(TokenArray),
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(bound(serialize = "", deserialize = ""))]
+pub enum SegmentContent<M> {
+    Prompt(TokenArray<M>),
     ReasoningOrToolCall {
-        tokens: TokenArrayWithLogprob,
+        tokens: TokenArrayWithLogprob<M>,
         complete: bool,
         // answer: Option<FinalAnswer>,
         // tool_call: Option<String>, // the tool call string if this is a tool call, which can be used for better interpretability and debugging, but should not be used for any logic in the code to avoid sneaky bugs where the tool call string is not correctly recorded
     },
-    ToolResponse(TokenArray),
+    ToolResponse(TokenArray<M>),
+}
+
+impl<M> Clone for SegmentContent<M> {
+    fn clone(&self) -> Self {
+        match self {
+            SegmentContent::Prompt(tokens) => SegmentContent::Prompt(tokens.clone()),
+            SegmentContent::ReasoningOrToolCall { tokens, complete } => {
+                SegmentContent::ReasoningOrToolCall {
+                    tokens: tokens.clone(),
+                    complete: *complete,
+                }
+            }
+            SegmentContent::ToolResponse(tokens) => SegmentContent::ToolResponse(tokens.clone()),
+        }
+    }
 }
 
 // initially we need to finish 4 full trajectory rollouts.
 // we can choose which trajectory to first branch on?
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct DirectTreeActionEntry {
+#[serde(bound(serialize = "", deserialize = ""))]
+pub struct DirectTreeActionEntry<M> {
     pub flat_id: usize,
     pub dataset_name: String,
     pub question_id: usize,
-    pub action: DirectTreeAction,
+    pub action: DirectTreeAction<M>,
 }

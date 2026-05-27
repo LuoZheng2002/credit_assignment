@@ -3,6 +3,7 @@ use research_utility::{
     sqlite_store::SqliteStore,
 };
 use serde::{Deserialize, Serialize};
+use std::marker::PhantomData;
 
 use crate::{
     direct_tool::{
@@ -12,17 +13,29 @@ use crate::{
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     json_line_util::{read_json, write_json},
-    llm_model::LlmModelName,
+    llm_model::LlmModelMarker,
 };
 
 const ACTION_LOG_SCHEMA_VERSION: usize = 1;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct DirectTreeActionLog {
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(bound(serialize = "", deserialize = ""))]
+pub struct DirectTreeActionLog<M> {
     pub question: HybridDatasetQuestion,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
-    pub actions: Vec<DirectTreeAction>,
+    pub actions: Vec<DirectTreeAction<M>>,
+}
+
+impl<M> Clone for DirectTreeActionLog<M> {
+    fn clone(&self) -> Self {
+        Self {
+            question: self.question.clone(),
+            rollout_config: self.rollout_config.clone(),
+            posterior_calculation_config: self.posterior_calculation_config.clone(),
+            actions: self.actions.clone(),
+        }
+    }
 }
 
 // rollout config and posterior_calculation_config are intrinsic to each action log
@@ -43,17 +56,18 @@ pub struct AssetFileDirectTreeActionLogsTracking {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct AssetFileDirectTreeActionLogs {
-    pub model: LlmModelName,
+pub struct AssetFileDirectTreeActionLogs<M: LlmModelMarker> {
     pub nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
+    #[serde(skip)]
+    pub _phantom: PhantomData<M>,
 }
 
 // for this asset, we check if the tracking file is stale
 // if so, we delete the target file
 
-impl AssetFileDirectTreeActionLogs {
+impl<M: LlmModelMarker> AssetFileDirectTreeActionLogs<M> {
     fn to_short_hash(&self) -> String {
         let serialized = serde_json::to_vec(self).unwrap();
         let hash = blake3::hash(&serialized);
@@ -64,7 +78,7 @@ impl AssetFileDirectTreeActionLogs {
     pub fn file_path(&self) -> String {
         format!(
             "results/{}/direct_action_log_{}_{}.sqlite",
-            self.model.cli_name(),
+            M::CLI_NAME,
             self.nickname,
             self.to_short_hash()
         )
@@ -72,7 +86,7 @@ impl AssetFileDirectTreeActionLogs {
     fn version_tracking_path(&self) -> String {
         format!(
             "results_version_tracking/{}/direct_action_log_{}_{}_tracking.json",
-            self.model.cli_name(),
+            M::CLI_NAME,
             self.nickname,
             self.to_short_hash()
         )
@@ -150,8 +164,8 @@ impl AssetFileDirectTreeActionLogs {
 }
 
 #[async_trait::async_trait]
-impl AssetFile for AssetFileDirectTreeActionLogs {
-    type FileModel = SqliteStore<usize, DirectTreeActionLog>;
+impl<M: LlmModelMarker> AssetFile for AssetFileDirectTreeActionLogs<M> {
+    type FileModel = SqliteStore<usize, DirectTreeActionLog<M>>;
     async fn synchronize(&self) -> Base64Hash {
         // synchromize all dependency assets
         let dataset_asset_file = AssetFileHybridDataset;
@@ -176,6 +190,6 @@ impl AssetFile for AssetFileDirectTreeActionLogs {
     }
     async fn fetch(&self) -> Self::FileModel {
         self.synchronize().await;
-        SqliteStore::assume_initialized(self.file_path()).await
+        SqliteStore::<usize, DirectTreeActionLog<M>>::assume_initialized(self.file_path()).await
     }
 }

@@ -4,11 +4,11 @@ use crate::{
         direct_tree_action::DirectTreeAction,
         direct_tree_status::DirectTreeStatus,
     },
-    llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob},
+    llm_model::{LlmModelMarker, TokenArrayWithLogprob},
 };
 
 impl<M: LlmModelMarker> DirectTree<M> {
-    pub fn apply_action(&mut self, action: DirectTreeAction) {
+    pub fn apply_action(&mut self, action: DirectTreeAction<M>) {
         match action {
             DirectTreeAction::CreateAndJudgeTrunkTrajectory {
                 content_array: content,
@@ -100,25 +100,19 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 let second_half_tokens = tokens.tokens[position.offset..].to_vec();
                 let second_half_logprobs = tokens.logprobs[position.offset..].to_vec();
                 first_half_content_array.push(SegmentContent::ReasoningOrToolCall {
-                    tokens: TokenArrayWithLogprob {
-                        tokens: first_half_tokens.clone(),
-                        decoded_string: <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(
-                            &first_half_tokens,
-                        ),
-                        logprobs: first_half_logprobs,
-                    },
+                    tokens: TokenArrayWithLogprob::from_tokens_and_logprobs(
+                        first_half_tokens.clone(),
+                        first_half_logprobs,
+                    ),
                     complete: false, // the first half is always incomplete
                 });
                 second_half_content_array.insert(
                     0,
                     SegmentContent::ReasoningOrToolCall {
-                        tokens: TokenArrayWithLogprob {
-                            tokens: second_half_tokens.clone(),
-                            decoded_string: <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(
-                                &second_half_tokens,
-                            ),
-                            logprobs: second_half_logprobs,
-                        },
+                        tokens: TokenArrayWithLogprob::from_tokens_and_logprobs(
+                            second_half_tokens.clone(),
+                            second_half_logprobs,
+                        ),
                         complete: *target_is_complete, // the second half is complete if and only if the original content is complete
                     },
                 );
