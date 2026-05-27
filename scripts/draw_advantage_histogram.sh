@@ -1,3 +1,3 @@
 uv run scripts/draw_advantage_histogram.py \
-    --input-file data/advantage_histogram_data.json \
+    --input-file results/qwen2.5-7b/training_trajectories_tra16_da5b0a7d_statistics.json \
     --output-file plots/qwen25_advantage_histogram.png
