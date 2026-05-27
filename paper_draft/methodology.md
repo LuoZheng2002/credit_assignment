@@ -242,6 +242,13 @@ In-distribution datasets:
 - MATH
 - GSM8K
 
+In-distribution train/validation construction:
+
+- We construct both `hybrid_train.sqlite` and `hybrid_val.sqlite` from the train splits of DeepMath, MATH, and GSM8K.
+- Per dataset, training uses 5,000 samples and validation uses 1,000 samples.
+- Validation samples are explicitly non-overlapping with training samples by using disjoint index ranges (`question_id` 0-4999 for train and 5000-5999 for validation).
+- We enforce a dataset-size assertion before extraction: each in-distribution dataset must have at least 6,000 train rows so both splits can be formed without overlap.
+
 Out-of-distribution datasets:
 
 - AIME25
@@ -252,9 +259,10 @@ Out-of-distribution datasets:
 ### Main Evaluation
 
 1. Measure baseline pass@1 accuracy for each model on all six evaluation datasets.
-2. Train TreeMAPPO on three training sets (one per in-distribution dataset) for each model.
-3. Re-evaluate pass@1 on all six datasets.
-4. Run five independent trials and report confidence intervals.
+2. Train TreeMAPPO on the in-distribution training data (`hybrid_train.sqlite`) for each model.
+3. Use in-distribution validation data (`hybrid_val.sqlite`) for checkpoint selection and hyperparameter control.
+4. Re-evaluate pass@1 on all six datasets.
+5. Run five independent trials and report confidence intervals.
 
 ### Ablation Studies
 
