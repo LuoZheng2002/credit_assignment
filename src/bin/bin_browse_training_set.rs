@@ -87,8 +87,12 @@ struct App<M: LlmModelMarker> {
     conversation_max_scroll: usize,
     summary_area: Option<Rect>,
     conversation_area: Option<Rect>,
+    jump_input_area: Option<Rect>,
     loaded: Option<LoadedTrajectory<M>>,
     statistics: Option<DirectTrainingSetStatistics>,
+    jump_input: String,
+    jump_input_active: bool,
+    jump_status: Option<String>,
 }
 
 impl<M: LlmModelMarker> App<M> {
@@ -108,8 +112,12 @@ impl<M: LlmModelMarker> App<M> {
             conversation_max_scroll: 0,
             summary_area: None,
             conversation_area: None,
+            jump_input_area: None,
             loaded: None,
             statistics,
+            jump_input: String::new(),
+            jump_input_active: false,
+            jump_status: None,
         }
     }
 
@@ -156,6 +164,7 @@ impl<M: LlmModelMarker> App<M> {
             .constraints([
                 Constraint::Length(12),
                 Constraint::Min(5),
+                Constraint::Length(3),
                 Constraint::Length(3),
             ])
             .split(frame.area());
@@ -268,16 +277,57 @@ impl<M: LlmModelMarker> App<M> {
             );
         }
 
+        let jump_hint = if self.jump_input_active {
+            "Enter key and press Enter (Esc to cancel)"
+        } else {
+            "Press '/' to jump by key"
+        };
+        let jump_status = self.jump_status.clone().unwrap_or_default();
+        let jump_text = if jump_status.is_empty() {
+            format!("{}{}", jump_hint, self.jump_input)
+        } else {
+            format!("{}{}  [{}]", jump_hint, self.jump_input, jump_status)
+        };
+        frame.render_widget(
+            Paragraph::new(jump_text).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Jump To Key")
+                    .border_style(if self.jump_input_active {
+                        Style::default().fg(Color::LightGreen)
+                    } else {
+                        Style::default()
+                    }),
+            ),
+            chunks[2],
+        );
+        self.jump_input_area = Some(chunks[2]);
+
         let controls = Paragraph::new(
-            "Left/Right: prev/next trajectory  Tab: switch focus  Up/Down/PgUp/PgDn/Home/End: scroll focused pane  Mouse wheel: scroll focused pane  q: quit",
+            "Left/Right: prev/next trajectory  /: jump by key  Tab: switch focus  Up/Down/PgUp/PgDn/Home/End: scroll focused pane  Mouse wheel: scroll focused pane  q: quit",
         )
         .block(Block::default().borders(Borders::ALL).title("Controls"));
-        frame.render_widget(controls, chunks[2]);
+        frame.render_widget(controls, chunks[3]);
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if self.jump_input_active {
+            return self.handle_jump_input_key(key);
+        }
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => true,
+            KeyCode::Char('/') => {
+                self.jump_input_active = true;
+                self.jump_status = None;
+                false
+            }
+            KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                self.jump_input_active = true;
+                self.jump_input.push(ch);
+                self.jump_status = None;
+                false
+            }
             KeyCode::Tab => {
                 self.focus = self.focus.next();
                 false
@@ -330,6 +380,59 @@ impl<M: LlmModelMarker> App<M> {
         }
     }
 
+    fn handle_jump_input_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.jump_input_active = false;
+                self.jump_input.clear();
+                self.jump_status = None;
+                false
+            }
+            KeyCode::Enter => {
+                if self.keys.is_empty() {
+                    self.jump_status = Some("No keys in training set".to_string());
+                    self.jump_input_active = false;
+                    self.jump_input.clear();
+                    return false;
+                }
+
+                if self.jump_input.is_empty() {
+                    self.jump_status = Some("Input is empty".to_string());
+                    self.jump_input_active = false;
+                    return false;
+                }
+
+                match self.jump_input.parse::<usize>() {
+                    Ok(target_key) => match self.keys.binary_search(&target_key) {
+                        Ok(index) => {
+                            self.selected_index = index;
+                            self.jump_status = Some(format!("Jumped to key {}", target_key));
+                        }
+                        Err(_) => {
+                            self.jump_status = Some(format!("Key {} not found", target_key));
+                        }
+                    },
+                    Err(_) => {
+                        self.jump_status = Some("Invalid key".to_string());
+                    }
+                }
+
+                self.jump_input_active = false;
+                self.jump_input.clear();
+                false
+            }
+            KeyCode::Backspace => {
+                self.jump_input.pop();
+                false
+            }
+            KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                self.jump_input.push(ch);
+                false
+            }
+            _ => false,
+        }
+    }
+
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         if let Some(summary_area) = self.summary_area {
             if contains_point(summary_area, mouse.column, mouse.row) {
@@ -339,6 +442,12 @@ impl<M: LlmModelMarker> App<M> {
         if let Some(conversation_area) = self.conversation_area {
             if contains_point(conversation_area, mouse.column, mouse.row) {
                 self.focus = PaneFocus::Conversation;
+            }
+        }
+        if let Some(jump_input_area) = self.jump_input_area {
+            if contains_point(jump_input_area, mouse.column, mouse.row) {
+                self.jump_input_active = true;
+                self.jump_status = None;
             }
         }
 
