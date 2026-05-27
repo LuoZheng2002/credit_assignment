@@ -179,7 +179,22 @@ node_priority_n = node_score_n * node_multiplier_n
 
 ## Advantage Assignment
 
-After tree construction, each segment advantage is set to its signed MAP contribution estimate. Advantages are normalized but not mean-shifted.
+After tree construction, each segment starts with an unnormalized signed MAP contribution estimate:
+
+```text
+r_i = m_i / std_i
+```
+
+To reduce instability from very short segments, we length-scale this value by reasoning-token length with tree-level clamping:
+
+```text
+L_max = max_j reasoning_only_token_length_j
+L_floor = max(1, L_max / 8)
+L_i_clamped = max(reasoning_only_token_length_i, L_floor)
+r_i_len = r_i / L_i_clamped
+```
+
+We then normalize `r_i_len` across segments in the same tree using standard deviation scaling (without mean-shift sign flips).
 
 ## Training Set Construction
 

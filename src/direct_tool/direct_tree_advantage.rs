@@ -15,15 +15,35 @@ impl<M: LlmModelMarker> DirectTree<M> {
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> BTreeMap<SegmentId, f32> {
         let posteriors = self.calculate_segment_posteriors(override_hyperparameters);
-        Self::segment_advantages_from_posteriors(posteriors)
+        self.segment_advantages_from_posteriors(posteriors)
     }
     fn segment_advantages_from_posteriors(
+        &self,
         posteriors: BTreeMap<SegmentId, Posterior>,
     ) -> BTreeMap<SegmentId, f32> {
+        let longest_reasoning_only_token_length = self
+            .segments
+            .values()
+            .map(|segment| segment.reasoning_only_token_length())
+            .max()
+            .unwrap_or(0);
+        let min_clamped_reasoning_only_token_length =
+            (longest_reasoning_only_token_length as f32 / 8.0).max(1.0);
+
         let segment_advantages_unnormalized = posteriors
             .into_iter()
             .map(|(segment_id, posterior)| {
-                (segment_id, posterior.mean / posterior.log_std.exp()) // we use the mean/std as the unnormalized advantage
+                let segment = self
+                    .segments
+                    .get(&segment_id)
+                    .expect("Posterior segment id must exist in tree segments");
+                let clamped_reasoning_only_token_length =
+                    (segment.reasoning_only_token_length() as f32)
+                        .max(min_clamped_reasoning_only_token_length);
+                (
+                    segment_id,
+                    (posterior.mean / posterior.log_std.exp()) / clamped_reasoning_only_token_length,
+                )
             })
             .collect::<Vec<(SegmentId, f32)>>();
         if segment_advantages_unnormalized.is_empty() {
