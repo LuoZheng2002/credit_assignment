@@ -1,0 +1,6 @@
+sbatch \
+    --job-name="qwen3508_gpu1" \
+    --output="slurm/logs/qwen3508_gpu1_%j.out" \
+    --error="slurm/logs/qwen3508_gpu1_%j.err" \
+    --gres=gpu:1 \
+    slurm/gpu.slurm
