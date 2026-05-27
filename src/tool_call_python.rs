@@ -1,8 +1,30 @@
 use std::{ffi::CString, time::Duration};
 
 use pyo3::{prelude::*, types::PyDict};
+use serde::{Deserialize, Serialize};
 
-use crate::{agent::trajectory_action_types::ToolResponse, worker_message_tx::log_key_value_pair};
+use crate::worker_message_tx::log_key_value_pair;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolResponse {
+    PythonSuccess(String),
+    PythonError(String),
+    // EmptyMessageHint,
+}
+
+impl ToolResponse {
+    pub fn to_raw_content(&self) -> String {
+        match self {
+            ToolResponse::PythonSuccess(output) => {
+                format!("<tool_response>{}</tool_response>", output)
+            }
+            ToolResponse::PythonError(error) => {
+                format!("<tool_response>Python error: {}</tool_response>", error)
+            } // ToolResponse::Intervention(content) => content.clone(),
+              // ToolResponse::EmptyMessageHint => EMPTY_MESSAGE_HINT.to_string(),
+        }
+    }
+}
 
 fn blocking_python_code_task(code: String) -> PyResult<String> {
     Python::attach(|py| -> PyResult<String> {

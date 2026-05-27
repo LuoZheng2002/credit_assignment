@@ -3,13 +3,11 @@ use std::collections::BTreeMap;
 use reqwest::Client;
 use research_utility::worker_message_tx::log_key_value_pair;
 
-use crate::direct_tool::direct_trajectory::{DirectTrajectory, TrajectoryContent};
+use crate::direct_tool::direct_trajectory::{DirectTrajectory, FinalAnswer, TrajectoryContent};
+use crate::judge_correctness::judge_final_answer;
 use crate::llm_model::MyTokenizer;
+use crate::tool_call_python::{ToolResponse, execute_python_code};
 use crate::{
-    agent::{
-        state_to_actions::judge_answer_task, tool_call_execution::execute_planner_tool_call,
-        trajectory_action_types::FinalAnswer, tree::CorrectnessJudgment,
-    },
     direct_tool::{
         direct_tree::{ContentIndex, DirectTree, SegmentContent, SegmentId},
         direct_tree_action::{DirectTreeAction, TokenPositionInTree},
@@ -20,6 +18,37 @@ use crate::{
         LlmCallable, LlmModelMarker, TokenArrayWithLogprob, TokenLogprobCandidate, Top8Candidates,
     },
 };
+
+pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
+    let mut trimmed_tool_call = tool_call.trim_start().to_string();
+    // trim <tool_wait>
+    if trimmed_tool_call.starts_with("<tool_wait>") {
+        trimmed_tool_call = trimmed_tool_call["<tool_wait>".len()..]
+            .trim_start()
+            .to_string();
+    }
+    assert!(
+        trimmed_tool_call.starts_with("```python"),
+        "Tool call not properly formatted: {}",
+        tool_call
+    );
+    let Some(fence_end_index) = trimmed_tool_call.rfind("```") else {
+        return ToolResponse::PythonError(
+            "Tool call markdown code block not properly closed.".to_string(),
+        );
+    };
+    let code_start = trimmed_tool_call
+        .find('\n')
+        .map(|idx| idx + 1)
+        .unwrap_or("```python".len());
+    if fence_end_index < code_start {
+        return ToolResponse::PythonError(
+            "Tool call markdown code block not properly formatted.".to_string(),
+        );
+    }
+    let code = &trimmed_tool_call[code_start..fence_end_index];
+    execute_python_code(code.to_string()).await
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum BranchingType {
@@ -488,7 +517,9 @@ pub struct NodeCandidate {
 // 2. context length exceeded
 // 3. other scenarios that require termination
 
-fn direct_trajectory_to_prompt_tokens<M: LlmModelMarker>(trajectory: &DirectTrajectory<M>) -> Vec<i32> {
+fn direct_trajectory_to_prompt_tokens<M: LlmModelMarker>(
+    trajectory: &DirectTrajectory<M>,
+) -> Vec<i32> {
     let mut prompt_tokens: Vec<i32> = Vec::new();
     for content in trajectory.trajectory_contents.iter() {
         let tokens = match content {
@@ -663,30 +694,5 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                 SegmentContent::ToolResponse(response_tokenized)
             }
         }
-    }
-}
-
-async fn judge_final_answer(
-    final_answer: &FinalAnswer,
-    correct_answer: &str,
-    question: &str,
-    client: Client,
-) -> CorrectnessJudgment {
-    let is_correct = match final_answer {
-        FinalAnswer::ModelProvided(model_answer) => {
-            judge_answer_task(
-                model_answer.clone(),
-                correct_answer.to_string(),
-                question.to_string(),
-                client,
-            )
-            .await
-        }
-        FinalAnswer::Failure(_error_message) => false,
-    };
-    CorrectnessJudgment {
-        model_answer: final_answer.clone(),
-        correct_answer: correct_answer.to_string(),
-        is_correct,
     }
 }

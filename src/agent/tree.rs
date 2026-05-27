@@ -94,12 +94,6 @@ pub struct Node {
     pub parent_id: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CorrectnessJudgment {
-    pub model_answer: FinalAnswer,
-    pub correct_answer: String,
-    pub is_correct: bool,
-}
 
 // #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 // pub enum TreeMasterStatus {

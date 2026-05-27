@@ -119,7 +119,8 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
                 result.expect("action_log_to_candidate_trajectories task panicked");
             pending_trajectories_by_index.insert(finished_index, finished_trajectories);
 
-            while let Some(trajectories) = pending_trajectories_by_index.remove(&next_index_to_reduce)
+            while let Some(trajectories) =
+                pending_trajectories_by_index.remove(&next_index_to_reduce)
             {
                 fold_candidate_trajectories(
                     trajectories,
@@ -302,7 +303,10 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
                         labels.extend(vec![-100; token_array.tokens.len()]); // we set the labels for the prompt tokens to -100 so that they will be ignored in the loss calculation
                         advantages.extend(vec![*segment_advantage; token_array.tokens.len()]); // we assign the same advantage to all tokens in the segment
                     }
-                    SegmentContent::ReasoningOrToolCall { tokens, complete: _ } => {
+                    SegmentContent::ReasoningOrToolCall {
+                        tokens,
+                        complete: _,
+                    } => {
                         input_ids.extend(tokens.tokens.iter());
                         labels.extend(tokens.tokens.iter());
                         advantages.extend(vec![*segment_advantage; tokens.tokens.len()]);
@@ -311,7 +315,8 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
             }
             *segment_advantage = 0.0; // we set the advantage of the taken segments to 0
         }
-        let average_absolute_advantage = sum_absolute_advantage / non_root_segment_count.max(1) as f32;
+        let average_absolute_advantage =
+            sum_absolute_advantage / non_root_segment_count.max(1) as f32;
         assert_eq!(average_absolute_advantage, best_average_absolute_advantage);
         trajectories.push(DirectTrainingTrajectory {
             question: tree.question.clone(),
@@ -435,9 +440,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             true
         };
         if stale {
-            println!(
-                "Training trajectories file is stale or does not exist. Regenerating...",
-            );
+            println!("Training trajectories file is stale or does not exist. Regenerating...",);
             // if so, we first delete the target file
             if std::path::Path::new(&self.file_path()).exists() {
                 std::fs::remove_file(&self.file_path()).unwrap();

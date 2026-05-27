@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    agent::tree::CorrectnessJudgment,
     direct_tool::{
         direct_rollout_config::DirectRolloutConfig,
         direct_tree_action::DirectTreeAction,
@@ -13,6 +12,7 @@ use crate::{
         posterior_calculation_config::PosteriorCalculationConfig,
         prompt::{prompt_with_tool_call, prompt_without_tool_call},
     },
+    judge_correctness::CorrectnessJudgment,
     llm_model::{LlmModelMarker, TokenArrayWithLogprob, Top8Candidates},
     token_array::TokenArray,
 };

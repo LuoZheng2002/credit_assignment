@@ -109,7 +109,10 @@ pub(crate) fn trim_tail_eos_if_needed<M: LlmModelMarker>(
     }
 
     assert!(
-        output.tokens.iter().all(|&token_id| token_id != eos_token_id),
+        output
+            .tokens
+            .iter()
+            .all(|&token_id| token_id != eos_token_id),
         "trim_eos=true requires EOS to appear only as an optional tail token",
     );
     output

@@ -1,8 +1,15 @@
-
 use std::backtrace::Backtrace;
 
 use clap::Parser;
-use credit_assignment::{direct_tool::{direct_rollout_config::DirectRolloutConfig, direct_training_set::AssetFileTrainingTrajectories, posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters}}, json_line_util::read_json, llm_model::{Gpt4o, Gpt5Mini, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B}};
+use credit_assignment::{
+    direct_tool::{
+        direct_rollout_config::DirectRolloutConfig,
+        direct_training_set::AssetFileTrainingTrajectories,
+        posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+    },
+    json_line_util::read_json,
+    llm_model::{Gpt4o, Gpt5Mini, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B},
+};
 use research_utility::asset_file::AssetFile;
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Interactively browse training sets")]
@@ -18,7 +25,6 @@ struct Args {
     #[arg(long)]
     max_num_training_trajectories: usize,
 }
-
 
 #[tokio::main]
 async fn main() {

@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    agent::tree::CorrectnessJudgment,
     direct_tool::direct_tree::{ContentIndex, SegmentContent, SegmentId},
+    judge_correctness::CorrectnessJudgment,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

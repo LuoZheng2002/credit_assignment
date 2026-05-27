@@ -2,7 +2,7 @@ use std::{backtrace::Backtrace, sync::Arc};
 
 use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
-    check_python::check_sympy_availability,
+    check_python_env::check_sympy_availability,
     direct_tool::{
         direct_rollout::direct_rollout_all_with_config,
         direct_rollout_config::DirectRolloutConfig,

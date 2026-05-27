@@ -26,38 +26,7 @@ use crate::{
     constants::{IDENTICAL_PYTHON_ERROR_ABORT_MESSAGE, REPETITION_ABORT_MESSAGE},
 };
 
-pub async fn judge_answer_task(
-    model_answer: String,
-    correct_answer: String,
-    question: String,
-    client: Client,
-) -> bool {
-    let prompt = format!(
-        "You are an answer checker that checks a model's answer against the reference answer. Judge if the model's answer is equivalent to the reference answer. \
-If the model's answer contains units but the reference answer does not, treat them as equivalent if the numerical values are the same. \n\
-The question is: \"{}\". \
-The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
-        question, model_answer, correct_answer
-    );
-    let gpt_callable = Gpt4oLlmCallable::new(client);
-    let evaluation = gpt_callable
-        .generate_text(Gpt4o::tokenize(prompt).tokens, false)
-        .await
-        .trim()
-        .to_lowercase();
-    // match evaluation.as_str() {
-    //     "correct" => true,
-    //     "incorrect" => false,
-    //     _ => panic!("Unexpected evaluation result: {}", evaluation),
-    // }
-    if evaluation.contains("incorrect") {
-        false
-    } else if evaluation.contains("correct") {
-        true
-    } else {
-        panic!("Unexpected evaluation result: {}", evaluation);
-    }
-}
+
 
 // we increased the repetition times to 5, there might be code that hasn't reflected this change.
 pub fn detect_repetition_five_times(response: &str) -> bool {

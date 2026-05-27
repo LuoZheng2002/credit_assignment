@@ -37,12 +37,13 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     .segments
                     .get(&segment_id)
                     .expect("Posterior segment id must exist in tree segments");
-                let clamped_reasoning_only_token_length =
-                    (segment.reasoning_only_token_length() as f32)
-                        .max(min_clamped_reasoning_only_token_length);
+                let clamped_reasoning_only_token_length = (segment.reasoning_only_token_length()
+                    as f32)
+                    .max(min_clamped_reasoning_only_token_length);
                 (
                     segment_id,
-                    (posterior.mean / posterior.log_std.exp()) / clamped_reasoning_only_token_length,
+                    (posterior.mean / posterior.log_std.exp())
+                        / clamped_reasoning_only_token_length,
                 )
             })
             .collect::<Vec<(SegmentId, f32)>>();

@@ -5,8 +5,8 @@ use std::hash::{Hash, Hasher};
 use std::io::{self, Stdout};
 
 use clap::Parser;
+use credit_assignment::judge_correctness::CorrectnessJudgment;
 use credit_assignment::{
-    agent::{trajectory_action_types::FinalAnswer, tree::CorrectnessJudgment},
     direct_tool::{
         direct_rollout_config::DirectRolloutConfig,
         direct_tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
@@ -388,7 +388,8 @@ impl App {
                     .expect("key from sqlite key set must exist")
             })
         });
-        let (num_correct, num_leaves, win_rate) = question_stats_from_action_log(self.model, &action_log);
+        let (num_correct, num_leaves, win_rate) =
+            question_stats_from_action_log(self.model, &action_log);
         self.entry_cache[index] = Some(QuestionEntry {
             key,
             action_log,
@@ -633,7 +634,7 @@ impl App {
             }
         }
         if let Some(judgment) = judgment {
-            let model_answer = model_answer_text(&judgment.model_answer);
+            let model_answer = judgment.model_answer.model_answer_text();
             summary.push_str(&format!(
                 "\nLeaf judgment: {}\nModel answer: {}",
                 if judgment.is_correct {
@@ -764,9 +765,8 @@ impl App {
             }
             KeyCode::Right => {
                 if self.total_entries() > 0 {
-                    self.home_selected_index =
-                        (self.home_selected_index + QUESTIONS_PER_PAGE)
-                            .min(self.total_entries() - 1);
+                    self.home_selected_index = (self.home_selected_index + QUESTIONS_PER_PAGE)
+                        .min(self.total_entries() - 1);
                 }
                 false
             }
@@ -923,7 +923,8 @@ impl App {
             } else if let Some(conversation_area) = self.conversation_area {
                 if contains_point(conversation_area, mouse.column, mouse.row) {
                     self.tree_focus = TreePaneFocus::Conversation;
-                } else if let Some(tree_area) = self.tree_page.as_ref().and_then(|page| page.tree_area)
+                } else if let Some(tree_area) =
+                    self.tree_page.as_ref().and_then(|page| page.tree_area)
                 {
                     if contains_point(tree_area, mouse.column, mouse.row) {
                         self.tree_focus = TreePaneFocus::Tree;
@@ -937,7 +938,12 @@ impl App {
                 .tree_page
                 .as_ref()
                 .expect("tree page must exist in tree mode");
-            tree_segment_at_mouse(tree_page, mouse.column, mouse.row, self.tree_horizontal_scroll)
+            tree_segment_at_mouse(
+                tree_page,
+                mouse.column,
+                mouse.row,
+                self.tree_horizontal_scroll,
+            )
         };
         match mouse.kind {
             MouseEventKind::Moved => {
@@ -1512,13 +1518,6 @@ fn single_line_preview(text: &str, max_chars: usize) -> String {
             .collect();
         prefix.push_str("...");
         prefix
-    }
-}
-
-fn model_answer_text(answer: &FinalAnswer) -> &str {
-    match answer {
-        FinalAnswer::ModelProvided(text) => text,
-        FinalAnswer::Failure(text) => text,
     }
 }
 

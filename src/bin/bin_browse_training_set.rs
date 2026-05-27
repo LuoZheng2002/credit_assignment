@@ -12,7 +12,9 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
-    llm_model::{Gpt4o, Gpt5Mini, LlmModelMarker, LlmModelName, MyTokenizer, Qwen3_4B, Qwen25, Qwen35_4B},
+    llm_model::{
+        Gpt4o, Gpt5Mini, LlmModelMarker, LlmModelName, MyTokenizer, Qwen3_4B, Qwen25, Qwen35_4B,
+    },
 };
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseEvent,
@@ -195,7 +197,8 @@ impl<M: LlmModelMarker> App<M> {
                 loaded.trajectory.input_ids.len(),
                 trainable_tokens,
             );
-            let trajectory_advantage_values = compress_advantage_changes(&loaded.trajectory.advantages);
+            let trajectory_advantage_values =
+                compress_advantage_changes(&loaded.trajectory.advantages);
             text.push_str(&format!(
                 "\nAdvantage values (change points): {:?}",
                 trajectory_advantage_values
@@ -570,7 +573,8 @@ fn push_text_as_spans(
             part
         };
         if !content.is_empty() {
-            lines.last_mut()
+            lines
+                .last_mut()
                 .expect("lines must not be empty")
                 .push(Span::styled(content.to_string(), style));
         }
@@ -732,7 +736,9 @@ pub async fn run_program<M: LlmModelMarker>(
     let training_set_store = asset_file_training_set.fetch().await;
     let mut keys = training_set_store.get_keys().await.unwrap();
     keys.sort();
-    let statistics = read_json::<DirectTrainingSetStatistics>(asset_file_training_set.statistics_file_path()).ok();
+    let statistics =
+        read_json::<DirectTrainingSetStatistics>(asset_file_training_set.statistics_file_path())
+            .ok();
 
     enable_raw_mode().unwrap();
     let mut stdout = io::stdout();
