@@ -115,12 +115,8 @@ impl MyTokenizer<Qwen25> for Qwen25Tokenizer {
         decode_from_i32_ids(&QWEN25_TOKENIZER, token_ids)
     }
 
-    fn token_to_id(token: &str) -> i32 {
-        token_to_i32_id(&QWEN25_TOKENIZER, token, Qwen25::API_NAME)
-    }
-
     fn eos_token_id() -> i32 {
-        Self::token_to_id("<|im_end|>")
+        token_to_i32_id(&QWEN25_TOKENIZER, "<|im_end|>", Qwen25::API_NAME)
     }
 }
 

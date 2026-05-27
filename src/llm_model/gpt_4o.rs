@@ -248,7 +248,8 @@ impl MyTokenizer<Gpt4o> for Gpt4oTokenizer {
             .expect("failed to decode GPT token ids")
     }
 
-    fn token_to_id(token: &str) -> i32 {
+    fn eos_token_id() -> i32 {
+        let token = "<|endoftext|>";
         let encoded = GPT4O_TOKENIZER.encode_with_special_tokens(token);
         assert_eq!(
             encoded.len(),
@@ -257,10 +258,6 @@ impl MyTokenizer<Gpt4o> for Gpt4oTokenizer {
             Gpt4o::API_NAME
         );
         i32::try_from(encoded[0]).expect("token id must fit in i32")
-    }
-
-    fn eos_token_id() -> i32 {
-        Self::token_to_id("<|endoftext|>")
     }
 }
 

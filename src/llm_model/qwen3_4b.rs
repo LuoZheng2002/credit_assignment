@@ -86,12 +86,8 @@ impl MyTokenizer<Qwen3_4B> for Qwen3_4BTokenizer {
         decode_from_i32_ids(&QWEN3_4B_TOKENIZER, token_ids)
     }
 
-    fn token_to_id(token: &str) -> i32 {
-        token_to_i32_id(&QWEN3_4B_TOKENIZER, token, Qwen3_4B::API_NAME)
-    }
-
     fn eos_token_id() -> i32 {
-        Self::token_to_id("<|im_end|>")
+        token_to_i32_id(&QWEN3_4B_TOKENIZER, "<|im_end|>", Qwen3_4B::API_NAME)
     }
 }
 

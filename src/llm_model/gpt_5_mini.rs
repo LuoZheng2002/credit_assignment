@@ -246,7 +246,8 @@ impl MyTokenizer<Gpt5Mini> for Gpt5MiniTokenizer {
             .expect("failed to decode GPT token ids")
     }
 
-    fn token_to_id(token: &str) -> i32 {
+    fn eos_token_id() -> i32 {
+        let token = "<|endoftext|>";
         let encoded = GPT5_MINI_TOKENIZER.encode_with_special_tokens(token);
         assert_eq!(
             encoded.len(),
@@ -255,10 +256,6 @@ impl MyTokenizer<Gpt5Mini> for Gpt5MiniTokenizer {
             Gpt5Mini::API_NAME
         );
         i32::try_from(encoded[0]).expect("token id must fit in i32")
-    }
-
-    fn eos_token_id() -> i32 {
-        Self::token_to_id("<|endoftext|>")
     }
 }
 

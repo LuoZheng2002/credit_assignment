@@ -2,7 +2,6 @@ use reqwest::Client;
 use serde_json::Value;
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
 };
 use tokenizers::Tokenizer;
 use tokio::sync::Semaphore;
@@ -46,7 +45,6 @@ pub(crate) struct SharedQwenLlmCallable {
     client: Client,
     backend: QwenBackend,
     request_semaphore: Arc<Semaphore>,
-    completed_requests: Arc<AtomicUsize>,
 }
 
 impl SharedQwenLlmCallable {
@@ -68,7 +66,6 @@ impl SharedQwenLlmCallable {
             client,
             backend,
             request_semaphore: Arc::new(Semaphore::new(max_concurrent_requests)),
-            completed_requests: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -112,8 +109,6 @@ impl SharedQwenLlmCallable {
             &tokens,
             &format!("SGLang port {}", self.backend.sglang_port),
         )?;
-
-        self.completed_requests.fetch_add(1, Ordering::SeqCst);
         Ok(generated_tokens)
     }
 
@@ -155,8 +150,6 @@ impl SharedQwenLlmCallable {
             &format!("SGLang port {}", self.backend.sglang_port),
             &json,
         )?;
-
-        self.completed_requests.fetch_add(1, Ordering::SeqCst);
         Ok(result)
     }
 

@@ -32,7 +32,6 @@ pub trait MyTokenizer<M: LlmModelMarker>: Send + Sync + 'static {
     }
     fn encode_to_i32_ids(text: &str) -> Vec<i32>;
     fn decode_i32_ids(token_ids: &[i32]) -> String;
-    fn token_to_id(token: &str) -> i32;
     fn eos_token_id() -> i32;
 }
 
