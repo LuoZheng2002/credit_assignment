@@ -42,7 +42,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 assert!(!self.leaf_segment_judgments.contains_key(&segment_id));
                 self.leaf_segment_judgments
                     .insert(segment_id, correctness_judgment);
-                self.trunk_leaf_segments.push(segment_id);
+                self.trunk_leaf_segments.insert(segment_id);
                 // update status
                 assert!(
                     self.rollout_config.max_num_trunks
@@ -160,6 +160,9 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 if let Some(judgment) = self.leaf_segment_judgments.remove(&position.segment_id) {
                     self.leaf_segment_judgments
                         .insert(new_second_half_id, judgment);
+                }
+                if let true = self.trunk_leaf_segments.remove(&position.segment_id) {
+                    self.trunk_leaf_segments.insert(new_second_half_id);
                 }
                 // after creating the branch point, we move to it and rollout until finding the answer
                 // the new branch point is at the end of the first half segment

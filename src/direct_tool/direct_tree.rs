@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -30,7 +30,7 @@ pub struct DirectTree<M: LlmModelMarker> {
     pub segments: BTreeMap<SegmentId, Segment<M>>, // segment_id -> segment. A segment branched from the middle is destroyed and its id is not reused to avoid hiding sneaky bugs
     // pub root_segment_ids: Vec<SegmentId>,
     pub root_segment_id: Option<SegmentId>, // all the trunks share the same root segment, which is the prompt segment
-    pub trunk_leaf_segments: Vec<SegmentId>, // the leaf segments of the trunk trajectories
+    pub trunk_leaf_segments: BTreeSet<SegmentId>, // the leaf segments of the trunk trajectories
     pub leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
     pub current_num_trunks: usize,
     pub next_segment_id: usize,
@@ -52,7 +52,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
             status: DirectTreeStatus::CreatingTrunkTrajectory, // this will be updated when applying actions
             segments: BTreeMap::new(),
             root_segment_id: None, // all the trunks share the same root segment, which is the prompt segment
-            trunk_leaf_segments: Vec::new(), // the leaf segments of the trunk trajectories
+            trunk_leaf_segments: BTreeSet::new(), // the leaf segments of the trunk trajectories
             leaf_segment_judgments: BTreeMap::new(),
             current_num_trunks: 0,
             next_segment_id: 0,
