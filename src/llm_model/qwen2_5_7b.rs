@@ -11,7 +11,7 @@ use super::qwen_shared::{
     QwenBackend, SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
 };
 use super::{
-    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
+    LlmCallable, LlmCliArgs, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
     trim_tail_eos_if_needed,
 };
 
@@ -31,7 +31,7 @@ struct ChatMessage {
     content: String,
 }
 
-fn build_qwen25_prefix(user_prompt: &str, enable_thinking: bool) -> String {
+fn build_qwen25_chat_template(user_prompt: &str, enable_thinking: bool) -> String {
     let tmpl = QWEN25_TEMPLATE_ENVIRONMENT.get_template("chat").unwrap();
     let messages = vec![ChatMessage {
         role: "user".into(),
@@ -63,9 +63,15 @@ impl Qwen25LlmCallable {
         }
     }
 }
-
 #[async_trait]
 impl LlmCallable<Qwen25> for Qwen25LlmCallable {
+    fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
+        let backend = QwenBackend {
+            sglang_port: llm_cli_args.qwen_sglang_port,
+        };
+
+        Qwen25LlmCallable::new(client, backend, llm_cli_args.max_concurrent_requests)
+    }
     async fn generate_tokens(
         &self,
         prompt_or_tokens: Vec<i32>,
@@ -102,8 +108,11 @@ impl MyTokenizer<Qwen25> for Qwen25Tokenizer {
         TokenArray::from_tokens(tokens)
     }
 
-    fn tokenize_prompt_for_generation(prompt: String) -> TokenArray<Qwen25> {
-        let prompt_with_template = build_qwen25_prefix(&prompt, false);
+    fn apply_chat_template_and_tokenize(
+        prompt: String,
+        enable_thinking: bool,
+    ) -> TokenArray<Qwen25> {
+        let prompt_with_template = build_qwen25_chat_template(&prompt, enable_thinking);
         Self::tokenize(prompt_with_template)
     }
 
@@ -126,26 +135,4 @@ impl LlmModelMarker for Qwen25 {
 
     const CLI_NAME: &'static str = "qwen2.5-7b";
     const API_NAME: &'static str = "Qwen/Qwen2.5-7B-Instruct";
-    const FAMILY: LlmFamily = LlmFamily::Qwen;
-
-    fn build_prefix_thinking_disabled(
-        prompt_before_assistant: &str,
-        prompt_after_assistant: &str,
-    ) -> String {
-        let mut full_prompt = build_qwen25_prefix(prompt_before_assistant, false);
-        full_prompt += prompt_after_assistant;
-        full_prompt
-    }
-
-    fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String {
-        build_qwen25_prefix(prompt_before_assistant, true)
-    }
-
-    fn callable_from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self::Callable {
-        let backend = QwenBackend {
-            sglang_port: llm_cli_args.qwen_sglang_port(),
-        };
-
-        Qwen25LlmCallable::new(client, backend, llm_cli_args.max_concurrent_requests)
-    }
 }

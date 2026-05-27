@@ -8,7 +8,7 @@ use tiktoken_rs::{CoreBPE, bpe_for_model};
 use crate::token_array::TokenArray;
 
 use super::{
-    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
+    LlmCallable, LlmCliArgs, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
     TokenLogprobCandidate, trim_tail_eos_if_needed,
 };
 
@@ -63,6 +63,9 @@ impl Gpt4oLlmCallable {
 
 #[async_trait]
 impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
+    fn from_cli_args(client: Client, _llm_cli_args: &LlmCliArgs) -> Self {
+        Gpt4oLlmCallable::new(client)
+    }
     async fn generate_tokens(
         &self,
         prompt_or_tokens: Vec<i32>,
@@ -225,6 +228,13 @@ pub struct Gpt4o;
 
 pub struct Gpt4oTokenizer;
 impl MyTokenizer<Gpt4o> for Gpt4oTokenizer {
+    fn apply_chat_template_and_tokenize(
+        prompt: String,
+        enable_thinking: bool,
+    ) -> TokenArray<Gpt4o> {
+        let _ = enable_thinking;
+        Self::tokenize(prompt) // GPT-4o does not need a special chat template, so we ignore the enable_thinking argument
+    }
     fn tokenize(prompt: String) -> TokenArray<Gpt4o> {
         let tokens = Self::encode_to_i32_ids(&prompt);
         TokenArray::from_tokens(tokens)
@@ -267,23 +277,8 @@ impl LlmModelMarker for Gpt4o {
 
     const CLI_NAME: &'static str = "gpt-4o";
     const API_NAME: &'static str = "gpt-4o";
-    const FAMILY: LlmFamily = LlmFamily::Gpt;
 
-    fn build_prefix_thinking_disabled(
-        prompt_before_assistant: &str,
-        prompt_after_assistant: &str,
-    ) -> String {
-        format!(
-            "{}\nAssistant: {}",
-            prompt_before_assistant, prompt_after_assistant
-        )
-    }
-
-    fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String {
-        prompt_before_assistant.to_string()
-    }
-
-    fn callable_from_cli_args(client: Client, _llm_cli_args: &LlmCliArgs) -> Self::Callable {
-        Gpt4oLlmCallable::new(client)
-    }
+    // fn callable_from_cli_args(client: Client, _llm_cli_args: &LlmCliArgs) -> Self::Callable {
+    //     Gpt4oLlmCallable::new(client)
+    // }
 }

@@ -28,7 +28,10 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
     );
     let gpt_callable = Gpt4oLlmCallable::new(client);
     let evaluation_tokens = gpt_callable
-        .generate_tokens(Gpt4o::tokenize(prompt).tokens, false)
+        .generate_tokens(
+            <Gpt4o as LlmModelMarker>::Tokenizer::tokenize(prompt).tokens,
+            false,
+        )
         .await
         .unwrap();
     let evaluation = <Gpt4o as LlmModelMarker>::Tokenizer::decode_i32_ids(&evaluation_tokens)

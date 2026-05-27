@@ -9,7 +9,7 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
-    llm_model::{Gpt4o, LlmModelMarker, LlmModelName, Qwen3, Qwen25, Qwen35, Qwen35_08B},
+    llm_model::{Gpt4o, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B, Qwen35_08B},
 };
 use research_utility::asset_file::AssetFile;
 
@@ -121,7 +121,7 @@ async fn main() {
             .await;
         }
         LlmModelName::Qwen3_4b => {
-            print_accuracy_for_model::<Qwen3>(
+            print_accuracy_for_model::<Qwen3_4B>(
                 config_nickname,
                 rollout_config,
                 posterior_calculation_config,
@@ -137,7 +137,7 @@ async fn main() {
             .await;
         }
         LlmModelName::Qwen35_4b => {
-            print_accuracy_for_model::<Qwen35>(
+            print_accuracy_for_model::<Qwen35_4B>(
                 config_nickname,
                 rollout_config,
                 posterior_calculation_config,

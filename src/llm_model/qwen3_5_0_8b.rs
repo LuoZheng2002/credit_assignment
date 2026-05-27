@@ -7,8 +7,8 @@ use super::qwen_shared::{
     QwenBackend, SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
 };
 use super::{
-    LlmCallable, LlmCliArgs, LlmFamily, LlmModelMarker, MyTokenizer, TokenArray,
-    TokenArrayWithLogprob, build_simple_qwen_chatml_prefix, trim_tail_eos_if_needed,
+    LlmCallable, LlmCliArgs, LlmModelMarker, MyTokenizer, TokenArray, TokenArrayWithLogprob,
+    build_simple_qwen35_chatml_template, trim_tail_eos_if_needed,
 };
 
 static QWEN35_08B_TOKENIZER: LazyLock<Tokenizer> =
@@ -35,6 +35,13 @@ impl Qwen35_08BLlmCallable {
 
 #[async_trait]
 impl LlmCallable<Qwen35_08B> for Qwen35_08BLlmCallable {
+    fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
+        let backend = QwenBackend {
+            sglang_port: llm_cli_args.qwen_sglang_port,
+        };
+
+        Qwen35_08BLlmCallable::new(client, backend, llm_cli_args.max_concurrent_requests)
+    }
     async fn generate_tokens(
         &self,
         prompt_or_tokens: Vec<i32>,
@@ -71,8 +78,11 @@ impl MyTokenizer<Qwen35_08B> for Qwen35_08BTokenizer {
         TokenArray::from_tokens(tokens)
     }
 
-    fn tokenize_prompt_for_generation(prompt: String) -> TokenArray<Qwen35_08B> {
-        let prompt_with_template = build_simple_qwen_chatml_prefix(&prompt, true);
+    fn apply_chat_template_and_tokenize(
+        prompt: String,
+        enable_thinking: bool,
+    ) -> TokenArray<Qwen35_08B> {
+        let prompt_with_template = build_simple_qwen35_chatml_template(&prompt, enable_thinking);
         Self::tokenize(prompt_with_template)
     }
 
@@ -95,26 +105,4 @@ impl LlmModelMarker for Qwen35_08B {
 
     const CLI_NAME: &'static str = "qwen3.5-0.8b";
     const API_NAME: &'static str = "Qwen/Qwen3.5-0.8B";
-    const FAMILY: LlmFamily = LlmFamily::Qwen;
-
-    fn build_prefix_thinking_disabled(
-        prompt_before_assistant: &str,
-        prompt_after_assistant: &str,
-    ) -> String {
-        let mut full_prompt = build_simple_qwen_chatml_prefix(prompt_before_assistant, false);
-        full_prompt += prompt_after_assistant;
-        full_prompt
-    }
-
-    fn build_prefix_thinking_enabled(prompt_before_assistant: &str) -> String {
-        build_simple_qwen_chatml_prefix(prompt_before_assistant, true)
-    }
-
-    fn callable_from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self::Callable {
-        let backend = QwenBackend {
-            sglang_port: llm_cli_args.qwen_sglang_port(),
-        };
-
-        Qwen35_08BLlmCallable::new(client, backend, llm_cli_args.max_concurrent_requests)
-    }
 }

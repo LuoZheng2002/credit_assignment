@@ -15,7 +15,7 @@ use crate::{
         hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
-    llm_model::{LlmCliArgs, LlmModelMarker},
+    llm_model::{LlmCallable, LlmCliArgs, LlmModelMarker},
 };
 
 pub async fn rollout<M: LlmModelMarker>(
@@ -76,7 +76,7 @@ pub async fn direct_rollout_all_with_config<M: LlmModelMarker>(
     llm_cli_args: &LlmCliArgs,
     first_n_samples: Option<usize>,
 ) {
-    let llm_callable = M::callable_from_cli_args(client.clone(), llm_cli_args);
+    let llm_callable = M::Callable::from_cli_args(client.clone(), llm_cli_args);
     let asset_file_dataset = AssetFileHybridDataset;
     let dataset = asset_file_dataset.fetch().await;
     let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
