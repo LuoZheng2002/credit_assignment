@@ -1,13 +1,8 @@
 use std::marker::PhantomData;
-
-use research_utility::worker_message_tx::log_key_value_pair;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    direct_tool::direct_tree::{DirectTree, SegmentContent, SegmentId},
-    llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob},
-    token_array::TokenArray,
-    util::extract_boxed_content,
+    direct_tool::direct_tree::{DirectTree, SegmentContent, SegmentId}, llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob}, token_array::TokenArray, tool_call_python::extract_python_tool_call, util::extract_boxed_content
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,91 +20,7 @@ impl FinalAnswer {
     }
 }
 
-pub trait ToolCallParser {
-    fn start_position(&self, content: &str) -> Option<usize>;
-    fn end_position(&self, content: &str, start_position: usize) -> Option<usize>;
-}
 
-pub struct MarkdownPythonParser;
-
-impl ToolCallParser for MarkdownPythonParser {
-    fn start_position(&self, content: &str) -> Option<usize> {
-        content.find("```python")
-    }
-
-    fn end_position(&self, content: &str, start_position: usize) -> Option<usize> {
-        let after_start = &content[start_position + "```python".len()..];
-        if let Some(end_relative) = after_start.find("```") {
-            let mut end_position = start_position + "```python".len() + end_relative + "```".len();
-            // if there is a '\n' after the closing fence, we also include it in the tool call, as it may be needed for correct formatting when the tool response is inserted back to the planner's reasoning
-            if after_start[end_relative + "```".len()..].starts_with('\n') {
-                end_position += 1;
-            }
-            Some(end_position)
-        } else {
-            None
-        }
-    }
-}
-
-pub fn split_reasoning_and_tool_call(response: String) -> (Option<String>, Option<String>, bool) {
-    let parsers: Vec<Box<dyn ToolCallParser>> = vec![Box::new(MarkdownPythonParser {})];
-    let mut min_start_position = None;
-    let mut selected_parser = None;
-    for parser in parsers {
-        if let Some(start_position) = parser.start_position(&response) {
-            if min_start_position.is_none() || start_position < min_start_position.unwrap() {
-                min_start_position = Some(start_position);
-                selected_parser = Some(parser);
-            }
-        }
-    }
-    let Some(mut start_position) = min_start_position else {
-        return (Some(response), None, false);
-    };
-    // if there is <tool_call> before the start position, also include it
-    if let Some(tag_position) = response[..start_position].rfind("<tool_wait>") {
-        if response[tag_position..start_position].trim().is_empty() {
-            start_position = tag_position;
-        }
-    }
-    let selected_parser = selected_parser.unwrap();
-    let end_position = selected_parser
-        .end_position(&response, start_position)
-        .unwrap_or(response.len());
-    let mut tool_call = response[start_position..end_position].to_string();
-    let mut tool_wait_violation = false;
-    // if after the end position there is immediately a </tool_wait> tag, we also include it in the tool call
-    if end_position < response.len() && response[end_position..].trim().starts_with("</tool_wait>")
-    {
-        let suffix = response[end_position..].trim_start();
-        let suffix_after_tag = suffix
-            .strip_prefix("</tool_wait>")
-            .expect("suffix should start with </tool_wait>");
-        if !suffix_after_tag.trim().is_empty() {
-            log_key_value_pair(
-                "warning".into(),
-                format!("Model outputs non-empty trailing content after </tool_wait>."),
-            );
-            tool_wait_violation = true;
-        }
-        tool_call.push_str("</tool_wait>");
-    } else {
-        tool_wait_violation = true;
-
-        // log_key_value_pair(
-        //     "warning".into(),
-        //     "Model's tool call does not end with </tool_wait> tag.".into(),
-        // );
-        tool_call.push_str("</tool_wait>"); // if there is no </tool_wait> tag, we also add it and trim all the content after the tool call
-    }
-    let reasoning = if !response[..start_position].trim().is_empty() {
-        Some(response[..start_position].to_string()) // do not trim the reasoning part, as leading/trailing spaces may be useful for formatting
-    } else {
-        None
-    };
-    (reasoning, Some(tool_call), tool_wait_violation)
-}
 
 pub struct DirectTrajectory<M: LlmModelMarker> {
     pub trajectory_contents: Vec<TrajectoryContent>,
@@ -159,8 +70,7 @@ impl<M: LlmModelMarker> DirectTrajectory<M> {
         let TrajectoryContent::ReasoningOrToolCallComplete(tokens) = last_content else {
             return None;
         };
-        let (_, tool_call, _) = split_reasoning_and_tool_call(tokens.decoded_string.clone());
-        tool_call
+        extract_python_tool_call(tokens.decoded_string.clone())
     }
     pub fn to_decoded_string(&self) -> String {
         self.trajectory_contents

@@ -5,20 +5,51 @@ use serde::{Deserialize, Serialize};
 
 use crate::worker_message_tx::log_key_value_pair;
 
+pub fn extract_python_tool_call(response: String) -> Option<String> {
+    let python_fence = "```python";
+    let Some(python_start_position) = response.find(python_fence) else {
+        return None;
+    };
+    let mut start_position = python_start_position;
+    // if there is <tool_call> before the start position, also include it
+    if let Some(tag_position) = response[..start_position].rfind("<tool_wait>") {
+        if response[tag_position..start_position].trim().is_empty() {
+            start_position = tag_position;
+        }
+    }
+    let end_position = {
+        let search_start = python_start_position + python_fence.len();
+        let after_python_fence = &response[search_start..];
+        if let Some(end_relative) = after_python_fence.find("```") {
+            let mut end_position = search_start + end_relative + "```".len();
+            // if there is a '\n' after the closing fence, include it in the tool call for formatting.
+            if after_python_fence[end_relative + "```".len()..].starts_with('\n') {
+                end_position += 1;
+            }
+            end_position
+        } else {
+            response.len()
+        }
+    };
+    let mut tool_call = response[start_position..end_position].to_string();
+    tool_call.push_str("</tool_wait>");
+    Some(tool_call)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ToolResponse {
+pub enum PythonToolResponse {
     PythonSuccess(String),
     PythonError(String),
     // EmptyMessageHint,
 }
 
-impl ToolResponse {
+impl PythonToolResponse {
     pub fn to_raw_content(&self) -> String {
         match self {
-            ToolResponse::PythonSuccess(output) => {
+            PythonToolResponse::PythonSuccess(output) => {
                 format!("<tool_response>{}</tool_response>", output)
             }
-            ToolResponse::PythonError(error) => {
+            PythonToolResponse::PythonError(error) => {
                 format!("<tool_response>Python error: {}</tool_response>", error)
             } // ToolResponse::Intervention(content) => content.clone(),
               // ToolResponse::EmptyMessageHint => EMPTY_MESSAGE_HINT.to_string(),
@@ -108,7 +139,7 @@ fn format_limited_output(output: String, max_chars: usize) -> String {
     )
 }
 
-pub async fn execute_python_code(code: String) -> ToolResponse {
+pub async fn execute_python_code(code: String) -> PythonToolResponse {
     let task = tokio::task::spawn_blocking(move || blocking_python_code_task(code));
     let result = tokio::time::timeout(Duration::from_millis(5000), task).await;
     match result {
@@ -119,18 +150,21 @@ pub async fn execute_python_code(code: String) -> ToolResponse {
                         "warning".into(),
                         "Python interpreter did not return any output. Please use print statements to retrieve results.".into(),
                     );
-                    return ToolResponse::PythonSuccess(
+                    return PythonToolResponse::PythonSuccess(
                         "Python interpreter did not return any output. Please use print statements to retrieve results.".to_string(),
                     );
                 }
-                ToolResponse::PythonSuccess(format_limited_output(output, MAX_TOOL_OUTPUT_CHARS))
+                PythonToolResponse::PythonSuccess(format_limited_output(
+                    output,
+                    MAX_TOOL_OUTPUT_CHARS,
+                ))
             }
-            Ok(Err(err)) => ToolResponse::PythonError(err.to_string()),
-            Err(_) => ToolResponse::PythonError(
+            Ok(Err(err)) => PythonToolResponse::PythonError(err.to_string()),
+            Err(_) => PythonToolResponse::PythonError(
                 "Sorry, unexpected error occurred. Please try again.".to_string(),
             ),
         },
-        Err(_) => ToolResponse::PythonError("Python code execution timed out.".to_string()),
+        Err(_) => PythonToolResponse::PythonError("Python code execution timed out.".to_string()),
     }
 }
 

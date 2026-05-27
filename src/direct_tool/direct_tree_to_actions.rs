@@ -6,7 +6,7 @@ use research_utility::worker_message_tx::log_key_value_pair;
 use crate::direct_tool::direct_trajectory::{DirectTrajectory, FinalAnswer, TrajectoryContent};
 use crate::judge_correctness::judge_final_answer;
 use crate::llm_model::MyTokenizer;
-use crate::tool_call_python::{ToolResponse, execute_python_code};
+use crate::tool_call_python::{PythonToolResponse, execute_python_code};
 use crate::{
     direct_tool::{
         direct_tree::{ContentIndex, DirectTree, SegmentContent, SegmentId},
@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
+pub async fn execute_planner_tool_call(tool_call: &str) -> PythonToolResponse {
     let mut trimmed_tool_call = tool_call.trim_start().to_string();
     // trim <tool_wait>
     if trimmed_tool_call.starts_with("<tool_wait>") {
@@ -33,7 +33,7 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
         tool_call
     );
     let Some(fence_end_index) = trimmed_tool_call.rfind("```") else {
-        return ToolResponse::PythonError(
+        return PythonToolResponse::PythonError(
             "Tool call markdown code block not properly closed.".to_string(),
         );
     };
@@ -42,7 +42,7 @@ pub async fn execute_planner_tool_call(tool_call: &str) -> ToolResponse {
         .map(|idx| idx + 1)
         .unwrap_or("```python".len());
     if fence_end_index < code_start {
-        return ToolResponse::PythonError(
+        return PythonToolResponse::PythonError(
             "Tool call markdown code block not properly formatted.".to_string(),
         );
     }
