@@ -1,8 +1,8 @@
 {
   "training_plan": "lora_current",
   "model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
-  "tokenized_sqlite_path": "results/qwen2.5-7b/agent/deepmath_training_tokenized_500_79fd.sqlite",
-  "batch_sqlite_path": "results/qwen2.5-7b/agent/deepmath_training_batch_500_79fd_bs64.sqlite",
+  "training_trajectory_sqlite_path": "results/qwen2.5-7b/agent/deepmath_training_trajectories_500_79fd.sqlite",
+  "batch_size": 64,
   "output_dir": "/work/nvme/bdns/zluo8/smoke_test_lora_qwen25",
   "advantage_clip": 3.0,
   "learning_rate": 1e-05,

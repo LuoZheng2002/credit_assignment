@@ -25,17 +25,6 @@ class TrainingSampleTokenized:
     model_official_name: str
 
 
-@dataclass(frozen=True)
-class TrainingBatch:
-    batch_index: int
-    ids: list[QuestionNodeId]
-    max_advantage: float
-    min_advantage: float
-    max_length: int
-    min_length: int
-    model_official_name: str
-
-
 def _assert_sqlite_path_exists(sqlite_path: str) -> None:
     assert os.path.isfile(sqlite_path), f"sqlite file not found: {sqlite_path}"
 
@@ -121,42 +110,52 @@ def _parse_tokenized_payload(payload: object) -> TrainingSampleTokenized:
     )
 
 
-def _parse_batch_payload(batch_index: int, payload: object) -> TrainingBatch:
-    payload_obj = _parse_payload_object(payload, "batch")
-    assert "ids" in payload_obj, "batch payload must contain ids"
-    assert "max_advantage" in payload_obj, "batch payload must contain max_advantage"
-    assert "min_advantage" in payload_obj, "batch payload must contain min_advantage"
-    assert "max_length" in payload_obj, "batch payload must contain max_length"
-    assert "min_length" in payload_obj, "batch payload must contain min_length"
-    assert "model_official_name" in payload_obj, "batch payload must contain model_official_name"
+def _parse_direct_training_trajectory_payload(
+    trajectory_id: int,
+    payload: object,
+) -> TrainingSampleTokenized:
+    payload_obj = _parse_payload_object(payload, "trajectory")
+    assert "question" in payload_obj, "trajectory payload must contain question"
+    assert "input_ids" in payload_obj, "trajectory payload must contain input_ids"
+    assert "labels" in payload_obj, "trajectory payload must contain labels"
+    assert "advantages" in payload_obj, "trajectory payload must contain advantages"
 
-    ids_obj = payload_obj["ids"]
-    assert isinstance(ids_obj, list), "ids must be a list"
-    ids: list[QuestionNodeId] = []
-    for id_obj in ids_obj:
-        ids.append(_parse_question_node_id(id_obj))
+    question_obj = payload_obj["question"]
+    assert isinstance(question_obj, dict), "question must be an object"
+    assert "flat_id" in question_obj, "question must contain flat_id"
+    question_flat_id = _parse_positive_int(question_obj["flat_id"], "question.flat_id")
 
-    assert len(ids) > 0, "batch ids cannot be empty"
+    input_ids = _parse_int_list(payload_obj["input_ids"], "input_ids")
+    labels = _parse_int_list(payload_obj["labels"], "labels")
 
-    max_advantage = _parse_finite_float(payload_obj["max_advantage"], "max_advantage")
-    min_advantage = _parse_finite_float(payload_obj["min_advantage"], "min_advantage")
-    max_length = _parse_positive_int(payload_obj["max_length"], "max_length")
-    min_length = _parse_positive_int(payload_obj["min_length"], "min_length")
-    model_official_name_obj = payload_obj["model_official_name"]
-    assert isinstance(model_official_name_obj, str), "model_official_name must be string"
-    assert len(model_official_name_obj) > 0, "model_official_name cannot be empty"
+    advantages_obj = payload_obj["advantages"]
+    assert isinstance(advantages_obj, list), "advantages must be a list"
+    token_advantages: list[float] = []
+    for element in advantages_obj:
+        token_advantages.append(_parse_finite_float(element, "advantages[]"))
 
-    assert max_length >= min_length, "max_length must be >= min_length"
-    assert max_advantage >= min_advantage, "max_advantage must be >= min_advantage"
+    assert len(input_ids) > 0, "input_ids cannot be empty"
+    assert len(labels) == len(input_ids), "labels and input_ids lengths must match"
+    assert len(token_advantages) == len(input_ids), "advantages and input_ids lengths must match"
 
-    return TrainingBatch(
-        batch_index=batch_index,
-        ids=ids,
-        max_advantage=max_advantage,
-        min_advantage=min_advantage,
-        max_length=max_length,
-        min_length=min_length,
-        model_official_name=model_official_name_obj,
+    supervised_advantages = [
+        token_advantages[index] for index, label in enumerate(labels) if label != -100
+    ]
+    assert len(supervised_advantages) > 0, "trajectory must contain at least one supervised token"
+
+    reconstructed = ""
+    question_text_obj = question_obj.get("question")
+    if isinstance(question_text_obj, str):
+        reconstructed = question_text_obj
+
+    return TrainingSampleTokenized(
+        id=QuestionNodeId(question_id=question_flat_id, node_id=trajectory_id),
+        input_ids=input_ids,
+        labels=labels,
+        reconstructed=reconstructed,
+        input_length=len(input_ids),
+        advantage=sum(supervised_advantages) / len(supervised_advantages),
+        model_official_name="",
     )
 
 
@@ -174,20 +173,20 @@ def load_tokenized_samples(sqlite_path: str) -> list[TrainingSampleTokenized]:
     return list(iter_tokenized_samples(sqlite_path))
 
 
-def iter_training_batches(sqlite_path: str) -> Iterator[TrainingBatch]:
+def iter_training_trajectories(sqlite_path: str) -> Iterator[TrainingSampleTokenized]:
     _assert_sqlite_path_exists(sqlite_path)
-    store = SqliteStore[str, object](sqlite_path)
+    store = SqliteStore[int, object](sqlite_path)
     try:
         payload_count = len(store.load_all())
-        for batch_index in range(payload_count):
-            payload = store.get(str(batch_index))
+        for trajectory_id in range(payload_count):
+            payload = store.get(trajectory_id)
             assert payload is not None, (
-                f"batch index must be contiguous: expected {batch_index}, got missing id {batch_index}"
+                f"trajectory index must be contiguous: expected {trajectory_id}, got missing id {trajectory_id}"
             )
-            yield _parse_batch_payload(batch_index=batch_index, payload=payload)
+            yield _parse_direct_training_trajectory_payload(trajectory_id=trajectory_id, payload=payload)
     finally:
         store.close()
 
 
-def load_training_batches(sqlite_path: str) -> list[TrainingBatch]:
-    return list(iter_training_batches(sqlite_path))
+def load_training_trajectories(sqlite_path: str) -> list[TrainingSampleTokenized]:
+    return list(iter_training_trajectories(sqlite_path))

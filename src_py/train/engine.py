@@ -19,8 +19,8 @@ from .losses import compute_advantage_weighted_causal_lm_loss
 class TrainConfig:
     training_plan: str
     model_name_or_path: str
-    tokenized_sqlite_path: str
-    batch_sqlite_path: str
+    training_trajectory_sqlite_path: str
+    batch_size: int
     output_dir: str
     advantage_clip: float
     learning_rate: float
@@ -312,9 +312,11 @@ def _verify_tokenizer_model_match(
     max_input_token_id = -1
     max_label_token_id = -1
     for resolved_batch in ordered_batches:
-        data_model_names.add(resolved_batch.model_official_name)
+        if len(resolved_batch.model_official_name.strip()) > 0:
+            data_model_names.add(resolved_batch.model_official_name)
         for sample in resolved_batch.samples:
-            data_model_names.add(sample.model_official_name)
+            if len(sample.model_official_name.strip()) > 0:
+                data_model_names.add(sample.model_official_name)
             for token_id in sample.input_ids:
                 assert token_id >= 0, "input_ids must be non-negative"
                 if token_id > max_input_token_id:
@@ -326,11 +328,14 @@ def _verify_tokenizer_model_match(
                 if token_id > max_label_token_id:
                     max_label_token_id = token_id
 
-    assert len(data_model_names) == 1, "training data must contain exactly one model_official_name"
-    data_model_name = next(iter(data_model_names))
-    assert (
-        data_model_name == expected_model_name
-    ), "training data model_official_name must match model_name_or_path"
+    if len(data_model_names) > 0:
+        assert len(data_model_names) == 1, "training data must contain exactly one model_official_name"
+        data_model_name = next(iter(data_model_names))
+        assert (
+            data_model_name == expected_model_name
+        ), "training data model_official_name must match model_name_or_path"
+    else:
+        data_model_name = expected_model_name
     assert max_input_token_id < model_vocab_size, "input_ids contain token id out of model vocab range"
     assert max_label_token_id < model_vocab_size, "labels contain token id out of model vocab range"
 
@@ -408,6 +413,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     assert config.learning_rate > 0.0, "learning_rate must be positive"
     assert config.weight_decay >= 0.0, "weight_decay must be non-negative"
     assert config.num_epochs > 0, "num_epochs must be positive"
+    assert config.batch_size > 0, "batch_size must be positive"
     assert config.grad_accum_steps > 0, "grad_accum_steps must be positive"
     assert config.log_interval_steps > 0, "log_interval_steps must be positive"
     assert config.save_interval_steps > 0, "save_interval_steps must be positive"
@@ -420,8 +426,9 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     rank, world_size = _get_rank_world_size()
 
     ordered_batches: list[ResolvedTrainingBatch] = load_resolved_training_batches(
-        tokenized_sqlite_path=config.tokenized_sqlite_path,
-        batch_sqlite_path=config.batch_sqlite_path,
+        training_trajectory_sqlite_path=config.training_trajectory_sqlite_path,
+        batch_size=config.batch_size,
+        model_official_name=config.model_name_or_path,
     )
     local_batches = _shard_batches_for_rank(ordered_batches=ordered_batches, rank=rank, world_size=world_size)
 

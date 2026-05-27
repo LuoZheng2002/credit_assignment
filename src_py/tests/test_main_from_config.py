@@ -11,8 +11,8 @@ class TestMainFromConfig(unittest.TestCase):
         payload = {
             "training_plan": "lora_current",
             "model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
-            "tokenized_sqlite_path": "/tmp/tokenized.sqlite",
-            "batch_sqlite_path": "/tmp/batches.sqlite",
+            "training_trajectory_sqlite_path": "/tmp/training_trajectories.sqlite",
+            "batch_size": 8,
             "output_dir": "/tmp/out",
             "advantage_clip": 3.0,
             "learning_rate": 1e-5,
@@ -39,8 +39,8 @@ class TestMainFromConfig(unittest.TestCase):
         payload = {
             "training_plan": "lora_current",
             "model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
-            "tokenized_sqlite_path": "/tmp/tokenized.sqlite",
-            "batch_sqlite_path": "/tmp/batches.sqlite",
+            "training_trajectory_sqlite_path": "/tmp/training_trajectories.sqlite",
+            "batch_size": 8,
             "output_dir": "/tmp/out",
             "advantage_clip": 3.0,
             "learning_rate": 1e-5,

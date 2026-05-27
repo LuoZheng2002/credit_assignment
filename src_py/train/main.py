@@ -9,8 +9,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train causal LM with LoRA or FSDP")
     parser.add_argument("--training-plan", type=str, required=True)
     parser.add_argument("--model-name-or-path", type=str, required=True)
-    parser.add_argument("--tokenized-sqlite-path", type=str, required=True)
-    parser.add_argument("--batch-sqlite-path", type=str, required=True)
+    parser.add_argument("--training-trajectory-sqlite-path", type=str, required=True)
+    parser.add_argument("--batch-size", type=int, required=True)
     parser.add_argument("--output-dir", type=str, required=True)
     parser.add_argument("--advantage-clip", type=float, required=True)
     parser.add_argument("--learning-rate", type=float, required=True)
@@ -35,8 +35,8 @@ def main() -> None:
     config = TrainConfig(
         training_plan=args.training_plan,
         model_name_or_path=args.model_name_or_path,
-        tokenized_sqlite_path=args.tokenized_sqlite_path,
-        batch_sqlite_path=args.batch_sqlite_path,
+        training_trajectory_sqlite_path=args.training_trajectory_sqlite_path,
+        batch_size=args.batch_size,
         output_dir=args.output_dir,
         advantage_clip=args.advantage_clip,
         learning_rate=args.learning_rate,
