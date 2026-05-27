@@ -6,7 +6,7 @@ use research_utility::worker_message_tx::log_key_value_pair;
 use crate::direct_tool::direct_trajectory::{DirectTrajectory, FinalAnswer, TrajectoryContent};
 use crate::judge_correctness::judge_final_answer;
 use crate::llm_model::MyTokenizer;
-use crate::tool_call_python::{PythonToolResponse, execute_python_code};
+use crate::tool_call_python::execute_python_tool_call;
 use crate::{
     direct_tool::{
         direct_tree::{ContentIndex, DirectTree, SegmentContent, SegmentId},
@@ -18,37 +18,6 @@ use crate::{
         LlmCallable, LlmModelMarker, TokenArrayWithLogprob, TokenLogprobCandidate, Top8Candidates,
     },
 };
-
-pub async fn execute_planner_tool_call(tool_call: &str) -> PythonToolResponse {
-    let mut trimmed_tool_call = tool_call.trim_start().to_string();
-    // trim <tool_wait>
-    if trimmed_tool_call.starts_with("<tool_wait>") {
-        trimmed_tool_call = trimmed_tool_call["<tool_wait>".len()..]
-            .trim_start()
-            .to_string();
-    }
-    assert!(
-        trimmed_tool_call.starts_with("```python"),
-        "Tool call not properly formatted: {}",
-        tool_call
-    );
-    let Some(fence_end_index) = trimmed_tool_call.rfind("```") else {
-        return PythonToolResponse::PythonError(
-            "Tool call markdown code block not properly closed.".to_string(),
-        );
-    };
-    let code_start = trimmed_tool_call
-        .find('\n')
-        .map(|idx| idx + 1)
-        .unwrap_or("```python".len());
-    if fence_end_index < code_start {
-        return PythonToolResponse::PythonError(
-            "Tool call markdown code block not properly formatted.".to_string(),
-        );
-    }
-    let code = &trimmed_tool_call[code_start..fence_end_index];
-    execute_python_code(code.to_string()).await
-}
 
 #[derive(Debug, Clone, Copy)]
 pub enum BranchingType {
@@ -641,10 +610,32 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     llm_callable: &M::Callable,
 ) -> SegmentContent<M> {
     let prompt_tokens = direct_trajectory_to_prompt_tokens(trajectory);
-    let response = llm_callable
-        .generate_tokens_with_logprobs(prompt_tokens.clone(), true, 1.0, true)
-        .await
-        .unwrap();
+    let mut response = None;
+    for trial in 1..=3 {
+        match llm_callable
+            .generate_tokens_with_logprobs(prompt_tokens.clone(), true, 1.0, true)
+            .await
+        {
+            Ok(result) => {
+                response = Some(result);
+                break;
+            }
+            Err(error) => {
+                log_key_value_pair(
+                    "warning".to_string(),
+                    format!("generate_tokens_with_logprobs failed on trial {trial}/3: {error}"),
+                );
+            }
+        }
+    }
+
+    let response = response.unwrap_or_else(|| {
+        let eos_token_id = <M::Tokenizer as MyTokenizer<M>>::eos_token_id();
+        TokenArrayWithLogprob::from_tokens_and_logprobs(
+            vec![eos_token_id],
+            vec![fallback_top8_for_token(eos_token_id)],
+        )
+    });
     let response = patch_unclosed_python_tool_wait::<M>(response);
     let decoded_response = response.decode();
     if response.tokens.is_empty() || decoded_response.trim().is_empty() {
@@ -682,11 +673,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
         }
         TrajectoryContent::ReasoningOrToolCallComplete(_) => {
             if let Some(tool_call) = trajectory.try_get_last_content_tool_call() {
-                // println!("Trajectory contents: {}", trajectory.to_decoded_string());
-                // panic!(
-                //     "tool call should not be none when the last content is a reasoning or tool call content when generating next segment content"
-                // );
-                let tool_response = execute_planner_tool_call(&tool_call).await;
+                let tool_response = execute_python_tool_call(&tool_call).await;
                 let tool_response_raw = tool_response.to_raw_content();
                 let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
                 SegmentContent::ToolResponse(response_tokenized)

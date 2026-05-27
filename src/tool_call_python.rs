@@ -139,7 +139,7 @@ fn format_limited_output(output: String, max_chars: usize) -> String {
     )
 }
 
-pub async fn execute_python_code(code: String) -> PythonToolResponse {
+async fn execute_python_code(code: String) -> PythonToolResponse {
     let task = tokio::task::spawn_blocking(move || blocking_python_code_task(code));
     let result = tokio::time::timeout(Duration::from_millis(5000), task).await;
     match result {
@@ -166,6 +166,37 @@ pub async fn execute_python_code(code: String) -> PythonToolResponse {
         },
         Err(_) => PythonToolResponse::PythonError("Python code execution timed out.".to_string()),
     }
+}
+
+pub async fn execute_python_tool_call(tool_call: &str) -> PythonToolResponse {
+    let mut trimmed_tool_call = tool_call.trim_start().to_string();
+    // trim <tool_wait>
+    if trimmed_tool_call.starts_with("<tool_wait>") {
+        trimmed_tool_call = trimmed_tool_call["<tool_wait>".len()..]
+            .trim_start()
+            .to_string();
+    }
+    assert!(
+        trimmed_tool_call.starts_with("```python"),
+        "Tool call not properly formatted: {}",
+        tool_call
+    );
+    let Some(fence_end_index) = trimmed_tool_call.rfind("```") else {
+        return PythonToolResponse::PythonError(
+            "Tool call markdown code block not properly closed.".to_string(),
+        );
+    };
+    let code_start = trimmed_tool_call
+        .find('\n')
+        .map(|idx| idx + 1)
+        .unwrap_or("```python".len());
+    if fence_end_index < code_start {
+        return PythonToolResponse::PythonError(
+            "Tool call markdown code block not properly formatted.".to_string(),
+        );
+    }
+    let code = &trimmed_tool_call[code_start..fence_end_index];
+    execute_python_code(code.to_string()).await
 }
 
 #[cfg(test)]
