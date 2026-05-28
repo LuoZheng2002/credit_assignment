@@ -11,6 +11,8 @@ use credit_assignment::{
     json_line_util::read_json,
     llm_model::{Gpt4o, LlmCliArgs, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B, Qwen35_08B},
 };
+use crossterm::{cursor::Show, event::DisableMouseCapture, execute};
+use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use pyo3::Python;
 use reqwest::Client;
 use research_utility::{
@@ -19,6 +21,12 @@ use research_utility::{
     worker_message_tx::WORKER_MESSAGE_TX,
 };
 use tokio::sync::Semaphore;
+
+fn restore_terminal_after_panic() {
+    let _ = disable_raw_mode();
+    let mut stderr = std::io::stderr();
+    let _ = execute!(stderr, LeaveAlternateScreen, DisableMouseCapture, Show);
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -50,6 +58,7 @@ struct Args {
 #[tokio::main]
 async fn main() {
     std::panic::set_hook(Box::new(|info| {
+        restore_terminal_after_panic();
         eprintln!("panic occurred: {}", info);
         let rust_backtrace = std::env::var("RUST_BACKTRACE").ok();
         if matches!(rust_backtrace.as_deref(), Some("1") | Some("full")) {

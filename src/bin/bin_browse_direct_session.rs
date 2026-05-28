@@ -19,6 +19,7 @@ use credit_assignment::{
     json_line_util::read_json,
     llm_model::{Gpt4o, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B, Qwen35_08B},
 };
+use crossterm::cursor::Show;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseButton,
     MouseEvent, MouseEventKind,
@@ -2222,9 +2223,16 @@ struct RunModelAppArgs<'a> {
     override_hyperparameters: Option<PosteriorHyperparameters>,
 }
 
+fn restore_terminal_after_panic() {
+    let _ = disable_raw_mode();
+    let mut stderr = io::stderr();
+    let _ = execute!(stderr, LeaveAlternateScreen, DisableMouseCapture, Show);
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     std::panic::set_hook(Box::new(|info| {
+        restore_terminal_after_panic();
         eprintln!("panic occurred: {}", info);
         let rust_backtrace = std::env::var("RUST_BACKTRACE").ok();
         if matches!(rust_backtrace.as_deref(), Some("1") | Some("full")) {
