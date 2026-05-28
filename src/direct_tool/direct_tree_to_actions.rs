@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 use reqwest::Client;
-use research_utility::worker_message_tx::log_key_value_pair;
+use research_utility::log_message::{log_info, log_key_value_pair, log_warning};
 
 use crate::direct_tool::direct_trajectory::{DirectTrajectory, FinalAnswer, TrajectoryContent};
 use crate::judge_correctness::judge_final_answer;
@@ -182,13 +182,10 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     client,
                 )
                 .await;
-                log_key_value_pair(
-                    "progress".into(),
-                    format!(
-                        "Question {}: Created and judged trunk trajectory, correctness: {}",
-                        self.question.flat_id, correctness_judgment.is_correct
-                    ),
-                );
+                log_info(format!(
+                    "Question {}: Created and judged trunk trajectory, correctness: {}",
+                    self.question.flat_id, correctness_judgment.is_correct
+                ));
                 vec![DirectTreeAction::CreateAndJudgeTrunkTrajectory {
                     content_array,
                     correctness_judgment,
@@ -281,18 +278,12 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     contents: new_contents,
                     correctness_judgment,
                 };
-                log_key_value_pair(
-                    "progress".into(),
-                    format!(
-                        "Question {}: Created and judged branch segment, correctness: {}",
-                        self.question.flat_id, is_correct
-                    ),
-                );
+                log_info(format!(
+                    "Question {}: Created and judged branch segment, correctness: {}",
+                    self.question.flat_id, is_correct
+                ));
                 vec![action]
             }
-            // DirectTreeStatus::JudgingBranchSegment => {
-            //     //
-            // }
             DirectTreeStatus::Complete => {
                 // the tree is complete, no more actions can be taken
                 unreachable!()
@@ -565,7 +556,7 @@ fn concise_failure_reason(error: &str) -> String {
 }
 
 async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
-    question_flat_id: usize,
+    _question_flat_id: usize,
     // current_content: &[SegmentContent],
     trajectory: &DirectTrajectory<M>,
     llm_callable: &M::Callable,
@@ -575,23 +566,14 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     let mut response = None;
     for trial in 1..=3 {
         let num_waiting_workers = sglang_waiting_workers.fetch_add(1, Ordering::SeqCst) + 1;
-        log_key_value_pair(
-            "sglang_waiting_workers".to_string(),
-            format!(
-                "count={} state=before_generate flat_id={} trial={}",
-                num_waiting_workers, question_flat_id, trial
-            ),
-        );
+        log_key_value_pair("sglang_waiting_workers", num_waiting_workers.to_string());
         let generation_result = llm_callable
             .generate_tokens_with_logprobs(prompt_tokens.clone(), true, 1.0, true)
             .await;
         let num_waiting_workers = sglang_waiting_workers.fetch_sub(1, Ordering::SeqCst) - 1;
         log_key_value_pair(
             "sglang_waiting_workers".to_string(),
-            format!(
-                "count={} state=after_generate flat_id={} trial={}",
-                num_waiting_workers, question_flat_id, trial
-            ),
+            num_waiting_workers.to_string(),
         );
         match generation_result {
             Ok(result) => {
@@ -599,10 +581,10 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
                 break;
             }
             Err(error) => {
-                log_key_value_pair(
-                    "WARNING".to_string(),
-                    format!("generate_tokens_with_logprobs failed on trial {trial}/3: {error}"),
-                );
+                log_warning(format!(
+                    "generate_tokens_with_logprobs failed on trial {}/3: {}",
+                    trial, error
+                ));
             }
         }
     }
@@ -638,14 +620,13 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
         TrajectoryContent::Prompt(_)
         | TrajectoryContent::ToolResponse(_)
         | TrajectoryContent::ReasoningOrToolCallIncomplete(_) => {
-            let new_content =
-                generate_reasoning_or_tool_call_content::<M>(
-                    question_flat_id,
-                    trajectory,
-                    llm_callable,
-                    sglang_waiting_workers,
-                )
-                .await;
+            let new_content = generate_reasoning_or_tool_call_content::<M>(
+                question_flat_id,
+                trajectory,
+                llm_callable,
+                sglang_waiting_workers,
+            )
+            .await;
             new_content
         }
         TrajectoryContent::ReasoningOrToolCallComplete(_) => {

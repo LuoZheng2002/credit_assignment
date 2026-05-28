@@ -8,4 +8,4 @@ pub mod token_array;
 pub mod tool_call_python;
 pub mod util;
 
-pub use research_utility::{asset_file, message, progress_screen, sqlite_store, worker_message_tx};
+pub use research_utility::{asset_file, message, progress_screen, sqlite_store};

@@ -1,13 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::{Arc, atomic::AtomicUsize};
 
 use reqwest::Client;
 use research_utility::{
     asset_file::AssetFile,
+    log_message::log_info,
     sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
-    worker_message_tx::log_key_value_pair,
 };
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -43,14 +40,19 @@ pub async fn rollout<M: LlmModelMarker>(
             posterior_calculation_config: posterior_calculation_config.clone(),
             actions: vec![],
         });
-    log_key_value_pair(
-        "status".to_string(),
-        format!(
-            "Loading {} existing actions for question flat id {}...",
-            action_log.actions.len(),
-            question.flat_id
-        ),
-    );
+    // log_key_value_pair(
+    //     "status".to_string(),
+    //     format!(
+    //         "Loading {} existing actions for question flat id {}...",
+    //         action_log.actions.len(),
+    //         question.flat_id
+    //     ),
+    // );
+    log_info(format!(
+        "Loading {} existing actions for question flat id {}...",
+        action_log.actions.len(),
+        question.flat_id
+    ));
     loop {
         let tree = DirectTree::<M>::from_action_log(&action_log);
         if tree.completed {
@@ -75,10 +77,7 @@ pub async fn rollout<M: LlmModelMarker>(
             .await
             .unwrap();
     }
-    log_key_value_pair(
-        "info".to_string(),
-        format!("Rollout {} finished", question.flat_id),
-    );
+    log_info(format!("Rollout {} finished", question.flat_id));
 }
 
 pub struct RolloutProgramConfig {
@@ -130,10 +129,6 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     }
     let mut join_set = JoinSet::new();
     let sglang_waiting_workers = Arc::new(AtomicUsize::new(0));
-    log_key_value_pair(
-        "sglang_waiting_workers".to_string(),
-        format!("count={}", sglang_waiting_workers.load(Ordering::SeqCst)),
-    );
     let num_keys = question_keys.len();
     let mut num_finished = 0;
     for question_key in question_keys {
@@ -162,10 +157,9 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         while let Some(result) = join_set.try_join_next() {
             result.expect("direct rollout worker task panicked or was cancelled");
             num_finished += 1;
-            log_key_value_pair(
-                "progress".to_string(),
-                format!("{num_finished}/{num_keys} questions finished"),
-            );
+            log_info(format!(
+                "Progress: {num_finished}/{num_keys} questions finished"
+            ));
         }
     }
 

@@ -11,15 +11,11 @@ use credit_assignment::{
     json_line_util::read_json,
     llm_model::{Gpt4o, LlmCliArgs, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B, Qwen35_08B},
 };
-use crossterm::{cursor::Show, event::DisableMouseCapture, execute};
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
+use crossterm::{cursor::Show, event::DisableMouseCapture, execute};
 use pyo3::Python;
 use reqwest::Client;
-use research_utility::{
-    message::WorkerMessage,
-    progress_screen::{ProgressScreen, ProgressScreenConfig},
-    worker_message_tx::WORKER_MESSAGE_TX,
-};
+use research_utility::progress_screen::ProgressScreen;
 use tokio::sync::Semaphore;
 
 fn restore_terminal_after_panic() {
@@ -98,42 +94,15 @@ async fn main() {
 
     let question_semaphore = Arc::new(Semaphore::new(max_concurrent_questions));
     let model_name = LlmModelName::from_str(&llm_cli_args.model_cli_name, true).unwrap();
-    // set up ui
-    let progress_screen = if ui {
-        let mut progress_screen_config = ProgressScreenConfig::from_defaults(1, 1);
-        progress_screen_config.window_title = "Bin Direct Tree Rollout Progress".to_string();
-        progress_screen_config.persist_after_channel_close = false;
-
-        let progress_screen = ProgressScreen::new(progress_screen_config);
-        Some(progress_screen)
-    } else {
-        None
-    };
-    let (worker_message_tx, mut worker_message_rx) = tokio::sync::mpsc::unbounded_channel();
-    WORKER_MESSAGE_TX.store(Some(Arc::new(worker_message_tx)));
-    let worker_message_listener = tokio::spawn(async move {
-        while let Some(message) = worker_message_rx.recv().await {
-            if let Some(progress_screen) = &progress_screen {
-                progress_screen.receive_message(message);
-            } else {
-                match message {
-                    WorkerMessage::KeyValuePair { key, value } => {
-                        println!("{key}: {value}");
-                    }
-                    WorkerMessage::WorkerProgress {
-                        worker_id,
-                        progress,
-                        label,
-                    } => {
-                        println!("worker {worker_id} progress {progress:.3}: {label}");
-                    }
-                    WorkerMessage::MasterProgress { progress, label } => {
-                        println!("master progress {progress:.3}: {label}");
-                    }
-                }
-            }
-        }
-    });
+    if ui {
+        ProgressScreen::initialize(
+            "Bin Direct Tree Rollout Progress",
+            true,
+            Some("log/log.txt"),
+        )
+        .await
+        .unwrap();
+    }
     let program_config = RolloutProgramConfig {
         config_nickname,
         rollout_config,
@@ -152,7 +121,7 @@ async fn main() {
         LlmModelName::Qwen35_08b => rollout_all::<Qwen35_08B>(program_config).await,
         LlmModelName::Gpt4o => rollout_all::<Gpt4o>(program_config).await,
     }
-    println!("All rollouts completed, shutting down worker message listener...");
-    WORKER_MESSAGE_TX.store(None);
-    worker_message_listener.await.unwrap();
+    if ui {
+        ProgressScreen::shutdown().await.unwrap();
+    }
 }
