@@ -4,6 +4,7 @@ use std::error::Error;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Stdout};
 use std::marker::PhantomData;
+use std::time::Duration;
 
 use clap::Parser;
 use credit_assignment::judge_correctness::CorrectnessJudgment;
@@ -37,6 +38,7 @@ use ratatui_core::buffer::Buffer;
 use research_utility::asset_file::AssetFile;
 use research_utility::sqlite_store::SqliteStore;
 use std::collections::hash_map::DefaultHasher;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 // home page: view the questions and win rate
 // the questions should be paged; each page should have 10 questions
@@ -77,6 +79,18 @@ struct QuestionEntry<M: LlmModelMarker> {
     win_rate: f64,
     num_correct: usize,
     num_leaves: usize,
+}
+
+enum EntryLoadState<M: LlmModelMarker> {
+    Unloaded,
+    Loading,
+    Loaded(QuestionEntry<M>),
+    Failed(String),
+}
+
+struct EntryLoadResult<M: LlmModelMarker> {
+    index: usize,
+    state: EntryLoadState<M>,
 }
 
 impl<M: LlmModelMarker> Clone for QuestionEntry<M> {
@@ -344,7 +358,9 @@ struct App<M: LlmModelMarker> {
     override_hyperparameters: Option<PosteriorHyperparameters>,
     action_log_store: SqliteStore<usize, DirectTreeActionLog<M>>,
     entry_keys: Vec<usize>,
-    entry_cache: Vec<Option<QuestionEntry<M>>>,
+    entry_cache: Vec<EntryLoadState<M>>,
+    entry_load_tx: UnboundedSender<EntryLoadResult<M>>,
+    entry_load_rx: UnboundedReceiver<EntryLoadResult<M>>,
     mode: Mode,
     home_selected_index: usize,
     home_list_area: Option<Rect>,
@@ -369,13 +385,18 @@ impl<M: LlmModelMarker> App<M> {
         entry_keys: Vec<usize>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> Self {
-        let entry_cache = vec![None; entry_keys.len()];
+        let entry_cache = std::iter::repeat_with(|| EntryLoadState::Unloaded)
+            .take(entry_keys.len())
+            .collect();
+        let (entry_load_tx, entry_load_rx) = unbounded_channel();
         Self {
             _model_marker: PhantomData,
             override_hyperparameters,
             action_log_store,
             entry_keys,
             entry_cache,
+            entry_load_tx,
+            entry_load_rx,
             mode: Mode::Home,
             home_selected_index: 0,
             home_list_area: None,
@@ -399,27 +420,50 @@ impl<M: LlmModelMarker> App<M> {
         self.entry_keys.len()
     }
 
-    fn ensure_entry_loaded(&mut self, index: usize) {
-        if index >= self.total_entries() || self.entry_cache[index].is_some() {
+    fn poll_entry_load_results(&mut self) {
+        while let Ok(result) = self.entry_load_rx.try_recv() {
+            if result.index < self.total_entries() {
+                self.entry_cache[result.index] = result.state;
+            }
+        }
+    }
+
+    fn request_entry_load_if_needed(&mut self, index: usize) {
+        if index >= self.total_entries() {
             return;
         }
+        match self.entry_cache.get(index) {
+            Some(EntryLoadState::Loaded(_)) | Some(EntryLoadState::Loading) => return,
+            Some(EntryLoadState::Failed(_)) => return,
+            Some(EntryLoadState::Unloaded) => {}
+            None => return,
+        }
+        self.entry_cache[index] = EntryLoadState::Loading;
         let key = self.entry_keys[index];
-        let action_log = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                self.action_log_store
-                    .get(key)
-                    .await
-                    .unwrap()
-                    .expect("key from sqlite key set must exist")
-            })
-        });
-        let (num_correct, num_leaves, win_rate) = question_stats_from_action_log::<M>(&action_log);
-        self.entry_cache[index] = Some(QuestionEntry {
-            key,
-            action_log,
-            win_rate,
-            num_correct,
-            num_leaves,
+        let action_log_store = self.action_log_store.clone();
+        let tx = self.entry_load_tx.clone();
+        tokio::spawn(async move {
+            let state = match action_log_store.get(key).await {
+                Ok(Some(action_log)) => {
+                    let (num_correct, num_leaves, win_rate) =
+                        question_stats_from_action_log::<M>(&action_log);
+                    EntryLoadState::Loaded(QuestionEntry {
+                        key,
+                        action_log,
+                        win_rate,
+                        num_correct,
+                        num_leaves,
+                    })
+                }
+                Ok(None) => {
+                    EntryLoadState::Failed(format!("Question key {} not found in sqlite store", key))
+                }
+                Err(error) => EntryLoadState::Failed(format!(
+                    "Failed to load question key {} from sqlite store: {}",
+                    key, error
+                )),
+            };
+            let _ = tx.send(EntryLoadResult { index, state });
         });
     }
 
@@ -430,17 +474,22 @@ impl<M: LlmModelMarker> App<M> {
         let page_start = (self.home_selected_index / QUESTIONS_PER_PAGE) * QUESTIONS_PER_PAGE;
         let page_end = (page_start + QUESTIONS_PER_PAGE).min(self.total_entries());
         for index in page_start..page_end {
-            self.ensure_entry_loaded(index);
+            self.request_entry_load_if_needed(index);
         }
     }
 
-    fn loaded_entry(&self, index: usize) -> &QuestionEntry<M> {
-        self.entry_cache[index]
-            .as_ref()
-            .expect("entry must be loaded before use")
+    fn loaded_entry(&self, index: usize) -> Option<&QuestionEntry<M>> {
+        let Some(state) = self.entry_cache.get(index) else {
+            return None;
+        };
+        let EntryLoadState::Loaded(entry) = state else {
+            return None;
+        };
+        Some(entry)
     }
 
     fn draw(&mut self, frame: &mut ratatui::Frame<'_>) {
+        self.poll_entry_load_results();
         match self.mode {
             Mode::Home => self.draw_home(frame),
             Mode::Tree => self.draw_tree(frame),
@@ -500,23 +549,32 @@ impl<M: LlmModelMarker> App<M> {
             self.ensure_visible_home_page_loaded();
             let page_start = (self.home_selected_index / QUESTIONS_PER_PAGE) * QUESTIONS_PER_PAGE;
             let page_end = (page_start + QUESTIONS_PER_PAGE).min(self.total_entries());
-            let page_entries: Vec<&QuestionEntry<M>> = (page_start..page_end)
-                .map(|index| self.loaded_entry(index))
-                .collect();
-
-            let items: Vec<ListItem> = page_entries
-                .iter()
-                .map(|entry| {
-                    let question_preview =
-                        single_line_preview(&entry.action_log.question.question, 72);
-                    ListItem::new(format!(
-                        "#{}  win {:>5.1}% ({}/{})  {}",
-                        entry.key,
-                        entry.win_rate * 100.0,
-                        entry.num_correct,
-                        entry.num_leaves,
-                        question_preview
-                    ))
+            let items: Vec<ListItem> = (page_start..page_end)
+                .map(|index| {
+                    let key = self.entry_keys[index];
+                    let text = match self.entry_cache.get(index) {
+                        Some(EntryLoadState::Loaded(entry)) => {
+                            let question_preview =
+                                single_line_preview(&entry.action_log.question.question, 72);
+                            format!(
+                                "#{}  win {:>5.1}% ({}/{})  {}",
+                                entry.key,
+                                entry.win_rate * 100.0,
+                                entry.num_correct,
+                                entry.num_leaves,
+                                question_preview
+                            )
+                        }
+                        Some(EntryLoadState::Loading) | Some(EntryLoadState::Unloaded) => {
+                            format!("#{}  loading...", key)
+                        }
+                        Some(EntryLoadState::Failed(error)) => {
+                            let preview = single_line_preview(error, 60);
+                            format!("#{}  failed: {}", key, preview)
+                        }
+                        None => format!("#{}  unavailable", key),
+                    };
+                    ListItem::new(text)
                 })
                 .collect();
             let mut state = ListState::default();
@@ -547,8 +605,12 @@ impl<M: LlmModelMarker> App<M> {
         let Some(entry_index) = self.tree_page.as_ref().map(|page| page.entry_index) else {
             return;
         };
-        self.ensure_entry_loaded(entry_index);
-        let entry = self.loaded_entry(entry_index).clone();
+        let Some(entry) = self.loaded_entry(entry_index).cloned() else {
+            let loading = Paragraph::new("Loading selected question...")
+                .block(Block::default().borders(Borders::ALL).title("Tree"));
+            frame.render_widget(loading, frame.area());
+            return;
+        };
 
         let Some(tree_page) = self.tree_page.as_mut() else {
             return;
@@ -993,8 +1055,9 @@ impl<M: LlmModelMarker> App<M> {
                         .as_ref()
                         .expect("tree page must exist in tree mode")
                         .entry_index;
-                    self.ensure_entry_loaded(entry_index);
-                    let entry = self.loaded_entry(entry_index).clone();
+                    let Some(entry) = self.loaded_entry(entry_index).cloned() else {
+                        return;
+                    };
                     let tree_page = self
                         .tree_page
                         .as_mut()
@@ -1038,8 +1101,9 @@ impl<M: LlmModelMarker> App<M> {
                         .as_ref()
                         .expect("tree page must exist in tree mode")
                         .entry_index;
-                    self.ensure_entry_loaded(entry_index);
-                    let entry = self.loaded_entry(entry_index).clone();
+                    let Some(entry) = self.loaded_entry(entry_index).cloned() else {
+                        return;
+                    };
                     let tree_page = self
                         .tree_page
                         .as_mut()
@@ -1078,8 +1142,10 @@ impl<M: LlmModelMarker> App<M> {
         if self.total_entries() == 0 {
             return;
         }
-        self.ensure_entry_loaded(self.home_selected_index);
-        let entry = self.loaded_entry(self.home_selected_index).clone();
+        self.request_entry_load_if_needed(self.home_selected_index);
+        let Some(entry) = self.loaded_entry(self.home_selected_index).cloned() else {
+            return;
+        };
         self.tree_page = Some(TreePage::new(
             self.home_selected_index,
             &entry,
@@ -2103,14 +2169,16 @@ fn run_app<M: LlmModelMarker>(
 ) -> Result<(), Box<dyn Error>> {
     loop {
         terminal.draw(|frame| app.draw(frame))?;
-        match event::read()? {
-            Event::Key(key) => {
-                if app.handle_key(key) {
-                    break;
+        if event::poll(Duration::from_millis(33))? {
+            match event::read()? {
+                Event::Key(key) => {
+                    if app.handle_key(key) {
+                        break;
+                    }
                 }
+                Event::Mouse(mouse) => app.handle_mouse(mouse),
+                _ => {}
             }
-            Event::Mouse(mouse) => app.handle_mouse(mouse),
-            _ => {}
         }
     }
     Ok(())
