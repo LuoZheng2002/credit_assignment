@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use reqwest::Client;
 use research_utility::{
@@ -27,6 +30,7 @@ pub async fn rollout<M: LlmModelMarker>(
     rollout_store: SqliteStore<usize, DirectTreeActionLog<M>>,
     llm_callable: M::Callable,
     client: Client,
+    sglang_waiting_workers: Arc<AtomicUsize>,
     // rng: &mut StdRng,
 ) {
     let mut action_log = rollout_store
@@ -53,7 +57,11 @@ pub async fn rollout<M: LlmModelMarker>(
             break;
         }
         let new_actions = tree
-            .produce_actions_from_direct_tree(&llm_callable, client.clone())
+            .produce_actions_from_direct_tree(
+                &llm_callable,
+                client.clone(),
+                sglang_waiting_workers.clone(),
+            )
             .await;
         for action in new_actions {
             action_log.actions.push(action);
@@ -121,6 +129,11 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         question_keys.truncate(first_n);
     }
     let mut join_set = JoinSet::new();
+    let sglang_waiting_workers = Arc::new(AtomicUsize::new(0));
+    log_key_value_pair(
+        "sglang_waiting_workers".to_string(),
+        format!("count={}", sglang_waiting_workers.load(Ordering::SeqCst)),
+    );
     let num_keys = question_keys.len();
     let mut num_finished = 0;
     for question_key in question_keys {
@@ -131,6 +144,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         let rollout_store = rollout_store.clone();
         let llm_callable_clone = llm_callable.clone();
         let client_clone = client.clone();
+        let sglang_waiting_workers_clone = sglang_waiting_workers.clone();
         join_set.spawn(async move {
             rollout::<M>(
                 question,
@@ -139,6 +153,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
                 rollout_store,
                 llm_callable_clone,
                 client_clone,
+                sglang_waiting_workers_clone,
             )
             .await;
             drop(owned_permit);

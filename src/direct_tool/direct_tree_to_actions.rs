@@ -1,4 +1,8 @@
 use std::collections::BTreeMap;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use reqwest::Client;
 use research_utility::worker_message_tx::log_key_value_pair;
@@ -155,6 +159,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
         &self,
         llm_callable: &M::Callable,
         client: Client,
+        sglang_waiting_workers: Arc<AtomicUsize>,
         // rng: &mut StdRng,
     ) -> Vec<DirectTreeAction<M>> {
         match self.status {
@@ -164,7 +169,11 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     .root_segment_id
                     .expect("Root segment id must exist when creating trunk trajectory");
                 let (content_array, final_answer) = self
-                    .generate_continuing_segment_contents(root_id, llm_callable)
+                    .generate_continuing_segment_contents(
+                        root_id,
+                        llm_callable,
+                        sglang_waiting_workers.clone(),
+                    )
                     .await;
                 let correctness_judgment = judge_final_answer(
                     &final_answer,
@@ -254,7 +263,11 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     .focused_parent_segment_id
                     .expect("Focused parent segment id must exist when creating branch segment");
                 let (new_contents, final_answer) = self
-                    .generate_continuing_segment_contents(focused_parent_segment_id, llm_callable)
+                    .generate_continuing_segment_contents(
+                        focused_parent_segment_id,
+                        llm_callable,
+                        sglang_waiting_workers,
+                    )
                     .await;
                 let correctness_judgment = judge_final_answer(
                     &final_answer,
@@ -426,6 +439,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
         target_segment_id: SegmentId,
         // client: Client,
         llm_callable: &M::Callable,
+        sglang_waiting_workers: Arc<AtomicUsize>,
         // rng: &mut StdRng,
     ) -> (Vec<SegmentContent<M>>, FinalAnswer) {
         let mut continuing_contents = Vec::new();
@@ -444,6 +458,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 self.question.flat_id,
                 &trajectory,
                 llm_callable,
+                sglang_waiting_workers.clone(),
             )
             .await;
             continuing_contents.push(next_content.clone());
@@ -618,17 +633,35 @@ fn single_eos_response<M: LlmModelMarker>() -> TokenArrayWithLogprob<M> {
 }
 
 async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
+    question_flat_id: usize,
     // current_content: &[SegmentContent],
     trajectory: &DirectTrajectory<M>,
     llm_callable: &M::Callable,
+    sglang_waiting_workers: Arc<AtomicUsize>,
 ) -> SegmentContent<M> {
     let prompt_tokens = direct_trajectory_to_prompt_tokens(trajectory);
     let mut response = None;
     for trial in 1..=3 {
-        match llm_callable
+        let num_waiting_workers = sglang_waiting_workers.fetch_add(1, Ordering::SeqCst) + 1;
+        log_key_value_pair(
+            "sglang_waiting_workers".to_string(),
+            format!(
+                "count={} state=before_generate flat_id={} trial={}",
+                num_waiting_workers, question_flat_id, trial
+            ),
+        );
+        let generation_result = llm_callable
             .generate_tokens_with_logprobs(prompt_tokens.clone(), true, 1.0, true)
-            .await
-        {
+            .await;
+        let num_waiting_workers = sglang_waiting_workers.fetch_sub(1, Ordering::SeqCst) - 1;
+        log_key_value_pair(
+            "sglang_waiting_workers".to_string(),
+            format!(
+                "count={} state=after_generate flat_id={} trial={}",
+                num_waiting_workers, question_flat_id, trial
+            ),
+        );
+        match generation_result {
             Ok(result) => {
                 response = Some(result);
                 break;
@@ -665,6 +698,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
     // current_content: &[SegmentContent],
     // client: Client,
     llm_callable: &M::Callable,
+    sglang_waiting_workers: Arc<AtomicUsize>,
     // rng: &mut StdRng,
 ) -> SegmentContent<M> {
     let last_trajectory_content = trajectory
@@ -676,7 +710,13 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
         | TrajectoryContent::ToolResponse(_)
         | TrajectoryContent::ReasoningOrToolCallIncomplete(_) => {
             let new_content =
-                generate_reasoning_or_tool_call_content::<M>(trajectory, llm_callable).await;
+                generate_reasoning_or_tool_call_content::<M>(
+                    question_flat_id,
+                    trajectory,
+                    llm_callable,
+                    sglang_waiting_workers,
+                )
+                .await;
             new_content
         }
         TrajectoryContent::ReasoningOrToolCallComplete(_) => {
