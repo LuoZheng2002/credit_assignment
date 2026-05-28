@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from contextlib import nullcontext
+import atexit
 import json
 import os
 import random
@@ -95,6 +96,20 @@ def _get_rank_world_size() -> tuple[int, int]:
     return 0, 1
 
 
+def _distributed_barrier() -> None:
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.barrier()
+
+
+def _shutdown_distributed_process_group() -> None:
+    if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+        return
+    try:
+        torch.distributed.barrier()
+    finally:
+        torch.distributed.destroy_process_group()
+
+
 def _init_distributed_device() -> torch.device:
     local_rank_env = os.environ.get("LOCAL_RANK")
     if local_rank_env is None:
@@ -106,7 +121,8 @@ def _init_distributed_device() -> torch.device:
     torch.cuda.set_device(local_rank)
 
     if not torch.distributed.is_initialized():
-        torch.distributed.init_process_group(backend="nccl")
+        torch.distributed.init_process_group(backend="nccl", device_id=local_rank)
+        atexit.register(_shutdown_distributed_process_group)
 
     return torch.device("cuda", local_rank)
 
@@ -174,8 +190,7 @@ def _save_checkpoint(
             unwrapped = model.module if hasattr(model, "module") else model
             torch.save(_extract_lora_checkpoint_state_dict(unwrapped), checkpoint_dir / "model_state.pt")
             _write_latest_checkpoint_pointer(output_dir=output_dir, checkpoint_tag=checkpoint_tag)
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            torch.distributed.barrier()
+        _distributed_barrier()
         return
 
     assert training_plan == "full_fsdp_backup", "unknown training plan for checkpointing"
@@ -192,8 +207,7 @@ def _save_checkpoint(
     if rank == 0:
         torch.save(state_dict, checkpoint_dir / "model_state.pt")
         _write_latest_checkpoint_pointer(output_dir=output_dir, checkpoint_tag=checkpoint_tag)
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
-        torch.distributed.barrier()
+    _distributed_barrier()
 
 
 def _write_latest_checkpoint_pointer(output_dir: Path, checkpoint_tag: str) -> None:
@@ -232,8 +246,7 @@ def _save_final_model_folder(
             export_model.save_pretrained(final_model_output_path, safe_serialization=True)
             if hasattr(tokenizer, "save_pretrained"):
                 tokenizer.save_pretrained(final_model_output_path)
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            torch.distributed.barrier()
+        _distributed_barrier()
         return
 
     assert training_plan == "full_fsdp_backup", "unknown training plan for final model export"
@@ -250,15 +263,14 @@ def _save_final_model_folder(
     if rank == 0:
         from transformers import AutoModelForCausalLM
 
-        export_model = AutoModelForCausalLM.from_pretrained(source_model_path, torch_dtype=torch.bfloat16)
+        export_model = AutoModelForCausalLM.from_pretrained(source_model_path, dtype=torch.bfloat16)
         incompatible = export_model.load_state_dict(state_dict, strict=True)
         assert len(incompatible.missing_keys) == 0, "final export state_dict is missing keys"
         assert len(incompatible.unexpected_keys) == 0, "final export state_dict has unexpected keys"
         export_model.save_pretrained(final_model_output_path, safe_serialization=True)
         if hasattr(tokenizer, "save_pretrained"):
             tokenizer.save_pretrained(final_model_output_path)
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
-        torch.distributed.barrier()
+    _distributed_barrier()
 
 
 def _read_latest_checkpoint_pointer(output_dir: Path) -> str:
@@ -388,8 +400,7 @@ def _load_checkpoint(
     assert (
         resume_state.accumulation_step == 0
     ), "resuming from partial gradient accumulation is not supported"
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
-        torch.distributed.barrier()
+    _distributed_barrier()
     return resume_state
 
 
@@ -578,7 +589,7 @@ def _build_lora_model(
 
     base_model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
     ).to(device)
     base_model.gradient_checkpointing_enable()
 
@@ -603,7 +614,7 @@ def _build_fsdp_model(model_path: str, device: torch.device) -> torch.nn.Module:
 
     base_model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
     ).to(device)
     base_model.gradient_checkpointing_enable()
 
@@ -771,8 +782,8 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         optimizer.zero_grad(set_to_none=True)
 
         if resume_state.next_iteration_index >= config.num_iterations:
-            if torch.distributed.is_available() and torch.distributed.is_initialized():
-                torch.distributed.barrier()
+            _distributed_barrier()
+            _shutdown_distributed_process_group()
             return
 
         for iteration_index in range(resume_state.next_iteration_index, config.num_iterations):
@@ -801,6 +812,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                 ):
                     sync_context = model.no_sync()
 
+                step_start = time.perf_counter()
                 with sync_context:
                     logits = _forward_logits(model, input_ids=input_ids, attention_mask=attention_mask)
                     loss_output = compute_advantage_weighted_causal_lm_loss(
@@ -812,6 +824,17 @@ def train_with_deepspeed(config: TrainConfig) -> None:
 
                     loss = loss_output.loss / config.grad_accum_steps
                     loss.backward()
+
+                step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
+                throughput_samples_per_sec = float(len(resolved_batch.samples)) / step_elapsed_sec
+                print(
+                    "[batch] "
+                    f"rank={rank} "
+                    f"iteration={iteration_index} "
+                    f"batch_index={resolved_batch.batch_index} "
+                    f"batch_size={len(resolved_batch.samples)} "
+                    f"throughput_samples_per_sec={throughput_samples_per_sec:.4f}"
+                )
 
                 accumulation_step += 1
 
@@ -878,8 +901,8 @@ def train_with_deepspeed(config: TrainConfig) -> None:
             tokenizer=tokenizer,
         )
 
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            torch.distributed.barrier()
+        _distributed_barrier()
+        _shutdown_distributed_process_group()
         return
 
     lazy_loader = LazyResolvedBatchLoader(
@@ -938,6 +961,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         optimizer.zero_grad(set_to_none=True)
 
         if resume_state.next_iteration_index >= config.num_iterations:
+            _shutdown_distributed_process_group()
             return
 
         for iteration_index in range(resume_state.next_iteration_index, config.num_iterations):
@@ -947,15 +971,6 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                 requested_batch_size = min(adaptive_state.next_batch_size, lazy_loader.sample_count - sample_index)
                 if requested_batch_size <= 0:
                     break
-
-                if _is_primary_rank():
-                    print(
-                        "[batch] "
-                        f"iteration={iteration_index} "
-                        f"batch_index={batch_index} "
-                        f"requested_batch_size={requested_batch_size} "
-                        f"next_batch_size={adaptive_state.next_batch_size}"
-                    )
 
                 window = lazy_loader.resolve_batch(
                     sample_index=sample_index,
@@ -1038,6 +1053,16 @@ def train_with_deepspeed(config: TrainConfig) -> None:
 
                 step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
                 throughput_samples_per_sec = float(len(resolved_batch.samples)) / step_elapsed_sec
+                print(
+                    "[batch] "
+                    f"rank={rank} "
+                    f"iteration={iteration_index} "
+                    f"batch_index={batch_index} "
+                    f"requested_batch_size={requested_batch_size} "
+                    f"next_batch_size={adaptive_state.next_batch_size} "
+                    f"actual_batch_size={len(resolved_batch.samples)} "
+                    f"throughput_samples_per_sec={throughput_samples_per_sec:.4f}"
+                )
 
                 accumulation_step += 1
                 sample_index = window.next_sample_index
@@ -1127,5 +1152,5 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     finally:
         lazy_loader.close()
 
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
-        torch.distributed.barrier()
+    _distributed_barrier()
+    _shutdown_distributed_process_group()

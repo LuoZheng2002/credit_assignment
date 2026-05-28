@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import os
 from pathlib import Path
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -38,6 +40,20 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    if os.environ.get("HF_TOKEN") in {None, ""}:
+        print(
+            "Warning: HF_TOKEN is not set. Authenticated Hugging Face downloads are typically faster and less rate-limited."
+        )
+
+    has_flash_linear_attention = importlib.util.find_spec("fla") is not None
+    has_causal_conv1d = importlib.util.find_spec("causal_conv1d") is not None
+    if (not has_flash_linear_attention) or (not has_causal_conv1d):
+        print(
+            "Warning: optional fast-path dependencies are missing "
+            "(flash-linear-attention and/or causal-conv1d). "
+            "Model loading will fall back to slower torch kernels during training."
+        )
 
     # output_path = args.output_path / f"model_{args.model.split('/')[-1].lower().replace('.', '_')}"
     output_path = args.output_path / "model"

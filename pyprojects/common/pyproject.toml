@@ -17,6 +17,7 @@ dependencies = [
     "scipy>=1.17.1",
     "numexpr>=2.14.1",
     "flash-linear-attention>=0.5.0",
+    "causal-conv1d>=1.6.2.post1",
 ]
 
 [[tool.uv.index]]
