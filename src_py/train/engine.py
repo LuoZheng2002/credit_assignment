@@ -336,6 +336,13 @@ def _load_checkpoint(
 
     rank, _ = _get_rank_world_size()
     checkpoint_dir = output_dir / "checkpoints"
+    print(
+        "[status] "
+        f"rank={rank} "
+        f"loading_checkpoint=1 "
+        f"checkpoint_tag={checkpoint_tag} "
+        f"checkpoint_dir={checkpoint_dir}"
+    )
     assert checkpoint_dir.exists(), f"checkpoint directory not found: {checkpoint_dir}"
     model_state_path = checkpoint_dir / "model_state.pt"
     optimizer_state_path = checkpoint_dir / f"optimizer_state.rank{rank}.pt"
@@ -400,6 +407,15 @@ def _load_checkpoint(
     assert (
         resume_state.accumulation_step == 0
     ), "resuming from partial gradient accumulation is not supported"
+    print(
+        "[status] "
+        f"rank={rank} "
+        f"loaded_checkpoint=1 "
+        f"global_step={resume_state.global_step} "
+        f"next_iteration={resume_state.next_iteration_index} "
+        f"next_batch_cursor={resume_state.next_batch_cursor} "
+        f"next_sample_index={resume_state.next_sample_index}"
+    )
     _distributed_barrier()
     return resume_state
 
@@ -652,6 +668,13 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     initial_adaptive_velocity = 0.12
 
     resolved_model_path = _resolve_local_model_path(config.model_path)
+    if _is_primary_rank():
+        print(
+            "[status] "
+            f"start_training=1 training_plan={config.training_plan} "
+            f"world_size={world_size} num_iterations={config.num_iterations} "
+            f"model_path={resolved_model_path}"
+        )
     tokenizer = AutoTokenizer.from_pretrained(resolved_model_path)
     pad_token_id = _resolve_pad_token_id(tokenizer.pad_token_id)
     eos_token_id = _normalize_optional_token_id(tokenizer.eos_token_id)
@@ -714,6 +737,8 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         adaptive_velocity=initial_adaptive_velocity,
     )
     if len(resolved_resume_tag) > 0:
+        if _is_primary_rank():
+            print(f"[status] loading_resume_checkpoint=1 checkpoint_tag={resolved_resume_tag}")
         resume_state = _load_checkpoint(
             model=model,
             optimizer=optimizer,
@@ -733,6 +758,8 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                 adaptive_throughput_ema=resume_state.adaptive_throughput_ema,
                 adaptive_best_throughput_ema=resume_state.adaptive_best_throughput_ema,
             )
+    elif _is_primary_rank():
+        print("[status] loading_resume_checkpoint=0 starting_fresh=1")
 
     if world_size > 1:
         ordered_batches: list[ResolvedTrainingBatch] = load_resolved_training_batches(
@@ -782,6 +809,11 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         optimizer.zero_grad(set_to_none=True)
 
         if resume_state.next_iteration_index >= config.num_iterations:
+            print(
+                "[status] "
+                f"rank={rank} training_already_complete=1 "
+                f"next_iteration={resume_state.next_iteration_index}"
+            )
             _distributed_barrier()
             _shutdown_distributed_process_group()
             return
@@ -902,6 +934,13 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         )
 
         _distributed_barrier()
+        if _is_primary_rank():
+            print(
+                "[status] "
+                f"finished_training=1 global_step={global_step} "
+                f"completed_iterations={config.num_iterations} "
+                f"final_model_output_parent_dir={final_model_output_parent_dir}"
+            )
         _shutdown_distributed_process_group()
         return
 
@@ -961,6 +1000,11 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         optimizer.zero_grad(set_to_none=True)
 
         if resume_state.next_iteration_index >= config.num_iterations:
+            print(
+                "[status] "
+                f"rank={rank} training_already_complete=1 "
+                f"next_iteration={resume_state.next_iteration_index}"
+            )
             _shutdown_distributed_process_group()
             return
 
@@ -1153,4 +1197,11 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         lazy_loader.close()
 
     _distributed_barrier()
+    if _is_primary_rank():
+        print(
+            "[status] "
+            f"finished_training=1 global_step={global_step} "
+            f"completed_iterations={config.num_iterations} "
+            f"final_model_output_parent_dir={final_model_output_parent_dir}"
+        )
     _shutdown_distributed_process_group()
