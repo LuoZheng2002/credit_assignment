@@ -112,6 +112,8 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         question_keys.truncate(first_n);
     }
     let mut join_set = JoinSet::new();
+    let num_keys = question_keys.len();
+    let mut num_finished = 0;
     for question_key in question_keys {
         let owned_permit = question_semaphore.clone().acquire_owned().await.unwrap();
         let question = dataset.get(question_key).await.unwrap().unwrap();
@@ -135,6 +137,11 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
 
         while let Some(result) = join_set.try_join_next() {
             result.expect("direct rollout worker task panicked or was cancelled");
+            num_finished += 1;
+            log_key_value_pair(
+                "progress".to_string(),
+                format!("{num_finished}/{num_keys} questions finished"),
+            );
         }
     }
 
