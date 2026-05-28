@@ -2,7 +2,26 @@ use reqwest::Client;
 use serde_json::Value;
 use tokenizers::Tokenizer;
 
+use crate::constants::SGLANG_CONTEXT_LENGTH;
 use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate};
+
+fn remaining_generation_tokens(prompt_len: usize) -> Result<usize, String> {
+    let remaining = SGLANG_CONTEXT_LENGTH
+        .checked_sub(prompt_len)
+        .ok_or_else(|| {
+            format!(
+                "Context length exceeded before generation (prompt_length={}, limit={}).",
+                prompt_len, SGLANG_CONTEXT_LENGTH
+            )
+        })?;
+    if remaining == 0 {
+        return Err(format!(
+            "Context length exceeded before generation (prompt_length={}, limit={}).",
+            prompt_len, SGLANG_CONTEXT_LENGTH
+        ));
+    }
+    Ok(remaining)
+}
 
 pub(crate) fn encode_to_i32_ids(tokenizer: &Tokenizer, text: &str) -> Vec<i32> {
     tokenizer
@@ -51,11 +70,12 @@ impl SharedQwenLlmCallable {
         tokens: Vec<i32>,
         passes_in_stop: bool,
     ) -> Result<Vec<i32>, String> {
+        let max_new_tokens = remaining_generation_tokens(tokens.len())?;
         let mut body = serde_json::json!({
             "input_ids": tokens.clone(),
             "sampling_params": {
                 "temperature": 0.0,
-                "max_new_tokens": 2048,
+                "max_new_tokens": max_new_tokens,
                 "no_stop_trim": true,
             },
             "stream": false,
@@ -89,11 +109,12 @@ impl SharedQwenLlmCallable {
         passes_in_stop: bool,
         temperature: f32,
     ) -> Result<TokenArrayWithLogprob<M>, String> {
+        let max_new_tokens = remaining_generation_tokens(tokens.len())?;
         let mut body = serde_json::json!({
             "input_ids": tokens.clone(),
             "sampling_params": {
                 "temperature": temperature,
-                "max_new_tokens": 2048,
+                "max_new_tokens": max_new_tokens,
                 "no_stop_trim": true,
             },
             "return_logprob": true,

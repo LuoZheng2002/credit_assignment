@@ -5,6 +5,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 use tiktoken_rs::{CoreBPE, bpe_for_model};
 
+use crate::constants::SGLANG_CONTEXT_LENGTH;
 use crate::token_array::TokenArray;
 
 use super::{
@@ -61,6 +62,24 @@ impl Gpt4oLlmCallable {
     }
 }
 
+fn remaining_generation_tokens(prompt_len: usize) -> Result<usize, String> {
+    let remaining = SGLANG_CONTEXT_LENGTH
+        .checked_sub(prompt_len)
+        .ok_or_else(|| {
+            format!(
+                "Context length exceeded before generation (prompt_length={}, limit={}).",
+                prompt_len, SGLANG_CONTEXT_LENGTH
+            )
+        })?;
+    if remaining == 0 {
+        return Err(format!(
+            "Context length exceeded before generation (prompt_length={}, limit={}).",
+            prompt_len, SGLANG_CONTEXT_LENGTH
+        ));
+    }
+    Ok(remaining)
+}
+
 #[async_trait]
 impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
     fn from_cli_args(client: Client, _llm_cli_args: &LlmCliArgs) -> Self {
@@ -71,19 +90,20 @@ impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
         prompt_or_tokens: Vec<i32>,
         passes_in_stop: bool,
     ) -> Result<Vec<i32>, String> {
+        let max_completion_tokens = remaining_generation_tokens(prompt_or_tokens.len())?;
         let prompt = <Gpt4o as LlmModelMarker>::Tokenizer::decode_i32_ids(&prompt_or_tokens);
         let body = if passes_in_stop {
             serde_json::json!({
                 "model": Gpt4o::API_NAME,
                 "messages": [{"role": "user", "content": prompt}],
-                "max_completion_tokens": 2048,
+                "max_completion_tokens": max_completion_tokens,
                 "stop": ["```\n"],
             })
         } else {
             serde_json::json!({
                 "model": Gpt4o::API_NAME,
                 "messages": [{"role": "user", "content": prompt}],
-                "max_completion_tokens": 2048,
+                "max_completion_tokens": max_completion_tokens,
             })
         };
 
@@ -118,12 +138,13 @@ impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
         temperature: f32,
         trim_eos: bool,
     ) -> Result<TokenArrayWithLogprob<Gpt4o>, String> {
+        let max_completion_tokens = remaining_generation_tokens(prompt_or_tokens.len())?;
         let prompt = <Gpt4o as LlmModelMarker>::Tokenizer::decode_i32_ids(&prompt_or_tokens);
         let body = if passes_in_stop {
             serde_json::json!({
                 "model": Gpt4o::API_NAME,
                 "messages": [{"role": "user", "content": prompt}],
-                "max_completion_tokens": 2048,
+                "max_completion_tokens": max_completion_tokens,
                 "stop": ["```\n"],
                 "temperature": temperature,
                 "logprobs": true,
@@ -133,7 +154,7 @@ impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
             serde_json::json!({
                 "model": Gpt4o::API_NAME,
                 "messages": [{"role": "user", "content": prompt}],
-                "max_completion_tokens": 2048,
+                "max_completion_tokens": max_completion_tokens,
                 "temperature": temperature,
                 "logprobs": true,
                 "top_logprobs": 8,
