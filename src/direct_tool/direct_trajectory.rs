@@ -1,3 +1,4 @@
+use research_utility::worker_message_tx::log_key_value_pair;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
@@ -40,6 +41,10 @@ impl<M: LlmModelMarker> DirectTrajectory<M> {
             .map(|content| content.tokens().len())
             .sum::<usize>();
         if trajectory_length >= SGLANG_CONTEXT_LENGTH - CONTEXT_LENGTH_SAFETY_MARGIN {
+            log_key_value_pair(
+                "WARNING".to_string(),
+                "Trajectory context length exceeded, submitting answer.".to_string(),
+            );
             return Some(FinalAnswer::Failure(format!(
                 "Context length exceeded (trajectory_length={}, limit={}).",
                 trajectory_length, SGLANG_CONTEXT_LENGTH
