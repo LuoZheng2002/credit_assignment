@@ -64,7 +64,7 @@ impl Gpt4oLlmCallable {
 
 fn remaining_generation_tokens(prompt_len: usize) -> Result<usize, String> {
     let remaining = SGLANG_CONTEXT_LENGTH
-        .checked_sub(prompt_len)
+        .checked_sub(prompt_len + 1)
         .ok_or_else(|| {
             format!(
                 "Context length exceeded before generation (prompt_length={}, limit={}).",

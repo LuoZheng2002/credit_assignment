@@ -639,6 +639,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
         }
         TrajectoryContent::ReasoningOrToolCallComplete(_) => {
             if let Some(tool_call) = trajectory.try_get_last_content_tool_call() {
+                log_key_value_pair("info".to_string(), "Executing a tool call".to_string());
                 let tool_response = execute_python_tool_call(&tool_call).await;
                 let tool_response_raw = tool_response.to_raw_content();
                 let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
