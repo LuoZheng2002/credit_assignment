@@ -43,13 +43,23 @@ Example with custom port:
 MASTER_PORT=29502 bash scripts/train/smoke_test_lora.sh 2 train_config/lora_qwen25.toml
 ```
 
-## 3) Resume Behavior
+## 3) Epoch and Resume Behavior
+
+Epoch definition:
+
+- One training program run corresponds to one epoch.
+- Within that run, `num_iterations` controls how many passes are made over that epoch's dataset.
+- Across epochs, use a new dataset and typically a new `checkpoints_parent_dir` (for example `.../epoch_2`).
 
 Checkpoint pointer file:
 
-- `checkpoint_dir/latest_checkpoint.txt`
+- `checkpoints_parent_dir/latest_checkpoint.txt`
 
-Each checkpoint directory (for example `global_step_100/`) includes:
+The checkpoint payload folder for a run is:
+
+- `checkpoints_parent_dir/checkpoints/`
+
+Its internal files are owned by training/resume logic and treated as opaque externally. Current files include:
 
 - `model_state.pt` (LoRA adapter state dict for `lora_current`; full model state dict for `full_fsdp_backup`)
 - `optimizer_state.rank{rank}.pt`
@@ -60,13 +70,13 @@ Resume modes via `resume_checkpoint_tag`:
 - `auto` (default): resume from latest if pointer exists, else start fresh.
 - `latest`: require pointer file and resume from it.
 - `none`: always start fresh.
-- explicit tag: e.g. `global_step_100`.
+- explicit tag: use `checkpoints`.
 
 Resume examples:
 
 ```bash
 # 1) Edit the config field "resume_checkpoint_tag"
-#    auto | latest | none | global_step_100
+#    auto | latest | none | checkpoints
 
 # 2) Launch using config-path-only entry
 bash scripts/train/smoke_test_lora.sh 1 train_config/lora_qwen25.toml
@@ -103,12 +113,12 @@ TOML schema rule:
 Padding note:
 
 - `pad_token_id` is no longer passed via CLI or TOML config.
-- The trainer reads `tokenizer.pad_token_id` from the tokenizer loaded by `model_name_or_path` and asserts it is defined.
+- The trainer reads `tokenizer.pad_token_id` from the tokenizer loaded by `model_path` and asserts it is defined.
+- `model_path` must point to a local Hugging Face model folder with safetensors weights (for example, `.../model_qwen35_08b`).
 
 ## 5) Outputs to Watch
 
-- Train logs: `checkpoint_dir/train_metrics.jsonl`
-- Latest pointer: `checkpoint_dir/latest_checkpoint.txt`
-- Periodic checkpoints: `checkpoint_dir/global_step_*`
-- Final checkpoint: `checkpoint_dir/final`
-- Final exported model weights: `final_model_output_path` (single `.pt` file; for `lora_current` this is merged full-model weights)
+- Train logs: `checkpoints_parent_dir/train_metrics.jsonl`
+- Latest pointer: `checkpoints_parent_dir/latest_checkpoint.txt`
+- Checkpoint payload (per run/epoch): `checkpoints_parent_dir/checkpoints`
+- Final exported model folder: `final_model_output_path` (Hugging Face Transformers format with safetensors and tokenizer files)

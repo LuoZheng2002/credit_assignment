@@ -1,8 +1,8 @@
 training_plan = "lora_current"
-model_name_or_path = "Qwen/Qwen2.5-7B-Instruct"
-training_trajectory_sqlite_path = "results/qwen2.5-7b/agent/deepmath_training_trajectories_500_79fd.sqlite"
-checkpoint_dir = "/work/nvme/bdns/zluo8/smoke_test_lora_qwen25/checkpoints"
-final_model_output_path = "/work/nvme/bdns/zluo8/smoke_test_lora_qwen25/final_model_state.pt"
+model_path = "" # to be determined (local Hugging Face folder)
+training_trajectory_sqlite_path = "" # to be determined
+checkpoints_parent_dir = "" # to be determined (typically an epoch_x folder; trainer writes checkpoints/ inside)
+final_model_output_path = "" # to be determined (output model folder)
 advantage_clip = 3.0
 learning_rate = 1e-05
 weight_decay = 0.01

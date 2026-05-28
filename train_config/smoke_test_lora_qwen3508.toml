@@ -1,8 +1,8 @@
 training_plan = "lora_current"
-model_name_or_path = "Qwen/Qwen3.5-0.8B"
+model_path = "" # to be determined (folder like .../model_qwen35_08b)
 training_trajectory_sqlite_path = "" # to be determined
-checkpoint_dir = "" # to be determined
-final_model_output_path = "" # to be determined
+checkpoints_parent_dir = "" # to be determined (typically an epoch_x folder; trainer writes checkpoints/ inside)
+final_model_output_path = "" # to be determined (output model folder)
 advantage_clip = 3.0
 learning_rate = 1e-05
 weight_decay = 0.01

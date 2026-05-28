@@ -211,6 +211,14 @@ We use a greedy selection policy:
 
 Selected trajectories are ordered by sequence length to improve batch efficiency. Since low-value trajectories are already pruned during selection, no additional value-based ordering is applied.
 
+## Epoch Definition in Training Pipeline
+
+We define **one epoch as one training program run** over an epoch-specific training dataset.
+
+- Within a run, `num_iterations` controls repeated passes over that epoch's dataset; these are optimization iterations, not epochs.
+- Across epochs, the dataset is regenerated using the model produced by the previous epoch.
+- Checkpointing is scoped to a single run/epoch directory (`checkpoints_parent_dir/checkpoints`), and checkpoint internals are treated as implementation-private resume state.
+
 ## Training Interface
 
 Each training sample provides:

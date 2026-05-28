@@ -19,9 +19,9 @@ from .losses import compute_advantage_weighted_causal_lm_loss
 @dataclass(frozen=True)
 class TrainConfig:
     training_plan: str
-    model_name_or_path: str
+    model_path: str
     training_trajectory_sqlite_path: str
-    checkpoint_dir: str
+    checkpoints_parent_dir: str
     final_model_output_path: str
     advantage_clip: float
     learning_rate: float
@@ -150,7 +150,7 @@ def _save_checkpoint(
     assert next_batch_size >= 0, "next_batch_size must be non-negative"
 
     rank, _ = _get_rank_world_size()
-    checkpoint_dir = output_dir / checkpoint_tag
+    checkpoint_dir = output_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     metadata_payload = {
         "global_step": global_step,
@@ -164,6 +164,7 @@ def _save_checkpoint(
         "accumulation_step": accumulation_step,
         "training_plan": training_plan,
         "rank": rank,
+        "checkpoint_tag": checkpoint_tag,
     }
     torch.save(metadata_payload, checkpoint_dir / f"training_state.rank{rank}.pt")
     torch.save(optimizer.state_dict(), checkpoint_dir / f"optimizer_state.rank{rank}.pt")
@@ -202,18 +203,28 @@ def _write_latest_checkpoint_pointer(output_dir: Path, checkpoint_tag: str) -> N
     latest_path.write_text(checkpoint_tag.strip() + "\n", encoding="utf-8")
 
 
-def _save_final_model_weights(
+def _save_final_model_folder(
     model: torch.nn.Module,
     training_plan: str,
     final_model_output_path: Path,
+    source_model_path: str,
+    tokenizer: object,
 ) -> None:
     rank, _ = _get_rank_world_size()
-    final_model_output_path.parent.mkdir(parents=True, exist_ok=True)
+    if rank == 0:
+        if final_model_output_path.exists():
+            assert final_model_output_path.is_dir(), (
+                f"final_model_output_path must be a directory when it exists: {final_model_output_path}"
+            )
+        final_model_output_path.mkdir(parents=True, exist_ok=True)
 
     if training_plan == "lora_current":
         if rank == 0:
             unwrapped = model.module if hasattr(model, "module") else model
-            torch.save(_extract_full_model_state_dict_for_export(unwrapped), final_model_output_path)
+            export_model = unwrapped.merge_and_unload() if hasattr(unwrapped, "merge_and_unload") else unwrapped
+            export_model.save_pretrained(final_model_output_path, safe_serialization=True)
+            if hasattr(tokenizer, "save_pretrained"):
+                tokenizer.save_pretrained(final_model_output_path)
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             torch.distributed.barrier()
         return
@@ -230,7 +241,15 @@ def _save_final_model_weights(
     with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
         state_dict = model.state_dict()
     if rank == 0:
-        torch.save(state_dict, final_model_output_path)
+        from transformers import AutoModelForCausalLM
+
+        export_model = AutoModelForCausalLM.from_pretrained(source_model_path, torch_dtype=torch.bfloat16)
+        incompatible = export_model.load_state_dict(state_dict, strict=True)
+        assert len(incompatible.missing_keys) == 0, "final export state_dict is missing keys"
+        assert len(incompatible.unexpected_keys) == 0, "final export state_dict has unexpected keys"
+        export_model.save_pretrained(final_model_output_path, safe_serialization=True)
+        if hasattr(tokenizer, "save_pretrained"):
+            tokenizer.save_pretrained(final_model_output_path)
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         torch.distributed.barrier()
 
@@ -255,6 +274,9 @@ def _resolve_resume_checkpoint_tag(output_dir: Path, resume_checkpoint_tag: str)
                 return ""
             assert latest_path.exists(), f"latest checkpoint pointer not found: {latest_path}"
         return _read_latest_checkpoint_pointer(output_dir=output_dir)
+    assert normalized_tag == "checkpoints", (
+        "explicit resume_checkpoint_tag must be 'checkpoints' for single-epoch run layout"
+    )
     return normalized_tag
 
 
@@ -284,13 +306,6 @@ def _load_lora_checkpoint_state_dict(model: torch.nn.Module, state_dict: dict[st
     assert len(incompatible.unexpected_keys) == 0, "checkpoint model state has unexpected keys"
 
 
-def _extract_full_model_state_dict_for_export(model: torch.nn.Module) -> dict[str, torch.Tensor]:
-    if hasattr(model, "merge_and_unload"):
-        merged_model = model.merge_and_unload()
-        return merged_model.state_dict()
-    return model.state_dict()
-
-
 def _load_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -301,7 +316,7 @@ def _load_checkpoint(
     assert len(checkpoint_tag.strip()) > 0, "checkpoint_tag cannot be empty"
 
     rank, _ = _get_rank_world_size()
-    checkpoint_dir = output_dir / checkpoint_tag
+    checkpoint_dir = output_dir / "checkpoints"
     assert checkpoint_dir.exists(), f"checkpoint directory not found: {checkpoint_dir}"
     model_state_path = checkpoint_dir / "model_state.pt"
     optimizer_state_path = checkpoint_dir / f"optimizer_state.rank{rank}.pt"
@@ -458,8 +473,30 @@ def _normalize_optional_token_id(token_id: int | None) -> int:
     return int(token_id)
 
 
+def _resolve_local_model_path(model_path: str) -> str:
+    normalized = Path(model_path).expanduser().resolve()
+    assert normalized.exists(), f"model_path does not exist: {normalized}"
+    assert normalized.is_dir(), f"model_path must be a directory: {normalized}"
+
+    required_files = [
+        normalized / "config.json",
+        normalized / "tokenizer_config.json",
+    ]
+    for required_file in required_files:
+        assert required_file.is_file(), f"missing required model file: {required_file}"
+
+    has_safetensors_weights = (normalized / "model.safetensors").is_file() or (
+        normalized / "model.safetensors.index.json"
+    ).is_file()
+    assert has_safetensors_weights, (
+        "model_path must contain safetensors weights (model.safetensors or "
+        "model.safetensors.index.json)"
+    )
+    return str(normalized)
+
+
 def _verify_tokenizer_model_match(
-    model_name_or_path: str,
+    model_path: str,
     tokenizer_name_or_path: str,
     ordered_batches: list[ResolvedTrainingBatch],
     model_vocab_size: int,
@@ -467,13 +504,13 @@ def _verify_tokenizer_model_match(
     assert len(ordered_batches) > 0, "ordered_batches must be non-empty"
     assert model_vocab_size > 0, "model_vocab_size must be positive"
 
-    expected_model_name = model_name_or_path.strip()
+    expected_model_name = model_path.strip()
     tokenizer_name = tokenizer_name_or_path.strip()
-    assert len(expected_model_name) > 0, "model_name_or_path cannot be empty"
+    assert len(expected_model_name) > 0, "model_path cannot be empty"
     assert len(tokenizer_name) > 0, "tokenizer_name_or_path cannot be empty"
     assert (
         tokenizer_name == expected_model_name
-    ), "tokenizer name_or_path must exactly match model_name_or_path"
+    ), "tokenizer name_or_path must exactly match model_path"
 
     data_model_names: set[str] = set()
     max_input_token_id = -1
@@ -500,7 +537,7 @@ def _verify_tokenizer_model_match(
         data_model_name = next(iter(data_model_names))
         assert (
             data_model_name == expected_model_name
-        ), "training data model_official_name must match model_name_or_path"
+        ), "training data model_official_name must match model_path"
     else:
         data_model_name = expected_model_name
     assert max_input_token_id < model_vocab_size, "input_ids contain token id out of model vocab range"
@@ -516,7 +553,7 @@ def _verify_tokenizer_model_match(
 
 
 def _build_lora_model(
-    model_name_or_path: str,
+    model_path: str,
     lora_rank: int,
     lora_alpha: int,
     lora_dropout: float,
@@ -533,7 +570,7 @@ def _build_lora_model(
     from transformers import AutoModelForCausalLM
 
     base_model = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path,
+        model_path,
         torch_dtype=torch.bfloat16,
     ).to(device)
     base_model.gradient_checkpointing_enable()
@@ -552,13 +589,13 @@ def _build_lora_model(
     return model
 
 
-def _build_fsdp_model(model_name_or_path: str, device: torch.device) -> torch.nn.Module:
+def _build_fsdp_model(model_path: str, device: torch.device) -> torch.nn.Module:
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
     from torch.distributed.fsdp import MixedPrecision
     from transformers import AutoModelForCausalLM
 
     base_model = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path,
+        model_path,
         torch_dtype=torch.bfloat16,
     ).to(device)
     base_model.gradient_checkpointing_enable()
@@ -584,7 +621,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     assert config.log_interval_steps > 0, "log_interval_steps must be positive"
     assert config.save_interval_steps > 0, "save_interval_steps must be positive"
     assert len(config.resume_checkpoint_tag.strip()) > 0, "resume_checkpoint_tag cannot be empty"
-    assert len(config.checkpoint_dir.strip()) > 0, "checkpoint_dir cannot be empty"
+    assert len(config.checkpoints_parent_dir.strip()) > 0, "checkpoints_parent_dir cannot be empty"
     assert len(config.final_model_output_path.strip()) > 0, "final_model_output_path cannot be empty"
     assert config.first_n_training_samples >= 0, "first_n_training_samples must be non-negative"
 
@@ -596,14 +633,15 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     initial_batch_size = 1
     initial_adaptive_velocity = 0.12
 
-    tokenizer = AutoTokenizer.from_pretrained(config.model_name_or_path)
+    resolved_model_path = _resolve_local_model_path(config.model_path)
+    tokenizer = AutoTokenizer.from_pretrained(resolved_model_path)
     pad_token_id = _resolve_pad_token_id(tokenizer.pad_token_id)
     eos_token_id = _normalize_optional_token_id(tokenizer.eos_token_id)
     bos_token_id = _normalize_optional_token_id(tokenizer.bos_token_id)
 
     if config.training_plan == "lora_current":
         model = _build_lora_model(
-            model_name_or_path=config.model_name_or_path,
+            model_path=resolved_model_path,
             lora_rank=config.lora_rank,
             lora_alpha=config.lora_alpha,
             lora_dropout=config.lora_dropout,
@@ -611,7 +649,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
             device=device,
         )
     else:
-        model = _build_fsdp_model(model_name_or_path=config.model_name_or_path, device=device)
+        model = _build_fsdp_model(model_path=resolved_model_path, device=device)
 
     input_embeddings = model.get_input_embeddings()
     assert input_embeddings is not None, "model must expose input embeddings"
@@ -632,19 +670,19 @@ def train_with_deepspeed(config: TrainConfig) -> None:
             find_unused_parameters=False,
         )
 
-    checkpoint_dir = Path(config.checkpoint_dir)
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoints_parent_dir = Path(config.checkpoints_parent_dir)
+    checkpoints_parent_dir.mkdir(parents=True, exist_ok=True)
     final_model_output_path = Path(config.final_model_output_path)
-    logs_path = checkpoint_dir / "train_metrics.jsonl"
+    logs_path = checkpoints_parent_dir / "train_metrics.jsonl"
 
-    expected_model_name = config.model_name_or_path.strip()
+    expected_model_name = resolved_model_path
     tokenizer_name = tokenizer.name_or_path.strip()
-    assert len(expected_model_name) > 0, "model_name_or_path cannot be empty"
+    assert len(expected_model_name) > 0, "model_path cannot be empty"
     assert len(tokenizer_name) > 0, "tokenizer_name_or_path cannot be empty"
-    assert tokenizer_name == expected_model_name, "tokenizer name_or_path must exactly match model_name_or_path"
+    assert tokenizer_name == expected_model_name, "tokenizer name_or_path must exactly match model_path"
 
     resolved_resume_tag = _resolve_resume_checkpoint_tag(
-        output_dir=checkpoint_dir,
+        output_dir=checkpoints_parent_dir,
         resume_checkpoint_tag=config.resume_checkpoint_tag,
     )
 
@@ -661,7 +699,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         resume_state = _load_checkpoint(
             model=model,
             optimizer=optimizer,
-            output_dir=checkpoint_dir,
+            output_dir=checkpoints_parent_dir,
             checkpoint_tag=resolved_resume_tag,
             training_plan=config.training_plan,
         )
@@ -682,12 +720,12 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         ordered_batches: list[ResolvedTrainingBatch] = load_resolved_training_batches(
             training_trajectory_sqlite_path=config.training_trajectory_sqlite_path,
             batch_size=initial_batch_size,
-            model_official_name=config.model_name_or_path,
+            model_official_name=expected_model_name,
             first_n_training_samples=config.first_n_training_samples,
         )
         local_batches = _shard_batches_for_rank(ordered_batches=ordered_batches, rank=rank, world_size=world_size)
         verification = _verify_tokenizer_model_match(
-            model_name_or_path=config.model_name_or_path,
+            model_path=expected_model_name,
             tokenizer_name_or_path=tokenizer.name_or_path,
             ordered_batches=ordered_batches,
             model_vocab_size=model_vocab_size,
@@ -793,11 +831,11 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                             local_batch_cursor=local_batch_cursor,
                             local_batch_count=len(local_batches),
                         )
-                        checkpoint_tag = f"global_step_{global_step}"
+                        checkpoint_tag = "checkpoints"
                         _save_checkpoint(
                             model=model,
                             optimizer=optimizer,
-                            output_dir=checkpoint_dir,
+                            output_dir=checkpoints_parent_dir,
                             checkpoint_tag=checkpoint_tag,
                             training_plan=config.training_plan,
                             global_step=global_step,
@@ -816,8 +854,8 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         _save_checkpoint(
             model=model,
             optimizer=optimizer,
-            output_dir=checkpoint_dir,
-            checkpoint_tag="final",
+            output_dir=checkpoints_parent_dir,
+            checkpoint_tag="checkpoints",
             training_plan=config.training_plan,
             global_step=global_step,
             next_iteration_index=config.num_iterations,
@@ -825,10 +863,12 @@ def train_with_deepspeed(config: TrainConfig) -> None:
             accumulation_step=accumulation_step,
             next_batch_size=initial_batch_size,
         )
-        _save_final_model_weights(
+        _save_final_model_folder(
             model=model,
             training_plan=config.training_plan,
             final_model_output_path=final_model_output_path,
+            source_model_path=resolved_model_path,
+            tokenizer=tokenizer,
         )
 
         if torch.distributed.is_available() and torch.distributed.is_initialized():
@@ -837,7 +877,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
 
     lazy_loader = LazyResolvedBatchLoader(
         training_trajectory_sqlite_path=config.training_trajectory_sqlite_path,
-        model_official_name=config.model_name_or_path,
+        model_official_name=expected_model_name,
         first_n_training_samples=config.first_n_training_samples,
     )
     try:
@@ -923,7 +963,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                             max_label_token_id = token_id
 
                 assert data_model_name == expected_model_name, (
-                    "training data model_official_name must match model_name_or_path"
+                    "training data model_official_name must match model_path"
                 )
                 assert max_input_token_id < model_vocab_size, "input_ids contain token id out of model vocab range"
                 assert max_label_token_id < model_vocab_size, "labels contain token id out of model vocab range"
@@ -1020,11 +1060,11 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                         if next_sample_index >= lazy_loader.sample_count:
                             next_iteration_index += 1
                             next_sample_index = 0
-                        checkpoint_tag = f"global_step_{global_step}"
+                        checkpoint_tag = "checkpoints"
                         _save_checkpoint(
                             model=model,
                             optimizer=optimizer,
-                            output_dir=checkpoint_dir,
+                            output_dir=checkpoints_parent_dir,
                             checkpoint_tag=checkpoint_tag,
                             training_plan=config.training_plan,
                             global_step=global_step,
@@ -1048,8 +1088,8 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         _save_checkpoint(
             model=model,
             optimizer=optimizer,
-            output_dir=checkpoint_dir,
-            checkpoint_tag="final",
+            output_dir=checkpoints_parent_dir,
+            checkpoint_tag="checkpoints",
             training_plan=config.training_plan,
             global_step=global_step,
             next_iteration_index=config.num_iterations,
@@ -1061,10 +1101,12 @@ def train_with_deepspeed(config: TrainConfig) -> None:
             adaptive_throughput_ema=adaptive_state.throughput_ema,
             adaptive_best_throughput_ema=adaptive_state.best_throughput_ema,
         )
-        _save_final_model_weights(
+        _save_final_model_folder(
             model=model,
             training_plan=config.training_plan,
             final_model_output_path=final_model_output_path,
+            source_model_path=resolved_model_path,
+            tokenizer=tokenizer,
         )
     finally:
         lazy_loader.close()

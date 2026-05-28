@@ -21,10 +21,10 @@ class TestMainFromConfig(unittest.TestCase):
     def test_load_train_config_from_toml_success(self) -> None:
         payload = {
             "training_plan": "lora_current",
-            "model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
+            "model_path": "/tmp/models/model_qwen35_08b",
             "training_trajectory_sqlite_path": "/tmp/training_trajectories.sqlite",
-            "checkpoint_dir": "/tmp/checkpoints",
-            "final_model_output_path": "/tmp/final_model.pt",
+            "checkpoints_parent_dir": "/tmp/run_a",
+            "final_model_output_path": "/tmp/final_model_hf",
             "advantage_clip": 3.0,
             "learning_rate": 1e-5,
             "weight_decay": 0.01,
@@ -51,10 +51,10 @@ class TestMainFromConfig(unittest.TestCase):
     def test_load_train_config_from_toml_defaults_first_n_training_samples(self) -> None:
         payload = {
             "training_plan": "lora_current",
-            "model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
+            "model_path": "/tmp/models/model_qwen35_08b",
             "training_trajectory_sqlite_path": "/tmp/training_trajectories.sqlite",
-            "checkpoint_dir": "/tmp/checkpoints",
-            "final_model_output_path": "/tmp/final_model.pt",
+            "checkpoints_parent_dir": "/tmp/run_a",
+            "final_model_output_path": "/tmp/final_model_hf",
             "advantage_clip": 3.0,
             "learning_rate": 1e-5,
             "weight_decay": 0.01,
@@ -78,10 +78,10 @@ class TestMainFromConfig(unittest.TestCase):
     def test_load_train_config_from_toml_rejects_missing_or_extra_keys(self) -> None:
         payload = {
             "training_plan": "lora_current",
-            "model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
+            "model_path": "/tmp/models/model_qwen35_08b",
             "training_trajectory_sqlite_path": "/tmp/training_trajectories.sqlite",
-            "checkpoint_dir": "/tmp/checkpoints",
-            "final_model_output_path": "/tmp/final_model.pt",
+            "checkpoints_parent_dir": "/tmp/run_a",
+            "final_model_output_path": "/tmp/final_model_hf",
             "advantage_clip": 3.0,
             "learning_rate": 1e-5,
             "weight_decay": 0.01,

@@ -32,7 +32,7 @@ class TestEngineCheckpoint(unittest.TestCase):
                 model=model,
                 optimizer=optimizer,
                 output_dir=output_dir,
-                checkpoint_tag="step_3",
+                checkpoint_tag="checkpoints",
                 training_plan="lora_current",
                 global_step=3,
                 next_iteration_index=1,
@@ -48,7 +48,7 @@ class TestEngineCheckpoint(unittest.TestCase):
                 model=model,
                 optimizer=optimizer,
                 output_dir=output_dir,
-                checkpoint_tag="step_3",
+                checkpoint_tag="checkpoints",
                 training_plan="lora_current",
             )
 
@@ -58,7 +58,7 @@ class TestEngineCheckpoint(unittest.TestCase):
             self.assertEqual(1, resumed.next_iteration_index)
             self.assertEqual(2, resumed.next_batch_cursor)
             self.assertEqual(0, resumed.accumulation_step)
-            self.assertEqual("step_3", _read_latest_checkpoint_pointer(output_dir))
+            self.assertEqual("checkpoints", _read_latest_checkpoint_pointer(output_dir))
 
     def test_save_checkpoint_rejects_partial_accumulation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -87,10 +87,10 @@ class TestEngineCheckpoint(unittest.TestCase):
             self.assertEqual("", _resolve_resume_checkpoint_tag(output_dir, "none"))
             self.assertEqual("", _resolve_resume_checkpoint_tag(output_dir, "auto"))
 
-            latest_pointer.write_text("global_step_12\n", encoding="utf-8")
-            self.assertEqual("global_step_12", _resolve_resume_checkpoint_tag(output_dir, "latest"))
-            self.assertEqual("global_step_12", _resolve_resume_checkpoint_tag(output_dir, "auto"))
-            self.assertEqual("final", _resolve_resume_checkpoint_tag(output_dir, "final"))
+            latest_pointer.write_text("checkpoints\n", encoding="utf-8")
+            self.assertEqual("checkpoints", _resolve_resume_checkpoint_tag(output_dir, "latest"))
+            self.assertEqual("checkpoints", _resolve_resume_checkpoint_tag(output_dir, "auto"))
+            self.assertEqual("checkpoints", _resolve_resume_checkpoint_tag(output_dir, "checkpoints"))
 
 
 if __name__ == "__main__":

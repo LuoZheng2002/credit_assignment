@@ -8,9 +8,9 @@ from .engine import TrainConfig, train_with_deepspeed
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train causal LM with LoRA or FSDP")
     parser.add_argument("--training-plan", type=str, required=True)
-    parser.add_argument("--model-name-or-path", type=str, required=True)
+    parser.add_argument("--model-path", type=str, required=True)
     parser.add_argument("--training-trajectory-sqlite-path", type=str, required=True)
-    parser.add_argument("--checkpoint-dir", type=str, required=True)
+    parser.add_argument("--checkpoints-parent-dir", type=str, required=True)
     parser.add_argument("--final-model-output-path", type=str, required=True)
     parser.add_argument("--advantage-clip", type=float, required=True)
     parser.add_argument("--learning-rate", type=float, required=True)
@@ -35,9 +35,9 @@ def main() -> None:
 
     config = TrainConfig(
         training_plan=args.training_plan,
-        model_name_or_path=args.model_name_or_path,
+        model_path=args.model_path,
         training_trajectory_sqlite_path=args.training_trajectory_sqlite_path,
-        checkpoint_dir=args.checkpoint_dir,
+        checkpoints_parent_dir=args.checkpoints_parent_dir,
         final_model_output_path=args.final_model_output_path,
         advantage_clip=args.advantage_clip,
         learning_rate=args.learning_rate,
