@@ -20,6 +20,7 @@ dependencies = [
     "scipy>=1.17.1",
     "numexpr>=2.14.1",
     "matplotlib>=3.10.9",
+    "peft>=0.19.1",
 ]
 
 [[tool.uv.index]]
