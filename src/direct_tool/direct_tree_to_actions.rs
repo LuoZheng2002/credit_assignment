@@ -440,7 +440,12 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 }
                 return (continuing_contents, answer);
             }
-            let next_content = generate_next_segment_content::<M>(&trajectory, llm_callable).await;
+            let next_content = generate_next_segment_content::<M>(
+                self.question.flat_id,
+                &trajectory,
+                llm_callable,
+            )
+            .await;
             continuing_contents.push(next_content.clone());
         }
     }
@@ -655,6 +660,7 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
 const SYSTEM_HINT: &str = "<system>You tried to end the sequence without providing a properly formatted tool call or an answer in \\boxed{}. Please either provide a tool call with <tool_wait></tool_wait> wrapper, or provide an answer in \\boxed{}.</system>";
 
 async fn generate_next_segment_content<M: LlmModelMarker>(
+    question_flat_id: usize,
     trajectory: &DirectTrajectory<M>,
     // current_content: &[SegmentContent],
     // client: Client,
@@ -684,7 +690,10 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                 if num_halting_violations >= 3 {
                     log_key_value_pair(
                         "warning".to_string(),
-                        "The model ends sequence abruptly. Occurred 3 or more times.".to_string(),
+                        format!(
+                            "The model ends sequence abruptly. Flat id: {} Occurred 3 or more times.",
+                            question_flat_id
+                        ),
                     );
                     let response = single_eos_response::<M>();
                     SegmentContent::ReasoningOrToolCall {
@@ -695,7 +704,8 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                     log_key_value_pair(
                         "warning".to_string(),
                         format!(
-                            "The model ends sequence abruptly. Violation count: {num_halting_violations}"
+                            "The model ends sequence abruptly. Flat id: {} Violation count: {num_halting_violations}",
+                            question_flat_id
                         ),
                     );
                     let tool_response_raw = SYSTEM_HINT.to_string();
