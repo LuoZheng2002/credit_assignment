@@ -22,7 +22,7 @@ class TrainConfig:
     model_path: str
     training_trajectory_sqlite_path: str
     checkpoints_parent_dir: str
-    final_model_output_path: str
+    final_model_output_parent_dir: str
     advantage_clip: float
     learning_rate: float
     weight_decay: float
@@ -206,12 +206,19 @@ def _write_latest_checkpoint_pointer(output_dir: Path, checkpoint_tag: str) -> N
 def _save_final_model_folder(
     model: torch.nn.Module,
     training_plan: str,
-    final_model_output_path: Path,
+    final_model_output_parent_dir: Path,
     source_model_path: str,
     tokenizer: object,
 ) -> None:
+    final_model_output_path = final_model_output_parent_dir / "model"
     rank, _ = _get_rank_world_size()
     if rank == 0:
+        if final_model_output_parent_dir.exists():
+            assert final_model_output_parent_dir.is_dir(), (
+                "final_model_output_parent_dir must be a directory when it exists: "
+                f"{final_model_output_parent_dir}"
+            )
+        final_model_output_parent_dir.mkdir(parents=True, exist_ok=True)
         if final_model_output_path.exists():
             assert final_model_output_path.is_dir(), (
                 f"final_model_output_path must be a directory when it exists: {final_model_output_path}"
@@ -622,7 +629,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     assert config.save_interval_steps > 0, "save_interval_steps must be positive"
     assert len(config.resume_checkpoint_tag.strip()) > 0, "resume_checkpoint_tag cannot be empty"
     assert len(config.checkpoints_parent_dir.strip()) > 0, "checkpoints_parent_dir cannot be empty"
-    assert len(config.final_model_output_path.strip()) > 0, "final_model_output_path cannot be empty"
+    assert len(config.final_model_output_parent_dir.strip()) > 0, "final_model_output_parent_dir cannot be empty"
     assert config.first_n_training_samples >= 0, "first_n_training_samples must be non-negative"
 
     from transformers import AutoTokenizer
@@ -672,7 +679,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
 
     checkpoints_parent_dir = Path(config.checkpoints_parent_dir)
     checkpoints_parent_dir.mkdir(parents=True, exist_ok=True)
-    final_model_output_path = Path(config.final_model_output_path)
+    final_model_output_parent_dir = Path(config.final_model_output_parent_dir)
     logs_path = checkpoints_parent_dir / "train_metrics.jsonl"
 
     expected_model_name = resolved_model_path
@@ -866,7 +873,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         _save_final_model_folder(
             model=model,
             training_plan=config.training_plan,
-            final_model_output_path=final_model_output_path,
+            final_model_output_parent_dir=final_model_output_parent_dir,
             source_model_path=resolved_model_path,
             tokenizer=tokenizer,
         )
@@ -1104,7 +1111,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         _save_final_model_folder(
             model=model,
             training_plan=config.training_plan,
-            final_model_output_path=final_model_output_path,
+            final_model_output_parent_dir=final_model_output_parent_dir,
             source_model_path=resolved_model_path,
             tokenizer=tokenizer,
         )

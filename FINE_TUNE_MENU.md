@@ -121,4 +121,4 @@ Padding note:
 - Train logs: `checkpoints_parent_dir/train_metrics.jsonl`
 - Latest pointer: `checkpoints_parent_dir/latest_checkpoint.txt`
 - Checkpoint payload (per run/epoch): `checkpoints_parent_dir/checkpoints`
-- Final exported model folder: `final_model_output_path` (Hugging Face Transformers format with safetensors and tokenizer files)
+- Final exported model folder: `final_model_output_parent_dir/model` (Hugging Face Transformers format with safetensors and tokenizer files)

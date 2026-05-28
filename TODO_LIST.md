@@ -35,3 +35,6 @@ We do the following in one epoch:
 
 
 We first need to build the components before orchestrating them.
+
+
+Going to add model answer, correct answer and judgment metadata to training trajectories, since there might be failure modes that can be caught, like \boxed{answer}.
