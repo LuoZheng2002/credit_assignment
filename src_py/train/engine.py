@@ -948,6 +948,15 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                 if requested_batch_size <= 0:
                     break
 
+                if _is_primary_rank():
+                    print(
+                        "[batch] "
+                        f"iteration={iteration_index} "
+                        f"batch_index={batch_index} "
+                        f"requested_batch_size={requested_batch_size} "
+                        f"next_batch_size={adaptive_state.next_batch_size}"
+                    )
+
                 window = lazy_loader.resolve_batch(
                     sample_index=sample_index,
                     batch_size=requested_batch_size,
