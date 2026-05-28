@@ -604,6 +604,14 @@ fn patch_unclosed_python_tool_wait<M: LlmModelMarker>(
     response
 }
 
+fn single_eos_response<M: LlmModelMarker>() -> TokenArrayWithLogprob<M> {
+    let eos_token_id = <M::Tokenizer as MyTokenizer<M>>::eos_token_id();
+    TokenArrayWithLogprob::from_tokens_and_logprobs(
+        vec![eos_token_id],
+        vec![fallback_top8_for_token(eos_token_id)],
+    )
+}
+
 async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     // current_content: &[SegmentContent],
     trajectory: &DirectTrajectory<M>,
@@ -629,13 +637,7 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
         }
     }
 
-    let response = response.unwrap_or_else(|| {
-        let eos_token_id = <M::Tokenizer as MyTokenizer<M>>::eos_token_id();
-        TokenArrayWithLogprob::from_tokens_and_logprobs(
-            vec![eos_token_id],
-            vec![fallback_top8_for_token(eos_token_id)],
-        )
-    });
+    let response = response.unwrap_or_else(|| single_eos_response::<M>());
     let response = patch_unclosed_python_tool_wait::<M>(response);
     let decoded_response = response.decode();
     if response.tokens.is_empty() || decoded_response.trim().is_empty() {
@@ -678,10 +680,28 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                 let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
                 SegmentContent::ToolResponse(response_tokenized)
             } else {
-                log_key_value_pair("warning".to_string(), "The model neither produced an answer nor a tool call when the last content is a reasoning or tool call content.".to_string());
-                let tool_response_raw = SYSTEM_HINT.to_string();
-                let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
-                SegmentContent::ToolResponse(response_tokenized)
+                let num_halting_violations = trajectory.count_halting_violations();
+                if num_halting_violations >= 3 {
+                    log_key_value_pair(
+                        "warning".to_string(),
+                        "The model ends sequence abruptly. Occurred 3 or more times.".to_string(),
+                    );
+                    let response = single_eos_response::<M>();
+                    SegmentContent::ReasoningOrToolCall {
+                        tokens: response,
+                        complete: true,
+                    }
+                } else {
+                    log_key_value_pair(
+                        "warning".to_string(),
+                        format!(
+                            "The model ends sequence abruptly. Violation count: {num_halting_violations}"
+                        ),
+                    );
+                    let tool_response_raw = SYSTEM_HINT.to_string();
+                    let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
+                    SegmentContent::ToolResponse(response_tokenized)
+                }
             }
         }
     }
