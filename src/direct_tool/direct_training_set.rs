@@ -376,7 +376,7 @@ impl<M: LlmModelMarker> AssetFileTrainingTrajectories<M> {
     }
     pub fn file_path(&self) -> String {
         format!(
-            "results/{}/training_trajectories_{}_{}.sqlite",
+            "results/{}/{}_{}/training_trajectories.sqlite",
             M::CLI_NAME,
             self.config_nickname,
             self.to_short_hash()
@@ -384,7 +384,7 @@ impl<M: LlmModelMarker> AssetFileTrainingTrajectories<M> {
     }
     pub fn statistics_file_path(&self) -> String {
         format!(
-            "results/{}/training_trajectories_{}_{}_statistics.json",
+            "results/{}/{}_{}/training_trajectories_statistics.json",
             M::CLI_NAME,
             self.config_nickname,
             self.to_short_hash()
@@ -392,7 +392,7 @@ impl<M: LlmModelMarker> AssetFileTrainingTrajectories<M> {
     }
     fn version_tracking_path(&self) -> String {
         format!(
-            "results_version_tracking/{}/training_trajectories_{}_{}_tracking.json",
+            "results_version_tracking/{}/{}_{}/training_trajectories_tracking.json",
             M::CLI_NAME,
             self.config_nickname,
             self.to_short_hash()
