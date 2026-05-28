@@ -660,9 +660,12 @@ impl<M: LlmModelMarker> App<M> {
             .get(&tree_page.selected_segment_id)
             .copied()
             .unwrap_or(0.0);
+        let selected_trajectory_length_tokens = tree_page
+            .tree
+            .get_trajectory_length_till_id(tree_page.selected_segment_id);
 
         let mut summary = format!(
-            "Question #{}\nQuestion: {}\nCorrect answer: {}\nActions applied: {}/{}\nSelected segment: S{} (children: {})\nposterior_mean: {}\nposterior_std: {}\nsignal_to_noise: {}\nadvantage: {:.6}",
+            "Question #{}\nQuestion: {}\nCorrect answer: {}\nActions applied: {}/{}\nSelected segment: S{} (children: {})\nTrajectory length (tokens): {}\nposterior_mean: {}\nposterior_std: {}\nsignal_to_noise: {}\nadvantage: {:.6}",
             entry.key,
             entry.action_log.question.question,
             entry.action_log.question.correct_answer,
@@ -670,6 +673,7 @@ impl<M: LlmModelMarker> App<M> {
             tree_page.total_actions,
             tree_page.selected_segment_id.0,
             selected_segment.child_ids.len(),
+            selected_trajectory_length_tokens,
             posterior_mean_text,
             posterior_std_text,
             signal_to_noise_text,

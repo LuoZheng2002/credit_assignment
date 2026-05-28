@@ -187,7 +187,7 @@ impl<M: LlmModelMarker> App<M> {
                 .filter(|&&label| label != -100)
                 .count();
             let mut text = format!(
-                "Model: {}\nTrajectory: {}/{} (key #{})\nQuestion #{} [{}:{}]\nAverage absolute segment advantage: {:.6}\nToken count: {}  Trainable tokens: {}",
+                "Model: {}\nTrajectory: {}/{} (key #{})\nQuestion #{} [{}:{}]\nAverage absolute segment advantage: {:.6}\nTrajectory length (tokens): {}\nTrainable tokens: {}",
                 M::CLI_NAME,
                 loaded.index + 1,
                 self.keys.len(),
