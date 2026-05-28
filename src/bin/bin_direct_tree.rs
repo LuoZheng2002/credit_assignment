@@ -30,6 +30,8 @@ struct Args {
     #[command(flatten)]
     llm_cli_args: LlmCliArgs,
     #[arg(long)]
+    max_concurrent_questions: usize,
+    #[arg(long)]
     config_nickname: String,
     #[arg(long)]
     rollout_config_path: String,
@@ -58,6 +60,7 @@ async fn main() {
     let Args {
         config_nickname,
         llm_cli_args,
+        max_concurrent_questions,
         rollout_config_path,
         posterior_hyperparameters_path,
         epoch,
@@ -81,7 +84,7 @@ async fn main() {
         hyperparameters: posterior_hyperparameters,
     };
 
-    let question_semaphore = Arc::new(Semaphore::new(200));
+    let question_semaphore = Arc::new(Semaphore::new(max_concurrent_questions));
     let model_name = LlmModelName::from_str(&llm_cli_args.model_cli_name, true).unwrap();
     // set up ui
     let progress_screen = if ui {

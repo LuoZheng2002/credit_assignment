@@ -10,8 +10,6 @@ pub struct LlmCliArgs {
     pub model_cli_name: String,
     #[arg(long)]
     pub qwen_sglang_port: u16,
-    #[arg(long, default_value_t = 100)]
-    pub max_concurrent_requests: usize,
 }
 
 pub trait LlmModelMarker: Sized + Send + Sync + 'static {

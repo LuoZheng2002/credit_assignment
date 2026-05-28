@@ -1,8 +1,6 @@
 use reqwest::Client;
 use serde_json::Value;
-use std::sync::Arc;
 use tokenizers::Tokenizer;
-use tokio::sync::Semaphore;
 
 use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate};
 
@@ -33,37 +31,18 @@ pub(crate) fn token_to_i32_id(tokenizer: &Tokenizer, token: &str, api_name: &str
     i32::try_from(token_id).expect("token id must fit in i32")
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct QwenBackend {
-    pub(crate) sglang_port: u16,
-}
-
 #[derive(Clone)]
 pub(crate) struct SharedQwenLlmCallable {
     client: Client,
-    backend: QwenBackend,
-    request_semaphore: Arc<Semaphore>,
+    sglang_port: u16,
 }
 
 impl SharedQwenLlmCallable {
-    pub(crate) fn new(
-        client: Client,
-        backend: QwenBackend,
-        max_concurrent_requests: usize,
-    ) -> Self {
-        assert!(
-            max_concurrent_requests > 0,
-            "max concurrent requests must be greater than 0"
-        );
-        assert!(
-            backend.sglang_port > 0,
-            "SGLang port must be greater than 0"
-        );
-
+    pub(crate) fn new(client: Client, sglang_port: u16) -> Self {
+        assert!(sglang_port > 0, "SGLang port must be greater than 0");
         Self {
             client,
-            backend,
-            request_semaphore: Arc::new(Semaphore::new(max_concurrent_requests)),
+            sglang_port,
         }
     }
 
@@ -72,13 +51,6 @@ impl SharedQwenLlmCallable {
         tokens: Vec<i32>,
         passes_in_stop: bool,
     ) -> Result<Vec<i32>, String> {
-        let _permit = self
-            .request_semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .unwrap();
-
         let mut body = serde_json::json!({
             "input_ids": tokens.clone(),
             "sampling_params": {
@@ -93,7 +65,7 @@ impl SharedQwenLlmCallable {
 
         let response = self
             .post_json(
-                &format!("http://localhost:{}/generate", self.backend.sglang_port),
+                &format!("http://localhost:{}/generate", self.sglang_port),
                 body,
             )
             .await?;
@@ -105,7 +77,7 @@ impl SharedQwenLlmCallable {
         let generated_tokens = parse_sglang_generated_token_ids(
             &response,
             &tokens,
-            &format!("SGLang port {}", self.backend.sglang_port),
+            &format!("SGLang port {}", self.sglang_port),
         )?;
         Ok(generated_tokens)
     }
@@ -116,13 +88,6 @@ impl SharedQwenLlmCallable {
         passes_in_stop: bool,
         temperature: f32,
     ) -> Result<TokenArrayWithLogprob<M>, String> {
-        let _permit = self
-            .request_semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .unwrap();
-
         let mut body = serde_json::json!({
             "input_ids": tokens.clone(),
             "sampling_params": {
@@ -140,12 +105,12 @@ impl SharedQwenLlmCallable {
 
         let json = self
             .post_json(
-                &format!("http://localhost:{}/generate", self.backend.sglang_port),
+                &format!("http://localhost:{}/generate", self.sglang_port),
                 body,
             )
             .await?;
         let result = parse_sglang_response_with_logprobs(
-            &format!("SGLang port {}", self.backend.sglang_port),
+            &format!("SGLang port {}", self.sglang_port),
             &json,
         )?;
         Ok(result)

@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
 use super::qwen_shared::{
-    QwenBackend, SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
+    SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
 };
 use super::{
     LlmCallable, LlmCliArgs, LlmModelMarker, MyTokenizer, TokenArray, TokenArrayWithLogprob,
@@ -22,13 +22,9 @@ pub struct Qwen35_08BLlmCallable {
 }
 
 impl Qwen35_08BLlmCallable {
-    pub(crate) fn new(
-        client: Client,
-        backend: QwenBackend,
-        max_concurrent_requests: usize,
-    ) -> Self {
+    pub(crate) fn new(client: Client, sglang_port: u16) -> Self {
         Self {
-            shared: SharedQwenLlmCallable::new(client, backend, max_concurrent_requests),
+            shared: SharedQwenLlmCallable::new(client, sglang_port),
         }
     }
 }
@@ -36,11 +32,8 @@ impl Qwen35_08BLlmCallable {
 #[async_trait]
 impl LlmCallable<Qwen35_08B> for Qwen35_08BLlmCallable {
     fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
-        let backend = QwenBackend {
-            sglang_port: llm_cli_args.qwen_sglang_port,
-        };
-
-        Qwen35_08BLlmCallable::new(client, backend, llm_cli_args.max_concurrent_requests)
+        let sglang_port = llm_cli_args.qwen_sglang_port;
+        Qwen35_08BLlmCallable::new(client, sglang_port)
     }
     async fn generate_tokens(
         &self,

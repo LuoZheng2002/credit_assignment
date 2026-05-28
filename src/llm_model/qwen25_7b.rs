@@ -8,7 +8,7 @@ use tokenizers::Tokenizer;
 use crate::token_array::TokenArray;
 
 use super::qwen_shared::{
-    QwenBackend, SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
+    SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
 };
 use super::{
     LlmCallable, LlmCliArgs, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
@@ -53,24 +53,18 @@ pub struct Qwen25LlmCallable {
 }
 
 impl Qwen25LlmCallable {
-    pub(crate) fn new(
-        client: Client,
-        backend: QwenBackend,
-        max_concurrent_requests: usize,
-    ) -> Self {
+    pub(crate) fn new(client: Client, sglang_port: u16) -> Self {
         Self {
-            shared: SharedQwenLlmCallable::new(client, backend, max_concurrent_requests),
+            shared: SharedQwenLlmCallable::new(client, sglang_port),
         }
     }
 }
 #[async_trait]
 impl LlmCallable<Qwen25> for Qwen25LlmCallable {
     fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
-        let backend = QwenBackend {
-            sglang_port: llm_cli_args.qwen_sglang_port,
-        };
+        let sglang_port = llm_cli_args.qwen_sglang_port;
 
-        Qwen25LlmCallable::new(client, backend, llm_cli_args.max_concurrent_requests)
+        Qwen25LlmCallable::new(client, sglang_port)
     }
     async fn generate_tokens(
         &self,
