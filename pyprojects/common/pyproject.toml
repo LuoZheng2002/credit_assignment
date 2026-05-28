@@ -15,7 +15,8 @@ dependencies = [
     "sympy>=1.14.0",
     "numpy>=2.4.6",
     "scipy>=1.17.1",
-    "numexpr>=2.14.1",    
+    "numexpr>=2.14.1",
+    "flash-linear-attention>=0.5.0",
 ]
 
 [[tool.uv.index]]
