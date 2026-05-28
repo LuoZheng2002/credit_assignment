@@ -79,17 +79,19 @@ impl<M: LlmModelMarker> AssetFileDirectTreeActionLogs<M> {
     }
     pub fn file_path(&self) -> String {
         format!(
-            "results/{}/{}_{}/action_logs.sqlite",
+            "results/{}/{}/epoch_{}/action_logs_{}.sqlite",
             M::CLI_NAME,
             self.nickname,
+            self.epoch,
             self.to_short_hash()
         )
     }
     fn version_tracking_path(&self) -> String {
         format!(
-            "results_version_tracking/{}/{}_{}/action_logs_tracking.json",
+            "results_version_tracking/{}/{}/epoch_{}/action_logs_{}_tracking.json",
             M::CLI_NAME,
             self.nickname,
+            self.epoch,
             self.to_short_hash()
         )
     }

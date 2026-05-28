@@ -376,25 +376,28 @@ impl<M: LlmModelMarker> AssetFileTrainingTrajectories<M> {
     }
     pub fn file_path(&self) -> String {
         format!(
-            "results/{}/{}_{}/training_trajectories.sqlite",
+            "results/{}/{}/epoch_{}/training_trajectories_{}.sqlite",
             M::CLI_NAME,
             self.config_nickname,
+            self.epoch,
             self.to_short_hash()
         )
     }
     pub fn statistics_file_path(&self) -> String {
         format!(
-            "results/{}/{}_{}/training_trajectories_statistics.json",
+            "results/{}/{}/epoch_{}/training_trajectories_{}_statistics.json",
             M::CLI_NAME,
             self.config_nickname,
+            self.epoch,
             self.to_short_hash()
         )
     }
     fn version_tracking_path(&self) -> String {
         format!(
-            "results_version_tracking/{}/{}_{}/training_trajectories_tracking.json",
+            "results_version_tracking/{}/{}/epoch_{}/training_trajectories_{}_tracking.json",
             M::CLI_NAME,
             self.config_nickname,
+            self.epoch,
             self.to_short_hash()
         )
     }
