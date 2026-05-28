@@ -589,7 +589,7 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
             }
             Err(error) => {
                 log_key_value_pair(
-                    "warning".to_string(),
+                    "WARNING".to_string(),
                     format!("generate_tokens_with_logprobs failed on trial {trial}/3: {error}"),
                 );
             }

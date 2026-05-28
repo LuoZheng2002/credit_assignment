@@ -2,12 +2,15 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
 use crate::{
+    constants::SGLANG_CONTEXT_LENGTH,
     direct_tool::direct_tree::{DirectTree, SegmentContent, SegmentId},
     llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob},
     token_array::TokenArray,
     tool_call_python::extract_python_tool_call,
     util::extract_boxed_content,
 };
+
+const CONTEXT_LENGTH_SAFETY_MARGIN: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FinalAnswer {
@@ -31,6 +34,18 @@ pub struct DirectTrajectory<M: LlmModelMarker> {
 
 impl<M: LlmModelMarker> DirectTrajectory<M> {
     pub fn try_get_answer(&self) -> Option<FinalAnswer> {
+        let trajectory_length = self
+            .trajectory_contents
+            .iter()
+            .map(|content| content.tokens().len())
+            .sum::<usize>();
+        if trajectory_length >= SGLANG_CONTEXT_LENGTH - CONTEXT_LENGTH_SAFETY_MARGIN {
+            return Some(FinalAnswer::Failure(format!(
+                "Context length exceeded (trajectory_length={}, limit={}).",
+                trajectory_length, SGLANG_CONTEXT_LENGTH
+            )));
+        }
+
         let last_content = self
             .trajectory_contents
             .last()
