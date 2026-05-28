@@ -1,0 +1,32 @@
+[project]
+name = "credit-assignment-common"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "datasets>=4.8.5",
+    "dotenv>=0.9.9",
+    "research-utility",
+    "torch",
+    "matplotlib>=3.10.9",
+    "peft>=0.19.1",
+    # used for LLM python tool calling
+    "sympy>=1.14.0",
+    "numpy>=2.4.6",
+    "scipy>=1.17.1",
+    "numexpr>=2.14.1",    
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+research-utility = { path = "../../../research-utility", editable = true }
+
+[tool.uv]
+environments = ["sys_platform == 'linux'"]
+prerelease = "allow"
