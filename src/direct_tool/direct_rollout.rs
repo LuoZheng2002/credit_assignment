@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use reqwest::Client;
 use research_utility::{
-    asset_file::AssetFile, sqlite_store::SqliteStore, worker_message_tx::log_key_value_pair,
+    asset_file::AssetFile,
+    sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
+    worker_message_tx::log_key_value_pair,
 };
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -57,7 +59,11 @@ pub async fn rollout<M: LlmModelMarker>(
             action_log.actions.push(action);
         }
         rollout_store
-            .upsert(question.flat_id, &action_log)
+            .upsert(
+                question.flat_id,
+                &action_log,
+                SqliteBusyRetryConfig::aggressive(),
+            )
             .await
             .unwrap();
     }

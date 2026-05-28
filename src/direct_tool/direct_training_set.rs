@@ -7,7 +7,7 @@ use std::{
 use ordered_float::NotNan;
 use research_utility::{
     asset_file::{AssetFile, Base64Hash, hash_file},
-    sqlite_store::SqliteStore,
+    sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
@@ -458,7 +458,9 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             )
             .await;
             for (i, trajectory) in training_trajectories.into_iter().enumerate() {
-                db.upsert(i, &trajectory).await.unwrap();
+                db.upsert(i, &trajectory, SqliteBusyRetryConfig::none())
+                    .await
+                    .unwrap();
             }
             println!("Finished generating training trajectories file.");
         }
