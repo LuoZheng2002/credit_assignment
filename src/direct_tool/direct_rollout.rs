@@ -76,6 +76,7 @@ pub struct RolloutProgramConfig {
     pub question_semaphore: Arc<Semaphore>,
     pub llm_cli_args: LlmCliArgs,
     pub first_n_samples: Option<usize>,
+    pub max_sqlite_connections: u32,
 }
 
 pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig) {
@@ -88,6 +89,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         question_semaphore,
         llm_cli_args,
         first_n_samples,
+        max_sqlite_connections,
     } = program_config;
     let llm_callable = M::Callable::from_cli_args(client.clone(), &llm_cli_args);
     let asset_file_dataset = AssetFileHybridDataset;
@@ -103,6 +105,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     asset_file_action_logs.create_tracking_file();
     let rollout_store = SqliteStore::<usize, DirectTreeActionLog<M>>::initialize_if_missing(
         asset_file_action_logs.file_path(),
+        max_sqlite_connections,
     )
     .await;
     let mut question_keys = dataset.get_keys().await.unwrap();

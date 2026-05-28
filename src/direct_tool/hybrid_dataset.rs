@@ -41,6 +41,6 @@ impl AssetFile for AssetFileHybridDataset {
     }
     async fn fetch(&self) -> Self::FileModel {
         self.synchronize().await;
-        SqliteStore::assume_initialized(Self::file_path()).await
+        SqliteStore::assume_initialized(Self::file_path(), 1).await
     }
 }

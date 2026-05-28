@@ -43,6 +43,8 @@ struct Args {
     ui: bool,
     #[arg(long)]
     first_n_samples: Option<usize>,
+    #[arg(long, default_value_t = 1)]
+    max_sqlite_connections: u32,
 }
 
 #[tokio::main]
@@ -66,6 +68,7 @@ async fn main() {
         epoch,
         ui,
         first_n_samples,
+        max_sqlite_connections,
     } = Args::parse();
     Python::initialize();
     check_sympy_availability().unwrap();
@@ -131,6 +134,7 @@ async fn main() {
         question_semaphore,
         llm_cli_args,
         first_n_samples,
+        max_sqlite_connections,
     };
     match model_name {
         LlmModelName::Qwen25_7b => rollout_all::<Qwen25>(program_config).await,

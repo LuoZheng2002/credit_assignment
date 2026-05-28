@@ -193,6 +193,6 @@ impl<M: LlmModelMarker> AssetFile for AssetFileDirectTreeActionLogs<M> {
     }
     async fn fetch(&self) -> Self::FileModel {
         self.synchronize().await;
-        SqliteStore::<usize, DirectTreeActionLog<M>>::assume_initialized(self.file_path()).await
+        SqliteStore::<usize, DirectTreeActionLog<M>>::assume_initialized(self.file_path(), 1).await
     }
 }

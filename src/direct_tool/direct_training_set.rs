@@ -405,7 +405,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
     type FileModel = SqliteStore<usize, DirectTrainingTrajectory<M>>;
     async fn fetch(&self) -> Self::FileModel {
         self.synchronize().await;
-        SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(self.file_path())
+        SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(self.file_path(), 1)
             .await
     }
     async fn synchronize(&self) -> Base64Hash {
@@ -448,7 +448,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             }
             // initialize database
             let db =
-                SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(self.file_path())
+                SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(self.file_path(), 1)
                     .await;
             let rollout_logs = asset_file_rollout_logs.fetch().await;
             let training_trajectories = rollout_logs_to_training_trajectories::<M>(
