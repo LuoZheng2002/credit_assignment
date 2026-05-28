@@ -60,6 +60,9 @@ fn blocking_python_code_task(code: String) -> PyResult<String> {
 import ast
 import io
 import sys
+import numpy as np
+import sympy as sp
+from sympy import *
 buf = io.StringIO()
 sys.stdout = buf
 
