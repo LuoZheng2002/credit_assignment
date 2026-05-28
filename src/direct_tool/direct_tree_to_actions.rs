@@ -640,7 +640,7 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     let response = response.unwrap_or_else(|| single_eos_response::<M>());
     let response = patch_unclosed_python_tool_wait::<M>(response);
     let decoded_response = response.decode();
-    if response.tokens.is_empty() || decoded_response.trim().is_empty() {
+    if response.tokens.is_empty() {
         panic!(
             "LLM returned empty response. Decoded string: '{}', tokens: {:?}",
             decoded_response, response.tokens
