@@ -7,9 +7,6 @@ from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
-DEFAULT_MODEL = "Qwen/Qwen3.5-0.8B"
-OUTPUT_DIR_NAME = "model_qwen35_08b"
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -23,15 +20,13 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         required=True,
         help=(
-            "Parent directory where the fixed folder "
-            f"'{OUTPUT_DIR_NAME}' will be created"
+            "Parent directory"
         ),
     )
     parser.add_argument(
         "--model",
         type=str,
-        default=DEFAULT_MODEL,
-        help=f"Model to download (default: {DEFAULT_MODEL})",
+        help=f"Model to download",
     )
     parser.add_argument(
         "--trust-remote-code",
@@ -44,7 +39,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    output_path = args.output_path / OUTPUT_DIR_NAME
+    # output_path = args.output_path / f"model_{args.model.split('/')[-1].lower().replace('.', '_')}"
+    output_path = args.output_path / "model"
     output_path.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading tokenizer: {args.model}")
