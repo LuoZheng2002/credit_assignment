@@ -10,7 +10,7 @@ use research_utility::worker_message_tx::log_key_value_pair;
 use crate::direct_tool::direct_trajectory::{DirectTrajectory, FinalAnswer, TrajectoryContent};
 use crate::judge_correctness::judge_final_answer;
 use crate::llm_model::MyTokenizer;
-use crate::tool_call_python::execute_python_tool_call;
+use crate::tool_call_python::{PythonToolResponse, execute_python_tool_call};
 use crate::{
     direct_tool::{
         direct_tree::{ContentIndex, DirectTree, SegmentContent, SegmentId},
@@ -553,6 +553,17 @@ fn single_eos_response<M: LlmModelMarker>() -> TokenArrayWithLogprob<M> {
     )
 }
 
+fn concise_failure_reason(error: &str) -> String {
+    const MAX_REASON_CHARS: usize = 120;
+    let first_line = error.lines().next().unwrap_or("").trim();
+    let first_line_len = first_line.chars().count();
+    if first_line_len <= MAX_REASON_CHARS {
+        return first_line.to_string();
+    }
+    let truncated: String = first_line.chars().take(MAX_REASON_CHARS).collect();
+    format!("{}...", truncated)
+}
+
 async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     question_flat_id: usize,
     // current_content: &[SegmentContent],
@@ -639,8 +650,29 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
         }
         TrajectoryContent::ReasoningOrToolCallComplete(_) => {
             if let Some(tool_call) = trajectory.try_get_last_content_tool_call() {
-                log_key_value_pair("info".to_string(), "Executing a tool call".to_string());
+                // log_key_value_pair("info".to_string(), "Executing a tool call".to_string());
                 let tool_response = execute_python_tool_call(&tool_call).await;
+                match &tool_response {
+                    PythonToolResponse::PythonSuccess(_) => {
+                        log_key_value_pair(
+                            "info".to_string(),
+                            format!(
+                                "Tool call completed. success=true flat_id={}",
+                                question_flat_id
+                            ),
+                        );
+                    }
+                    PythonToolResponse::PythonError(error) => {
+                        log_key_value_pair(
+                            "warning".to_string(),
+                            format!(
+                                "Tool call completed. success=false flat_id={} reason={}",
+                                question_flat_id,
+                                concise_failure_reason(error)
+                            ),
+                        );
+                    }
+                }
                 let tool_response_raw = tool_response.to_raw_content();
                 let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
                 SegmentContent::ToolResponse(response_tokenized)
