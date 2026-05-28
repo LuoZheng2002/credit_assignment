@@ -10,30 +10,24 @@ pub fn extract_python_tool_call(response: String) -> Option<String> {
     let Some(python_start_position) = response.find(python_fence) else {
         return None;
     };
-    let mut start_position = python_start_position;
-    // if there is <tool_call> before the start position, also include it
-    if let Some(tag_position) = response[..start_position].rfind("<tool_wait>") {
-        if response[tag_position..start_position].trim().is_empty() {
-            start_position = tag_position;
-        }
-    }
+
+    let start_position = python_start_position;
     let end_position = {
         let search_start = python_start_position + python_fence.len();
         let after_python_fence = &response[search_start..];
-        if let Some(end_relative) = after_python_fence.find("```") {
+        if let Some(end_relative) = after_python_fence.find("```\n") {
+            search_start + end_relative + "```\n".len()
+        } else if let Some(end_relative) = after_python_fence.find("```") {
             let mut end_position = search_start + end_relative + "```".len();
-            // if there is a '\n' after the closing fence, include it in the tool call for formatting.
             if after_python_fence[end_relative + "```".len()..].starts_with('\n') {
                 end_position += 1;
             }
             end_position
         } else {
-            response.len()
+            return None;
         }
     };
-    let mut tool_call = response[start_position..end_position].to_string();
-    tool_call.push_str("</tool_wait>");
-    Some(tool_call)
+    Some(response[start_position..end_position].to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,27 +163,24 @@ async fn execute_python_code(code: String) -> PythonToolResponse {
 }
 
 pub async fn execute_python_tool_call(tool_call: &str) -> PythonToolResponse {
-    let mut trimmed_tool_call = tool_call.trim_start().to_string();
-    // trim <tool_wait>
-    if trimmed_tool_call.starts_with("<tool_wait>") {
-        trimmed_tool_call = trimmed_tool_call["<tool_wait>".len()..]
-            .trim_start()
-            .to_string();
-    }
+    let trimmed_tool_call = tool_call.trim_start().to_string();
     assert!(
         trimmed_tool_call.starts_with("```python"),
         "Tool call not properly formatted: {}",
         tool_call
     );
-    let Some(fence_end_index) = trimmed_tool_call.rfind("```") else {
-        return PythonToolResponse::PythonError(
-            "Tool call markdown code block not properly closed.".to_string(),
-        );
-    };
     let code_start = trimmed_tool_call
         .find('\n')
         .map(|idx| idx + 1)
         .unwrap_or("```python".len());
+    let fence_end_index = trimmed_tool_call[code_start..]
+        .find("```")
+        .map(|relative_idx| code_start + relative_idx);
+    let Some(fence_end_index) = fence_end_index else {
+        return PythonToolResponse::PythonError(
+            "Tool call markdown code block not properly closed.".to_string(),
+        );
+    };
     if fence_end_index < code_start {
         return PythonToolResponse::PythonError(
             "Tool call markdown code block not properly formatted.".to_string(),

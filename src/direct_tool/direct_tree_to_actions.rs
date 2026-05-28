@@ -461,7 +461,16 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 sglang_waiting_workers.clone(),
             )
             .await;
-            continuing_contents.push(next_content.clone());
+            if matches!(next_content, SegmentContent::ReasoningOrToolCall { .. }) {
+                if let Some(SegmentContent::ReasoningOrToolCall { complete, .. }) =
+                    continuing_contents.last_mut()
+                {
+                    if *complete {
+                        *complete = false;
+                    }
+                }
+            }
+            continuing_contents.push(next_content);
         }
     }
     pub fn trajectory_reasoning_token_length(&self, segment_id: SegmentId) -> usize {
@@ -524,17 +533,6 @@ fn direct_trajectory_to_prompt_tokens<M: LlmModelMarker>(
     prompt_tokens
 }
 
-fn find_subsequence(tokens: &[i32], needle: &[i32], start: usize) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(start.min(tokens.len()));
-    }
-    if start > tokens.len() || needle.len() > tokens.len().saturating_sub(start) {
-        return None;
-    }
-
-    (start..=(tokens.len() - needle.len())).find(|&idx| tokens[idx..idx + needle.len()] == *needle)
-}
-
 fn fallback_top8_for_token(token_id: i32) -> Top8Candidates {
     let mut top8 = [TokenLogprobCandidate {
         token_id,
@@ -545,83 +543,6 @@ fn fallback_top8_for_token(token_id: i32) -> Top8Candidates {
         logprob: 0.0,
     };
     top8
-}
-
-fn patch_unclosed_python_tool_wait<M: LlmModelMarker>(
-    mut response: TokenArrayWithLogprob<M>,
-) -> TokenArrayWithLogprob<M> {
-    if response.tokens.len() != response.logprobs.len() {
-        panic!(
-            "Response token/logprob length mismatch before tool_wait patching: tokens={}, logprobs={}",
-            response.tokens.len(),
-            response.logprobs.len()
-        );
-    }
-
-    let open_tool_wait = <M::Tokenizer as MyTokenizer<M>>::encode_to_i32_ids("<tool_wait>");
-    let python_fence = <M::Tokenizer as MyTokenizer<M>>::encode_to_i32_ids("```python");
-    let close_fence = <M::Tokenizer as MyTokenizer<M>>::encode_to_i32_ids("```");
-    let close_fence_with_newline = <M::Tokenizer as MyTokenizer<M>>::encode_to_i32_ids("```\n");
-    let close_tool_wait = <M::Tokenizer as MyTokenizer<M>>::encode_to_i32_ids("</tool_wait>");
-
-    if open_tool_wait.is_empty()
-        || python_fence.is_empty()
-        || close_fence.is_empty()
-        || close_tool_wait.is_empty()
-    {
-        return response;
-    }
-
-    let Some(open_start) = find_subsequence(&response.tokens, &open_tool_wait, 0) else {
-        return response;
-    };
-    let after_open = open_start + open_tool_wait.len();
-
-    let Some(python_start) = find_subsequence(&response.tokens, &python_fence, after_open) else {
-        return response;
-    };
-    let after_python = python_start + python_fence.len();
-
-    let close_plain_start = find_subsequence(&response.tokens, &close_fence, after_python);
-    let close_newline_start = if close_fence_with_newline.is_empty() {
-        None
-    } else {
-        find_subsequence(&response.tokens, &close_fence_with_newline, after_python)
-    };
-
-    let (close_end, append_text) = match (close_plain_start, close_newline_start) {
-        (None, None) => return response,
-        (Some(plain_start), None) => (plain_start + close_fence.len(), "\n</tool_wait>"),
-        (None, Some(newline_start)) => (
-            newline_start + close_fence_with_newline.len(),
-            "</tool_wait>",
-        ),
-        (Some(plain_start), Some(newline_start)) => {
-            if newline_start <= plain_start {
-                (
-                    newline_start + close_fence_with_newline.len(),
-                    "</tool_wait>",
-                )
-            } else {
-                (plain_start + close_fence.len(), "\n</tool_wait>")
-            }
-        }
-    };
-
-    if find_subsequence(&response.tokens, &close_tool_wait, close_end).is_some() {
-        return response;
-    }
-
-    response.tokens.truncate(close_end);
-    response.logprobs.truncate(close_end);
-
-    let append_tokens = <M::Tokenizer as MyTokenizer<M>>::encode_to_i32_ids(append_text);
-    for token_id in append_tokens {
-        response.tokens.push(token_id);
-        response.logprobs.push(fallback_top8_for_token(token_id));
-    }
-
-    response
 }
 
 fn single_eos_response<M: LlmModelMarker>() -> TokenArrayWithLogprob<M> {
@@ -676,7 +597,6 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     }
 
     let response = response.unwrap_or_else(|| single_eos_response::<M>());
-    let response = patch_unclosed_python_tool_wait::<M>(response);
     let decoded_response = response.decode();
     if response.tokens.is_empty() {
         panic!(
@@ -689,8 +609,6 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
         complete: true,
     }
 }
-
-const SYSTEM_HINT: &str = "<system>You tried to end the sequence without providing a properly formatted tool call or an answer in \\boxed{}. Please either provide a tool call with <tool_wait></tool_wait> wrapper, or provide an answer in \\boxed{}.</system>";
 
 async fn generate_next_segment_content<M: LlmModelMarker>(
     question_flat_id: usize,
@@ -726,32 +644,20 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                 let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
                 SegmentContent::ToolResponse(response_tokenized)
             } else {
-                let num_halting_violations = trajectory.count_halting_violations();
-                if num_halting_violations >= 3 {
-                    log_key_value_pair(
-                        "warning".to_string(),
-                        format!(
-                            "The model ends sequence abruptly. Flat id: {} Occurred 3 or more times.",
-                            question_flat_id
-                        ),
-                    );
-                    let response = single_eos_response::<M>();
-                    SegmentContent::ReasoningOrToolCall {
-                        tokens: response,
-                        complete: true,
-                    }
-                } else {
-                    log_key_value_pair(
-                        "warning".to_string(),
-                        format!(
-                            "The model ends sequence abruptly. Flat id: {} Violation count: {num_halting_violations}",
-                            question_flat_id
-                        ),
-                    );
-                    let tool_response_raw = SYSTEM_HINT.to_string();
-                    let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
-                    SegmentContent::ToolResponse(response_tokenized)
-                }
+                log_key_value_pair(
+                    "warning".to_string(),
+                    format!(
+                        "The model ended a sequence without a boxed answer or python tool call. Continuing generation. Flat id: {}",
+                        question_flat_id
+                    ),
+                );
+                generate_reasoning_or_tool_call_content::<M>(
+                    question_flat_id,
+                    trajectory,
+                    llm_callable,
+                    sglang_waiting_workers,
+                )
+                .await
             }
         }
     }

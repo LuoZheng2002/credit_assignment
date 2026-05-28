@@ -81,20 +81,6 @@ impl<M: LlmModelMarker> DirectTrajectory<M> {
             .collect::<Vec<String>>()
             .join("    ")
     }
-
-    pub fn count_halting_violations(&self) -> usize {
-        self.trajectory_contents
-            .iter()
-            .filter(|content| {
-                let TrajectoryContent::ReasoningOrToolCallComplete(tokens) = content else {
-                    return false;
-                };
-                let decoded = tokens.decode();
-                extract_boxed_content(&decoded).is_none()
-                    && extract_python_tool_call(decoded).is_none()
-            })
-            .count()
-    }
 }
 
 #[derive(Debug, Clone)]

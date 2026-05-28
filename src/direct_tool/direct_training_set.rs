@@ -334,7 +334,7 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
 pub struct DirectTrainingTrajectory<M: LlmModelMarker> {
     pub question: HybridDatasetQuestion,
     pub input_ids: Vec<i32>,
-    pub labels: Vec<i32>, // we may not need to let model learn to stop after tool_wait or end since our framework already handled this
+    pub labels: Vec<i32>, // we may not need to let model learn to stop at tool-call boundaries or end since our framework already handled this
     pub advantages: Vec<f32>,
     pub average_absolute_segment_advantage: f32,
     #[serde(skip)]

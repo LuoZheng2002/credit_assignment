@@ -77,7 +77,7 @@ impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
                 "model": Gpt4o::API_NAME,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_completion_tokens": 2048,
-                "stop": ["</tool_wait>"],
+                "stop": ["```\n"],
             })
         } else {
             serde_json::json!({
@@ -124,7 +124,7 @@ impl LlmCallable<Gpt4o> for Gpt4oLlmCallable {
                 "model": Gpt4o::API_NAME,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_completion_tokens": 2048,
-                "stop": ["</tool_wait>"],
+                "stop": ["```\n"],
                 "temperature": temperature,
                 "logprobs": true,
                 "top_logprobs": 8,

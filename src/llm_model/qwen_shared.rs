@@ -56,11 +56,12 @@ impl SharedQwenLlmCallable {
             "sampling_params": {
                 "temperature": 0.0,
                 "max_new_tokens": 2048,
+                "no_stop_trim": true,
             },
             "stream": false,
         });
         if passes_in_stop {
-            body["sampling_params"]["stop"] = serde_json::json!(["</tool_wait>"]);
+            body["sampling_params"]["stop"] = serde_json::json!(["```\n"]);
         }
 
         let response = self
@@ -93,6 +94,7 @@ impl SharedQwenLlmCallable {
             "sampling_params": {
                 "temperature": temperature,
                 "max_new_tokens": 2048,
+                "no_stop_trim": true,
             },
             "return_logprob": true,
             "logprob_start_len": -1,
@@ -100,7 +102,7 @@ impl SharedQwenLlmCallable {
             "stream": false,
         });
         if passes_in_stop {
-            body["sampling_params"]["stop"] = serde_json::json!(["</tool_wait>"]);
+            body["sampling_params"]["stop"] = serde_json::json!(["```\n"]);
         }
 
         let json = self

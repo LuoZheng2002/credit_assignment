@@ -140,7 +140,7 @@ The failure modes are:
 3. planning direction errors
 
 
-Try <tool_wait> </tool_wait> for qwen 3 / 3.5
+Try fenced Python tool calls for qwen 3 / 3.5
 
 Make the compactor to spot if the final answer is found.
 

@@ -8,8 +8,8 @@ Our experimental setup uses a lightweight agent framework with one callable Pyth
 
 1. Each prompt contains the problem statement and the tool specification.
 2. The model is allowed to interleave reasoning and tool use.
-3. Tool calls are delimited by `<tool_wait></tool_wait>`. Once `</tool_wait>` is emitted, generation is paused, the tool is executed, and the tool response is injected into the assistant context.
-4. The model is instructed to present the final answer in `\boxed{}`. Generation stops when a boxed answer is detected at a control handoff (EOS or `</tool_wait>`).
+3. Tool calls are delimited by fenced Python markdown blocks. Once the closing fence (` ``` ` on its own line) is emitted, generation is paused, the tool is executed, and the tool response is injected into the assistant context.
+4. The model is instructed to present the final answer in `\boxed{}`. Generation stops when a boxed answer is detected at a control handoff (EOS or tool-call fence stop).
 5. If EOS is reached without a boxed answer, the framework appends a continuation cue requesting either further reasoning or a boxed final answer.
 
 ## Trajectory Branching
