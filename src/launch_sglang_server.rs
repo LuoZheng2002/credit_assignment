@@ -47,6 +47,7 @@ pub async fn launch_sglang_server_process<M: LlmModelMarker>(
             });
         }
         let stdout_file = OpenOptions::new()
+            .write(true)
             .create(true)
             .truncate(true)
             .open(log_path)
