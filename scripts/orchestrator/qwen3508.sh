@@ -1,10 +1,11 @@
+set -euo pipefail
 
-source .venv/bin/activate
+source pyprojects/common/.venv/bin/activate
 LIBDIR=$(python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')
 export RUSTFLAGS="-C link-arg=-Wl,-rpath,$LIBDIR"
 
-RUST_BACKTRACE=1 cargo run --bin orchestrator -- \
-    --model-cli-name qwen3.5-08b \
+RUST_BACKTRACE=1 cargo run --bin bin_orchestrator -- \
+    --model-cli-name qwen3.5-0.8b \
     --max-rollout-concurrency 200 \
     --config-nickname tra16 \
     --validation-rollout-config-path config/rollout_config_validation.json \
