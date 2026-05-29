@@ -21,7 +21,7 @@ class TestMainFromConfig(unittest.TestCase):
     def test_load_train_config_from_toml_success(self) -> None:
         payload = {
             "training_plan": "lora_current",
-            "model_path": "/tmp/models/model_qwen35_08b",
+            "model_parent_dir": "/tmp/models/qwen35_08b_parent",
             "training_trajectory_sqlite_path": "/tmp/training_trajectories.sqlite",
             "checkpoints_parent_dir": "/tmp/run_a",
             "final_model_output_parent_dir": "/tmp/final_model_hf_parent",
@@ -51,7 +51,7 @@ class TestMainFromConfig(unittest.TestCase):
     def test_load_train_config_from_toml_defaults_first_n_training_samples(self) -> None:
         payload = {
             "training_plan": "lora_current",
-            "model_path": "/tmp/models/model_qwen35_08b",
+            "model_parent_dir": "/tmp/models/qwen35_08b_parent",
             "training_trajectory_sqlite_path": "/tmp/training_trajectories.sqlite",
             "checkpoints_parent_dir": "/tmp/run_a",
             "final_model_output_parent_dir": "/tmp/final_model_hf_parent",
@@ -78,7 +78,7 @@ class TestMainFromConfig(unittest.TestCase):
     def test_load_train_config_from_toml_rejects_missing_or_extra_keys(self) -> None:
         payload = {
             "training_plan": "lora_current",
-            "model_path": "/tmp/models/model_qwen35_08b",
+            "model_parent_dir": "/tmp/models/qwen35_08b_parent",
             "training_trajectory_sqlite_path": "/tmp/training_trajectories.sqlite",
             "checkpoints_parent_dir": "/tmp/run_a",
             "final_model_output_parent_dir": "/tmp/final_model_hf_parent",

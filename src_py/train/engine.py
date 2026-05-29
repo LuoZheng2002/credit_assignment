@@ -20,7 +20,7 @@ from .losses import compute_advantage_weighted_causal_lm_loss
 @dataclass(frozen=True)
 class TrainConfig:
     training_plan: str
-    model_path: str
+    model_parent_dir: str
     training_trajectory_sqlite_path: str
     checkpoints_parent_dir: str
     final_model_output_parent_dir: str
@@ -507,10 +507,16 @@ def _normalize_optional_token_id(token_id: int | None) -> int:
     return int(token_id)
 
 
-def _resolve_local_model_path(model_path: str) -> str:
-    normalized = Path(model_path).expanduser().resolve()
-    assert normalized.exists(), f"model_path does not exist: {normalized}"
-    assert normalized.is_dir(), f"model_path must be a directory: {normalized}"
+def _resolve_local_model_path(model_parent_dir: str) -> str:
+    normalized_parent = Path(model_parent_dir).expanduser().resolve()
+    assert normalized_parent.exists(), f"model_parent_dir does not exist: {normalized_parent}"
+    assert normalized_parent.is_dir(), f"model_parent_dir must be a directory: {normalized_parent}"
+
+    normalized = normalized_parent / "model"
+    assert normalized.exists(), (
+        f"model folder not found under model_parent_dir: {normalized}"
+    )
+    assert normalized.is_dir(), f"model folder must be a directory: {normalized}"
 
     required_files = [
         normalized / "config.json",
@@ -523,7 +529,7 @@ def _resolve_local_model_path(model_path: str) -> str:
         normalized / "model.safetensors.index.json"
     ).is_file()
     assert has_safetensors_weights, (
-        "model_path must contain safetensors weights (model.safetensors or "
+        "model_parent_dir/model must contain safetensors weights (model.safetensors or "
         "model.safetensors.index.json)"
     )
     return str(normalized)
@@ -667,7 +673,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     initial_batch_size = 1
     initial_adaptive_velocity = 0.12
 
-    resolved_model_path = _resolve_local_model_path(config.model_path)
+    resolved_model_path = _resolve_local_model_path(config.model_parent_dir)
     if _is_primary_rank():
         print(
             "[status] "

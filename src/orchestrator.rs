@@ -1,4 +1,4 @@
-use std::{process::Child, sync::Arc};
+use std::{process::Child, sync::{Arc, atomic::Ordering}};
 
 use research_utility::{asset_file::AssetFile, log_message::log_info};
 use serde::{Deserialize, Serialize};
@@ -11,11 +11,13 @@ use crate::{
         direct_training_set::AssetFileTrainingTrajectories,
         posterior_calculation_config::PosteriorCalculationConfig,
     },
-    json_line_util::write_json,
+    json_line_util::{write_json, write_toml},
+    launch_python_training::launch_python_training_process,
     launch_sglang_server::{
         launch_sglang_server_process, model_uses_sglang, shut_down_sglang_server_process,
     },
     llm_model::{LlmCliArgs, LlmModelMarker},
+    python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
 };
 
 pub struct Orchestrator {
@@ -38,7 +40,10 @@ pub struct Orchestrator {
     pub question_semaphore: Arc<Semaphore>,
     // state
     pub progress: OrchestrationProgress,
-    // for training: we assume only one set of training configuration, so no arguments
+    // for training
+    pub training_config_common: PythonTrainingConfigCommon,
+    pub first_n_training_samples: Option<usize>,
+    pub num_gpus: usize,
 }
 
 pub struct InferenceServerHandle {
@@ -94,7 +99,9 @@ impl Orchestrator {
                 OrchestrationProgress::WorkingOnTraining { epoch } => {
                     // we do not want inference server to be up during training
                     self.ensure_inference_server_shut_down();
-                    self.train_model::<M>(epoch).await;
+                    self.train_model::<M>(epoch)
+                        .await
+                        .expect("Python training failed");
                     assert!(epoch < self.num_total_epochs);
                     // do the final validation
                     self.update_and_save_progress(OrchestrationProgress::WorkingOnValidation {
@@ -236,12 +243,72 @@ impl Orchestrator {
         };
         asset_file_training_trajectories.synchronize().await;
     }
-    async fn train_model<M: LlmModelMarker>(&self, epoch: usize) {
+    async fn train_model<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
+        let asset_file_training_trajectories = AssetFileTrainingTrajectories {
+            config_nickname: self.config_nickname.clone(),
+            epoch,
+            rollout_config: self.training_set_rollout_config.clone(),
+            posterior_calculation_config: self.posterior_calculation_config.clone(),
+            max_num_training_trajectories: self.max_num_training_trajectories,
+            _phantom: std::marker::PhantomData::<M>,
+        };
+        let training_trajectory_sqlite_path = asset_file_training_trajectories.file_path();
+        // first we need to write the training config to the expected location
+        let training_config = PythonTrainingConfig {
+            common: self.training_config_common.clone(),
+            model_parent_dir: self.epoch_dir::<M>(epoch),
+            training_trajectory_sqlite_path,
+            checkpoints_parent_dir: self.epoch_dir::<M>(epoch),
+            final_model_output_parent_dir: self.epoch_dir::<M>(epoch),
+            first_n_training_samples: self.first_n_training_samples,
+        };
+        let training_config_path = self.python_training_config_path::<M>(epoch);
+        write_toml(&training_config_path, &training_config).unwrap();
         // launch the training python code
+        let mut handle = launch_python_training_process(self.num_gpus, training_config_path).await;
+        // wait for it to finish, do not interrupt unless the process crashes
+        let exit_status = handle
+            .process
+            .wait()
+            .map_err(|err| format!("Failed to wait for python training process: {}", err))?;
+        handle.listener_should_stop.store(true, Ordering::Relaxed);
+        handle
+            .io_listener_task
+            .await
+            .map_err(|err| format!("Python training log listener task failed: {}", err))?;
+        if !exit_status.success() {
+            return Err(format!(
+                "Python training process exited with non-zero status: {}",
+                exit_status
+            ));
+        }
+        Ok(())
     }
 
     fn model_folder_path<M: LlmModelMarker>(&self, epoch: usize) -> String {
-        format!("results/{}/{}/epoch_{}/model", M::CLI_NAME, self.config_nickname, epoch)
+        format!(
+            "results/{}/{}/epoch_{}/model",
+            M::CLI_NAME,
+            self.config_nickname,
+            epoch
+        )
+    }
+    fn epoch_dir<M: LlmModelMarker>(&self, epoch: usize) -> String {
+        format!(
+            "results/{}/{}/epoch_{}",
+            M::CLI_NAME,
+            self.config_nickname,
+            epoch
+        )
+    }
+
+    fn python_training_config_path<M: LlmModelMarker>(&self, epoch: usize) -> String {
+        format!(
+            "results/{}/{}/epoch_{}/python_training_config.json",
+            M::CLI_NAME,
+            self.config_nickname,
+            epoch
+        )
     }
 }
 impl Drop for Orchestrator {

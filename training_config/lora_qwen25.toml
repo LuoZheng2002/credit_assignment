@@ -1,12 +1,12 @@
 training_plan = "lora_current"
-model_path = "" # to be determined (local Hugging Face folder)
+model_parent_dir = "" # to be determined (expects model/ Hugging Face folder inside)
 training_trajectory_sqlite_path = "" # to be determined
 checkpoints_parent_dir = "" # to be determined (typically an epoch_x folder; trainer writes checkpoints/ inside)
 final_model_output_parent_dir = "" # to be determined (final model writes to model/ under this folder)
 advantage_clip = 3.0
 learning_rate = 1e-05
 weight_decay = 0.01
-num_iterations = 1
+num_iterations = 3
 grad_accum_steps = 4
 log_interval_steps = 10
 save_interval_steps = 100

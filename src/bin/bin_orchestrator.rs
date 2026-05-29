@@ -6,9 +6,10 @@ use credit_assignment::{
         direct_rollout_config::DirectRolloutConfig,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
-    json_line_util::read_json,
+    json_line_util::{read_json, read_toml},
     llm_model::{Gpt4o, LlmModelName, Qwen3_4B, Qwen25_7B, Qwen35_4B, Qwen35_08B},
     orchestrator::{OrchestrationProgress, Orchestrator},
+    python_training_config::PythonTrainingConfigCommon,
 };
 use research_utility::{log_message::log_info, progress_screen::ProgressScreen};
 use tokio::sync::Semaphore;
@@ -36,6 +37,10 @@ struct Args {
     num_total_epochs: usize,
     #[arg(long)]
     max_num_training_trajectories: usize,
+    #[arg(long)]
+    training_config_common_path: String,
+    #[arg(long)]
+    first_n_training_samples: Option<usize>,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
     #[arg(long)]
@@ -48,6 +53,8 @@ struct Args {
     message_log_path: Option<String>,
     #[arg(long)]
     progress_save_file_path: String,
+    #[arg(long)]
+    num_gpus: usize,
 }
 
 #[tokio::main]
@@ -77,6 +84,9 @@ async fn main() {
         message_log_path,
         progress_save_file_path,
         max_num_training_trajectories,
+        training_config_common_path,
+        first_n_training_samples,
+        num_gpus,
     } = Args::parse();
     // maybe we need to initialize python here
 
@@ -94,6 +104,8 @@ async fn main() {
     let posterior_calculation_config = PosteriorCalculationConfig {
         hyperparameters: posterior_hyperparameters,
     };
+    let training_config_common: PythonTrainingConfigCommon =
+        read_toml(training_config_common_path).unwrap();
     // do the rest of the orchestrator work here
     let client = reqwest::Client::new();
     let question_semaphore = Arc::new(Semaphore::new(max_rollout_concurrency));
@@ -127,8 +139,11 @@ async fn main() {
         inference_server_handle: None,
         sglang_server_log_path,
         max_num_training_trajectories,
+        training_config_common,
+        first_n_training_samples,
         progress_save_file_path,
         progress,
+        num_gpus,
     };
     let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
     match model_name {
