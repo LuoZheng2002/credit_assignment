@@ -1,4 +1,10 @@
-use std::{fs::OpenOptions, net::SocketAddr, process::Stdio, time::Duration};
+use std::{
+    fs::{self, OpenOptions},
+    net::SocketAddr,
+    path::Path,
+    process::Stdio,
+    time::Duration,
+};
 
 use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep, timeout};
@@ -32,6 +38,14 @@ pub async fn launch_sglang_server_process<M: LlmModelMarker>(
         .arg(SGLANG_CONTEXT_LENGTH.to_string());
 
     if let Some(log_path) = sglang_server_log_path {
+        if let Some(parent) = Path::new(log_path).parent() {
+            fs::create_dir_all(parent).unwrap_or_else(|err| {
+                panic!(
+                    "Failed to create parent directory for sglang server log path {}: {}",
+                    log_path, err
+                )
+            });
+        }
         let stdout_file = OpenOptions::new()
             .create(true)
             .truncate(true)
