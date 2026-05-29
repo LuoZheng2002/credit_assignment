@@ -1,20 +1,13 @@
-use std::{
-    io::{BufRead, BufReader, Read},
-    path::Path,
-    process::{Child, Command, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::{path::Path, process::Stdio};
 
 use research_utility::log_message::{log_info, log_warning};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 
 pub struct PythonTrainingProcessHandle {
     pub process: Child,
     pub io_listener_task: JoinHandle<()>,
-    pub listener_should_stop: Arc<AtomicBool>,
 }
 
 pub async fn launch_python_training_process(
@@ -80,9 +73,8 @@ pub async fn launch_python_training_process(
         )
     });
 
-    let listener_should_stop = Arc::new(AtomicBool::new(false));
-    let stdout_listener = spawn_pipe_listener(stdout, listener_should_stop.clone(), false);
-    let stderr_listener = spawn_pipe_listener(stderr, listener_should_stop.clone(), true);
+    let stdout_listener = tokio::spawn(stream_process_output(stdout, false));
+    let stderr_listener = tokio::spawn(stream_process_output(stderr, true));
 
     let io_listener_task = tokio::spawn(async move {
         let _ = stdout_listener.await;
@@ -92,41 +84,31 @@ pub async fn launch_python_training_process(
     PythonTrainingProcessHandle {
         process,
         io_listener_task,
-        listener_should_stop,
     }
 }
 
-fn spawn_pipe_listener<R: Read + Send + 'static>(
-    reader: R,
-    listener_should_stop: Arc<AtomicBool>,
-    is_stderr: bool,
-) -> JoinHandle<()> {
-    tokio::task::spawn_blocking(move || {
-        let mut buffered = BufReader::new(reader);
-        loop {
-            if listener_should_stop.load(Ordering::Relaxed) {
+async fn stream_process_output<R>(reader: R, is_stderr: bool)
+where
+    R: AsyncRead + Unpin,
+{
+    let mut lines = BufReader::new(reader).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(content)) => {
+                if content.is_empty() {
+                    continue;
+                }
+                if is_stderr {
+                    log_warning(format!("[TRAIN]: {}", content));
+                } else {
+                    log_info(format!("[TRAIN]: {}", content));
+                }
+            }
+            Ok(None) => break,
+            Err(err) => {
+                log_warning(format!("[TRAIN]: Failed to read process output: {}", err));
                 break;
             }
-
-            let mut line = String::new();
-            match buffered.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    let content = line.trim_end_matches(['\n', '\r']);
-                    if content.is_empty() {
-                        continue;
-                    }
-                    if is_stderr {
-                        log_warning(format!("[TRAIN]: {}", content));
-                    } else {
-                        log_info(format!("[TRAIN]: {}", content));
-                    }
-                }
-                Err(err) => {
-                    log_warning(format!("[TRAIN]: Failed to read process output: {}", err));
-                    break;
-                }
-            }
         }
-    })
+    }
 }

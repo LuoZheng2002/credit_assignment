@@ -1,10 +1,6 @@
-use std::{
-    fs::OpenOptions,
-    net::SocketAddr,
-    process::{Child, Command, Stdio},
-    time::Duration,
-};
+use std::{fs::OpenOptions, net::SocketAddr, process::Stdio, time::Duration};
 
+use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep, timeout};
 
 use crate::{constants::SGLANG_CONTEXT_LENGTH, llm_model::LlmModelMarker};
@@ -68,18 +64,18 @@ pub async fn launch_sglang_server_process<M: LlmModelMarker>(
     (sglang_port, process)
 }
 
-pub fn shut_down_sglang_server_process(process: &mut Child) {
+pub async fn shut_down_sglang_server_process(process: &mut Child) {
     match process.try_wait() {
         Ok(Some(_)) => {}
         Ok(None) => {
-            if let Err(err) = process.kill() {
+            if let Err(err) = process.kill().await {
                 panic!("Failed to kill inference server process: {}", err);
             }
         }
         Err(err) => panic!("Failed to inspect inference server process status: {}", err),
     }
 
-    if let Err(err) = process.wait() {
+    if let Err(err) = process.wait().await {
         panic!("Failed to wait on inference server process: {}", err);
     }
 }

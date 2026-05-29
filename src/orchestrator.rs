@@ -1,7 +1,8 @@
-use std::{process::Child, sync::{Arc, atomic::Ordering}};
+use std::sync::Arc;
 
 use research_utility::{asset_file::AssetFile, log_message::log_info};
 use serde::{Deserialize, Serialize};
+use tokio::process::Child;
 use tokio::sync::Semaphore;
 
 use crate::{
@@ -72,7 +73,7 @@ impl Orchestrator {
                             "Finished all {} epochs of orchestration",
                             self.num_total_epochs
                         ));
-                        self.ensure_inference_server_shut_down();
+                        self.ensure_inference_server_shut_down().await;
                         break;
                     }
                     self.update_and_save_progress(
@@ -83,14 +84,14 @@ impl Orchestrator {
                     self.ensure_inference_server_launched::<M>(epoch).await;
                     self.collect_training_rollout::<M>(epoch).await;
                     // after rollout collection, we can shut down the inference server
-                    self.ensure_inference_server_shut_down();
+                    self.ensure_inference_server_shut_down().await;
                     self.update_and_save_progress(
                         OrchestrationProgress::WorkingOnTrainingSetGeneration { epoch },
                     );
                 }
                 OrchestrationProgress::WorkingOnTrainingSetGeneration { epoch } => {
                     // we do not need inference server for training set generation, and it won't be launched again until we do the training step
-                    self.ensure_inference_server_shut_down();
+                    self.ensure_inference_server_shut_down().await;
                     self.generate_training_set::<M>(epoch).await;
                     self.update_and_save_progress(OrchestrationProgress::WorkingOnTraining {
                         epoch,
@@ -98,7 +99,7 @@ impl Orchestrator {
                 }
                 OrchestrationProgress::WorkingOnTraining { epoch } => {
                     // we do not want inference server to be up during training
-                    self.ensure_inference_server_shut_down();
+                    self.ensure_inference_server_shut_down().await;
                     self.train_model::<M>(epoch)
                         .await
                         .expect("Python training failed");
@@ -110,7 +111,7 @@ impl Orchestrator {
                 }
             }
             // for safety
-            self.ensure_inference_server_shut_down();
+            self.ensure_inference_server_shut_down().await;
         }
     }
 
@@ -126,7 +127,7 @@ impl Orchestrator {
                 return;
             } else {
                 // first shut down the previous one
-                self.ensure_inference_server_shut_down();
+                self.ensure_inference_server_shut_down().await;
                 // then continue to launch the new one
                 self.launch_inference_server::<M>(epoch).await;
             }
@@ -177,11 +178,11 @@ impl Orchestrator {
         log_info("Inference server launched");
     }
 
-    fn ensure_inference_server_shut_down(&mut self) {
+    async fn ensure_inference_server_shut_down(&mut self) {
         if let Some(handle) = self.inference_server_handle.take() {
             log_info("Shutting down inference server...");
             if let Some(mut process) = handle.process {
-                shut_down_sglang_server_process(&mut process);
+                shut_down_sglang_server_process(&mut process).await;
             }
             log_info("Inference server shut down");
         }
@@ -270,8 +271,8 @@ impl Orchestrator {
         let exit_status = handle
             .process
             .wait()
+            .await
             .map_err(|err| format!("Failed to wait for python training process: {}", err))?;
-        handle.listener_should_stop.store(true, Ordering::Relaxed);
         handle
             .io_listener_task
             .await
@@ -304,7 +305,7 @@ impl Orchestrator {
 
     fn python_training_config_path<M: LlmModelMarker>(&self, epoch: usize) -> String {
         format!(
-            "results/{}/{}/epoch_{}/python_training_config.json",
+            "results/{}/{}/epoch_{}/python_training_config.toml",
             M::CLI_NAME,
             self.config_nickname,
             epoch
@@ -313,7 +314,12 @@ impl Orchestrator {
 }
 impl Drop for Orchestrator {
     fn drop(&mut self) {
-        self.ensure_inference_server_shut_down();
+        if let Some(handle) = self.inference_server_handle.as_mut() {
+            if let Some(process) = handle.process.as_mut() {
+                let _ = process.start_kill();
+            }
+        }
+        self.inference_server_handle = None;
         log_info("Orchestrator dropped, inference server (if any) should be shut down");
         println!("Orchestrator dropped, inference server (if any) should be shut down");
     }
