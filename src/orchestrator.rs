@@ -8,7 +8,7 @@ use tokio::sync::Semaphore;
 use crate::{
     direct_tool::{
         direct_rollout::{RolloutProgramConfig, rollout_all},
-        direct_rollout_config::DirectRolloutConfig,
+        direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         direct_training_set::AssetFileTrainingTrajectories,
         hybrid_dataset::DatasetSplit,
         posterior_calculation_config::PosteriorCalculationConfig,
@@ -34,6 +34,7 @@ pub struct Orchestrator {
     pub sglang_server_log_path: Option<String>,
     // for training set generation
     pub max_num_training_trajectories: usize,
+    pub advantage_calculation_policy: AdvantageCalculationPolicy,
     // for orchestration
     pub num_total_epochs: usize,
     // utilities
@@ -251,6 +252,7 @@ impl Orchestrator {
             rollout_config: self.training_set_rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
             max_num_training_trajectories: self.max_num_training_trajectories,
+            advantage_calculation_policy: self.advantage_calculation_policy,
             _phantom: std::marker::PhantomData::<M>,
         };
         asset_file_training_trajectories.synchronize().await;
@@ -262,6 +264,7 @@ impl Orchestrator {
             rollout_config: self.training_set_rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
             max_num_training_trajectories: self.max_num_training_trajectories,
+            advantage_calculation_policy: self.advantage_calculation_policy,
             _phantom: std::marker::PhantomData::<M>,
         };
         let training_trajectory_sqlite_path = asset_file_training_trajectories.file_path();

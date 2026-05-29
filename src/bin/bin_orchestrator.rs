@@ -4,7 +4,7 @@ use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
     direct_tool::{
-        direct_rollout_config::DirectRolloutConfig,
+        direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::{read_json, read_toml},
@@ -39,6 +39,8 @@ struct Args {
     num_total_epochs: usize,
     #[arg(long)]
     max_num_training_trajectories: usize,
+    #[arg(long, value_enum)]
+    advantage_calculation_policy: AdvantageCalculationPolicy,
     #[arg(long)]
     training_config_common_path: String,
     #[arg(long)]
@@ -85,6 +87,7 @@ async fn main() {
         sglang_server_log_path,
         message_log_path,
         max_num_training_trajectories,
+        advantage_calculation_policy,
         training_config_common_path,
         first_n_training_samples,
         num_iterations,
@@ -144,6 +147,7 @@ async fn main() {
         inference_server_handle: None,
         sglang_server_log_path,
         max_num_training_trajectories,
+        advantage_calculation_policy,
         training_config_common,
         first_n_training_samples,
         progress,

@@ -3,6 +3,7 @@ use std::error::Error;
 use std::io::{self, Stdout};
 
 use clap::Parser;
+use credit_assignment::direct_tool::direct_rollout_config::AdvantageCalculationPolicy;
 use credit_assignment::{
     direct_tool::{
         direct_rollout_config::DirectRolloutConfig,
@@ -51,6 +52,8 @@ struct Args {
     epoch: usize, // the epoch index
     #[arg(long)]
     max_num_training_trajectories: usize,
+    #[arg(long, value_enum)]
+    advantage_calculation_policy: AdvantageCalculationPolicy,
 }
 
 struct ConversationRender {
@@ -656,6 +659,7 @@ struct RunProgramArgs {
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize, // the epoch index
     max_num_training_trajectories: usize,
+    advantage_calculation_policy: AdvantageCalculationPolicy,
 }
 
 fn restore_terminal_after_panic() {
@@ -684,6 +688,7 @@ async fn main() {
         posterior_hyperparameters_path,
         epoch,
         max_num_training_trajectories,
+        advantage_calculation_policy,
     } = Args::parse();
     let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();
     let posterior_hyperparameters =
@@ -697,6 +702,7 @@ async fn main() {
         posterior_calculation_config,
         epoch,
         max_num_training_trajectories,
+        advantage_calculation_policy,
     };
     match model {
         LlmModelName::Gpt4o => run_program::<Gpt4o>(run_program_args).await,
@@ -714,6 +720,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         posterior_calculation_config,
         epoch,
         max_num_training_trajectories,
+        advantage_calculation_policy,
     } = run_program_args;
     let asset_file_training_set = AssetFileTrainingTrajectories::<M> {
         config_nickname: config_nickname.clone(),
@@ -721,6 +728,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         posterior_calculation_config,
         epoch,
         max_num_training_trajectories,
+        advantage_calculation_policy,
         _phantom: std::marker::PhantomData::<M>,
     };
     let training_set_store = asset_file_training_set.fetch().await;

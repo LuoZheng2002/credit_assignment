@@ -60,7 +60,7 @@ pub struct AssetFileDirectTreeActionLogs<M: LlmModelMarker> {
     pub nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
-    
+
     pub epoch: usize, // the epoch index
     #[serde(skip)]
     pub _phantom: PhantomData<M>,

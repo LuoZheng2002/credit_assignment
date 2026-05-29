@@ -15,7 +15,7 @@ use tokio::task::JoinSet;
 
 use crate::{
     direct_tool::{
-        direct_rollout_config::DirectRolloutConfig,
+        direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         direct_tree::{DirectTree, SegmentContent, SegmentId},
         direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
         hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
@@ -55,6 +55,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     action_log_store: SqliteStore<usize, DirectTreeActionLog<M>>,
     max_num_training_trajectories: usize,
     statistics_file_path: String,
+    advantage_calculation_policy: AdvantageCalculationPolicy,
 ) -> Vec<DirectTrainingTrajectory<M>> {
     if max_num_training_trajectories == 0 {
         let statistics = DirectTrainingSetStatistics {
@@ -110,7 +111,10 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         let task_permit = task_semaphore.clone().acquire_owned().await.unwrap();
         join_set.spawn_blocking(move || {
             let _task_permit = task_permit;
-            (index, action_log_to_candidate_trajectories::<M>(action_log))
+            (
+                index,
+                action_log_to_candidate_trajectories::<M>(action_log, advantage_calculation_policy),
+            )
         });
 
         while let Some(result) = join_set.try_join_next() {
@@ -246,6 +250,7 @@ pub struct DirectTrainingSetStatistics {
 
 fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
     action_log: DirectTreeActionLog<M>,
+    advantage_calculation_policy: AdvantageCalculationPolicy,
 ) -> Vec<DirectTrainingTrajectory<M>> {
     let tree = DirectTree::<M>::from_action_log(&action_log);
     if !tree.completed {
@@ -254,7 +259,15 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
     let root_segment_id = tree
         .root_segment_id
         .expect("DirectTree must have root_segment_id");
-    let mut segment_advantages = tree.calculate_segment_advantages(None);
+    // let mut segment_advantages = tree.calculate_segment_advantages(None);
+    let mut segment_advantages = match advantage_calculation_policy {
+        AdvantageCalculationPolicy::TreeMappoPosterior => {
+            tree.calculate_segment_advantages_from_posteriors(None)
+        }
+        AdvantageCalculationPolicy::TreeRpoWinRate => {
+            tree.calculate_segment_advantages_from_win_rate()
+        }
+    };
     for segment_id in tree.segments.keys().copied() {
         segment_advantages.entry(segment_id).or_insert(0.0);
     }
@@ -346,6 +359,7 @@ pub struct AssetFileTrainingTrajectories<M: LlmModelMarker> {
     pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub advantage_calculation_policy: AdvantageCalculationPolicy,
     pub epoch: usize, // the epoch index
     pub max_num_training_trajectories: usize,
     pub _phantom: std::marker::PhantomData<M>,
@@ -357,6 +371,7 @@ pub struct AssetFileTrainingTrajectoriesTracking {
     pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub advantage_calculation_policy: AdvantageCalculationPolicy,
     pub epoch: usize, // the epoch index
     pub max_num_training_trajectories: usize,
 }
@@ -429,6 +444,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             config_nickname: self.config_nickname.clone(),
             rollout_config: self.rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
+            advantage_calculation_policy: self.advantage_calculation_policy.clone(),
             epoch: self.epoch,
             max_num_training_trajectories: self.max_num_training_trajectories,
         };
@@ -462,6 +478,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
                 rollout_logs,
                 self.max_num_training_trajectories,
                 self.statistics_file_path(),
+                self.advantage_calculation_policy,
             )
             .await;
             for (i, trajectory) in training_trajectories.into_iter().enumerate() {

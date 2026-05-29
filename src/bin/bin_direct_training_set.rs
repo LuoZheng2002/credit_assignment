@@ -3,7 +3,7 @@ use std::backtrace::Backtrace;
 use clap::Parser;
 use credit_assignment::{
     direct_tool::{
-        direct_rollout_config::DirectRolloutConfig,
+        direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         direct_training_set::AssetFileTrainingTrajectories,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
@@ -26,6 +26,8 @@ struct Args {
     epoch: usize, // the epoch index
     #[arg(long)]
     max_num_training_trajectories: usize,
+    #[arg(long, value_enum)]
+    advantage_calculation_policy: AdvantageCalculationPolicy,
 }
 
 #[tokio::main]
@@ -47,6 +49,7 @@ async fn main() {
         posterior_hyperparameters_path,
         epoch,
         max_num_training_trajectories,
+        advantage_calculation_policy,
     } = Args::parse();
     let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();
     let posterior_hyperparameters =
@@ -60,6 +63,7 @@ async fn main() {
         posterior_calculation_config,
         epoch,
         max_num_training_trajectories,
+        advantage_calculation_policy,
     };
     match model {
         LlmModelName::Gpt4o => run_program::<Gpt4o>(run_program_args).await,
@@ -76,6 +80,7 @@ struct RunProgramArgs {
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize, // the epoch index
     max_num_training_trajectories: usize,
+    advantage_calculation_policy: AdvantageCalculationPolicy,
 }
 
 async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
@@ -85,6 +90,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         posterior_calculation_config,
         epoch,
         max_num_training_trajectories,
+        advantage_calculation_policy,
     } = run_program_args;
     let asset_file_training_set = AssetFileTrainingTrajectories::<M> {
         config_nickname: config_nickname.clone(),
@@ -92,6 +98,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         posterior_calculation_config,
         epoch,
         max_num_training_trajectories,
+        advantage_calculation_policy,
         _phantom: std::marker::PhantomData::<M>,
     };
     asset_file_training_set.synchronize().await;
