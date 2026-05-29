@@ -155,12 +155,15 @@ async fn main() {
         num_iterations,
     };
 
-    match model_name {
+    let result = match model_name {
         LlmModelName::Gpt4o => orchestrator.orchestrate::<Gpt4o>().await,
         LlmModelName::Qwen3_4b => orchestrator.orchestrate::<Qwen3_4B>().await,
         LlmModelName::Qwen25_7b => orchestrator.orchestrate::<Qwen25_7B>().await,
         LlmModelName::Qwen35_08b => orchestrator.orchestrate::<Qwen35_08B>().await,
         LlmModelName::Qwen35_4b => orchestrator.orchestrate::<Qwen35_4B>().await,
+    };
+    if let Err(e) = result {
+        ProgressScreen::set_persist_exit_hint(format!("Orchestrator exits with error: {}", e));
     }
     if ui {
         ProgressScreen::shutdown().await.unwrap();

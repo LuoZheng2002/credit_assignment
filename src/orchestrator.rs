@@ -69,13 +69,13 @@ impl Orchestrator {
             model_cli_name, config_nickname,
         )
     }
-    pub async fn orchestrate<M: LlmModelMarker>(&mut self) {
+    pub async fn orchestrate<M: LlmModelMarker>(&mut self) -> Result<(), String> {
         loop {
             match self.progress.clone() {
                 OrchestrationProgress::WorkingOnValidation { epoch } => {
                     assert!(epoch <= self.num_total_epochs);
                     self.ensure_inference_server_launched::<M>(epoch).await;
-                    self.validate_model::<M>(epoch).await;
+                    self.validate_model::<M>(epoch).await?;
                     if epoch >= self.num_total_epochs {
                         log_info(&format!(
                             "Finished all {} epochs of orchestration",
@@ -108,9 +108,7 @@ impl Orchestrator {
                 OrchestrationProgress::WorkingOnTraining { epoch } => {
                     // we do not want inference server to be up during training
                     self.ensure_inference_server_shut_down().await;
-                    self.train_model::<M>(epoch)
-                        .await
-                        .expect("Python training failed");
+                    self.train_model::<M>(epoch).await?;
                     assert!(epoch < self.num_total_epochs);
                     // do the final validation
                     self.update_and_save_progress::<M>(
@@ -121,6 +119,7 @@ impl Orchestrator {
             // for safety
             self.ensure_inference_server_shut_down().await;
         }
+        Ok(())
     }
 
     fn update_and_save_progress<M: LlmModelMarker>(&mut self, progress: OrchestrationProgress) {
@@ -202,8 +201,12 @@ impl Orchestrator {
         );
     }
 
-    async fn validate_model<M: LlmModelMarker>(&self, epoch: usize) {
+    async fn validate_model<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
         assert!(self.validation_rollout_config.split == DatasetSplit::Validation);
+        if epoch == 0 {
+            crate::load_initial_model::load_initial_model(&self.epoch_dir::<M>(epoch), M::API_NAME)
+                .await?;
+        }
         let validation_rollout_program_config = RolloutProgramConfig {
             config_nickname: self.config_nickname.clone(),
             rollout_config: self.validation_rollout_config.clone(),
@@ -221,6 +224,7 @@ impl Orchestrator {
             max_sqlite_connections: self.max_sqlite_connections,
         };
         rollout_all::<M>(validation_rollout_program_config).await;
+        Ok(())
     }
 
     async fn collect_training_rollout<M: LlmModelMarker>(&self, epoch: usize) {

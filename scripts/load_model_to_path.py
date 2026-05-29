@@ -18,11 +18,11 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument(
-        "--output-path",
+        "--output-parent-dir",
         type=Path,
         required=True,
         help=(
-            "Parent directory"
+            "Parent directory where a 'model' subfolder will be created"
         ),
     )
     parser.add_argument(
@@ -55,8 +55,7 @@ def main() -> None:
             "Model loading will fall back to slower torch kernels during training."
         )
 
-    # output_path = args.output_path / f"model_{args.model.split('/')[-1].lower().replace('.', '_')}"
-    output_path = args.output_path / "model"
+    output_path = args.output_parent_dir / "model"
     output_path.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading tokenizer: {args.model}")

@@ -12,6 +12,7 @@ RUST_BACKTRACE=1 cargo run --bin orchestrator -- \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --num-total-epochs 3 \
     --max-num-training-trajectories 100 \
+    --advantage-calculation-policy tree-mappo-posterior \
     --training-config-common-path config/training/common.toml \
     --first-n-training-samples 100 \
     --first-n-rollout-samples 10 \
@@ -20,4 +21,4 @@ RUST_BACKTRACE=1 cargo run --bin orchestrator -- \
     --message-log-path logs/messages.txt \
     --num-iterations 3 \
     --num-gpus 1 \
-    --ui true \
+    --ui true

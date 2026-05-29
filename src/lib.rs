@@ -5,6 +5,7 @@ pub mod json_line_util;
 pub mod judge_correctness;
 pub mod launch_python_training;
 pub mod launch_sglang_server;
+pub mod load_initial_model;
 pub mod llm_model;
 pub mod orchestrator;
 pub mod python_training_config;
