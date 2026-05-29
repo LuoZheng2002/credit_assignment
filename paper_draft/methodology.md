@@ -262,14 +262,21 @@ Out-of-distribution datasets:
 - AIME25
 - AMC23
 
+Test set construction:
+
+- We construct `aggregated_test.sqlite` by concatenating samples from all five evaluation datasets in the following order: DeepMath, MATH, GSM8K, AIME25, AMC23.
+- Per dataset, up to 1,000 samples are drawn from the test split where available (MATH, GSM8K, AIME25, AMC23). For DeepMath, which lacks a dedicated test split, samples are drawn from the train split starting after the combined train+val clearance of 6,000 rows (indices 0-5999 reserved for hybrid_train and hybrid_val), ensuring no overlap with the in-distribution training or validation sets.
+- Samples from datasets with more than 1,000 rows are randomly subsampled with a fixed seed (42). Datasets with fewer than 1,000 rows use all available rows without repetition.
+- Total test set size is approximately 5,000 rows (1,000 per dataset when source sizes permit).
+
 ## Experiments
 
 ### Main Evaluation
 
-1. Measure baseline pass@1 accuracy for each model on all six evaluation datasets.
+1. Measure baseline pass@1 accuracy for each model on all five evaluation datasets.
 2. Train TreeMAPPO on the in-distribution training data (`hybrid_train.sqlite`) for each model.
 3. Use in-distribution validation data (`hybrid_val.sqlite`) for checkpoint selection and hyperparameter control.
-4. Re-evaluate pass@1 on all six datasets.
+4. Re-evaluate pass@1 on all five datasets.
 5. Run five independent trials and report confidence intervals.
 
 ### Ablation Studies

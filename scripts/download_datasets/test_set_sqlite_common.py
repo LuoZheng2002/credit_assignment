@@ -173,12 +173,16 @@ def _sample_question_ids(
     target_count: int,
     source_split: str,
     sample_seed: int,
+    clearance_override: int | None = None,
 ) -> list[int]:
     assert num_rows > 0, f"{dataset_name} dataset must contain at least one row"
 
     clearance_start = 0
     if source_split == "train" and dataset_name in TRAINING_DATASET_NAMES:
-        clearance_start = min(TRAIN_SPLIT_CLEARANCE, num_rows)
+        effective_clearance = (
+            clearance_override if clearance_override is not None else TRAIN_SPLIT_CLEARANCE
+        )
+        clearance_start = min(effective_clearance, num_rows)
 
     if num_rows > MIN_SAMPLES:
         candidate_ids = list(range(clearance_start, num_rows))
@@ -208,13 +212,14 @@ def build_and_write_test_sqlite(
     output_path: Path,
     source_split: str,
     sample_seed: int,
+    clearance_override: int | None = None,
 ) -> tuple[int, int, bool]:
     num_rows = dataset.num_rows
     assert num_rows > 0, f"{dataset_name} dataset must contain at least one row"
 
     target_count = min(num_rows, MIN_SAMPLES)
     repeated = target_count > num_rows
-    question_ids = _sample_question_ids(dataset_name, num_rows, target_count, source_split, sample_seed)
+    question_ids = _sample_question_ids(dataset_name, num_rows, target_count, source_split, sample_seed, clearance_override=clearance_override)
 
     rows: list[dict[str, object]] = []
     for flat_id, question_id in enumerate(question_ids):
