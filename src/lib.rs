@@ -4,6 +4,7 @@ pub mod direct_tool;
 pub mod json_line_util;
 pub mod judge_correctness;
 pub mod llm_model;
+pub mod orchestrator;
 pub mod token_array;
 pub mod tool_call_python;
 pub mod util;

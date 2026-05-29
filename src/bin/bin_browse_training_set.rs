@@ -13,7 +13,8 @@ use credit_assignment::{
     },
     json_line_util::read_json,
     llm_model::{
-        Gpt4o, LlmModelMarker, LlmModelName, MyTokenizer, Qwen3_4B, Qwen25, Qwen35_4B, Qwen35_08B,
+        Gpt4o, LlmModelMarker, LlmModelName, MyTokenizer, Qwen3_4B, Qwen25_7B, Qwen35_4B,
+        Qwen35_08B,
     },
 };
 use crossterm::cursor::Show;
@@ -47,7 +48,7 @@ struct Args {
     #[arg(long)]
     posterior_hyperparameters_path: String,
     #[arg(long)]
-    epoch: usize,
+    epoch: usize, // the epoch index
     #[arg(long)]
     max_num_training_trajectories: usize,
 }
@@ -653,7 +654,7 @@ struct RunProgramArgs {
     config_nickname: String,
     rollout_config: DirectRolloutConfig,
     posterior_calculation_config: PosteriorCalculationConfig,
-    epoch: usize,
+    epoch: usize, // the epoch index
     max_num_training_trajectories: usize,
 }
 
@@ -700,7 +701,7 @@ async fn main() {
     match model {
         LlmModelName::Gpt4o => run_program::<Gpt4o>(run_program_args).await,
         LlmModelName::Qwen3_4b => run_program::<Qwen3_4B>(run_program_args).await,
-        LlmModelName::Qwen25_7b => run_program::<Qwen25>(run_program_args).await,
+        LlmModelName::Qwen25_7b => run_program::<Qwen25_7B>(run_program_args).await,
         LlmModelName::Qwen35_08b => run_program::<Qwen35_08B>(run_program_args).await,
         LlmModelName::Qwen35_4b => run_program::<Qwen35_4B>(run_program_args).await,
     }

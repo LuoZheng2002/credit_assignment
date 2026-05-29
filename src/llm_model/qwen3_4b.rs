@@ -38,7 +38,9 @@ impl Qwen3_4BLlmCallable {
 #[async_trait]
 impl LlmCallable<Qwen3_4B> for Qwen3_4BLlmCallable {
     fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
-        let sglang_port = llm_cli_args.qwen_sglang_port;
+        let sglang_port = llm_cli_args
+            .sglang_port
+            .expect("Qwen3-4B model requires sglang port");
 
         Qwen3_4BLlmCallable::new(client, sglang_port)
     }

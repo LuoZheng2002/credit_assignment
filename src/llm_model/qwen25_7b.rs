@@ -16,7 +16,7 @@ use super::{
 };
 
 static QWEN25_TOKENIZER: LazyLock<Tokenizer> =
-    LazyLock::new(|| Tokenizer::from_pretrained(Qwen25::API_NAME, None).unwrap());
+    LazyLock::new(|| Tokenizer::from_pretrained(Qwen25_7B::API_NAME, None).unwrap());
 
 static QWEN25_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment> = LazyLock::new(|| {
     let mut env = minijinja::Environment::new();
@@ -45,7 +45,7 @@ fn build_qwen25_chat_template(user_prompt: &str, enable_thinking: bool) -> Strin
     .unwrap()
 }
 
-pub struct Qwen25;
+pub struct Qwen25_7B;
 
 #[derive(Clone)]
 pub struct Qwen25LlmCallable {
@@ -60,10 +60,11 @@ impl Qwen25LlmCallable {
     }
 }
 #[async_trait]
-impl LlmCallable<Qwen25> for Qwen25LlmCallable {
+impl LlmCallable<Qwen25_7B> for Qwen25LlmCallable {
     fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
-        let sglang_port = llm_cli_args.qwen_sglang_port;
-
+        let sglang_port = llm_cli_args
+            .sglang_port
+            .expect("Sglang port not set for Qwen25");
         Qwen25LlmCallable::new(client, sglang_port)
     }
     async fn generate_tokens(
@@ -82,7 +83,7 @@ impl LlmCallable<Qwen25> for Qwen25LlmCallable {
         passes_in_stop: bool,
         temperature: f32,
         trim_eos: bool,
-    ) -> Result<TokenArrayWithLogprob<Qwen25>, String> {
+    ) -> Result<TokenArrayWithLogprob<Qwen25_7B>, String> {
         let output = self
             .shared
             .generate_tokens_with_logprobs_from_tokens(
@@ -91,13 +92,13 @@ impl LlmCallable<Qwen25> for Qwen25LlmCallable {
                 temperature,
             )
             .await?;
-        Ok(trim_tail_eos_if_needed::<Qwen25>(output, trim_eos))
+        Ok(trim_tail_eos_if_needed::<Qwen25_7B>(output, trim_eos))
     }
 }
 
 pub struct Qwen25Tokenizer;
-impl MyTokenizer<Qwen25> for Qwen25Tokenizer {
-    fn tokenize(prompt: String) -> TokenArray<Qwen25> {
+impl MyTokenizer<Qwen25_7B> for Qwen25Tokenizer {
+    fn tokenize(prompt: String) -> TokenArray<Qwen25_7B> {
         let tokens = Self::encode_to_i32_ids(&prompt);
         TokenArray::from_tokens(tokens)
     }
@@ -105,7 +106,7 @@ impl MyTokenizer<Qwen25> for Qwen25Tokenizer {
     fn apply_chat_template_and_tokenize(
         prompt: String,
         enable_thinking: bool,
-    ) -> TokenArray<Qwen25> {
+    ) -> TokenArray<Qwen25_7B> {
         let prompt_with_template = build_qwen25_chat_template(&prompt, enable_thinking);
         Self::tokenize(prompt_with_template)
     }
@@ -119,11 +120,11 @@ impl MyTokenizer<Qwen25> for Qwen25Tokenizer {
     }
 
     fn eos_token_id() -> i32 {
-        token_to_i32_id(&QWEN25_TOKENIZER, "<|im_end|>", Qwen25::API_NAME)
+        token_to_i32_id(&QWEN25_TOKENIZER, "<|im_end|>", Qwen25_7B::API_NAME)
     }
 }
 
-impl LlmModelMarker for Qwen25 {
+impl LlmModelMarker for Qwen25_7B {
     type Tokenizer = Qwen25Tokenizer;
     type Callable = Qwen25LlmCallable;
 

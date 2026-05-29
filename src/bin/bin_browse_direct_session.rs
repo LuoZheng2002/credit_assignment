@@ -17,7 +17,7 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
-    llm_model::{Gpt4o, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B, Qwen35_08B},
+    llm_model::{Gpt4o, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen25_7B, Qwen35_4B, Qwen35_08B},
 };
 use crossterm::cursor::Show;
 use crossterm::event::{
@@ -66,7 +66,7 @@ struct Args {
     #[arg(long)]
     posterior_hyperparameters_path: String,
     #[arg(long)]
-    epoch: usize,
+    epoch: usize, // the epoch index
     #[arg(long)]
     override_hyperparameters_path: Option<String>,
 }
@@ -456,9 +456,10 @@ impl<M: LlmModelMarker> App<M> {
                         num_leaves,
                     })
                 }
-                Ok(None) => {
-                    EntryLoadState::Failed(format!("Question key {} not found in sqlite store", key))
-                }
+                Ok(None) => EntryLoadState::Failed(format!(
+                    "Question key {} not found in sqlite store",
+                    key
+                )),
                 Err(error) => EntryLoadState::Failed(format!(
                     "Failed to load question key {} from sqlite store: {}",
                     key, error
@@ -2219,7 +2220,7 @@ struct RunModelAppArgs<'a> {
     config_nickname: String,
     rollout_config: DirectRolloutConfig,
     posterior_calculation_config: PosteriorCalculationConfig,
-    epoch: usize,
+    epoch: usize, // the epoch index
     override_hyperparameters: Option<PosteriorHyperparameters>,
 }
 
@@ -2271,7 +2272,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         override_hyperparameters,
     };
     let result = match model {
-        LlmModelName::Qwen25_7b => run_model_app::<Qwen25>(run_model_app_args).await,
+        LlmModelName::Qwen25_7b => run_model_app::<Qwen25_7B>(run_model_app_args).await,
         LlmModelName::Qwen3_4b => run_model_app::<Qwen3_4B>(run_model_app_args).await,
         LlmModelName::Qwen35_4b => run_model_app::<Qwen35_4B>(run_model_app_args).await,
         LlmModelName::Qwen35_08b => run_model_app::<Qwen35_08B>(run_model_app_args).await,

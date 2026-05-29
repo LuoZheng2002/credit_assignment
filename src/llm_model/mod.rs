@@ -14,7 +14,7 @@ pub use llm_model_name::LlmModelName;
 pub(crate) use llm_model_traits::trim_tail_eos_if_needed;
 pub use llm_model_traits::{LlmCallable, LlmCliArgs, LlmModelMarker, MyTokenizer};
 pub use qwen3_4b::{Qwen3_4B, Qwen3_4BLlmCallable, Qwen3_4BTokenizer};
-pub use qwen25_7b::{Qwen25, Qwen25LlmCallable, Qwen25Tokenizer};
+pub use qwen25_7b::{Qwen25_7B, Qwen25LlmCallable, Qwen25Tokenizer};
 pub(crate) use qwen35_4b::build_simple_qwen35_chatml_template;
 pub use qwen35_4b::{Qwen35_4B, Qwen35_4BLlmCallable, Qwen35_4BTokenizer};
 pub use qwen35_08b::{Qwen35_08B, Qwen35_08BLlmCallable, Qwen35_08BTokenizer};

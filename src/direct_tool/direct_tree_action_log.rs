@@ -52,7 +52,7 @@ pub struct AssetFileDirectTreeActionLogsTracking {
     pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
-    pub epoch: usize,
+    pub epoch: usize, // the epoch index
     pub action_log_schema_version: usize,
 }
 
@@ -61,7 +61,7 @@ pub struct AssetFileDirectTreeActionLogs<M: LlmModelMarker> {
     pub nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
-    pub epoch: usize,
+    pub epoch: usize, // the epoch index
     #[serde(skip)]
     pub _phantom: PhantomData<M>,
 }

@@ -84,7 +84,7 @@ pub struct RolloutProgramConfig {
     pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
-    pub epoch: usize,
+    pub epoch: usize, // the epoch index
     pub client: Client,
     pub question_semaphore: Arc<Semaphore>,
     pub llm_cli_args: LlmCliArgs,

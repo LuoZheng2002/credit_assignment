@@ -346,7 +346,7 @@ pub struct AssetFileTrainingTrajectories<M: LlmModelMarker> {
     pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
-    pub epoch: usize,
+    pub epoch: usize, // the epoch index
     pub max_num_training_trajectories: usize,
     pub _phantom: std::marker::PhantomData<M>,
 }
@@ -357,7 +357,7 @@ pub struct AssetFileTrainingTrajectoriesTracking {
     pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
-    pub epoch: usize,
+    pub epoch: usize, // the epoch index
     pub max_num_training_trajectories: usize,
 }
 

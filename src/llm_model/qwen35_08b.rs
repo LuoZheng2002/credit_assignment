@@ -32,7 +32,9 @@ impl Qwen35_08BLlmCallable {
 #[async_trait]
 impl LlmCallable<Qwen35_08B> for Qwen35_08BLlmCallable {
     fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
-        let sglang_port = llm_cli_args.qwen_sglang_port;
+        let sglang_port = llm_cli_args
+            .sglang_port
+            .expect("Qwen3.5-0.8B model requires sglang port");
         Qwen35_08BLlmCallable::new(client, sglang_port)
     }
     async fn generate_tokens(

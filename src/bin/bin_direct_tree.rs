@@ -9,20 +9,12 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
-    llm_model::{Gpt4o, LlmCliArgs, LlmModelName, Qwen3_4B, Qwen25, Qwen35_4B, Qwen35_08B},
+    llm_model::{Gpt4o, LlmCliArgs, LlmModelName, Qwen3_4B, Qwen25_7B, Qwen35_4B, Qwen35_08B},
 };
-use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
-use crossterm::{cursor::Show, event::DisableMouseCapture, execute};
 use pyo3::Python;
 use reqwest::Client;
-use research_utility::progress_screen::ProgressScreen;
+use research_utility::{log_message::log_warning, progress_screen::ProgressScreen};
 use tokio::sync::Semaphore;
-
-fn restore_terminal_after_panic() {
-    let _ = disable_raw_mode();
-    let mut stderr = std::io::stderr();
-    let _ = execute!(stderr, LeaveAlternateScreen, DisableMouseCapture, Show);
-}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -31,10 +23,12 @@ fn restore_terminal_after_panic() {
     about = "Run direct tree rollout and save action logs"
 )]
 struct Args {
+    #[arg(long)]
+    model_cli_name: String,
     #[command(flatten)]
     llm_cli_args: LlmCliArgs,
     #[arg(long)]
-    max_concurrent_questions: usize,
+    max_rollout_concurrency: usize,
     #[arg(long)]
     config_nickname: String,
     #[arg(long)]
@@ -42,7 +36,7 @@ struct Args {
     #[arg(long)]
     posterior_hyperparameters_path: String,
     #[arg(long)]
-    epoch: usize,
+    epoch: usize, // the epoch index
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
     #[arg(long)]
@@ -54,7 +48,6 @@ struct Args {
 #[tokio::main]
 async fn main() {
     std::panic::set_hook(Box::new(|info| {
-        restore_terminal_after_panic();
         eprintln!("panic occurred: {}", info);
         let rust_backtrace = std::env::var("RUST_BACKTRACE").ok();
         if matches!(rust_backtrace.as_deref(), Some("1") | Some("full")) {
@@ -65,9 +58,10 @@ async fn main() {
     }));
     dotenvy::dotenv().ok();
     let Args {
+        model_cli_name,
         config_nickname,
         llm_cli_args,
-        max_concurrent_questions,
+        max_rollout_concurrency,
         rollout_config_path,
         posterior_hyperparameters_path,
         epoch,
@@ -82,8 +76,8 @@ async fn main() {
     let client = Client::new();
     let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();
     if rollout_config.accuracy_under_temperature.is_none() {
-        eprintln!(
-            "WARNING: rollout_config.accuracy_under_temperature is None; all segment posteriors will use mean=0 and std=1."
+        log_warning(
+            "rollout_config.accuracy_under_temperature is None; all segment posteriors will use mean=0 and std=1.",
         );
     }
     let posterior_hyperparameters =
@@ -92,13 +86,13 @@ async fn main() {
         hyperparameters: posterior_hyperparameters,
     };
 
-    let question_semaphore = Arc::new(Semaphore::new(max_concurrent_questions));
-    let model_name = LlmModelName::from_str(&llm_cli_args.model_cli_name, true).unwrap();
+    let question_semaphore = Arc::new(Semaphore::new(max_rollout_concurrency));
+    let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
     if ui {
         ProgressScreen::initialize(
             "Bin Direct Tree Rollout Progress",
             true,
-            Some("log/log.txt"),
+            Some("log/log.txt".into()),
         )
         .await
         .unwrap();
@@ -115,7 +109,7 @@ async fn main() {
         max_sqlite_connections,
     };
     match model_name {
-        LlmModelName::Qwen25_7b => rollout_all::<Qwen25>(program_config).await,
+        LlmModelName::Qwen25_7b => rollout_all::<Qwen25_7B>(program_config).await,
         LlmModelName::Qwen3_4b => rollout_all::<Qwen3_4B>(program_config).await,
         LlmModelName::Qwen35_4b => rollout_all::<Qwen35_4B>(program_config).await,
         LlmModelName::Qwen35_08b => rollout_all::<Qwen35_08B>(program_config).await,
