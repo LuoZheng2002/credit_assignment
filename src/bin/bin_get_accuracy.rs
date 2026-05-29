@@ -6,6 +6,7 @@ use credit_assignment::{
         direct_rollout_config::DirectRolloutConfig,
         direct_tree::DirectTree,
         direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
+        hybrid_dataset::DatasetSplit,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
@@ -28,6 +29,8 @@ struct Args {
     rollout_config_path: String,
     #[arg(long)]
     posterior_hyperparameters_path: String,
+    #[arg(value_enum, long)]
+    split: DatasetSplit,
     #[arg(long)]
     epoch: usize, // the epoch index
 }
@@ -46,6 +49,7 @@ struct PrintAccuracyArgs {
     config_nickname: String,
     rollout_config: DirectRolloutConfig,
     posterior_calculation_config: PosteriorCalculationConfig,
+    split: DatasetSplit,
     epoch: usize, // the epoch index
 }
 
@@ -54,12 +58,14 @@ async fn print_accuracy<M: LlmModelMarker>(args: PrintAccuracyArgs) {
         config_nickname,
         rollout_config,
         posterior_calculation_config,
+        split,
         epoch,
     } = args;
     let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
         nickname: config_nickname,
         rollout_config,
         posterior_calculation_config,
+        split,
         epoch,
         _phantom: std::marker::PhantomData,
     };
@@ -107,6 +113,7 @@ async fn main() {
         config_nickname,
         rollout_config_path,
         posterior_hyperparameters_path,
+        split,
         epoch,
     } = Args::parse();
     let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();
@@ -120,6 +127,7 @@ async fn main() {
         config_nickname,
         rollout_config,
         posterior_calculation_config,
+        split,
         epoch,
     };
     match model_name {

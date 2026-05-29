@@ -18,7 +18,7 @@ use crate::{
         direct_rollout_config::DirectRolloutConfig,
         direct_tree::{DirectTree, SegmentContent, SegmentId},
         direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
-        hybrid_dataset::HybridDatasetQuestion,
+        hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     json_line_util::{read_json, write_json},
@@ -416,6 +416,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             nickname: self.config_nickname.clone(),
             rollout_config: self.rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
+            split: DatasetSplit::Training, // The training set must use the training split
             epoch: self.epoch,
             _phantom: std::marker::PhantomData,
         };

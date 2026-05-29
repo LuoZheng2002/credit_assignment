@@ -9,7 +9,7 @@ use crate::{
     direct_tool::{
         direct_rollout_config::DirectRolloutConfig,
         direct_tree_action::DirectTreeAction,
-        hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
+        hybrid_dataset::{AssetFileHybridDataset, DatasetSplit, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     json_line_util::{read_json, write_json},
@@ -38,13 +38,12 @@ impl<M> Clone for DirectTreeActionLog<M> {
     }
 }
 
-// rollout config and posterior_calculation_config are intrinsic to each action log
-// we need to provide the configs during rollout generation, but for referencing the log, we can use a unique name
-// however, this will complicate things
-
-// we want the downstream files to also record the config as a part of the tracking even if they are no longer used
-
-// if we only get the unique name, we cannot synchronize the rollout log file since we don't know which config it corresponds to
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RolloutPurpose {
+    Training,
+    Evaluation,
+    Testing {},
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetFileDirectTreeActionLogsTracking {
@@ -61,6 +60,7 @@ pub struct AssetFileDirectTreeActionLogs<M: LlmModelMarker> {
     pub nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub split: DatasetSplit,
     pub epoch: usize, // the epoch index
     #[serde(skip)]
     pub _phantom: PhantomData<M>,
@@ -100,7 +100,9 @@ impl<M: LlmModelMarker> AssetFileDirectTreeActionLogs<M> {
             self.version_tracking_path(),
         ) {
             Ok(tracking_content) => {
-                let dataset_asset_file = AssetFileHybridDataset;
+                let dataset_asset_file = AssetFileHybridDataset {
+                    split: self.split.clone(),
+                };
                 let dataset_hash = futures::executor::block_on(dataset_asset_file.synchronize());
                 if dataset_hash != tracking_content.dataset_hash {
                     Some(format!(
@@ -154,7 +156,9 @@ impl<M: LlmModelMarker> AssetFileDirectTreeActionLogs<M> {
     }
     pub fn create_tracking_file(&self) {
         // we collect the dataset hash
-        let dataset_asset_file = AssetFileHybridDataset;
+        let dataset_asset_file = AssetFileHybridDataset {
+            split: self.split.clone(),
+        };
         let dataset_hash = futures::executor::block_on(dataset_asset_file.synchronize());
         let tracking_content = AssetFileDirectTreeActionLogsTracking {
             dataset_hash,
@@ -173,7 +177,9 @@ impl<M: LlmModelMarker> AssetFile for AssetFileDirectTreeActionLogs<M> {
     type FileModel = SqliteStore<usize, DirectTreeActionLog<M>>;
     async fn synchronize(&self) -> Base64Hash {
         // synchromize all dependency assets
-        let dataset_asset_file = AssetFileHybridDataset;
+        let dataset_asset_file = AssetFileHybridDataset {
+            split: self.split.clone(),
+        };
         let dataset_hash = dataset_asset_file.synchronize().await;
         let tracking_content =
             read_json::<AssetFileDirectTreeActionLogsTracking>(self.version_tracking_path())

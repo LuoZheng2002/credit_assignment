@@ -14,7 +14,7 @@ use crate::{
         direct_rollout_config::DirectRolloutConfig,
         direct_tree::DirectTree,
         direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
-        hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
+        hybrid_dataset::{AssetFileHybridDataset, DatasetSplit, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     llm_model::{LlmCallable, LlmCliArgs, LlmModelMarker},
@@ -84,6 +84,7 @@ pub struct RolloutProgramConfig {
     pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub split: DatasetSplit,
     pub epoch: usize, // the epoch index
     pub client: Client,
     pub question_semaphore: Arc<Semaphore>,
@@ -103,14 +104,16 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         llm_cli_args,
         first_n_samples,
         max_sqlite_connections,
+        split,
     } = program_config;
     let llm_callable = M::Callable::from_cli_args(client.clone(), &llm_cli_args);
-    let asset_file_dataset = AssetFileHybridDataset;
+    let asset_file_dataset = AssetFileHybridDataset { split };
     let dataset = asset_file_dataset.fetch().await;
     let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
         nickname: config_nickname,
         rollout_config: rollout_config.clone(),
         posterior_calculation_config: posterior_calculation_config.clone(),
+        split,
         epoch,
         _phantom: std::marker::PhantomData,
     };

@@ -19,7 +19,7 @@ pub struct PythonTrainingConfigCommon {
     pub training_plan: String,
     pub advantage_clip: f32,
     pub learning_rate: f32,
-    pub weight_decay: f32,    
+    pub weight_decay: f32,
     pub grad_accum_steps: usize,
     pub log_interval_steps: usize,
     pub save_interval_steps: usize,

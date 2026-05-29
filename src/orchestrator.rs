@@ -10,6 +10,7 @@ use crate::{
         direct_rollout::{RolloutProgramConfig, rollout_all},
         direct_rollout_config::DirectRolloutConfig,
         direct_training_set::AssetFileTrainingTrajectories,
+        hybrid_dataset::DatasetSplit,
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     json_line_util::{write_json, write_toml},
@@ -61,13 +62,10 @@ pub enum OrchestrationProgress {
 }
 
 impl Orchestrator {
-    pub fn progress_save_path(model_cli_name: &str,
-        config_nickname: &str,
-    ) -> String {
+    pub fn progress_save_path(model_cli_name: &str, config_nickname: &str) -> String {
         format!(
             "results/{}/{}/orchestration_progress.json",
-            model_cli_name,
-            config_nickname,
+            model_cli_name, config_nickname,
         )
     }
     pub async fn orchestrate<M: LlmModelMarker>(&mut self) {
@@ -114,9 +112,9 @@ impl Orchestrator {
                         .expect("Python training failed");
                     assert!(epoch < self.num_total_epochs);
                     // do the final validation
-                    self.update_and_save_progress::<M>(OrchestrationProgress::WorkingOnValidation {
-                        epoch: epoch + 1,
-                    });
+                    self.update_and_save_progress::<M>(
+                        OrchestrationProgress::WorkingOnValidation { epoch: epoch + 1 },
+                    );
                 }
             }
             // for safety
@@ -125,10 +123,8 @@ impl Orchestrator {
     }
 
     fn update_and_save_progress<M: LlmModelMarker>(&mut self, progress: OrchestrationProgress) {
-        let progress_save_path = Orchestrator::progress_save_path(
-            M::CLI_NAME.into(),
-            &self.config_nickname,
-        );
+        let progress_save_path =
+            Orchestrator::progress_save_path(M::CLI_NAME.into(), &self.config_nickname);
         write_json(&progress_save_path, &progress).unwrap();
         self.progress = progress;
     }
@@ -210,6 +206,7 @@ impl Orchestrator {
             config_nickname: self.config_nickname.clone(),
             rollout_config: self.validation_rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
+            split: DatasetSplit::Validation, // The validation rollout must use the validation split
             epoch,
             client: self.client.clone(),
             question_semaphore: self.question_semaphore.clone(),
@@ -236,6 +233,7 @@ impl Orchestrator {
             config_nickname: self.config_nickname.clone(),
             rollout_config: self.training_set_rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
+            split: DatasetSplit::Training, // The rollout for training set generation must use the training split
             epoch,
             client: self.client.clone(),
             question_semaphore: self.question_semaphore.clone(),

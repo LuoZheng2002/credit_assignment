@@ -7,6 +7,7 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use clap::Parser;
+use credit_assignment::direct_tool::hybrid_dataset::DatasetSplit;
 use credit_assignment::judge_correctness::CorrectnessJudgment;
 use credit_assignment::{
     direct_tool::{
@@ -65,6 +66,8 @@ struct Args {
     rollout_config_path: String,
     #[arg(long)]
     posterior_hyperparameters_path: String,
+    #[arg(value_enum, long)]
+    split: DatasetSplit,
     #[arg(long)]
     epoch: usize, // the epoch index
     #[arg(long)]
@@ -2200,11 +2203,13 @@ async fn run_model_app<'a, M: LlmModelMarker>(
         posterior_calculation_config,
         epoch,
         override_hyperparameters,
+        split,
     } = run_model_app_args;
     let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
         nickname: config_nickname,
         rollout_config,
         posterior_calculation_config,
+        split,
         epoch,
         _phantom: std::marker::PhantomData,
     };
@@ -2220,6 +2225,7 @@ struct RunModelAppArgs<'a> {
     config_nickname: String,
     rollout_config: DirectRolloutConfig,
     posterior_calculation_config: PosteriorCalculationConfig,
+    split: DatasetSplit,
     epoch: usize, // the epoch index
     override_hyperparameters: Option<PosteriorHyperparameters>,
 }
@@ -2249,6 +2255,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         posterior_hyperparameters_path,
         epoch,
         override_hyperparameters_path,
+        split,
     } = Args::parse();
     let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();
     let posterior_hyperparameters =
@@ -2269,6 +2276,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         rollout_config,
         posterior_calculation_config,
         epoch,
+        split,
         override_hyperparameters,
     };
     let result = match model {

@@ -24,7 +24,6 @@ TODO:
 3. Ablation study
 4. TBD
 
-
 We want a fully automated pipeline:
 
 We do the following in one epoch:
@@ -38,3 +37,7 @@ We first need to build the components before orchestrating them.
 
 
 Going to add model answer, correct answer and judgment metadata to training trajectories, since there might be failure modes that can be caught, like \boxed{answer}.
+
+
+TODO: add a config field purpose: Purpose (Training, Validation, Testing) to rollout trajectories; 
+TODO: add potential ablation variants configuration, like which strategy to use for calculating advantage, branching strategy, etc.
