@@ -35,7 +35,6 @@ pub struct Orchestrator {
     pub max_num_training_trajectories: usize,
     // for orchestration
     pub num_total_epochs: usize,
-    pub progress_save_file_path: String,
     // utilities
     pub client: reqwest::Client,
     pub question_semaphore: Arc<Semaphore>,
@@ -44,6 +43,7 @@ pub struct Orchestrator {
     // for training
     pub training_config_common: PythonTrainingConfigCommon,
     pub first_n_training_samples: Option<usize>,
+    pub num_iterations: usize,
     pub num_gpus: usize,
 }
 
@@ -61,6 +61,15 @@ pub enum OrchestrationProgress {
 }
 
 impl Orchestrator {
+    pub fn progress_save_path(model_cli_name: &str,
+        config_nickname: &str,
+    ) -> String {
+        format!(
+            "results/{}/{}/orchestration_progress.json",
+            model_cli_name,
+            config_nickname,
+        )
+    }
     pub async fn orchestrate<M: LlmModelMarker>(&mut self) {
         loop {
             match self.progress.clone() {
@@ -76,7 +85,7 @@ impl Orchestrator {
                         self.ensure_inference_server_shut_down().await;
                         break;
                     }
-                    self.update_and_save_progress(
+                    self.update_and_save_progress::<M>(
                         OrchestrationProgress::WorkingOnRolloutCollection { epoch },
                     );
                 }
@@ -85,7 +94,7 @@ impl Orchestrator {
                     self.collect_training_rollout::<M>(epoch).await;
                     // after rollout collection, we can shut down the inference server
                     self.ensure_inference_server_shut_down().await;
-                    self.update_and_save_progress(
+                    self.update_and_save_progress::<M>(
                         OrchestrationProgress::WorkingOnTrainingSetGeneration { epoch },
                     );
                 }
@@ -93,7 +102,7 @@ impl Orchestrator {
                     // we do not need inference server for training set generation, and it won't be launched again until we do the training step
                     self.ensure_inference_server_shut_down().await;
                     self.generate_training_set::<M>(epoch).await;
-                    self.update_and_save_progress(OrchestrationProgress::WorkingOnTraining {
+                    self.update_and_save_progress::<M>(OrchestrationProgress::WorkingOnTraining {
                         epoch,
                     });
                 }
@@ -105,7 +114,7 @@ impl Orchestrator {
                         .expect("Python training failed");
                     assert!(epoch < self.num_total_epochs);
                     // do the final validation
-                    self.update_and_save_progress(OrchestrationProgress::WorkingOnValidation {
+                    self.update_and_save_progress::<M>(OrchestrationProgress::WorkingOnValidation {
                         epoch: epoch + 1,
                     });
                 }
@@ -115,8 +124,12 @@ impl Orchestrator {
         }
     }
 
-    fn update_and_save_progress(&mut self, progress: OrchestrationProgress) {
-        write_json(&self.progress_save_file_path, &progress).unwrap();
+    fn update_and_save_progress<M: LlmModelMarker>(&mut self, progress: OrchestrationProgress) {
+        let progress_save_path = Orchestrator::progress_save_path(
+            M::CLI_NAME.into(),
+            &self.config_nickname,
+        );
+        write_json(&progress_save_path, &progress).unwrap();
         self.progress = progress;
     }
 
@@ -262,6 +275,7 @@ impl Orchestrator {
             checkpoints_parent_dir: self.epoch_dir::<M>(epoch),
             final_model_output_parent_dir: self.epoch_dir::<M>(epoch),
             first_n_training_samples: self.first_n_training_samples,
+            num_iterations: self.num_iterations,
         };
         let training_config_path = self.python_training_config_path::<M>(epoch);
         write_toml(&training_config_path, &training_config).unwrap();

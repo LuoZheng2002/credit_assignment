@@ -11,6 +11,7 @@ pub struct PythonTrainingConfig {
     pub final_model_output_parent_dir: String, // final model writes to model/ under this folder
     // orchestrator config
     pub first_n_training_samples: Option<usize>,
+    pub num_iterations: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -18,8 +19,7 @@ pub struct PythonTrainingConfigCommon {
     pub training_plan: String,
     pub advantage_clip: f32,
     pub learning_rate: f32,
-    pub weight_decay: f32,
-    pub num_iterations: usize,
+    pub weight_decay: f32,    
     pub grad_accum_steps: usize,
     pub log_interval_steps: usize,
     pub save_interval_steps: usize,

@@ -43,6 +43,8 @@ struct Args {
     first_n_samples: Option<usize>,
     #[arg(long, default_value_t = 1)]
     max_sqlite_connections: u32,
+    #[arg(long)]
+    sglang_server_log_path: Option<String>,
 }
 
 #[tokio::main]
@@ -68,6 +70,7 @@ async fn main() {
         ui,
         first_n_samples,
         max_sqlite_connections,
+        sglang_server_log_path,
     } = Args::parse();
     Python::initialize();
     check_sympy_availability().unwrap();
@@ -92,7 +95,7 @@ async fn main() {
         ProgressScreen::initialize(
             "Bin Direct Tree Rollout Progress",
             true,
-            Some("log/log.txt".into()),
+            sglang_server_log_path.clone(),
         )
         .await
         .unwrap();
