@@ -1,5 +1,6 @@
 use crate::{
     direct_tool::{
+        direct_rollout_config::BranchingPolicy,
         direct_tree::{DirectTree, Segment, SegmentContent, SegmentId},
         direct_tree_action::DirectTreeAction,
         direct_tree_status::DirectTreeStatus,
@@ -54,7 +55,14 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 } else if self.leaf_segment_judgments.len()
                     < self.rollout_config.max_num_total_trajectories
                 {
-                    self.status = DirectTreeStatus::CreatingOrChoosingBranchPoint;
+                    match self.rollout_config.branching_policy {
+                        BranchingPolicy::TreeMappoGuided => {
+                            self.status = DirectTreeStatus::CreatingOrChoosingBranchPoint;
+                        }
+                        BranchingPolicy::TempoSpontaneous => {
+                            self.status = DirectTreeStatus::SpontaneousBranching;
+                        }
+                    }
                 } else {
                     self.status = DirectTreeStatus::Complete;
                     self.completed = true;
@@ -67,6 +75,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 assert!(matches!(
                     self.status,
                     DirectTreeStatus::CreatingOrChoosingBranchPoint
+                        | DirectTreeStatus::SpontaneousBranching
                 ));
                 let new_first_half_id = SegmentId(self.next_segment_id);
                 self.next_segment_id += 1;
@@ -179,6 +188,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 assert!(matches!(
                     self.status,
                     DirectTreeStatus::CreatingOrChoosingBranchPoint
+                        | DirectTreeStatus::SpontaneousBranching
                 ));
                 assert!(
                     position.content_index == 0 && position.offset == 0,
@@ -200,6 +210,10 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     self.status,
                     DirectTreeStatus::CreatingOrChoosingBranchPoint
                 ));
+                assert!(matches!(
+                    self.rollout_config.branching_policy,
+                    BranchingPolicy::TreeMappoGuided
+                ));
                 // this action does not change the tree structure, it only indicates that we have found no valid branching point and should conclude the tree
                 self.status = DirectTreeStatus::Complete;
                 self.completed = true;
@@ -211,6 +225,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 assert!(matches!(
                     self.status,
                     DirectTreeStatus::CreatingBranchSegment
+                        | DirectTreeStatus::SpontaneousBranching
                 ));
                 // this action adds a new segment as a child of the current branch point
                 let Some(parent_id) = self.focused_parent_segment_id else {
@@ -242,7 +257,14 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     self.status = DirectTreeStatus::Complete;
                     self.completed = true;
                 } else {
-                    self.status = DirectTreeStatus::CreatingOrChoosingBranchPoint;
+                    match self.rollout_config.branching_policy {
+                        BranchingPolicy::TreeMappoGuided => {
+                            self.status = DirectTreeStatus::CreatingOrChoosingBranchPoint;
+                        }
+                        BranchingPolicy::TempoSpontaneous => {
+                            self.status = DirectTreeStatus::SpontaneousBranching;
+                        }
+                    }
                 }
             }
         }

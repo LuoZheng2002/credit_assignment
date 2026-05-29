@@ -19,6 +19,7 @@ pub enum DirectTreeAction<M> {
         content_array: Vec<SegmentContent<M>>,
         correctness_judgment: CorrectnessJudgment,
     },
+    // guided branching mode
     BranchFromSegment {
         position: TokenPositionInTree, // at least one of content_index and offset must be > 0, indicating the branching happens in the middle of a segment
         new_branch_start_token: i32,
@@ -32,9 +33,6 @@ pub enum DirectTreeAction<M> {
         contents: Vec<SegmentContent<M>>,
         correctness_judgment: CorrectnessJudgment,
     },
-    // JudgeFocusedSegmentCorrectness {
-    //     correctness_judgment: CorrectnessJudgment,
-    // },
 }
 
 impl<M> Clone for DirectTreeAction<M> {

@@ -193,6 +193,34 @@ pub enum SegmentContent<M> {
     ToolResponse(TokenArray<M>),
 }
 
+impl<M> SegmentContent<M> {
+    pub fn tokens(&self) -> Vec<i32> {
+        match self {
+            SegmentContent::Prompt(TokenArray { tokens, .. }) => tokens.clone(),
+            SegmentContent::ReasoningOrToolCall { tokens, .. } => tokens.tokens.clone(),
+            SegmentContent::ToolResponse(TokenArray { tokens, .. }) => tokens.clone(),
+        }
+    }
+    pub fn tokens_mut(&mut self) -> &mut Vec<i32> {
+        match self {
+            SegmentContent::Prompt(TokenArray { tokens, .. }) => tokens,
+            SegmentContent::ReasoningOrToolCall { tokens, .. } => &mut tokens.tokens,
+            SegmentContent::ToolResponse(TokenArray { tokens, .. }) => tokens,
+        }
+    }
+    pub fn trim_prefix(&self, num_tokens_to_trim: usize) -> Option<Self> {
+        let mut cloned = self.clone();
+        let tokens = cloned.tokens_mut();
+        assert!(num_tokens_to_trim <= tokens.len());
+        if num_tokens_to_trim == tokens.len() {
+            return None;
+        }
+        tokens.drain(0..num_tokens_to_trim);
+        assert!(!tokens.is_empty());
+        Some(cloned)
+    }
+}
+
 impl<M> Clone for SegmentContent<M> {
     fn clone(&self) -> Self {
         match self {

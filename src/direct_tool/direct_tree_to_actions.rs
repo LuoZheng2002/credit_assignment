@@ -284,6 +284,75 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 ));
                 vec![action]
             }
+            DirectTreeStatus::SpontaneousBranching => {
+                // this is equivalent to determining a branching point and doing a rollout to the end
+                let root_id = self
+                    .root_segment_id
+                    .expect("Root segment id must exist when creating trunk trajectory");
+                let (content_array, final_answer) = self
+                    .generate_continuing_segment_contents(
+                        root_id,
+                        llm_callable,
+                        sglang_waiting_workers.clone(),
+                    )
+                    .await;
+                let correctness_judgment = judge_final_answer(
+                    &final_answer,
+                    &self.question.correct_answer,
+                    &self.question.question,
+                    client,
+                )
+                .await;
+                log_info(format!(
+                    "Question {}: Created and judged a spontaneous branching, correctness: {}",
+                    self.question.flat_id, correctness_judgment.is_correct
+                ));
+                let prefix_result = self.find_longest_common_prefix(&content_array);
+                let branch_from_existing_node =
+                    prefix_result.diverge_position_in_tree.content_index == 0
+                        && prefix_result.diverge_position_in_tree.offset == 0;
+                let mut remaining_contents: Vec<SegmentContent<M>> = vec![];
+                if let Some(first_trimmed) = content_array
+                    [prefix_result.diverge_position_in_query.content_index]
+                    .trim_prefix(prefix_result.diverge_position_in_query.offset)
+                {
+                    remaining_contents.push(first_trimmed);
+                }
+                for content in content_array
+                    .into_iter()
+                    .skip(prefix_result.diverge_position_in_query.content_index + 1)
+                {
+                    remaining_contents.push(content);
+                }
+                assert!(matches!(
+                    remaining_contents[0],
+                    SegmentContent::ReasoningOrToolCall { .. }
+                ));
+                let new_branch_start_token = remaining_contents
+                    .first()
+                    .expect("There should be at least one content in the new trajectory")
+                    .tokens()
+                    .first()
+                    .expect(
+                        "The first content in the new trajectory should have at least one token",
+                    )
+                    .to_owned();
+                let branching_action = match branch_from_existing_node {
+                    true => DirectTreeAction::BranchFromNode {
+                        position: prefix_result.diverge_position_in_tree,
+                        new_branch_start_token,
+                    },
+                    false => DirectTreeAction::BranchFromSegment {
+                        position: prefix_result.diverge_position_in_tree,
+                        new_branch_start_token,
+                    },
+                };
+                let create_branch_segment_action = DirectTreeAction::CreateAndJudgeBranchSegment {
+                    contents: remaining_contents,
+                    correctness_judgment,
+                };
+                vec![branching_action, create_branch_segment_action]
+            }
             DirectTreeStatus::Complete => {
                 // the tree is complete, no more actions can be taken
                 unreachable!()
