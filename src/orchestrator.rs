@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{process::Child, sync::Arc};
 
 use research_utility::{asset_file::AssetFile, log_message::log_info};
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,9 @@ use crate::{
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     json_line_util::write_json,
+    launch_sglang_server::{
+        launch_sglang_server_process, model_uses_sglang, shut_down_sglang_server_process,
+    },
     llm_model::{LlmCliArgs, LlmModelMarker},
 };
 
@@ -41,7 +44,7 @@ pub struct Orchestrator {
 pub struct InferenceServerHandle {
     pub epoch: usize,
     pub sglang_port: Option<u16>,
-    // to do: add process handle, etc.
+    pub process: Option<Child>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum OrchestrationProgress {
@@ -57,7 +60,7 @@ impl Orchestrator {
             match self.progress.clone() {
                 OrchestrationProgress::WorkingOnValidation { epoch } => {
                     assert!(epoch <= self.num_total_epochs);
-                    self.ensure_inference_server_launched(epoch);
+                    self.ensure_inference_server_launched::<M>(epoch).await;
                     self.validate_model::<M>(epoch).await;
                     if epoch >= self.num_total_epochs {
                         log_info(&format!(
@@ -72,7 +75,7 @@ impl Orchestrator {
                     );
                 }
                 OrchestrationProgress::WorkingOnRolloutCollection { epoch } => {
-                    self.ensure_inference_server_launched(epoch);
+                    self.ensure_inference_server_launched::<M>(epoch).await;
                     self.collect_training_rollout::<M>(epoch).await;
                     // after rollout collection, we can shut down the inference server
                     self.ensure_inference_server_shut_down();
@@ -109,7 +112,7 @@ impl Orchestrator {
         self.progress = progress;
     }
 
-    fn ensure_inference_server_launched(&mut self, epoch: usize) {
+    async fn ensure_inference_server_launched<M: LlmModelMarker>(&mut self, epoch: usize) {
         if let Some(handle) = &self.inference_server_handle {
             if handle.epoch == epoch {
                 // already launched for this epoch
@@ -118,34 +121,61 @@ impl Orchestrator {
                 // first shut down the previous one
                 self.ensure_inference_server_shut_down();
                 // then continue to launch the new one
-                self.launch_inference_server(epoch);
+                self.launch_inference_server::<M>(epoch).await;
             }
         } else {
             // not launched, just launch
-            self.launch_inference_server(epoch);
+            self.launch_inference_server::<M>(epoch).await;
         }
     }
 
-    fn launch_inference_server(&mut self, epoch: usize) {
+    async fn launch_inference_server<M: LlmModelMarker>(&mut self, epoch: usize) {
         assert!(
             self.inference_server_handle.is_none(),
             "Inference server is already launched for epoch {}, cannot launch again without shutting down",
             self.inference_server_handle.as_ref().unwrap().epoch
         );
-        log_info("Launching inference server");
-        // to do: spawn a server process like the one in scripts/sglang_serve/qwen35_08b.sh if the model requires sglang (local model)
-        // for gpt model, we don't need to launch sglang server, and will panic at training stage
-        // then fill the inference_server_handle, including the process handle
+        if !model_uses_sglang::<M>() {
+            self.inference_server_handle = Some(InferenceServerHandle {
+                epoch,
+                sglang_port: None,
+                process: None,
+            });
+            log_info(format!(
+                "Model {} does not need a local inference server",
+                M::CLI_NAME
+            ));
+            return;
+        }
 
-        // then redirect the stdout and stderr to the sglang_server_log_path if provided
+        log_info(format!(
+            "Launching inference server for model {}",
+            M::CLI_NAME,
+        ));
+        let model_path = self.model_folder_path::<M>(epoch);
+        log_info(format!("Using model folder path: {}", model_path));
+        let (sglang_port, process) =
+            launch_sglang_server_process::<M>(&model_path, self.sglang_server_log_path.as_deref())
+                .await;
+        log_info(format!(
+            "SGLang server is listening on port {}",
+            sglang_port
+        ));
 
+        self.inference_server_handle = Some(InferenceServerHandle {
+            epoch,
+            sglang_port: Some(sglang_port),
+            process: Some(process),
+        });
         log_info("Inference server launched");
     }
 
     fn ensure_inference_server_shut_down(&mut self) {
         if let Some(handle) = self.inference_server_handle.take() {
             log_info("Shutting down inference server...");
-            // kill the process
+            if let Some(mut process) = handle.process {
+                shut_down_sglang_server_process(&mut process);
+            }
             log_info("Inference server shut down");
         }
         assert!(
@@ -208,6 +238,10 @@ impl Orchestrator {
     }
     async fn train_model<M: LlmModelMarker>(&self, epoch: usize) {
         // launch the training python code
+    }
+
+    fn model_folder_path<M: LlmModelMarker>(&self, epoch: usize) -> String {
+        format!("results/{}/{}/epoch_{}/model", M::CLI_NAME, self.config_nickname, epoch)
     }
 }
 impl Drop for Orchestrator {

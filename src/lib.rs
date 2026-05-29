@@ -3,6 +3,7 @@ pub mod constants;
 pub mod direct_tool;
 pub mod json_line_util;
 pub mod judge_correctness;
+pub mod launch_sglang_server;
 pub mod llm_model;
 pub mod orchestrator;
 pub mod token_array;
