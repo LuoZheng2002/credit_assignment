@@ -82,6 +82,18 @@ def _log_json_line(log_path: Path, payload: dict[str, float | int]) -> None:
         handle.write(json.dumps(payload) + "\n")
 
 
+def _json_key_value(key: str, value: object) -> str:
+    return json.dumps({"KeyValuePair": {"key": key, "value": str(value)}})
+
+
+def _json_master_progress(progress: float, label: str) -> str:
+    return json.dumps({"MasterProgress": {"progress": progress, "label": label}})
+
+
+def _json_worker_progress(worker_name: str, progress: float, label: str) -> str:
+    return json.dumps({"WorkerProgress": {"worker_name": worker_name, "progress": progress, "label": label}})
+
+
 def _forward_logits(model_engine: torch.nn.Module, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     outputs = model_engine(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
     assert hasattr(outputs, "logits"), "model forward output must contain logits"
@@ -825,10 +837,15 @@ def train_with_deepspeed(config: TrainConfig) -> None:
             return
 
         for iteration_index in range(resume_state.next_iteration_index, config.num_iterations):
+            if _is_primary_rank():
+                iteration_progress = (iteration_index + 1) / config.num_iterations
+                print(_json_master_progress(float(iteration_progress), f"Iteration {iteration_index + 1}/{config.num_iterations}"))
             batch_start_cursor = (
                 resume_state.next_batch_cursor if iteration_index == resume_state.next_iteration_index else 0
             )
             for local_batch_cursor in range(batch_start_cursor, len(local_batches)):
+                worker_progress = float(local_batch_cursor + 1) / len(local_batches)
+                print(_json_worker_progress(f"rank{rank}", worker_progress, f"Batch {local_batch_cursor + 1}/{len(local_batches)}"))
                 resolved_batch = local_batches[local_batch_cursor]
                 collated = collate_training_samples(
                     samples=resolved_batch.samples,
@@ -865,14 +882,14 @@ def train_with_deepspeed(config: TrainConfig) -> None:
 
                 step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
                 throughput_samples_per_sec = float(len(resolved_batch.samples)) / step_elapsed_sec
-                print(
-                    "[batch] "
-                    f"rank={rank} "
-                    f"iteration={iteration_index} "
-                    f"batch_index={resolved_batch.batch_index} "
-                    f"batch_size={len(resolved_batch.samples)} "
-                    f"throughput_samples_per_sec={throughput_samples_per_sec:.4f}"
-                )
+                print(_json_key_value("throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"))
+                print(_json_key_value("batch_size", str(len(resolved_batch.samples))))
+                if _is_primary_rank():
+                    print(_json_key_value("global_step", str(global_step)))
+                    print(_json_key_value("iteration", str(iteration_index)))
+                    print(_json_key_value("batch_index", str(resolved_batch.batch_index)))
+                    for stat_key, stat_value in loss_output.stats.items():
+                        print(_json_key_value(stat_key, f"{stat_value:.6f}"))
 
                 accumulation_step += 1
 
@@ -1015,12 +1032,18 @@ def train_with_deepspeed(config: TrainConfig) -> None:
             return
 
         for iteration_index in range(resume_state.next_iteration_index, config.num_iterations):
+            if _is_primary_rank():
+                iteration_progress = (iteration_index + 1) / config.num_iterations
+                print(_json_master_progress(float(iteration_progress), f"Iteration {iteration_index + 1}/{config.num_iterations}"))
             sample_index = resume_sample_index if iteration_index == resume_state.next_iteration_index else 0
             batch_index = 0
             while sample_index < lazy_loader.sample_count:
                 requested_batch_size = min(adaptive_state.next_batch_size, lazy_loader.sample_count - sample_index)
                 if requested_batch_size <= 0:
                     break
+
+                worker_progress = float(sample_index) / lazy_loader.sample_count
+                print(_json_worker_progress(f"rank{rank}", worker_progress, f"Sample {sample_index}/{lazy_loader.sample_count}"))
 
                 window = lazy_loader.resolve_batch(
                     sample_index=sample_index,
@@ -1103,16 +1126,16 @@ def train_with_deepspeed(config: TrainConfig) -> None:
 
                 step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
                 throughput_samples_per_sec = float(len(resolved_batch.samples)) / step_elapsed_sec
-                print(
-                    "[batch] "
-                    f"rank={rank} "
-                    f"iteration={iteration_index} "
-                    f"batch_index={batch_index} "
-                    f"requested_batch_size={requested_batch_size} "
-                    f"next_batch_size={adaptive_state.next_batch_size} "
-                    f"actual_batch_size={len(resolved_batch.samples)} "
-                    f"throughput_samples_per_sec={throughput_samples_per_sec:.4f}"
-                )
+                print(_json_key_value("throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"))
+                print(_json_key_value("batch_size", str(len(resolved_batch.samples))))
+                print(_json_key_value("requested_batch_size", str(requested_batch_size)))
+                print(_json_key_value("next_batch_size", str(adaptive_state.next_batch_size)))
+                if _is_primary_rank():
+                    print(_json_key_value("global_step", str(global_step)))
+                    print(_json_key_value("iteration", str(iteration_index)))
+                    print(_json_key_value("batch_index", str(batch_index)))
+                    for stat_key, stat_value in loss_output.stats.items():
+                        print(_json_key_value(stat_key, f"{stat_value:.6f}"))
 
                 accumulation_step += 1
                 sample_index = window.next_sample_index

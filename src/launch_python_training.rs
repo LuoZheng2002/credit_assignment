@@ -1,6 +1,7 @@
 use std::{path::Path, process::Stdio};
 
-use research_utility::log_message::{log_info, log_warning};
+use research_utility::log_message::{log_info, log_message, log_warning};
+use research_utility::message::MyLogMessage;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
@@ -100,6 +101,8 @@ where
                 }
                 if is_stderr {
                     log_warning(format!("[TRAIN]: {}", content));
+                } else if let Ok(parsed) = serde_json::from_str::<MyLogMessage>(&content) {
+                    log_message(parsed);
                 } else {
                     log_info(format!("[TRAIN]: {}", content));
                 }
