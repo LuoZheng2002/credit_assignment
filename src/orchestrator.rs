@@ -202,11 +202,11 @@ impl Orchestrator {
     }
 
     async fn validate_model<M: LlmModelMarker>(&self, epoch: usize) {
+        assert!(self.validation_rollout_config.split == DatasetSplit::Validation);
         let validation_rollout_program_config = RolloutProgramConfig {
             config_nickname: self.config_nickname.clone(),
             rollout_config: self.validation_rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
-            split: DatasetSplit::Validation, // The validation rollout must use the validation split
             epoch,
             client: self.client.clone(),
             question_semaphore: self.question_semaphore.clone(),
@@ -229,11 +229,11 @@ impl Orchestrator {
         let llm_cli_args = LlmCliArgs {
             sglang_port: sglang_server_handle.sglang_port.clone(),
         };
+        assert!(self.training_set_rollout_config.split == DatasetSplit::Training);
         let training_set_rollout_program_config = RolloutProgramConfig {
             config_nickname: self.config_nickname.clone(),
             rollout_config: self.training_set_rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
-            split: DatasetSplit::Training, // The rollout for training set generation must use the training split
             epoch,
             client: self.client.clone(),
             question_semaphore: self.question_semaphore.clone(),

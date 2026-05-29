@@ -412,11 +412,14 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             .await
     }
     async fn synchronize(&self) -> Base64Hash {
+        assert!(
+            self.rollout_config.split == DatasetSplit::Training,
+            "AssetFileTrainingTrajectories can only be generated from the training split of the rollout logs"
+        );
         let asset_file_rollout_logs = AssetFileDirectTreeActionLogs::<M> {
             nickname: self.config_nickname.clone(),
             rollout_config: self.rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
-            split: DatasetSplit::Training, // The training set must use the training split
             epoch: self.epoch,
             _phantom: std::marker::PhantomData,
         };

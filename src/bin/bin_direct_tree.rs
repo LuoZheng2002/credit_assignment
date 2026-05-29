@@ -6,7 +6,6 @@ use credit_assignment::{
     direct_tool::{
         direct_rollout::{RolloutProgramConfig, rollout_all},
         direct_rollout_config::DirectRolloutConfig,
-        hybrid_dataset::DatasetSplit,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
@@ -36,8 +35,6 @@ struct Args {
     rollout_config_path: String,
     #[arg(long)]
     posterior_hyperparameters_path: String,
-    #[arg(value_enum, long)]
-    split: DatasetSplit,
     #[arg(long)]
     epoch: usize, // the epoch index
     #[arg(long, action = ArgAction::Set)]
@@ -74,7 +71,6 @@ async fn main() {
         first_n_samples,
         max_sqlite_connections,
         sglang_server_log_path,
-        split,
     } = Args::parse();
     Python::initialize();
     check_sympy_availability().unwrap();
@@ -108,7 +104,6 @@ async fn main() {
         config_nickname,
         rollout_config,
         posterior_calculation_config,
-        split,
         epoch,
         client,
         question_semaphore,

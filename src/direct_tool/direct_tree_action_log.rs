@@ -9,7 +9,7 @@ use crate::{
     direct_tool::{
         direct_rollout_config::DirectRolloutConfig,
         direct_tree_action::DirectTreeAction,
-        hybrid_dataset::{AssetFileHybridDataset, DatasetSplit, HybridDatasetQuestion},
+        hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     json_line_util::{read_json, write_json},
@@ -60,7 +60,7 @@ pub struct AssetFileDirectTreeActionLogs<M: LlmModelMarker> {
     pub nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
-    pub split: DatasetSplit,
+    
     pub epoch: usize, // the epoch index
     #[serde(skip)]
     pub _phantom: PhantomData<M>,
@@ -101,7 +101,7 @@ impl<M: LlmModelMarker> AssetFileDirectTreeActionLogs<M> {
         ) {
             Ok(tracking_content) => {
                 let dataset_asset_file = AssetFileHybridDataset {
-                    split: self.split.clone(),
+                    split: self.rollout_config.split.clone(),
                 };
                 let dataset_hash = futures::executor::block_on(dataset_asset_file.synchronize());
                 if dataset_hash != tracking_content.dataset_hash {
@@ -157,7 +157,7 @@ impl<M: LlmModelMarker> AssetFileDirectTreeActionLogs<M> {
     pub fn create_tracking_file(&self) {
         // we collect the dataset hash
         let dataset_asset_file = AssetFileHybridDataset {
-            split: self.split.clone(),
+            split: self.rollout_config.split.clone(),
         };
         let dataset_hash = futures::executor::block_on(dataset_asset_file.synchronize());
         let tracking_content = AssetFileDirectTreeActionLogsTracking {
@@ -178,7 +178,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileDirectTreeActionLogs<M> {
     async fn synchronize(&self) -> Base64Hash {
         // synchromize all dependency assets
         let dataset_asset_file = AssetFileHybridDataset {
-            split: self.split.clone(),
+            split: self.rollout_config.split.clone(),
         };
         let dataset_hash = dataset_asset_file.synchronize().await;
         let tracking_content =
