@@ -36,6 +36,8 @@ pub async fn launch_sglang_server_process<M: LlmModelMarker>(
         .arg(sglang_port.to_string())
         .arg("--context-length")
         .arg(SGLANG_CONTEXT_LENGTH.to_string());
+    #[cfg(unix)]
+    command.process_group(0);
 
     if let Some(log_path) = sglang_server_log_path {
         if let Some(parent) = Path::new(log_path).parent() {
@@ -83,6 +85,27 @@ pub async fn shut_down_sglang_server_process(process: &mut Child) {
     match process.try_wait() {
         Ok(Some(_)) => {}
         Ok(None) => {
+            if let Some(pid) = process.id() {
+                send_signal_to_process_group(pid, "-TERM").await;
+            }
+
+            match timeout(Duration::from_secs(15), process.wait()).await {
+                Ok(Ok(_)) => return,
+                Ok(Err(err)) => panic!("Failed to wait on inference server process: {}", err),
+                Err(_) => {}
+            }
+
+            if let Some(pid) = process.id() {
+                send_signal_to_process_group(pid, "-KILL").await;
+                match timeout(Duration::from_secs(10), process.wait()).await {
+                    Ok(Ok(_)) => return,
+                    Ok(Err(err)) => {
+                        panic!("Failed to wait on inference server process: {}", err)
+                    }
+                    Err(_) => {}
+                }
+            }
+
             if let Err(err) = process.kill().await {
                 panic!("Failed to kill inference server process: {}", err);
             }
@@ -92,6 +115,24 @@ pub async fn shut_down_sglang_server_process(process: &mut Child) {
 
     if let Err(err) = process.wait().await {
         panic!("Failed to wait on inference server process: {}", err);
+    }
+}
+
+async fn send_signal_to_process_group(pid: u32, signal: &str) {
+    let status = Command::new("kill")
+        .arg(signal)
+        .arg("--")
+        .arg(format!("-{}", pid))
+        .status()
+        .await;
+    match status {
+        Ok(_) => {}
+        Err(err) => {
+            panic!(
+                "Failed to send signal {} to process group {}: {}",
+                signal, pid, err
+            );
+        }
     }
 }
 
