@@ -1,6 +1,7 @@
 use std::{
     cmp::Reverse,
     collections::{BTreeMap, BTreeSet, BinaryHeap},
+    sync::Arc,
 };
 
 use ordered_float::NotNan;
@@ -27,6 +28,91 @@ use crate::{
 pub struct TrajectoryHeapItem<M: LlmModelMarker> {
     pub trajectory: DirectTrainingTrajectory<M>,
     pub average_absolute_advantage: NotNan<f32>,
+}
+
+struct TrajectorySelectionState<M: LlmModelMarker> {
+    total_samples: usize,
+    finished_samples: usize,
+    total_trajectories: usize,
+    all_average_absolute_advantages: Vec<f32>,
+    min_heap: BinaryHeap<Reverse<TrajectoryHeapItem<M>>>,
+    max_num_training_trajectories: usize,
+}
+
+impl<M: LlmModelMarker> TrajectorySelectionState<M> {
+    fn new(total_samples: usize, max_num_training_trajectories: usize) -> Self {
+        Self {
+            total_samples,
+            finished_samples: 0,
+            total_trajectories: 0,
+            all_average_absolute_advantages: Vec::new(),
+            min_heap: BinaryHeap::new(),
+            max_num_training_trajectories,
+        }
+    }
+
+    fn fold_chunk(&mut self, processed_chunk: Vec<(usize, Vec<DirectTrainingTrajectory<M>>)>) {
+        for (_, trajectories) in processed_chunk {
+            self.finished_samples += 1;
+            let progress = if self.total_samples == 0 {
+                0.0
+            } else {
+                self.finished_samples as f32 / self.total_samples as f32
+            };
+            log_master_progress(progress, "Rollout Samples Processed");
+            self.fold_candidate_trajectories(trajectories);
+        }
+    }
+
+    fn fold_candidate_trajectories(
+        &mut self,
+        candidate_trajectories: Vec<DirectTrainingTrajectory<M>>,
+    ) {
+        for trajectory in candidate_trajectories {
+            self.total_trajectories += 1;
+            let average_absolute_advantage =
+                NotNan::new(trajectory.average_absolute_segment_advantage)
+                    .expect("Average absolute segment advantage must not be NaN");
+            self.all_average_absolute_advantages
+                .push(*average_absolute_advantage);
+
+            self.min_heap.push(Reverse(TrajectoryHeapItem {
+                trajectory,
+                average_absolute_advantage,
+            }));
+            if self.min_heap.len() > self.max_num_training_trajectories {
+                self.min_heap.pop();
+            }
+        }
+    }
+
+    fn into_output(mut self) -> TrainingTrajectorySelectionOutput<M> {
+        self.all_average_absolute_advantages
+            .sort_by(|a, b| b.partial_cmp(a).unwrap());
+        let kept_items: Vec<TrajectoryHeapItem<M>> =
+            self.min_heap.into_iter().map(|item| item.0).collect();
+        let average_absolute_advantage_cutoff = kept_items
+            .iter()
+            .map(|item| item.trajectory.average_absolute_segment_advantage)
+            .min_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap_or(0.0);
+        let mut kept_trajectories: Vec<DirectTrainingTrajectory<M>> =
+            kept_items.into_iter().map(|item| item.trajectory).collect();
+        kept_trajectories.sort_by_key(|trajectory| trajectory.input_ids.len());
+        TrainingTrajectorySelectionOutput {
+            kept_trajectories,
+            all_average_absolute_advantages: self.all_average_absolute_advantages,
+            total_trajectories: self.total_trajectories,
+            average_absolute_advantage_cutoff,
+        }
+    }
+}
+
+struct TrainingTrajectorySelectionOutput<M: LlmModelMarker> {
+    kept_trajectories: Vec<DirectTrainingTrajectory<M>>,
+    all_average_absolute_advantages: Vec<f32>,
+    total_trajectories: usize,
+    average_absolute_advantage_cutoff: f32,
 }
 
 impl<M: LlmModelMarker> PartialEq for TrajectoryHeapItem<M> {
@@ -67,21 +153,18 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     // we want to make a histogram
 
     keys.sort(); // ensure deterministic order
-    // we need a min heap to collect the top n trajectories with the highest
-    // average absolute segment advantage across all action logs, where n is
-    // the number of trajectories we want to train on in total.
-    let mut min_heap: BinaryHeap<Reverse<TrajectoryHeapItem<M>>> = BinaryHeap::new();
-    let mut all_average_absolute_advantages: Vec<f32> = Vec::new();
-    let mut total_trajectories = 0_usize;
-    let mut finished_samples = 0usize;
+    let mut selection_state =
+        TrajectorySelectionState::<M>::new(num_keys, max_num_training_trajectories);
     let nproc = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(1);
     let num_worker_threads = std::cmp::max((nproc + 1) / 2, 1);
-    let worker_pool = ThreadPoolBuilder::new()
+    let worker_pool = Arc::new(
+        ThreadPoolBuilder::new()
         .num_threads(num_worker_threads)
         .build()
-        .expect("Failed to build rayon worker pool for training trajectory conversion");
+        .expect("Failed to build rayon worker pool for training trajectory conversion"),
+    );
     log_info(format!("Converting action logs to trajectories with rayon threads: {}", num_worker_threads));
     let chunk_size = std::cmp::max(num_worker_threads * 4, 1);
     let mut pending_chunk: Vec<(usize, DirectTreeActionLog<M>)> = Vec::with_capacity(chunk_size);
@@ -91,47 +174,29 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         let action_log = action_log_store.get(*key).await.unwrap().unwrap();
         pending_chunk.push((index, action_log));
         if pending_chunk.len() >= chunk_size {
-            fold_processed_chunk(
-                run_parallel_action_log_chunk(
-                    &worker_pool,
-                    std::mem::take(&mut pending_chunk),
-                    advantage_calculation_policy,
-                ),
-                num_keys,
-                &mut finished_samples,
-                &mut total_trajectories,
-                &mut all_average_absolute_advantages,
-                &mut min_heap,
-                max_num_training_trajectories,
-            );
+            let processed_chunk = run_parallel_action_log_chunk(
+                worker_pool.clone(),
+                std::mem::take(&mut pending_chunk),
+                advantage_calculation_policy,
+            )
+            .await;
+            selection_state.fold_chunk(processed_chunk);
         }
     }
 
     if !pending_chunk.is_empty() {
-        fold_processed_chunk(
-            run_parallel_action_log_chunk(
-                &worker_pool,
-                pending_chunk,
-                advantage_calculation_policy,
-            ),
-            num_keys,
-            &mut finished_samples,
-            &mut total_trajectories,
-            &mut all_average_absolute_advantages,
-            &mut min_heap,
-            max_num_training_trajectories,
-        );
+        let processed_chunk =
+            run_parallel_action_log_chunk(worker_pool, pending_chunk, advantage_calculation_policy)
+                .await;
+        selection_state.fold_chunk(processed_chunk);
     }
 
-    let kept_items: Vec<TrajectoryHeapItem<M>> = min_heap.into_iter().map(|item| item.0).collect();
-    let average_absolute_advantage_cutoff = kept_items
-        .iter()
-        .map(|item| item.trajectory.average_absolute_segment_advantage)
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
-        .unwrap_or(0.0);
-
-    let mut kept_trajectories: Vec<DirectTrainingTrajectory<M>> =
-        kept_items.into_iter().map(|item| item.trajectory).collect();
+    let TrainingTrajectorySelectionOutput {
+        kept_trajectories,
+        all_average_absolute_advantages,
+        total_trajectories,
+        average_absolute_advantage_cutoff,
+    } = selection_state.into_output();
 
     for trajectory in kept_trajectories.iter() {
         assert_eq!(
@@ -147,10 +212,6 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
             trajectory.question.flat_id
         );
     }
-
-    kept_trajectories.sort_by_key(|trajectory| trajectory.input_ids.len());
-
-    all_average_absolute_advantages.sort_by(|a, b| b.partial_cmp(a).unwrap());
 
     let adopted_trajectories = kept_trajectories.len();
     let max_average_absolute_advantage = *all_average_absolute_advantages.first().unwrap_or(&0.0);
@@ -174,77 +235,31 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     kept_trajectories
 }
 
-fn run_parallel_action_log_chunk<M: LlmModelMarker>(
-    worker_pool: &ThreadPool,
+async fn run_parallel_action_log_chunk<M: LlmModelMarker>(
+    worker_pool: Arc<ThreadPool>,
     chunk: Vec<(usize, DirectTreeActionLog<M>)>,
     advantage_calculation_policy: AdvantageCalculationPolicy,
 ) -> Vec<(usize, Vec<DirectTrainingTrajectory<M>>)> {
-    let mut processed_chunk = worker_pool.install(|| {
-        chunk
-            .into_par_iter()
-            .map(|(index, action_log)| {
-                (
-                    index,
-                    action_log_to_candidate_trajectories::<M>(
-                        action_log,
-                        advantage_calculation_policy,
-                    ),
-                )
-            })
-            .collect::<Vec<(usize, Vec<DirectTrainingTrajectory<M>>)>>()
-    });
+    let mut processed_chunk = tokio::task::spawn_blocking(move || {
+        worker_pool.install(|| {
+            chunk
+                .into_par_iter()
+                .map(|(index, action_log)| {
+                    (
+                        index,
+                        action_log_to_candidate_trajectories::<M>(
+                            action_log,
+                            advantage_calculation_policy,
+                        ),
+                    )
+                })
+                .collect::<Vec<(usize, Vec<DirectTrainingTrajectory<M>>)>>()
+        })
+    })
+    .await
+    .expect("blocking task for training trajectory conversion panicked");
     processed_chunk.sort_by_key(|(index, _)| *index);
     processed_chunk
-}
-
-fn fold_processed_chunk<M: LlmModelMarker>(
-    processed_chunk: Vec<(usize, Vec<DirectTrainingTrajectory<M>>)>,
-    total_samples: usize,
-    finished_samples: &mut usize,
-    total_trajectories: &mut usize,
-    all_average_absolute_advantages: &mut Vec<f32>,
-    min_heap: &mut BinaryHeap<Reverse<TrajectoryHeapItem<M>>>,
-    max_num_training_trajectories: usize,
-) {
-    for (_, trajectories) in processed_chunk {
-        *finished_samples += 1;
-        let progress = if total_samples == 0 {
-            0.0
-        } else {
-            *finished_samples as f32 / total_samples as f32
-        };
-        log_master_progress(progress, "Rollout Samples Processed");
-        fold_candidate_trajectories(
-            trajectories,
-            total_trajectories,
-            all_average_absolute_advantages,
-            min_heap,
-            max_num_training_trajectories,
-        );
-    }
-}
-
-fn fold_candidate_trajectories<M: LlmModelMarker>(
-    candidate_trajectories: Vec<DirectTrainingTrajectory<M>>,
-    total_trajectories: &mut usize,
-    all_average_absolute_advantages: &mut Vec<f32>,
-    min_heap: &mut BinaryHeap<Reverse<TrajectoryHeapItem<M>>>,
-    max_num_training_trajectories: usize,
-) {
-    for trajectory in candidate_trajectories {
-        *total_trajectories += 1;
-        let average_absolute_advantage = NotNan::new(trajectory.average_absolute_segment_advantage)
-            .expect("Average absolute segment advantage must not be NaN");
-        all_average_absolute_advantages.push(*average_absolute_advantage);
-
-        min_heap.push(Reverse(TrajectoryHeapItem {
-            trajectory,
-            average_absolute_advantage,
-        }));
-        if min_heap.len() > max_num_training_trajectories {
-            min_heap.pop();
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
