@@ -50,7 +50,7 @@ struct Args {
     #[arg(long)]
     training_config_common_path: String,
     #[arg(long)]
-    first_n_training_samples: Option<usize>,
+    training_time: f32,
     #[arg(long)]
     first_n_training_rollout_samples: Option<usize>,
     #[arg(long)]
@@ -61,8 +61,6 @@ struct Args {
     sglang_server_log_path: Option<String>,
     #[arg(long)]
     message_log_path: Option<String>,
-    #[arg(long)]
-    num_iterations: usize,
     #[arg(long)]
     num_gpus: usize,
     #[arg(long, action = ArgAction::Set)]
@@ -105,8 +103,7 @@ async fn main() {
         max_num_training_trajectories,
         advantage_calculation_policy,
         training_config_common_path,
-        first_n_training_samples,
-        num_iterations,
+        training_time,
         num_gpus,
     } = Args::parse();
     Python::initialize();
@@ -166,10 +163,9 @@ async fn main() {
         max_num_training_trajectories,
         advantage_calculation_policy,
         training_config_common,
-        first_n_training_samples,
+        training_time,
         progress,
         num_gpus,
-        num_iterations,
     };
 
     let result = match model_name {

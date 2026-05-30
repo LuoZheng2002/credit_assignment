@@ -29,7 +29,7 @@ class TrainConfig:
     advantage_clip: float
     learning_rate: float
     weight_decay: float
-    num_iterations: int
+    training_time: float
     grad_accum_steps: int
     log_time_interval: float
     checkpoint_save_time_interval: float
@@ -39,7 +39,6 @@ class TrainConfig:
     lora_target_modules_csv: str
     resume_checkpoint_tag: str
     seed: int
-    first_n_training_samples: int
 
 
 @dataclass(frozen=True)
@@ -828,14 +827,13 @@ def train(config: TrainConfig) -> None:
     assert config.advantage_clip > 0.0, "advantage_clip must be positive"
     assert config.learning_rate > 0.0, "learning_rate must be positive"
     assert config.weight_decay >= 0.0, "weight_decay must be non-negative"
-    assert config.num_iterations > 0, "num_iterations must be positive"
+    assert config.training_time > 0.0, "training_time must be positive"
     assert config.grad_accum_steps > 0, "grad_accum_steps must be positive"
     assert config.log_time_interval > 0.0, "log_time_interval must be positive"
     assert config.checkpoint_save_time_interval > 0.0, "checkpoint_save_time_interval must be positive"
     assert len(config.resume_checkpoint_tag.strip()) > 0, "resume_checkpoint_tag cannot be empty"
     assert len(config.checkpoints_parent_dir.strip()) > 0, "checkpoints_parent_dir cannot be empty"
     assert len(config.final_model_output_parent_dir.strip()) > 0, "final_model_output_parent_dir cannot be empty"
-    assert config.first_n_training_samples >= 0, "first_n_training_samples must be non-negative"
 
     from transformers import AutoTokenizer
 
@@ -853,7 +851,7 @@ def train(config: TrainConfig) -> None:
         print(
             "[status] "
             f"start_training=1 training_plan={config.training_plan} "
-            f"world_size={world_size} num_iterations={config.num_iterations} "
+            f"world_size={world_size} training_time={config.training_time:.1f}s "
             f"model_path={resolved_model_path}"
         )
     tokenizer = AutoTokenizer.from_pretrained(resolved_model_path)
@@ -951,7 +949,7 @@ def train(config: TrainConfig) -> None:
             training_trajectory_sqlite_path=config.training_trajectory_sqlite_path,
             batch_size=initial_batch_size,
             model_official_name=expected_model_name,
-            first_n_training_samples=config.first_n_training_samples,
+            first_n_training_samples=0,
         )
         local_batches = _shard_batches_for_rank(ordered_batches=ordered_batches, rank=rank, world_size=world_size)
         verification = _verify_tokenizer_model_match(
@@ -987,148 +985,153 @@ def train(config: TrainConfig) -> None:
                 },
             )
 
-        assert resume_state.next_batch_cursor < len(local_batches) or (
-            resume_state.next_iteration_index >= config.num_iterations and resume_state.next_batch_cursor == 0
-        ), "resume batch cursor is out of local batch range"
-
         global_step = resume_state.global_step
         accumulation_step = resume_state.accumulation_step
-        last_checkpoint_save_time = time.monotonic()
+        training_start_time = time.monotonic()
+        training_end_time = training_start_time + config.training_time
+        last_checkpoint_save_time = training_start_time
         last_log_time = last_checkpoint_save_time
+        last_master_progress_time = training_start_time - 1.0
+        samples_trained = 0
+        iteration_index = max(0, resume_state.next_iteration_index)
+        local_batch_cursor = resume_state.next_batch_cursor
+        if local_batch_cursor >= len(local_batches):
+            local_batch_cursor = 0
         optimizer.zero_grad(set_to_none=True)
 
-        if resume_state.next_iteration_index >= config.num_iterations:
-            print(
-                "[status] "
-                f"rank={rank} training_already_complete=1 "
-                f"next_iteration={resume_state.next_iteration_index}"
-            )
-            _distributed_barrier()
-            _shutdown_distributed_process_group()
-            return
+        while time.monotonic() < training_end_time:
+            now = time.monotonic()
+            if _is_primary_rank() and now - last_master_progress_time >= 1.0:
+                elapsed_time = min(config.training_time, now - training_start_time)
+                progress = min(1.0, elapsed_time / config.training_time)
+                label = (
+                    f"Training: {samples_trained} samples trained "
+                    f"({elapsed_time:.1f}s/{config.training_time:.1f}s)"
+                )
+                print(_json_master_progress(progress, label))
+                last_master_progress_time = now
 
-        for iteration_index in range(resume_state.next_iteration_index, config.num_iterations):
-            if _is_primary_rank():
-                iteration_progress = (iteration_index + 1) / config.num_iterations
-                print(_json_master_progress(float(iteration_progress), f"Iteration {iteration_index + 1}/{config.num_iterations}"))
-            batch_start_cursor = (
-                resume_state.next_batch_cursor if iteration_index == resume_state.next_iteration_index else 0
-            )
-            for local_batch_cursor in range(batch_start_cursor, len(local_batches)):
-                worker_progress = float(local_batch_cursor + 1) / len(local_batches)
-                print(_json_worker_progress(f"rank{rank}", worker_progress, f"Batch {local_batch_cursor + 1}/{len(local_batches)}"))
-                resolved_batch = local_batches[local_batch_cursor]
-                should_sync = (accumulation_step + 1) == config.grad_accum_steps
-                sync_context = nullcontext()
-                if (
-                    config.training_plan == "lora_current"
-                    and world_size > 1
-                    and hasattr(model, "no_sync")
-                    and not should_sync
-                ):
-                    sync_context = model.no_sync()
+            worker_progress = float(local_batch_cursor + 1) / len(local_batches)
+            print(_json_worker_progress(f"rank{rank}", worker_progress, f"Batch {local_batch_cursor + 1}/{len(local_batches)}"))
+            resolved_batch = local_batches[local_batch_cursor]
+            should_sync = (accumulation_step + 1) == config.grad_accum_steps
+            sync_context = nullcontext()
+            if (
+                config.training_plan == "lora_current"
+                and world_size > 1
+                and hasattr(model, "no_sync")
+                and not should_sync
+            ):
+                sync_context = model.no_sync()
 
-                step_start = time.perf_counter()
-                try:
-                    collated = collate_training_samples(
-                        samples=resolved_batch.samples,
-                        pad_token_id=pad_token_id,
+            step_start = time.perf_counter()
+            try:
+                collated = collate_training_samples(
+                    samples=resolved_batch.samples,
+                    pad_token_id=pad_token_id,
+                )
+
+                input_ids = collated.input_ids.to(device=device, non_blocking=True)
+                labels = collated.labels.to(device=device, non_blocking=True)
+                attention_mask = collated.attention_mask.to(device=device, non_blocking=True)
+                advantages = collated.advantages.to(device=device, non_blocking=True)
+
+                with sync_context:
+                    logits = _forward_logits(model, input_ids=input_ids, attention_mask=attention_mask)
+                    loss_output = compute_advantage_weighted_causal_lm_loss(
+                        logits=logits,
+                        labels=labels,
+                        advantages=advantages,
+                        advantage_clip=config.advantage_clip,
                     )
 
-                    input_ids = collated.input_ids.to(device=device, non_blocking=True)
-                    labels = collated.labels.to(device=device, non_blocking=True)
-                    attention_mask = collated.attention_mask.to(device=device, non_blocking=True)
-                    advantages = collated.advantages.to(device=device, non_blocking=True)
-
-                    with sync_context:
-                        logits = _forward_logits(model, input_ids=input_ids, attention_mask=attention_mask)
-                        loss_output = compute_advantage_weighted_causal_lm_loss(
-                            logits=logits,
-                            labels=labels,
-                            advantages=advantages,
-                            advantage_clip=config.advantage_clip,
-                        )
-
-                        loss = loss_output.loss / config.grad_accum_steps
-                        loss.backward()
-                except RuntimeError as exc:
-                    if not _is_cuda_oom_exception(exc):
-                        raise
-                    optimizer.zero_grad(set_to_none=True)
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    _print_cuda_oom_stderr(
-                        rank=rank,
-                        iteration_index=iteration_index,
-                        batch_index=resolved_batch.batch_index,
-                        next_batch_size=initial_batch_size,
-                        will_retry=False,
-                    )
+                    loss = loss_output.loss / config.grad_accum_steps
+                    loss.backward()
+            except RuntimeError as exc:
+                if not _is_cuda_oom_exception(exc):
                     raise
+                optimizer.zero_grad(set_to_none=True)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                _print_cuda_oom_stderr(
+                    rank=rank,
+                    iteration_index=iteration_index,
+                    batch_index=resolved_batch.batch_index,
+                    next_batch_size=initial_batch_size,
+                    will_retry=False,
+                )
+                raise
 
-                step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
-                throughput_samples_per_sec = float(len(resolved_batch.samples)) / step_elapsed_sec
-                gpu_memory_usage_pct = 100.0 * _gpu_memory_utilization(device)
-                print(_json_key_value("throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"))
-                print(_json_key_value("batch_size", str(len(resolved_batch.samples))))
-                print(_json_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}"))
-                if _is_primary_rank():
-                    print(_json_key_value("global_step", str(global_step)))
-                    print(_json_key_value("iteration", str(iteration_index)))
-                    print(_json_key_value("batch_index", str(resolved_batch.batch_index)))
-                    for stat_key, stat_value in loss_output.stats.items():
-                        print(_json_key_value(stat_key, f"{stat_value:.6f}"))
+            step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
+            throughput_samples_per_sec = float(len(resolved_batch.samples)) / step_elapsed_sec
+            gpu_memory_usage_pct = 100.0 * _gpu_memory_utilization(device)
+            print(_json_key_value("throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"))
+            print(_json_key_value("batch_size", str(len(resolved_batch.samples))))
+            print(_json_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}"))
+            if _is_primary_rank():
+                print(_json_key_value("global_step", str(global_step)))
+                print(_json_key_value("iteration", str(iteration_index)))
+                print(_json_key_value("batch_index", str(resolved_batch.batch_index)))
+                for stat_key, stat_value in loss_output.stats.items():
+                    print(_json_key_value(stat_key, f"{stat_value:.6f}"))
 
-                accumulation_step += 1
+            accumulation_step += 1
+            samples_trained += len(resolved_batch.samples)
 
-                if accumulation_step == config.grad_accum_steps:
-                    optimizer.step()
-                    optimizer.zero_grad(set_to_none=True)
-                    accumulation_step = 0
-                    global_step += 1
+            if accumulation_step == config.grad_accum_steps:
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                accumulation_step = 0
+                global_step += 1
 
-                    now = time.monotonic()
-                    elapsed_since_last_log_sec = now - last_log_time
-                    if _is_primary_rank() and elapsed_since_last_log_sec >= config.log_time_interval:
-                        log_payload: dict[str, float | int] = {
-                            "step": global_step,
-                            "iteration": iteration_index,
-                            "batch_index": resolved_batch.batch_index,
-                            "next_batch_size": initial_batch_size,
-                        }
-                        for key, value in loss_output.stats.items():
-                            log_payload[key] = value
-                        _log_json_line(logs_path, log_payload)
-                        last_log_time = now
+                now = time.monotonic()
+                elapsed_since_last_log_sec = now - last_log_time
+                if _is_primary_rank() and elapsed_since_last_log_sec >= config.log_time_interval:
+                    log_payload: dict[str, float | int] = {
+                        "step": global_step,
+                        "iteration": iteration_index,
+                        "batch_index": resolved_batch.batch_index,
+                        "next_batch_size": initial_batch_size,
+                    }
+                    for key, value in loss_output.stats.items():
+                        log_payload[key] = value
+                    _log_json_line(logs_path, log_payload)
+                    last_log_time = now
 
-                    elapsed_since_last_checkpoint_sec = now - last_checkpoint_save_time
-                    if elapsed_since_last_checkpoint_sec >= config.checkpoint_save_time_interval:
-                        next_iteration_index, next_batch_cursor = _compute_next_position(
-                            iteration_index=iteration_index,
-                            local_batch_cursor=local_batch_cursor,
-                            local_batch_count=len(local_batches),
+                elapsed_since_last_checkpoint_sec = now - last_checkpoint_save_time
+                if elapsed_since_last_checkpoint_sec >= config.checkpoint_save_time_interval:
+                    next_iteration_index, next_batch_cursor = _compute_next_position(
+                        iteration_index=iteration_index,
+                        local_batch_cursor=local_batch_cursor,
+                        local_batch_count=len(local_batches),
+                    )
+                    checkpoint_tag = "checkpoints"
+                    if _is_primary_rank():
+                        print(
+                            "[status] "
+                            f"saving_periodic_checkpoint=1 elapsed_sec={elapsed_since_last_checkpoint_sec:.2f} "
+                            f"global_step={global_step} iteration={iteration_index} "
+                            f"batch_index={resolved_batch.batch_index}"
                         )
-                        checkpoint_tag = "checkpoints"
-                        if _is_primary_rank():
-                            print(
-                                "[status] "
-                                f"saving_periodic_checkpoint=1 elapsed_sec={elapsed_since_last_checkpoint_sec:.2f} "
-                                f"global_step={global_step} iteration={iteration_index} "
-                                f"batch_index={resolved_batch.batch_index}"
-                            )
-                        _save_checkpoint(
-                            model=model,
-                            optimizer=optimizer,
-                            output_dir=checkpoints_parent_dir,
-                            checkpoint_tag=checkpoint_tag,
-                            training_plan=config.training_plan,
-                            global_step=global_step,
-                            next_iteration_index=next_iteration_index,
-                            next_batch_cursor=next_batch_cursor,
-                            accumulation_step=accumulation_step,
-                            next_batch_size=initial_batch_size,
-                        )
-                        last_checkpoint_save_time = now
+                    _save_checkpoint(
+                        model=model,
+                        optimizer=optimizer,
+                        output_dir=checkpoints_parent_dir,
+                        checkpoint_tag=checkpoint_tag,
+                        training_plan=config.training_plan,
+                        global_step=global_step,
+                        next_iteration_index=next_iteration_index,
+                        next_batch_cursor=next_batch_cursor,
+                        accumulation_step=accumulation_step,
+                        next_batch_size=initial_batch_size,
+                    )
+                    last_checkpoint_save_time = now
+
+            iteration_index, local_batch_cursor = _compute_next_position(
+                iteration_index=iteration_index,
+                local_batch_cursor=local_batch_cursor,
+                local_batch_count=len(local_batches),
+            )
 
         if accumulation_step > 0:
             optimizer.step()
@@ -1143,8 +1146,8 @@ def train(config: TrainConfig) -> None:
             checkpoint_tag="checkpoints",
             training_plan=config.training_plan,
             global_step=global_step,
-            next_iteration_index=config.num_iterations,
-            next_batch_cursor=0,
+            next_iteration_index=iteration_index,
+            next_batch_cursor=local_batch_cursor,
             accumulation_step=accumulation_step,
             next_batch_size=initial_batch_size,
         )
@@ -1161,7 +1164,7 @@ def train(config: TrainConfig) -> None:
             print(
                 "[status] "
                 f"finished_training=1 global_step={global_step} "
-                f"completed_iterations={config.num_iterations} "
+                f"training_time={config.training_time:.1f}s "
                 f"final_model_output_parent_dir={final_model_output_parent_dir}"
             )
         _shutdown_distributed_process_group()
@@ -1170,14 +1173,15 @@ def train(config: TrainConfig) -> None:
     lazy_loader = LazyResolvedBatchLoader(
         training_trajectory_sqlite_path=config.training_trajectory_sqlite_path,
         model_official_name=expected_model_name,
-        first_n_training_samples=config.first_n_training_samples,
+        first_n_training_samples=0,
     )
     try:
         fallback_sample_index = resume_state.next_batch_cursor * initial_batch_size
         resume_sample_index = resume_state.next_sample_index
         if resume_sample_index == 0 and resume_state.next_batch_cursor > 0:
             resume_sample_index = fallback_sample_index
-        assert resume_sample_index <= lazy_loader.sample_count, "resume sample index is out of range"
+        if resume_sample_index >= lazy_loader.sample_count:
+            resume_sample_index = 0
 
         adaptive_state = AdaptiveBatchState(
             next_batch_size=max(1, min(lazy_loader.sample_count, resume_state.next_batch_size)),
@@ -1233,222 +1237,227 @@ def train(config: TrainConfig) -> None:
 
         global_step = resume_state.global_step
         accumulation_step = resume_state.accumulation_step
-        last_checkpoint_save_time = time.monotonic()
+        training_start_time = time.monotonic()
+        training_end_time = training_start_time + config.training_time
+        last_checkpoint_save_time = training_start_time
         last_log_time = last_checkpoint_save_time
+        last_master_progress_time = training_start_time - 1.0
+        samples_trained = 0
         optimizer.zero_grad(set_to_none=True)
 
-        if resume_state.next_iteration_index >= config.num_iterations:
-            print(
-                "[status] "
-                f"rank={rank} training_already_complete=1 "
-                f"next_iteration={resume_state.next_iteration_index}"
+        iteration_index = max(0, resume_state.next_iteration_index)
+        sample_index = resume_sample_index
+        batch_index = max(0, resume_state.next_batch_cursor)
+
+        while time.monotonic() < training_end_time:
+            now = time.monotonic()
+            if _is_primary_rank() and now - last_master_progress_time >= 1.0:
+                elapsed_time = min(config.training_time, now - training_start_time)
+                progress = min(1.0, elapsed_time / config.training_time)
+                label = (
+                    f"Training: {samples_trained} samples trained "
+                    f"({elapsed_time:.1f}s/{config.training_time:.1f}s)"
+                )
+                print(_json_master_progress(progress, label))
+                last_master_progress_time = now
+
+            requested_batch_size = min(adaptive_state.next_batch_size, lazy_loader.sample_count - sample_index)
+            if requested_batch_size <= 0:
+                sample_index = 0
+                batch_index = 0
+                iteration_index += 1
+                continue
+
+            worker_progress = float(sample_index) / lazy_loader.sample_count
+            print(_json_worker_progress(f"rank{rank}", worker_progress, f"Sample {sample_index}/{lazy_loader.sample_count}"))
+
+            window = lazy_loader.resolve_batch(
+                sample_index=sample_index,
+                batch_size=requested_batch_size,
+                batch_index=batch_index,
             )
-            _shutdown_distributed_process_group()
-            return
+            resolved_batch = window.resolved_batch
+            for sample in resolved_batch.samples:
+                if len(sample.model_official_name.strip()) > 0:
+                    data_model_name = sample.model_official_name.strip()
+                for token_id in sample.input_ids:
+                    assert token_id >= 0, "input_ids must be non-negative"
+                    if token_id > max_input_token_id:
+                        max_input_token_id = token_id
+                for token_id in sample.labels:
+                    if token_id == -100:
+                        continue
+                    assert token_id >= 0, "supervised label token ids must be non-negative"
+                    if token_id > max_label_token_id:
+                        max_label_token_id = token_id
 
-        for iteration_index in range(resume_state.next_iteration_index, config.num_iterations):
-            if _is_primary_rank():
-                iteration_progress = (iteration_index + 1) / config.num_iterations
-                print(_json_master_progress(float(iteration_progress), f"Iteration {iteration_index + 1}/{config.num_iterations}"))
-            sample_index = resume_sample_index if iteration_index == resume_state.next_iteration_index else 0
-            batch_index = 0
-            while sample_index < lazy_loader.sample_count:
-                requested_batch_size = min(adaptive_state.next_batch_size, lazy_loader.sample_count - sample_index)
-                if requested_batch_size <= 0:
-                    break
+            assert data_model_name == expected_model_name, (
+                "training data model_official_name must match model_path"
+            )
+            assert max_input_token_id < model_vocab_size, "input_ids contain token id out of model vocab range"
+            assert max_label_token_id < model_vocab_size, "labels contain token id out of model vocab range"
 
-                worker_progress = float(sample_index) / lazy_loader.sample_count
-                print(_json_worker_progress(f"rank{rank}", worker_progress, f"Sample {sample_index}/{lazy_loader.sample_count}"))
+            should_sync = (accumulation_step + 1) == config.grad_accum_steps
+            sync_context = nullcontext()
 
-                window = lazy_loader.resolve_batch(
-                    sample_index=sample_index,
-                    batch_size=requested_batch_size,
+            step_start = time.perf_counter()
+            try:
+                collated = collate_training_samples(
+                    samples=resolved_batch.samples,
+                    pad_token_id=pad_token_id,
+                )
+
+                input_ids = collated.input_ids.to(device=device, non_blocking=True)
+                labels = collated.labels.to(device=device, non_blocking=True)
+                attention_mask = collated.attention_mask.to(device=device, non_blocking=True)
+                advantages = collated.advantages.to(device=device, non_blocking=True)
+
+                with sync_context:
+                    logits = _forward_logits(model, input_ids=input_ids, attention_mask=attention_mask)
+                    loss_output = compute_advantage_weighted_causal_lm_loss(
+                        logits=logits,
+                        labels=labels,
+                        advantages=advantages,
+                        advantage_clip=config.advantage_clip,
+                    )
+
+                    loss = loss_output.loss / config.grad_accum_steps
+                    loss.backward()
+            except RuntimeError as exc:
+                if not _is_cuda_oom_exception(exc):
+                    raise
+                optimizer.zero_grad(set_to_none=True)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                reduced_batch_size = max(1, adaptive_state.next_batch_size // 2)
+                will_retry = adaptive_state.next_batch_size > 1
+                _print_cuda_oom_stderr(
+                    rank=rank,
+                    iteration_index=iteration_index,
                     batch_index=batch_index,
+                    next_batch_size=reduced_batch_size,
+                    will_retry=will_retry,
                 )
-                resolved_batch = window.resolved_batch
-
-                for sample in resolved_batch.samples:
-                    if len(sample.model_official_name.strip()) > 0:
-                        data_model_name = sample.model_official_name.strip()
-                    for token_id in sample.input_ids:
-                        assert token_id >= 0, "input_ids must be non-negative"
-                        if token_id > max_input_token_id:
-                            max_input_token_id = token_id
-                    for token_id in sample.labels:
-                        if token_id == -100:
-                            continue
-                        assert token_id >= 0, "supervised label token ids must be non-negative"
-                        if token_id > max_label_token_id:
-                            max_label_token_id = token_id
-
-                assert data_model_name == expected_model_name, (
-                    "training data model_official_name must match model_path"
+                if adaptive_state.next_batch_size <= 1:
+                    raise
+                adaptive_state = AdaptiveBatchState(
+                    next_batch_size=reduced_batch_size,
+                    next_batch_size_float=float(reduced_batch_size),
+                    velocity=0.0,
+                    throughput_ema=adaptive_state.throughput_ema,
+                    best_throughput_ema=adaptive_state.best_throughput_ema,
+                    memory_utilization_ema=adaptive_state.memory_utilization_ema,
+                    previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
                 )
-                assert max_input_token_id < model_vocab_size, "input_ids contain token id out of model vocab range"
-                assert max_label_token_id < model_vocab_size, "labels contain token id out of model vocab range"
-
-                should_sync = (accumulation_step + 1) == config.grad_accum_steps
-                sync_context = nullcontext()
-
-                step_start = time.perf_counter()
-                try:
-                    collated = collate_training_samples(
-                        samples=resolved_batch.samples,
-                        pad_token_id=pad_token_id,
-                    )
-
-                    input_ids = collated.input_ids.to(device=device, non_blocking=True)
-                    labels = collated.labels.to(device=device, non_blocking=True)
-                    attention_mask = collated.attention_mask.to(device=device, non_blocking=True)
-                    advantages = collated.advantages.to(device=device, non_blocking=True)
-
-                    with sync_context:
-                        logits = _forward_logits(model, input_ids=input_ids, attention_mask=attention_mask)
-                        loss_output = compute_advantage_weighted_causal_lm_loss(
-                            logits=logits,
-                            labels=labels,
-                            advantages=advantages,
-                            advantage_clip=config.advantage_clip,
-                        )
-
-                        loss = loss_output.loss / config.grad_accum_steps
-                        loss.backward()
-                except RuntimeError as exc:
-                    if not _is_cuda_oom_exception(exc):
-                        raise
-                    optimizer.zero_grad(set_to_none=True)
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    reduced_batch_size = max(1, adaptive_state.next_batch_size // 2)
-                    will_retry = adaptive_state.next_batch_size > 1
-                    _print_cuda_oom_stderr(
-                        rank=rank,
-                        iteration_index=iteration_index,
-                        batch_index=batch_index,
-                        next_batch_size=reduced_batch_size,
-                        will_retry=will_retry,
-                    )
-                    if adaptive_state.next_batch_size <= 1:
-                        raise
-                    adaptive_state = AdaptiveBatchState(
-                        next_batch_size=reduced_batch_size,
-                        next_batch_size_float=float(reduced_batch_size),
-                        velocity=0.0,
-                        throughput_ema=adaptive_state.throughput_ema,
-                        best_throughput_ema=adaptive_state.best_throughput_ema,
-                        memory_utilization_ema=adaptive_state.memory_utilization_ema,
-                        previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-                    )
-                    if _is_primary_rank():
-                        _log_json_line(
-                            logs_path,
-                            {
-                                "step": global_step,
-                                "iteration": iteration_index,
-                                "batch_index": batch_index,
-                                "oom": 1,
-                                "next_batch_size": adaptive_state.next_batch_size,
-                                "next_batch_size_float": adaptive_state.next_batch_size_float,
-                            },
-                        )
-                    continue
-
-                step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
-                throughput_samples_per_sec = float(len(resolved_batch.samples)) / step_elapsed_sec
-                measured_tokens_per_sample = float(
-                    collated.attention_mask.sum(dim=1).float().mean().item()
-                )
-                gpu_memory_utilization = _gpu_memory_utilization(device)
-                gpu_memory_usage_pct = 100.0 * gpu_memory_utilization
-                print(_json_key_value("throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"))
-                print(_json_key_value("batch_size", str(len(resolved_batch.samples))))
-                print(_json_key_value("requested_batch_size", str(requested_batch_size)))
-                print(_json_key_value("next_batch_size", str(adaptive_state.next_batch_size)))
-                print(_json_key_value("next_batch_size_int", str(adaptive_state.next_batch_size)))
-                print(_json_key_value("next_batch_size_float", f"{adaptive_state.next_batch_size_float:.2f}"))
-                print(_json_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}"))
                 if _is_primary_rank():
-                    print(_json_key_value("global_step", str(global_step)))
-                    print(_json_key_value("iteration", str(iteration_index)))
-                    print(_json_key_value("batch_index", str(batch_index)))
-                    for stat_key, stat_value in loss_output.stats.items():
-                        print(_json_key_value(stat_key, f"{stat_value:.6f}"))
-
-                accumulation_step += 1
-                sample_index = window.next_sample_index
-                batch_index += 1
-
-                if accumulation_step == config.grad_accum_steps:
-                    optimizer.step()
-                    optimizer.zero_grad(set_to_none=True)
-                    accumulation_step = 0
-                    global_step += 1
-
-                    adaptive_state = _update_adaptive_batch_state(
-                        adaptive_state=adaptive_state,
-                        measured_throughput=throughput_samples_per_sec,
-                        measured_memory_utilization=gpu_memory_utilization,
-                        measured_tokens_per_sample=measured_tokens_per_sample,
-                        target_memory_utilization=target_gpu_memory_utilization,
-                        min_batch_size=1,
-                        max_batch_size=lazy_loader.sample_count,
-                    )
-
-                    now = time.monotonic()
-                    elapsed_since_last_log_sec = now - last_log_time
-                    if _is_primary_rank() and elapsed_since_last_log_sec >= config.log_time_interval:
-                        log_payload: dict[str, float | int] = {
+                    _log_json_line(
+                        logs_path,
+                        {
                             "step": global_step,
                             "iteration": iteration_index,
-                            "batch_index": resolved_batch.batch_index,
+                            "batch_index": batch_index,
+                            "oom": 1,
                             "next_batch_size": adaptive_state.next_batch_size,
                             "next_batch_size_float": adaptive_state.next_batch_size_float,
-                            "actual_batch_size": len(resolved_batch.samples),
-                            "step_time_sec": float(step_elapsed_sec),
-                            "throughput_samples_per_sec": throughput_samples_per_sec,
-                            "gpu_memory_usage_pct": gpu_memory_usage_pct,
-                        }
-                        for key, value in loss_output.stats.items():
-                            log_payload[key] = value
-                        _log_json_line(logs_path, log_payload)
-                        last_log_time = now
+                        },
+                    )
+                continue
 
-                    elapsed_since_last_checkpoint_sec = now - last_checkpoint_save_time
-                    if elapsed_since_last_checkpoint_sec >= config.checkpoint_save_time_interval:
-                        next_iteration_index = iteration_index
-                        next_sample_index = sample_index
-                        if next_sample_index >= lazy_loader.sample_count:
-                            next_iteration_index += 1
-                            next_sample_index = 0
-                        checkpoint_tag = "checkpoints"
-                        if _is_primary_rank():
-                            print(
-                                "[status] "
-                                f"saving_periodic_checkpoint=1 elapsed_sec={elapsed_since_last_checkpoint_sec:.2f} "
-                                f"global_step={global_step} iteration={iteration_index} "
-                                f"batch_index={batch_index} next_sample_index={next_sample_index}"
-                            )
-                        _save_checkpoint(
-                            model=model,
-                            optimizer=optimizer,
-                            output_dir=checkpoints_parent_dir,
-                            checkpoint_tag=checkpoint_tag,
-                            training_plan=config.training_plan,
-                            global_step=global_step,
-                            next_iteration_index=next_iteration_index,
-                            next_batch_cursor=max(0, next_sample_index // max(1, adaptive_state.next_batch_size)),
-                            accumulation_step=accumulation_step,
-                            next_sample_index=next_sample_index,
-                            next_batch_size=adaptive_state.next_batch_size,
-                            adaptive_velocity=adaptive_state.velocity,
-                            adaptive_throughput_ema=adaptive_state.throughput_ema,
-                            adaptive_best_throughput_ema=adaptive_state.best_throughput_ema,
-                            adaptive_memory_utilization_ema=adaptive_state.memory_utilization_ema,
-                            adaptive_previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-                            adaptive_next_batch_size_float=adaptive_state.next_batch_size_float,
+            step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
+            throughput_samples_per_sec = float(len(resolved_batch.samples)) / step_elapsed_sec
+            measured_tokens_per_sample = float(
+                collated.attention_mask.sum(dim=1).float().mean().item()
+            )
+            gpu_memory_utilization = _gpu_memory_utilization(device)
+            gpu_memory_usage_pct = 100.0 * gpu_memory_utilization
+            print(_json_key_value("throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"))
+            print(_json_key_value("batch_size", str(len(resolved_batch.samples))))
+            print(_json_key_value("requested_batch_size", str(requested_batch_size)))
+            print(_json_key_value("next_batch_size", str(adaptive_state.next_batch_size)))
+            print(_json_key_value("next_batch_size_int", str(adaptive_state.next_batch_size)))
+            print(_json_key_value("next_batch_size_float", f"{adaptive_state.next_batch_size_float:.2f}"))
+            print(_json_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}"))
+            if _is_primary_rank():
+                print(_json_key_value("global_step", str(global_step)))
+                print(_json_key_value("iteration", str(iteration_index)))
+                print(_json_key_value("batch_index", str(batch_index)))
+                for stat_key, stat_value in loss_output.stats.items():
+                    print(_json_key_value(stat_key, f"{stat_value:.6f}"))
+
+            accumulation_step += 1
+            samples_trained += len(resolved_batch.samples)
+            sample_index = window.next_sample_index
+            batch_index += 1
+            if sample_index >= lazy_loader.sample_count:
+                sample_index = 0
+                batch_index = 0
+                iteration_index += 1
+
+            if accumulation_step == config.grad_accum_steps:
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                accumulation_step = 0
+                global_step += 1
+
+                adaptive_state = _update_adaptive_batch_state(
+                    adaptive_state=adaptive_state,
+                    measured_throughput=throughput_samples_per_sec,
+                    measured_memory_utilization=gpu_memory_utilization,
+                    measured_tokens_per_sample=measured_tokens_per_sample,
+                    target_memory_utilization=target_gpu_memory_utilization,
+                    min_batch_size=1,
+                    max_batch_size=lazy_loader.sample_count,
+                )
+
+                now = time.monotonic()
+                elapsed_since_last_log_sec = now - last_log_time
+                if _is_primary_rank() and elapsed_since_last_log_sec >= config.log_time_interval:
+                    log_payload: dict[str, float | int] = {
+                        "step": global_step,
+                        "iteration": iteration_index,
+                        "batch_index": resolved_batch.batch_index,
+                        "next_batch_size": adaptive_state.next_batch_size,
+                        "next_batch_size_float": adaptive_state.next_batch_size_float,
+                        "actual_batch_size": len(resolved_batch.samples),
+                        "step_time_sec": float(step_elapsed_sec),
+                        "throughput_samples_per_sec": throughput_samples_per_sec,
+                        "gpu_memory_usage_pct": gpu_memory_usage_pct,
+                    }
+                    for key, value in loss_output.stats.items():
+                        log_payload[key] = value
+                    _log_json_line(logs_path, log_payload)
+                    last_log_time = now
+
+                elapsed_since_last_checkpoint_sec = now - last_checkpoint_save_time
+                if elapsed_since_last_checkpoint_sec >= config.checkpoint_save_time_interval:
+                    checkpoint_tag = "checkpoints"
+                    if _is_primary_rank():
+                        print(
+                            "[status] "
+                            f"saving_periodic_checkpoint=1 elapsed_sec={elapsed_since_last_checkpoint_sec:.2f} "
+                            f"global_step={global_step} iteration={iteration_index} "
+                            f"batch_index={batch_index} next_sample_index={sample_index}"
                         )
-                        last_checkpoint_save_time = now
-            resume_sample_index = 0
+                    _save_checkpoint(
+                        model=model,
+                        optimizer=optimizer,
+                        output_dir=checkpoints_parent_dir,
+                        checkpoint_tag=checkpoint_tag,
+                        training_plan=config.training_plan,
+                        global_step=global_step,
+                        next_iteration_index=iteration_index,
+                        next_batch_cursor=batch_index,
+                        accumulation_step=accumulation_step,
+                        next_sample_index=sample_index,
+                        next_batch_size=adaptive_state.next_batch_size,
+                        adaptive_velocity=adaptive_state.velocity,
+                        adaptive_throughput_ema=adaptive_state.throughput_ema,
+                        adaptive_best_throughput_ema=adaptive_state.best_throughput_ema,
+                        adaptive_memory_utilization_ema=adaptive_state.memory_utilization_ema,
+                        adaptive_previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
+                        adaptive_next_batch_size_float=adaptive_state.next_batch_size_float,
+                    )
+                    last_checkpoint_save_time = now
 
         if accumulation_step > 0:
             optimizer.step()
@@ -1463,10 +1472,10 @@ def train(config: TrainConfig) -> None:
             checkpoint_tag="checkpoints",
             training_plan=config.training_plan,
             global_step=global_step,
-            next_iteration_index=config.num_iterations,
-            next_batch_cursor=0,
+            next_iteration_index=iteration_index,
+            next_batch_cursor=batch_index,
             accumulation_step=accumulation_step,
-            next_sample_index=0,
+            next_sample_index=sample_index,
             next_batch_size=adaptive_state.next_batch_size,
             adaptive_velocity=adaptive_state.velocity,
             adaptive_throughput_ema=adaptive_state.throughput_ema,
@@ -1490,7 +1499,7 @@ def train(config: TrainConfig) -> None:
         print(
             "[status] "
             f"finished_training=1 global_step={global_step} "
-            f"completed_iterations={config.num_iterations} "
+            f"training_time={config.training_time:.1f}s "
             f"final_model_output_parent_dir={final_model_output_parent_dir}"
         )
     _shutdown_distributed_process_group()

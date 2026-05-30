@@ -4,14 +4,12 @@ use serde::{Deserialize, Serialize};
 pub struct PythonTrainingConfig {
     #[serde(flatten)]
     pub common: PythonTrainingConfigCommon,
+    pub training_time: f32,
     // paths
     pub model_parent_dir: String,
     pub training_trajectory_sqlite_path: String,
     pub checkpoints_parent_dir: String,
     pub final_model_output_parent_dir: String, // final model writes to model/ under this folder
-    // orchestrator config
-    pub first_n_training_samples: Option<usize>,
-    pub num_iterations: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

@@ -15,7 +15,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--advantage-clip", type=float, required=True)
     parser.add_argument("--learning-rate", type=float, required=True)
     parser.add_argument("--weight-decay", type=float, required=True)
-    parser.add_argument("--num-iterations", type=int, required=True)
+    parser.add_argument("--training-time", type=float, required=True)
     parser.add_argument("--grad-accum-steps", type=int, required=True)
     parser.add_argument("--log-time-interval", type=float, required=True)
     parser.add_argument("--checkpoint-save-time-interval", type=float, required=True)
@@ -25,7 +25,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lora-target-modules-csv", type=str, required=True)
     parser.add_argument("--resume-checkpoint-tag", type=str, required=False, default="auto")
     parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--first-n-training-samples", type=int, required=False, default=0)
     return parser
 
 
@@ -42,7 +41,7 @@ def main() -> None:
         advantage_clip=args.advantage_clip,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
-        num_iterations=args.num_iterations,
+        training_time=args.training_time,
         grad_accum_steps=args.grad_accum_steps,
         log_time_interval=args.log_time_interval,
         checkpoint_save_time_interval=args.checkpoint_save_time_interval,
@@ -52,7 +51,6 @@ def main() -> None:
         lora_target_modules_csv=args.lora_target_modules_csv,
         resume_checkpoint_tag=args.resume_checkpoint_tag,
         seed=args.seed,
-        first_n_training_samples=args.first_n_training_samples,
     )
     train(config)
 

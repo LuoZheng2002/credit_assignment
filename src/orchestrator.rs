@@ -45,8 +45,7 @@ pub struct Orchestrator {
     pub progress: OrchestrationProgress,
     // for training
     pub training_config_common: PythonTrainingConfigCommon,
-    pub first_n_training_samples: Option<usize>,
-    pub num_iterations: usize,
+    pub training_time: f32,
     pub num_gpus: usize,
 }
 
@@ -286,12 +285,11 @@ impl Orchestrator {
         // first we need to write the training config to the expected location
         let training_config = PythonTrainingConfig {
             common: self.training_config_common.clone(),
+            training_time: self.training_time,
             model_parent_dir: self.epoch_dir::<M>(epoch),
             training_trajectory_sqlite_path,
             checkpoints_parent_dir: self.epoch_dir::<M>(epoch),
             final_model_output_parent_dir: self.epoch_dir::<M>(epoch + 1),
-            first_n_training_samples: self.first_n_training_samples,
-            num_iterations: self.num_iterations,
         };
         let training_config_path = self.python_training_config_path::<M>(epoch);
         write_toml(&training_config_path, &training_config).unwrap();
