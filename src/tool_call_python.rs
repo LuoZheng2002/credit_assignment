@@ -57,33 +57,43 @@ fn blocking_python_code_task(code: String) -> PyResult<String> {
 
         let io_redirect_code = r#"
 import ast
+import contextlib
 import io
 import sys
 import numpy as np
 import sympy as sp
 from sympy import *
 buf = io.StringIO()
-sys.stdout = buf
+
+class _NullWriter:
+    def write(self, _text):
+        return 0
+
+    def flush(self):
+        return None
+
+_stderr_sink = _NullWriter()
 
 def _execute_with_trailing_expression(code_text: str, namespace: dict):
-    tree = ast.parse(code_text, mode='exec')
-    if len(tree.body) == 0:
-        return
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(_stderr_sink):
+        tree = ast.parse(code_text, mode='exec')
+        if len(tree.body) == 0:
+            return
 
-    last_stmt = tree.body[-1]
-    if isinstance(last_stmt, ast.Expr):
-        prefix_module = ast.Module(body=tree.body[:-1], type_ignores=[])
-        ast.fix_missing_locations(prefix_module)
-        if len(prefix_module.body) > 0:
-            exec(compile(prefix_module, '<tool>', 'exec'), namespace, namespace)
+        last_stmt = tree.body[-1]
+        if isinstance(last_stmt, ast.Expr):
+            prefix_module = ast.Module(body=tree.body[:-1], type_ignores=[])
+            ast.fix_missing_locations(prefix_module)
+            if len(prefix_module.body) > 0:
+                exec(compile(prefix_module, '<tool>', 'exec'), namespace, namespace)
 
-        expr = ast.Expression(last_stmt.value)
-        ast.fix_missing_locations(expr)
-        expr_value = eval(compile(expr, '<tool>', 'eval'), namespace, namespace)
-        if expr_value is not None:
-            print(repr(expr_value))
-    else:
-        exec(compile(tree, '<tool>', 'exec'), namespace, namespace)
+            expr = ast.Expression(last_stmt.value)
+            ast.fix_missing_locations(expr)
+            expr_value = eval(compile(expr, '<tool>', 'eval'), namespace, namespace)
+            if expr_value is not None:
+                print(repr(expr_value))
+        else:
+            exec(compile(tree, '<tool>', 'exec'), namespace, namespace)
 "#;
 
         py.run(

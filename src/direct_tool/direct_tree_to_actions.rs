@@ -7,6 +7,7 @@ use std::sync::{
 use reqwest::Client;
 use research_utility::log_message::{log_error, log_info, log_key_value_pair, log_warning};
 
+use crate::direct_tool::direct_rollout::StopRequestedError;
 use crate::direct_tool::direct_trajectory::{DirectTrajectory, FinalAnswer, TrajectoryContent};
 use crate::judge_correctness::judge_final_answer;
 use crate::llm_model::MyTokenizer;
@@ -161,12 +162,8 @@ impl<M: LlmModelMarker> DirectTree<M> {
         client: Client,
         sglang_waiting_workers: Arc<AtomicUsize>,
         stop_signal: Arc<AtomicBool>,
-        // rng: &mut StdRng,
-    ) -> Vec<DirectTreeAction<M>> {
-        if stop_signal.load(Ordering::Relaxed) {
-            return vec![];
-        }
-        match self.status {
+    ) -> Result<Vec<DirectTreeAction<M>>, StopRequestedError> {
+        let result = match self.status {
             DirectTreeStatus::CreatingTrunkTrajectory => {
                 assert!(self.current_num_trunks < self.rollout_config.max_num_trunks);
                 let root_id = self
@@ -179,10 +176,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                         sglang_waiting_workers.clone(),
                         stop_signal.clone(),
                     )
-                    .await;
-                if stop_signal.load(Ordering::Relaxed) {
-                    return vec![];
-                }
+                    .await?;
                 let correctness_judgment = judge_final_answer(
                     &final_answer,
                     &self.question.correct_answer,
@@ -274,10 +268,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                         sglang_waiting_workers,
                         stop_signal.clone(),
                     )
-                    .await;
-                if stop_signal.load(Ordering::Relaxed) {
-                    return vec![];
-                }
+                    .await?;
                 let correctness_judgment = judge_final_answer(
                     &final_answer,
                     &self.question.correct_answer,
@@ -308,10 +299,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                         sglang_waiting_workers.clone(),
                         stop_signal.clone(),
                     )
-                    .await;
-                if stop_signal.load(Ordering::Relaxed) {
-                    return vec![];
-                }
+                    .await?;
                 let correctness_judgment = judge_final_answer(
                     &final_answer,
                     &self.question.correct_answer,
@@ -373,7 +361,8 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 // the tree is complete, no more actions can be taken
                 unreachable!()
             }
-        }
+        };
+        Ok(result)
     }
     fn node_uncertainty_score_from_parent_and_children(
         parent_uncertainty_score: f32,
@@ -518,7 +507,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
         sglang_waiting_workers: Arc<AtomicUsize>,
         stop_signal: Arc<AtomicBool>,
         // rng: &mut StdRng,
-    ) -> (Vec<SegmentContent<M>>, FinalAnswer) {
+    ) -> Result<(Vec<SegmentContent<M>>, FinalAnswer), StopRequestedError> {
         let mut continuing_contents = Vec::new();
         loop {
             let trajectory = self.get_trajectory(target_segment_id, &continuing_contents);
@@ -529,7 +518,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                         "The trajectory should produce some continuing content before producing the answer"
                     );
                 }
-                return (continuing_contents, answer);
+                return Ok((continuing_contents, answer));
             }
             let next_content = generate_next_segment_content::<M>(
                 self.question.flat_id,
@@ -538,7 +527,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 sglang_waiting_workers.clone(),
                 stop_signal.clone(),
             )
-            .await;
+            .await?;
             if matches!(next_content, SegmentContent::ReasoningOrToolCall { .. }) {
                 if let Some(SegmentContent::ReasoningOrToolCall { complete, .. }) =
                     continuing_contents.last_mut()
@@ -649,18 +638,15 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     llm_callable: &M::Callable,
     sglang_waiting_workers: Arc<AtomicUsize>,
     stop_signal: Arc<AtomicBool>,
-) -> SegmentContent<M> {
+) -> Result<SegmentContent<M>, StopRequestedError> {
     let prompt_tokens = direct_trajectory_to_prompt_tokens(trajectory);
     let mut response = None;
     for trial in 1..=3 {
-        if stop_signal.load(Ordering::Relaxed) {
-            return SegmentContent::ReasoningOrToolCall {
-                tokens: single_eos_response::<M>(),
-                complete: true,
-            };
-        }
         let num_waiting_workers = sglang_waiting_workers.fetch_add(1, Ordering::SeqCst) + 1;
         log_key_value_pair("sglang_waiting_workers", num_waiting_workers.to_string());
+        if stop_signal.load(Ordering::Relaxed) {
+            return Err(StopRequestedError);
+        }
         let generation_result = llm_callable
             .generate_tokens_with_logprobs(prompt_tokens.clone(), true, 1.0, true)
             .await;
@@ -691,10 +677,11 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
             decoded_response, response.tokens
         );
     }
-    SegmentContent::ReasoningOrToolCall {
+    let result = SegmentContent::ReasoningOrToolCall {
         tokens: response,
         complete: true,
-    }
+    };
+    Ok(result)
 }
 
 async fn generate_next_segment_content<M: LlmModelMarker>(
@@ -706,7 +693,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
     sglang_waiting_workers: Arc<AtomicUsize>,
     stop_signal: Arc<AtomicBool>,
     // rng: &mut StdRng,
-) -> SegmentContent<M> {
+) -> Result<SegmentContent<M>, StopRequestedError> {
     let last_trajectory_content = trajectory
         .trajectory_contents
         .last()
@@ -722,8 +709,8 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                 sglang_waiting_workers,
                 stop_signal,
             )
-            .await;
-            new_content
+            .await?;
+            Ok(new_content)
         }
         TrajectoryContent::ReasoningOrToolCallComplete(_) => {
             if let Some(tool_call) = trajectory.try_get_last_content_tool_call() {
@@ -749,7 +736,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                 }
                 let tool_response_raw = tool_response.to_raw_content();
                 let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
-                SegmentContent::ToolResponse(response_tokenized)
+                Ok(SegmentContent::ToolResponse(response_tokenized))
             } else {
                 log_warning(format!(
                     "The model ended a sequence without a boxed answer or python tool call. Continuing generation. Flat id: {}",

@@ -140,7 +140,7 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
         let num_finished_branches = num_finished_branches.clone();
         let num_finished_trees = num_finished_trees.clone();
         join_set.spawn(async move {
-            rollout::<M>(
+            let result = rollout::<M>(
                 question,
                 rollout_config_clone,
                 posterior_calculation_config_clone,
@@ -155,6 +155,8 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
                 total_trees_to_finish,
             )
             .await;
+            // we do not care about whether the rollout is interrupted by stop signal
+            let _ = result;
             drop(owned_permit);
         });
     }
@@ -165,6 +167,9 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
 
     stop_signal.store(true, Ordering::Relaxed);
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct StopRequestedError;
 
 pub async fn rollout<M: LlmModelMarker>(
     question: HybridDatasetQuestion,
@@ -179,7 +184,7 @@ pub async fn rollout<M: LlmModelMarker>(
     num_finished_trees: Arc<AtomicUsize>,
     total_branches_to_finish: usize,
     total_trees_to_finish: usize,
-) {
+) -> Result<(), StopRequestedError> {
     let mut action_log = rollout_store
         .get(question.flat_id)
         .await
@@ -196,9 +201,6 @@ pub async fn rollout<M: LlmModelMarker>(
         question.flat_id
     ));
     loop {
-        if stop_signal.load(Ordering::Relaxed) {
-            break;
-        }
         let tree = DirectTree::<M>::from_action_log(&action_log);
         if tree.completed {
             break;
@@ -210,7 +212,7 @@ pub async fn rollout<M: LlmModelMarker>(
                 sglang_waiting_workers.clone(),
                 stop_signal.clone(),
             )
-            .await;
+            .await?;
         if new_actions.is_empty() {
             break;
         }
@@ -252,6 +254,7 @@ pub async fn rollout<M: LlmModelMarker>(
             finished, total_trees_to_finish
         ),
     );
+    Ok(())
 }
 
 pub struct RolloutProgramConfig {
