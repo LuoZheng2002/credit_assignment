@@ -31,7 +31,7 @@ class TrainConfig:
     weight_decay: float
     num_iterations: int
     grad_accum_steps: int
-    log_interval_steps: int
+    log_time_interval: float
     checkpoint_save_time_interval: float
     lora_rank: int
     lora_alpha: int
@@ -53,14 +53,20 @@ class ResumeState:
     adaptive_velocity: float = 0.0
     adaptive_throughput_ema: float = 0.0
     adaptive_best_throughput_ema: float = 0.0
+    adaptive_memory_utilization_ema: float = 0.0
+    adaptive_previous_tokens_per_sample: float = 0.0
+    adaptive_next_batch_size_float: float = 0.0
 
 
 @dataclass(frozen=True)
 class AdaptiveBatchState:
     next_batch_size: int
+    next_batch_size_float: float
     velocity: float
     throughput_ema: float
     best_throughput_ema: float
+    memory_utilization_ema: float
+    previous_tokens_per_sample: float
 
 
 def _set_seed(seed: int) -> None:
@@ -151,6 +157,16 @@ def _print_cuda_oom_stderr(
     )
 
 
+def _gpu_memory_utilization(device: torch.device) -> float:
+    if not torch.cuda.is_available() or device.type != "cuda":
+        return 0.0
+    free_bytes, total_bytes = torch.cuda.mem_get_info(device=device)
+    if total_bytes <= 0:
+        return 0.0
+    used_ratio = 1.0 - (float(free_bytes) / float(total_bytes))
+    return max(0.0, min(1.0, used_ratio))
+
+
 def _init_distributed_device() -> torch.device:
     local_rank_env = os.environ.get("LOCAL_RANK")
     if local_rank_env is None:
@@ -198,6 +214,9 @@ def _save_checkpoint(
     adaptive_velocity: float = 0.0,
     adaptive_throughput_ema: float = 0.0,
     adaptive_best_throughput_ema: float = 0.0,
+    adaptive_memory_utilization_ema: float = 0.0,
+    adaptive_previous_tokens_per_sample: float = 0.0,
+    adaptive_next_batch_size_float: float = 0.0,
 ) -> None:
     assert global_step >= 0, "global_step must be non-negative"
     assert next_iteration_index >= 0, "next_iteration_index must be non-negative"
@@ -218,6 +237,9 @@ def _save_checkpoint(
         "adaptive_velocity": adaptive_velocity,
         "adaptive_throughput_ema": adaptive_throughput_ema,
         "adaptive_best_throughput_ema": adaptive_best_throughput_ema,
+        "adaptive_memory_utilization_ema": adaptive_memory_utilization_ema,
+        "adaptive_previous_tokens_per_sample": adaptive_previous_tokens_per_sample,
+        "adaptive_next_batch_size_float": adaptive_next_batch_size_float,
         "accumulation_step": accumulation_step,
         "training_plan": training_plan,
         "rank": rank,
@@ -469,6 +491,14 @@ def _load_checkpoint(
         adaptive_velocity=float(training_state.get("adaptive_velocity", 0.0)),
         adaptive_throughput_ema=float(training_state.get("adaptive_throughput_ema", 0.0)),
         adaptive_best_throughput_ema=float(training_state.get("adaptive_best_throughput_ema", 0.0)),
+        adaptive_memory_utilization_ema=float(training_state.get("adaptive_memory_utilization_ema", 0.0)),
+        adaptive_previous_tokens_per_sample=float(training_state.get("adaptive_previous_tokens_per_sample", 0.0)),
+        adaptive_next_batch_size_float=float(
+            training_state.get(
+                "adaptive_next_batch_size_float",
+                float(training_state.get("next_batch_size", 0)),
+            )
+        ),
     )
     assert resume_state.global_step >= 0, "resume global_step must be non-negative"
     assert resume_state.next_iteration_index >= 0, "resume iteration index must be non-negative"
@@ -480,6 +510,15 @@ def _load_checkpoint(
     assert np.isfinite(
         resume_state.adaptive_best_throughput_ema
     ), "resume adaptive_best_throughput_ema must be finite"
+    assert np.isfinite(
+        resume_state.adaptive_memory_utilization_ema
+    ), "resume adaptive_memory_utilization_ema must be finite"
+    assert np.isfinite(
+        resume_state.adaptive_previous_tokens_per_sample
+    ), "resume adaptive_previous_tokens_per_sample must be finite"
+    assert np.isfinite(
+        resume_state.adaptive_next_batch_size_float
+    ), "resume adaptive_next_batch_size_float must be finite"
     assert (
         resume_state.accumulation_step == 0
     ), "resuming from partial gradient accumulation is not supported"
@@ -517,10 +556,16 @@ def _compute_next_position(
 def _update_adaptive_batch_state(
     adaptive_state: AdaptiveBatchState,
     measured_throughput: float,
+    measured_memory_utilization: float,
+    measured_tokens_per_sample: float,
+    target_memory_utilization: float,
     min_batch_size: int,
     max_batch_size: int,
 ) -> AdaptiveBatchState:
     assert measured_throughput > 0.0, "measured_throughput must be positive"
+    assert measured_memory_utilization >= 0.0, "measured_memory_utilization must be non-negative"
+    assert measured_tokens_per_sample > 0.0, "measured_tokens_per_sample must be positive"
+    assert 0.0 < target_memory_utilization < 1.0, "target_memory_utilization must be in (0, 1)"
     assert min_batch_size > 0, "min_batch_size must be positive"
     assert max_batch_size >= min_batch_size, "max_batch_size must be >= min_batch_size"
 
@@ -529,6 +574,13 @@ def _update_adaptive_batch_state(
     min_improvement_ratio = 0.01
     base_step = 0.08
     max_velocity = 0.35
+    memory_ema_alpha = 0.3
+    max_growth_ratio = 1.2
+
+    current_batch_size_float = adaptive_state.next_batch_size_float
+    if current_batch_size_float <= 0.0:
+        current_batch_size_float = float(adaptive_state.next_batch_size)
+    current_batch_size_float = max(float(min_batch_size), min(float(max_batch_size), current_batch_size_float))
 
     updated_ema = adaptive_state.throughput_ema
     if updated_ema <= 0.0:
@@ -549,24 +601,68 @@ def _update_adaptive_batch_state(
     velocity = momentum * adaptive_state.velocity + direction * base_step
     velocity = min(max_velocity, max(-max_velocity, velocity))
 
-    candidate_batch_size = int(round(adaptive_state.next_batch_size * (1.0 + velocity)))
-    if candidate_batch_size == adaptive_state.next_batch_size:
-        if velocity > 0.0:
-            candidate_batch_size += 1
-        elif velocity < 0.0:
-            candidate_batch_size -= 1
+    throughput_candidate_batch_size_float = current_batch_size_float * (1.0 + velocity)
+    throughput_candidate_batch_size_float = max(
+        float(min_batch_size),
+        min(float(max_batch_size), throughput_candidate_batch_size_float),
+    )
+
+    if throughput_candidate_batch_size_float >= float(max_batch_size) and velocity > 0.0:
+        velocity = 0.0
+    if throughput_candidate_batch_size_float <= float(min_batch_size) and velocity < 0.0:
+        velocity = 0.0
+
+    updated_memory_utilization_ema = adaptive_state.memory_utilization_ema
+    if updated_memory_utilization_ema <= 0.0:
+        updated_memory_utilization_ema = measured_memory_utilization
+    else:
+        updated_memory_utilization_ema = (
+            (1.0 - memory_ema_alpha) * adaptive_state.memory_utilization_ema
+            + memory_ema_alpha * measured_memory_utilization
+        )
+
+    safe_memory_utilization = max(updated_memory_utilization_ema, 1e-4)
+    memory_scale = target_memory_utilization / safe_memory_utilization
+    memory_target_batch_size_float = current_batch_size_float * memory_scale
+    if int(round(memory_target_batch_size_float)) == adaptive_state.next_batch_size:
+        if updated_memory_utilization_ema < target_memory_utilization:
+            memory_target_batch_size_float += 1.0
+        elif updated_memory_utilization_ema > target_memory_utilization:
+            memory_target_batch_size_float -= 1.0
+
+    previous_tokens_per_sample = max(adaptive_state.previous_tokens_per_sample, 1.0)
+    token_growth_ratio = max(1.0, measured_tokens_per_sample / previous_tokens_per_sample)
+    memory_target_batch_size_float = memory_target_batch_size_float / token_growth_ratio
+
+    candidate_batch_size_float = (
+        0.2 * throughput_candidate_batch_size_float + 0.8 * memory_target_batch_size_float
+    )
+    if updated_memory_utilization_ema > target_memory_utilization:
+        candidate_batch_size_float = min(candidate_batch_size_float, memory_target_batch_size_float)
+
+    max_allowed_next_float = current_batch_size_float * max_growth_ratio
+    candidate_batch_size_float = min(candidate_batch_size_float, max_allowed_next_float)
+    candidate_batch_size_float = max(
+        float(min_batch_size),
+        min(float(max_batch_size), candidate_batch_size_float),
+    )
+
+    candidate_batch_size = int(round(candidate_batch_size_float))
     candidate_batch_size = max(min_batch_size, min(max_batch_size, candidate_batch_size))
 
-    if candidate_batch_size == max_batch_size and velocity > 0.0:
-        velocity = 0.0
-    if candidate_batch_size == min_batch_size and velocity < 0.0:
-        velocity = 0.0
+    updated_previous_tokens_per_sample = max(
+        adaptive_state.previous_tokens_per_sample,
+        measured_tokens_per_sample,
+    )
 
     return AdaptiveBatchState(
         next_batch_size=candidate_batch_size,
+        next_batch_size_float=candidate_batch_size_float,
         velocity=velocity,
         throughput_ema=updated_ema,
         best_throughput_ema=max(best_ema, updated_ema),
+        memory_utilization_ema=updated_memory_utilization_ema,
+        previous_tokens_per_sample=updated_previous_tokens_per_sample,
     )
 
 
@@ -724,7 +820,7 @@ def _build_fsdp_model(model_path: str, device: torch.device) -> torch.nn.Module:
     return FSDP(base_model, device_id=device, mixed_precision=mixed_precision)
 
 
-def train_with_deepspeed(config: TrainConfig) -> None:
+def train(config: TrainConfig) -> None:
     assert config.training_plan in {
         "lora_current",
         "full_fsdp_backup",
@@ -734,7 +830,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     assert config.weight_decay >= 0.0, "weight_decay must be non-negative"
     assert config.num_iterations > 0, "num_iterations must be positive"
     assert config.grad_accum_steps > 0, "grad_accum_steps must be positive"
-    assert config.log_interval_steps > 0, "log_interval_steps must be positive"
+    assert config.log_time_interval > 0.0, "log_time_interval must be positive"
     assert config.checkpoint_save_time_interval > 0.0, "checkpoint_save_time_interval must be positive"
     assert len(config.resume_checkpoint_tag.strip()) > 0, "resume_checkpoint_tag cannot be empty"
     assert len(config.checkpoints_parent_dir.strip()) > 0, "checkpoints_parent_dir cannot be empty"
@@ -748,6 +844,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     rank, world_size = _get_rank_world_size()
     initial_batch_size = 1
     initial_adaptive_velocity = 0.12
+    target_gpu_memory_utilization = 0.90
 
     if _is_primary_rank():
         print(f"[status] loading_model=1 model_parent_dir={config.model_parent_dir}")
@@ -819,6 +916,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         next_sample_index=0,
         next_batch_size=initial_batch_size,
         adaptive_velocity=initial_adaptive_velocity,
+        adaptive_next_batch_size_float=float(initial_batch_size),
     )
     if len(resolved_resume_tag) > 0:
         if _is_primary_rank():
@@ -841,6 +939,9 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                 adaptive_velocity=initial_adaptive_velocity,
                 adaptive_throughput_ema=resume_state.adaptive_throughput_ema,
                 adaptive_best_throughput_ema=resume_state.adaptive_best_throughput_ema,
+                adaptive_memory_utilization_ema=resume_state.adaptive_memory_utilization_ema,
+                adaptive_previous_tokens_per_sample=resume_state.adaptive_previous_tokens_per_sample,
+                adaptive_next_batch_size_float=float(initial_batch_size),
             )
     elif _is_primary_rank():
         print("[status] loading_resume_checkpoint=0 starting_fresh=1")
@@ -881,6 +982,8 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                     "world_size": world_size,
                     "local_batch_count": len(local_batches),
                     "next_batch_size": initial_batch_size,
+                    "next_batch_size_int": initial_batch_size,
+                    "next_batch_size_float": float(initial_batch_size),
                 },
             )
 
@@ -891,6 +994,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
         global_step = resume_state.global_step
         accumulation_step = resume_state.accumulation_step
         last_checkpoint_save_time = time.monotonic()
+        last_log_time = last_checkpoint_save_time
         optimizer.zero_grad(set_to_none=True)
 
         if resume_state.next_iteration_index >= config.num_iterations:
@@ -964,8 +1068,10 @@ def train_with_deepspeed(config: TrainConfig) -> None:
 
                 step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
                 throughput_samples_per_sec = float(len(resolved_batch.samples)) / step_elapsed_sec
+                gpu_memory_usage_pct = 100.0 * _gpu_memory_utilization(device)
                 print(_json_key_value("throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"))
                 print(_json_key_value("batch_size", str(len(resolved_batch.samples))))
+                print(_json_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}"))
                 if _is_primary_rank():
                     print(_json_key_value("global_step", str(global_step)))
                     print(_json_key_value("iteration", str(iteration_index)))
@@ -981,7 +1087,9 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                     accumulation_step = 0
                     global_step += 1
 
-                    if _is_primary_rank() and global_step % config.log_interval_steps == 0:
+                    now = time.monotonic()
+                    elapsed_since_last_log_sec = now - last_log_time
+                    if _is_primary_rank() and elapsed_since_last_log_sec >= config.log_time_interval:
                         log_payload: dict[str, float | int] = {
                             "step": global_step,
                             "iteration": iteration_index,
@@ -991,8 +1099,8 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                         for key, value in loss_output.stats.items():
                             log_payload[key] = value
                         _log_json_line(logs_path, log_payload)
+                        last_log_time = now
 
-                    now = time.monotonic()
                     elapsed_since_last_checkpoint_sec = now - last_checkpoint_save_time
                     if elapsed_since_last_checkpoint_sec >= config.checkpoint_save_time_interval:
                         next_iteration_index, next_batch_cursor = _compute_next_position(
@@ -1073,6 +1181,15 @@ def train_with_deepspeed(config: TrainConfig) -> None:
 
         adaptive_state = AdaptiveBatchState(
             next_batch_size=max(1, min(lazy_loader.sample_count, resume_state.next_batch_size)),
+            next_batch_size_float=max(
+                1.0,
+                min(
+                    float(lazy_loader.sample_count),
+                    resume_state.adaptive_next_batch_size_float
+                    if resume_state.adaptive_next_batch_size_float > 0.0
+                    else float(max(1, min(lazy_loader.sample_count, resume_state.next_batch_size))),
+                ),
+            ),
             velocity=(
                 resume_state.adaptive_velocity
                 if resume_state.adaptive_velocity > 0.0
@@ -1080,6 +1197,8 @@ def train_with_deepspeed(config: TrainConfig) -> None:
             ),
             throughput_ema=resume_state.adaptive_throughput_ema,
             best_throughput_ema=resume_state.adaptive_best_throughput_ema,
+            memory_utilization_ema=resume_state.adaptive_memory_utilization_ema,
+            previous_tokens_per_sample=resume_state.adaptive_previous_tokens_per_sample,
         )
 
         max_input_token_id = -1
@@ -1107,12 +1226,15 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                     "world_size": world_size,
                     "local_batch_count": -1,
                     "next_batch_size": adaptive_state.next_batch_size,
+                    "next_batch_size_int": adaptive_state.next_batch_size,
+                    "next_batch_size_float": adaptive_state.next_batch_size_float,
                 },
             )
 
         global_step = resume_state.global_step
         accumulation_step = resume_state.accumulation_step
         last_checkpoint_save_time = time.monotonic()
+        last_log_time = last_checkpoint_save_time
         optimizer.zero_grad(set_to_none=True)
 
         if resume_state.next_iteration_index >= config.num_iterations:
@@ -1210,9 +1332,12 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                         raise
                     adaptive_state = AdaptiveBatchState(
                         next_batch_size=reduced_batch_size,
+                        next_batch_size_float=float(reduced_batch_size),
                         velocity=0.0,
                         throughput_ema=adaptive_state.throughput_ema,
                         best_throughput_ema=adaptive_state.best_throughput_ema,
+                        memory_utilization_ema=adaptive_state.memory_utilization_ema,
+                        previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
                     )
                     if _is_primary_rank():
                         _log_json_line(
@@ -1223,16 +1348,25 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                                 "batch_index": batch_index,
                                 "oom": 1,
                                 "next_batch_size": adaptive_state.next_batch_size,
+                                "next_batch_size_float": adaptive_state.next_batch_size_float,
                             },
                         )
                     continue
 
                 step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
                 throughput_samples_per_sec = float(len(resolved_batch.samples)) / step_elapsed_sec
+                measured_tokens_per_sample = float(
+                    collated.attention_mask.sum(dim=1).float().mean().item()
+                )
+                gpu_memory_utilization = _gpu_memory_utilization(device)
+                gpu_memory_usage_pct = 100.0 * gpu_memory_utilization
                 print(_json_key_value("throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"))
                 print(_json_key_value("batch_size", str(len(resolved_batch.samples))))
                 print(_json_key_value("requested_batch_size", str(requested_batch_size)))
                 print(_json_key_value("next_batch_size", str(adaptive_state.next_batch_size)))
+                print(_json_key_value("next_batch_size_int", str(adaptive_state.next_batch_size)))
+                print(_json_key_value("next_batch_size_float", f"{adaptive_state.next_batch_size_float:.2f}"))
+                print(_json_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}"))
                 if _is_primary_rank():
                     print(_json_key_value("global_step", str(global_step)))
                     print(_json_key_value("iteration", str(iteration_index)))
@@ -1253,25 +1387,32 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                     adaptive_state = _update_adaptive_batch_state(
                         adaptive_state=adaptive_state,
                         measured_throughput=throughput_samples_per_sec,
+                        measured_memory_utilization=gpu_memory_utilization,
+                        measured_tokens_per_sample=measured_tokens_per_sample,
+                        target_memory_utilization=target_gpu_memory_utilization,
                         min_batch_size=1,
                         max_batch_size=lazy_loader.sample_count,
                     )
 
-                    if _is_primary_rank() and global_step % config.log_interval_steps == 0:
+                    now = time.monotonic()
+                    elapsed_since_last_log_sec = now - last_log_time
+                    if _is_primary_rank() and elapsed_since_last_log_sec >= config.log_time_interval:
                         log_payload: dict[str, float | int] = {
                             "step": global_step,
                             "iteration": iteration_index,
                             "batch_index": resolved_batch.batch_index,
                             "next_batch_size": adaptive_state.next_batch_size,
+                            "next_batch_size_float": adaptive_state.next_batch_size_float,
                             "actual_batch_size": len(resolved_batch.samples),
                             "step_time_sec": float(step_elapsed_sec),
                             "throughput_samples_per_sec": throughput_samples_per_sec,
+                            "gpu_memory_usage_pct": gpu_memory_usage_pct,
                         }
                         for key, value in loss_output.stats.items():
                             log_payload[key] = value
                         _log_json_line(logs_path, log_payload)
+                        last_log_time = now
 
-                    now = time.monotonic()
                     elapsed_since_last_checkpoint_sec = now - last_checkpoint_save_time
                     if elapsed_since_last_checkpoint_sec >= config.checkpoint_save_time_interval:
                         next_iteration_index = iteration_index
@@ -1302,6 +1443,9 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                             adaptive_velocity=adaptive_state.velocity,
                             adaptive_throughput_ema=adaptive_state.throughput_ema,
                             adaptive_best_throughput_ema=adaptive_state.best_throughput_ema,
+                            adaptive_memory_utilization_ema=adaptive_state.memory_utilization_ema,
+                            adaptive_previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
+                            adaptive_next_batch_size_float=adaptive_state.next_batch_size_float,
                         )
                         last_checkpoint_save_time = now
             resume_sample_index = 0
@@ -1327,6 +1471,9 @@ def train_with_deepspeed(config: TrainConfig) -> None:
             adaptive_velocity=adaptive_state.velocity,
             adaptive_throughput_ema=adaptive_state.throughput_ema,
             adaptive_best_throughput_ema=adaptive_state.best_throughput_ema,
+            adaptive_memory_utilization_ema=adaptive_state.memory_utilization_ema,
+            adaptive_previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
+            adaptive_next_batch_size_float=adaptive_state.next_batch_size_float,
         )
         _save_final_model_folder(
             model=model,

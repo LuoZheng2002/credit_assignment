@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from .engine import TrainConfig, train_with_deepspeed
+from .engine import TrainConfig, train
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -17,7 +17,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, required=True)
     parser.add_argument("--num-iterations", type=int, required=True)
     parser.add_argument("--grad-accum-steps", type=int, required=True)
-    parser.add_argument("--log-interval-steps", type=int, required=True)
+    parser.add_argument("--log-time-interval", type=float, required=True)
     parser.add_argument("--checkpoint-save-time-interval", type=float, required=True)
     parser.add_argument("--lora-rank", type=int, required=True)
     parser.add_argument("--lora-alpha", type=int, required=True)
@@ -44,7 +44,7 @@ def main() -> None:
         weight_decay=args.weight_decay,
         num_iterations=args.num_iterations,
         grad_accum_steps=args.grad_accum_steps,
-        log_interval_steps=args.log_interval_steps,
+        log_time_interval=args.log_time_interval,
         checkpoint_save_time_interval=args.checkpoint_save_time_interval,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
@@ -54,7 +54,7 @@ def main() -> None:
         seed=args.seed,
         first_n_training_samples=args.first_n_training_samples,
     )
-    train_with_deepspeed(config)
+    train(config)
 
 
 if __name__ == "__main__":

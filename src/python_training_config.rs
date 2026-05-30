@@ -21,7 +21,7 @@ pub struct PythonTrainingConfigCommon {
     pub learning_rate: f32,
     pub weight_decay: f32,
     pub grad_accum_steps: usize,
-    pub log_interval_steps: usize,
+    pub log_time_interval: f32,
     pub checkpoint_save_time_interval: f32,
     pub seed: u64,
     // lora specific
