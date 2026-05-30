@@ -7,6 +7,7 @@ import atexit
 import json
 import os
 import random
+import shutil
 import time
 
 import numpy as np
@@ -237,8 +238,31 @@ def _save_final_model_folder(
     tokenizer: object,
 ) -> None:
     final_model_output_path = final_model_output_parent_dir / "model"
+    source_model_folder = Path(source_model_path).expanduser().resolve()
     rank, _ = _get_rank_world_size()
+
+    def _remove_existing_weight_files(model_dir: Path) -> None:
+        weight_paths = [
+            model_dir / "model.safetensors",
+            model_dir / "model.safetensors.index.json",
+            model_dir / "pytorch_model.bin",
+            model_dir / "pytorch_model.bin.index.json",
+        ]
+        for weight_path in weight_paths:
+            if weight_path.exists():
+                assert weight_path.is_file(), f"weight artifact must be a file: {weight_path}"
+                weight_path.unlink()
+
+        shard_patterns = ["model-*.safetensors", "pytorch_model-*.bin"]
+        for pattern in shard_patterns:
+            for shard_path in model_dir.glob(pattern):
+                if shard_path.exists():
+                    assert shard_path.is_file(), f"weight shard must be a file: {shard_path}"
+                    shard_path.unlink()
+
     if rank == 0:
+        assert source_model_folder.exists(), f"source model folder does not exist: {source_model_folder}"
+        assert source_model_folder.is_dir(), f"source model folder must be a directory: {source_model_folder}"
         if final_model_output_parent_dir.exists():
             assert final_model_output_parent_dir.is_dir(), (
                 "final_model_output_parent_dir must be a directory when it exists: "
@@ -249,15 +273,21 @@ def _save_final_model_folder(
             assert final_model_output_path.is_dir(), (
                 f"final_model_output_path must be a directory when it exists: {final_model_output_path}"
             )
-        final_model_output_path.mkdir(parents=True, exist_ok=True)
+            shutil.rmtree(final_model_output_path)
+        shutil.copytree(source_model_folder, final_model_output_path)
+        _remove_existing_weight_files(final_model_output_path)
+
+    _distributed_barrier()
 
     if training_plan == "lora_current":
         if rank == 0:
             unwrapped = model.module if hasattr(model, "module") else model
             export_model = unwrapped.merge_and_unload() if hasattr(unwrapped, "merge_and_unload") else unwrapped
-            export_model.save_pretrained(final_model_output_path, safe_serialization=True)
-            if hasattr(tokenizer, "save_pretrained"):
-                tokenizer.save_pretrained(final_model_output_path)
+            export_model.save_pretrained(
+                final_model_output_path,
+                safe_serialization=True,
+                save_config=False,
+            )
         _distributed_barrier()
         return
 
@@ -279,9 +309,11 @@ def _save_final_model_folder(
         incompatible = export_model.load_state_dict(state_dict, strict=True)
         assert len(incompatible.missing_keys) == 0, "final export state_dict is missing keys"
         assert len(incompatible.unexpected_keys) == 0, "final export state_dict has unexpected keys"
-        export_model.save_pretrained(final_model_output_path, safe_serialization=True)
-        if hasattr(tokenizer, "save_pretrained"):
-            tokenizer.save_pretrained(final_model_output_path)
+        export_model.save_pretrained(
+            final_model_output_path,
+            safe_serialization=True,
+            save_config=False,
+        )
     _distributed_barrier()
 
 
