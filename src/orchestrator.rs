@@ -116,10 +116,10 @@ impl Orchestrator {
                         OrchestrationProgress::WorkingOnValidation { epoch: epoch + 1 },
                     );
                 }
-            }
-            // for safety
-            self.ensure_inference_server_shut_down().await;
+            }            
         }
+        // for safety
+        self.ensure_inference_server_shut_down().await;
         Ok(())
     }
 
@@ -289,7 +289,7 @@ impl Orchestrator {
             model_parent_dir: self.epoch_dir::<M>(epoch),
             training_trajectory_sqlite_path,
             checkpoints_parent_dir: self.epoch_dir::<M>(epoch),
-            final_model_output_parent_dir: self.epoch_dir::<M>(epoch),
+            final_model_output_parent_dir: self.epoch_dir::<M>(epoch + 1),
             first_n_training_samples: self.first_n_training_samples,
             num_iterations: self.num_iterations,
         };

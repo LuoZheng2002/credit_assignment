@@ -3,7 +3,7 @@ use std::sync::{Arc, atomic::AtomicUsize};
 use reqwest::Client;
 use research_utility::{
     asset_file::AssetFile,
-    log_message::log_info,
+    log_message::{log_info, log_master_progress},
     sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
 };
 use tokio::sync::Semaphore;
@@ -28,6 +28,8 @@ pub async fn rollout<M: LlmModelMarker>(
     llm_callable: M::Callable,
     client: Client,
     sglang_waiting_workers: Arc<AtomicUsize>,
+    num_finished_branches: Arc<AtomicUsize>,
+    total_branches_to_finish: usize,
     // rng: &mut StdRng,
 ) {
     let mut action_log = rollout_store
@@ -78,6 +80,11 @@ pub async fn rollout<M: LlmModelMarker>(
             .unwrap();
     }
     log_info(format!("Rollout {} finished", question.flat_id));
+    let finished = num_finished_branches.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    log_master_progress(
+        finished as f32 / total_branches_to_finish as f32,
+        "Branches Finished",
+    );
 }
 
 pub struct RolloutProgramConfig {
@@ -131,6 +138,8 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     }
     let mut join_set = JoinSet::new();
     let sglang_waiting_workers = Arc::new(AtomicUsize::new(0));
+    let num_finished_branches = Arc::new(AtomicUsize::new(0));
+    let total_branches_to_finish = question_keys.len() * rollout_config.max_num_total_trajectories;
     let num_keys = question_keys.len();
     let mut num_finished = 0;
     for question_key in question_keys {
@@ -142,6 +151,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         let llm_callable_clone = llm_callable.clone();
         let client_clone = client.clone();
         let sglang_waiting_workers_clone = sglang_waiting_workers.clone();
+        let num_finished_branches = num_finished_branches.clone();
         join_set.spawn(async move {
             rollout::<M>(
                 question,
@@ -151,6 +161,8 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
                 llm_callable_clone,
                 client_clone,
                 sglang_waiting_workers_clone,
+                num_finished_branches,
+                total_branches_to_finish,
             )
             .await;
             drop(owned_permit);
@@ -168,4 +180,5 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     while let Some(result) = join_set.join_next().await {
         result.expect("direct rollout worker task panicked or was cancelled");
     }
+    log_master_progress(0.0, "All Branches Finished");
 }

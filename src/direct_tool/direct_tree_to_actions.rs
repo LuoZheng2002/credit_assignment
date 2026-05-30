@@ -713,27 +713,21 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                         );
                     }
                     PythonToolResponse::PythonError(error) => {
-                        log_key_value_pair(
-                            "warning".to_string(),
-                            format!(
-                                "Tool call completed. success=false flat_id={} reason={}",
-                                question_flat_id,
-                                concise_failure_reason(error)
-                            ),
-                        );
+                        log_warning(format!(
+                            "Tool call completed. success=false flat_id={} reason={}",
+                            question_flat_id,
+                            concise_failure_reason(error)
+                        ));
                     }
                 }
                 let tool_response_raw = tool_response.to_raw_content();
                 let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
                 SegmentContent::ToolResponse(response_tokenized)
             } else {
-                log_key_value_pair(
-                    "warning".to_string(),
-                    format!(
-                        "The model ended a sequence without a boxed answer or python tool call. Continuing generation. Flat id: {}",
-                        question_flat_id
-                    ),
-                );
+                log_warning(format!(
+                    "The model ended a sequence without a boxed answer or python tool call. Continuing generation. Flat id: {}",
+                    question_flat_id
+                ));
                 generate_reasoning_or_tool_call_content::<M>(
                     question_flat_id,
                     trajectory,
