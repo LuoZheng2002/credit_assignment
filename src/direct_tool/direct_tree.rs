@@ -88,7 +88,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
             true => prompt_with_tool_call(question),
             false => prompt_without_tool_call(question),
         };
-        let tokenized = M::Tokenizer::apply_chat_template_and_tokenize(prompt_string, true);
+        let tokenized = M::Tokenizer::apply_chat_template_and_tokenize(prompt_string, false);
         Segment {
             segment_id,
             content: vec![SegmentContent::Prompt(tokenized)],
