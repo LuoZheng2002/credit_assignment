@@ -16,7 +16,8 @@ RUST_BACKTRACE=1 cargo run --bin bin_orchestrator -- \
     --advantage-calculation-policy tree-mappo-posterior \
     --training-config-common-path config/training/common.toml \
     --first-n-training-samples 100 \
-    --first-n-rollout-samples 10 \
+    --first-n-training-rollout-samples 10 \
+    --first-n-validation-rollout-samples 10 \
     --max-sqlite-connections 1 \
     --sglang-server-log-path logs/sglang_server.txt \
     --message-log-path logs/messages.txt \

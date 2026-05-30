@@ -28,7 +28,8 @@ pub struct Orchestrator {
     pub validation_rollout_config: DirectRolloutConfig,
     pub training_set_rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
-    pub first_n_rollout_samples: Option<usize>,
+    pub first_n_training_rollout_samples: Option<usize>,
+    pub first_n_validation_rollout_samples: Option<usize>,
     pub max_sqlite_connections: u32,
     pub inference_server_handle: Option<InferenceServerHandle>,
     pub sglang_server_log_path: Option<String>,
@@ -129,7 +130,10 @@ impl Orchestrator {
         self.progress = progress;
     }
 
-    async fn ensure_inference_server_launched<M: LlmModelMarker>(&mut self, epoch: usize) -> Result<(), String> {
+    async fn ensure_inference_server_launched<M: LlmModelMarker>(
+        &mut self,
+        epoch: usize,
+    ) -> Result<(), String> {
         if let Some(handle) = &self.inference_server_handle {
             if handle.epoch == epoch {
                 // already launched for this epoch
@@ -147,7 +151,10 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn launch_inference_server<M: LlmModelMarker>(&mut self, epoch: usize) -> Result<(), String> {
+    async fn launch_inference_server<M: LlmModelMarker>(
+        &mut self,
+        epoch: usize,
+    ) -> Result<(), String> {
         assert!(
             self.inference_server_handle.is_none(),
             "Inference server is already launched for epoch {}, cannot launch again without shutting down",
@@ -210,7 +217,7 @@ impl Orchestrator {
 
     async fn validate_model<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
         assert!(self.validation_rollout_config.split == DatasetSplit::Validation);
-        
+
         let validation_rollout_program_config = RolloutProgramConfig {
             config_nickname: self.config_nickname.clone(),
             rollout_config: self.validation_rollout_config.clone(),
@@ -224,7 +231,7 @@ impl Orchestrator {
                     .as_ref()
                     .and_then(|handle| handle.sglang_port),
             },
-            first_n_samples: None,
+            first_n_samples: self.first_n_validation_rollout_samples,
             max_sqlite_connections: self.max_sqlite_connections,
         };
         rollout_all::<M>(validation_rollout_program_config).await;
@@ -247,7 +254,7 @@ impl Orchestrator {
             client: self.client.clone(),
             question_semaphore: self.question_semaphore.clone(),
             llm_cli_args,
-            first_n_samples: self.first_n_rollout_samples,
+            first_n_samples: self.first_n_training_rollout_samples,
             max_sqlite_connections: self.max_sqlite_connections,
         };
         rollout_all::<M>(training_set_rollout_program_config).await;

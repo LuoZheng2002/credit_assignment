@@ -8,11 +8,16 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::{read_json, read_toml},
-    llm_model::{Gpt4o, LlmModelName, Qwen3_06B, Qwen3_4B, Qwen25_7B, Qwen35_4B, Qwen35_08B},
+    llm_model::{Gpt4o, LlmModelName, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B},
     orchestrator::{OrchestrationProgress, Orchestrator},
     python_training_config::PythonTrainingConfigCommon,
 };
-use crossterm::{cursor::Show, event::DisableMouseCapture, execute, terminal::{LeaveAlternateScreen, disable_raw_mode}};
+use crossterm::{
+    cursor::Show,
+    event::DisableMouseCapture,
+    execute,
+    terminal::{LeaveAlternateScreen, disable_raw_mode},
+};
 use pyo3::Python;
 use research_utility::{log_message::log_info, progress_screen::ProgressScreen};
 use tokio::sync::Semaphore;
@@ -47,7 +52,9 @@ struct Args {
     #[arg(long)]
     first_n_training_samples: Option<usize>,
     #[arg(long)]
-    first_n_rollout_samples: Option<usize>,
+    first_n_training_rollout_samples: Option<usize>,
+    #[arg(long)]
+    first_n_validation_rollout_samples: Option<usize>,
     #[arg(long, default_value_t = 1)]
     max_sqlite_connections: u32,
     #[arg(long)]
@@ -90,7 +97,8 @@ async fn main() {
         posterior_hyperparameters_path,
         num_total_epochs,
         ui,
-        first_n_rollout_samples,
+        first_n_training_rollout_samples,
+        first_n_validation_rollout_samples,
         max_sqlite_connections,
         sglang_server_log_path,
         message_log_path,
@@ -148,7 +156,8 @@ async fn main() {
         training_set_rollout_config,
         posterior_calculation_config,
         num_total_epochs,
-        first_n_rollout_samples,
+        first_n_training_rollout_samples,
+        first_n_validation_rollout_samples,
         max_sqlite_connections,
         client,
         question_semaphore: question_semaphore,

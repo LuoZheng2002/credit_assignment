@@ -21,7 +21,6 @@ pub async fn load_initial_model(
         .arg(parent_dir)
         .arg("--model")
         .arg(hf_model_name)
-        .arg("--trust-remote-code")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd
