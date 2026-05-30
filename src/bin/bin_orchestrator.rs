@@ -1,6 +1,8 @@
 use std::{backtrace::Backtrace, io, sync::Arc};
 
 use clap::{ArgAction, Parser, ValueEnum};
+use std::collections::BTreeMap;
+
 use credit_assignment::{
     check_python_env::check_sympy_availability,
     direct_tool::{
@@ -9,7 +11,7 @@ use credit_assignment::{
     },
     json_line_util::{read_json, read_toml},
     llm_model::{Gpt4o, LlmModelName, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B},
-    orchestrator::{OrchestrationProgress, Orchestrator},
+    orchestrator::{OrchestrationProgress, OrchestrationStatus, Orchestrator},
     python_training_config::PythonTrainingConfigCommon,
 };
 use crossterm::{
@@ -141,7 +143,11 @@ async fn main() {
                 "No progress file found at: {}, starting fresh",
                 progress_save_path
             ));
-            OrchestrationProgress::WorkingOnValidation { epoch: 0 }
+            OrchestrationProgress {
+                status: OrchestrationStatus::WorkingOnValidation,
+                epoch: 0,
+                validation_accuracies: BTreeMap::new(),
+            }
         }
     };
     let mut orchestrator = Orchestrator {

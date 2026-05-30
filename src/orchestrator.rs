@@ -1,6 +1,6 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
-use research_utility::{asset_file::AssetFile, log_message::log_info};
+use research_utility::{asset_file::AssetFile, log_message::{log_info, log_key_value_pair}};
 use serde::{Deserialize, Serialize};
 use tokio::process::Child;
 use tokio::sync::Semaphore;
@@ -9,6 +9,7 @@ use crate::{
     direct_tool::{
         direct_rollout::{RolloutProgramConfig, rollout_all},
         direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+        direct_tree_action_log::AssetFileDirectTreeActionLogs,
         direct_training_set::AssetFileTrainingTrajectories,
         hybrid_dataset::DatasetSplit,
         posterior_calculation_config::PosteriorCalculationConfig,
@@ -20,6 +21,7 @@ use crate::{
     },
     llm_model::{LlmCliArgs, LlmModelMarker},
     python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
+    read_accuracy::read_accuracy,
 };
 
 pub struct Orchestrator {
@@ -54,11 +56,18 @@ pub struct InferenceServerHandle {
     pub process: Option<Child>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum OrchestrationProgress {
-    WorkingOnValidation { epoch: usize },
-    WorkingOnRolloutCollection { epoch: usize },
-    WorkingOnTrainingSetGeneration { epoch: usize },
-    WorkingOnTraining { epoch: usize },
+pub enum OrchestrationStatus {
+    WorkingOnValidation,
+    WorkingOnRolloutCollection,
+    WorkingOnTrainingSetGeneration,
+    WorkingOnTraining,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OrchestrationProgress {
+    pub status: OrchestrationStatus,
+    pub epoch: usize,
+    pub validation_accuracies: BTreeMap<usize, f32>,
 }
 
 impl Orchestrator {
@@ -70,11 +79,14 @@ impl Orchestrator {
     }
     pub async fn orchestrate<M: LlmModelMarker>(&mut self) -> Result<(), String> {
         loop {
-            match self.progress.clone() {
-                OrchestrationProgress::WorkingOnValidation { epoch } => {
+            let progress = self.progress.clone();
+            let epoch = progress.epoch;
+            match progress.status {
+                OrchestrationStatus::WorkingOnValidation => {
                     assert!(epoch <= self.num_total_epochs);
                     self.ensure_inference_server_launched::<M>(epoch).await?;
                     self.validate_model::<M>(epoch).await?;
+                    self.read_and_log_validation_accuracy::<M>(epoch).await?;
                     if epoch >= self.num_total_epochs {
                         log_info(&format!(
                             "Finished all {} epochs of orchestration",
@@ -84,35 +96,33 @@ impl Orchestrator {
                         break;
                     }
                     self.update_and_save_progress::<M>(
-                        OrchestrationProgress::WorkingOnRolloutCollection { epoch },
+                        OrchestrationStatus::WorkingOnRolloutCollection,
+                        epoch,
                     );
                 }
-                OrchestrationProgress::WorkingOnRolloutCollection { epoch } => {
+                OrchestrationStatus::WorkingOnRolloutCollection => {
                     self.ensure_inference_server_launched::<M>(epoch).await?;
                     self.collect_training_rollout::<M>(epoch).await;
                     // after rollout collection, we can shut down the inference server
                     self.ensure_inference_server_shut_down().await;
                     self.update_and_save_progress::<M>(
-                        OrchestrationProgress::WorkingOnTrainingSetGeneration { epoch },
+                        OrchestrationStatus::WorkingOnTrainingSetGeneration,
+                        epoch,
                     );
                 }
-                OrchestrationProgress::WorkingOnTrainingSetGeneration { epoch } => {
+                OrchestrationStatus::WorkingOnTrainingSetGeneration => {
                     // we do not need inference server for training set generation, and it won't be launched again until we do the training step
                     self.ensure_inference_server_shut_down().await;
                     self.generate_training_set::<M>(epoch).await;
-                    self.update_and_save_progress::<M>(OrchestrationProgress::WorkingOnTraining {
-                        epoch,
-                    });
+                    self.update_and_save_progress::<M>(OrchestrationStatus::WorkingOnTraining, epoch);
                 }
-                OrchestrationProgress::WorkingOnTraining { epoch } => {
+                OrchestrationStatus::WorkingOnTraining => {
                     // we do not want inference server to be up during training
                     self.ensure_inference_server_shut_down().await;
                     self.train_model::<M>(epoch).await?;
                     assert!(epoch < self.num_total_epochs);
                     // do the final validation
-                    self.update_and_save_progress::<M>(
-                        OrchestrationProgress::WorkingOnValidation { epoch: epoch + 1 },
-                    );
+                    self.update_and_save_progress::<M>(OrchestrationStatus::WorkingOnValidation, epoch + 1);
                 }
             }            
         }
@@ -121,11 +131,43 @@ impl Orchestrator {
         Ok(())
     }
 
-    fn update_and_save_progress<M: LlmModelMarker>(&mut self, progress: OrchestrationProgress) {
+    fn update_and_save_progress<M: LlmModelMarker>(
+        &mut self,
+        status: OrchestrationStatus,
+        epoch: usize,
+    ) {
+        self.progress.status = status;
+        self.progress.epoch = epoch;
         let progress_save_path =
             Orchestrator::progress_save_path(M::CLI_NAME.into(), &self.config_nickname);
-        write_json(&progress_save_path, &progress).unwrap();
-        self.progress = progress;
+        write_json(&progress_save_path, &self.progress).unwrap();
+    }
+
+    async fn read_and_log_validation_accuracy<M: LlmModelMarker>(
+        &mut self,
+        epoch: usize,
+    ) -> Result<(), String> {
+        let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
+            nickname: self.config_nickname.clone(),
+            rollout_config: self.validation_rollout_config.clone(),
+            posterior_calculation_config: self.posterior_calculation_config.clone(),
+            epoch,
+            _phantom: std::marker::PhantomData,
+        };
+        let win_rate = read_accuracy(asset_file_action_logs).await;
+        if win_rate.total_plays == 0 {
+            return Err("Validation action log is empty, cannot compute accuracy".to_string());
+        }
+        let accuracy = win_rate.num_wins as f32 / win_rate.total_plays as f32;
+        self.progress.validation_accuracies.insert(epoch, accuracy);
+        log_key_value_pair(
+            format!("epoch_{}_start_accuracy", epoch),
+            accuracy.to_string(),
+        );
+        let progress_save_path =
+            Orchestrator::progress_save_path(M::CLI_NAME.into(), &self.config_nickname);
+        write_json(&progress_save_path, &self.progress).unwrap();
+        Ok(())
     }
 
     async fn ensure_inference_server_launched<M: LlmModelMarker>(
