@@ -9,7 +9,10 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
-    llm_model::{Gpt4o, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen25_7B, Qwen35_4B, Qwen35_08B},
+    llm_model::{
+        Gpt4o, LlmModelMarker, LlmModelName, Qwen3_06B, Qwen3_4B, Qwen25_7B, Qwen35_4B,
+        Qwen35_08B,
+    },
 };
 use research_utility::asset_file::AssetFile;
 
@@ -125,6 +128,7 @@ async fn main() {
     match model_name {
         LlmModelName::Gpt4o => print_accuracy::<Gpt4o>(program_args).await,
         LlmModelName::Qwen25_7b => print_accuracy::<Qwen25_7B>(program_args).await,
+        LlmModelName::Qwen3_06b => print_accuracy::<Qwen3_06B>(program_args).await,
         LlmModelName::Qwen3_4b => print_accuracy::<Qwen3_4B>(program_args).await,
         LlmModelName::Qwen35_08b => print_accuracy::<Qwen35_08B>(program_args).await,
         LlmModelName::Qwen35_4b => print_accuracy::<Qwen35_4B>(program_args).await,

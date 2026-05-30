@@ -17,7 +17,10 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
-    llm_model::{Gpt4o, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen25_7B, Qwen35_4B, Qwen35_08B},
+    llm_model::{
+        Gpt4o, LlmModelMarker, LlmModelName, Qwen3_06B, Qwen3_4B, Qwen25_7B, Qwen35_4B,
+        Qwen35_08B,
+    },
 };
 use crossterm::cursor::Show;
 use crossterm::event::{
@@ -2329,6 +2332,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let result = match model {
         LlmModelName::Qwen25_7b => run_model_app::<Qwen25_7B>(run_model_app_args).await,
+        LlmModelName::Qwen3_06b => run_model_app::<Qwen3_06B>(run_model_app_args).await,
         LlmModelName::Qwen3_4b => run_model_app::<Qwen3_4B>(run_model_app_args).await,
         LlmModelName::Qwen35_4b => run_model_app::<Qwen35_4B>(run_model_app_args).await,
         LlmModelName::Qwen35_08b => run_model_app::<Qwen35_08B>(run_model_app_args).await,

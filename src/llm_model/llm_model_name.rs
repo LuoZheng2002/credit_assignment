@@ -5,6 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub enum LlmModelName {
     Gpt4o,
     Qwen25_7b,
+    Qwen3_06b,
     Qwen3_4b,
     Qwen35_08b,
     Qwen35_4b,
@@ -15,6 +16,7 @@ impl ValueEnum for LlmModelName {
         &[
             Self::Gpt4o,
             Self::Qwen25_7b,
+            Self::Qwen3_06b,
             Self::Qwen3_4b,
             Self::Qwen35_08b,
             Self::Qwen35_4b,
@@ -53,6 +55,7 @@ impl LlmModelName {
         match self {
             LlmModelName::Gpt4o => "gpt-4o",
             LlmModelName::Qwen25_7b => "qwen2.5-7b",
+            LlmModelName::Qwen3_06b => "qwen3-0.6b",
             LlmModelName::Qwen3_4b => "qwen3-4b",
             LlmModelName::Qwen35_08b => "qwen3.5-0.8b",
             LlmModelName::Qwen35_4b => "qwen3.5-4b",
@@ -63,6 +66,7 @@ impl LlmModelName {
         match self {
             LlmModelName::Gpt4o => "gpt-4o",
             LlmModelName::Qwen25_7b => "Qwen/Qwen2.5-7B-Instruct",
+            LlmModelName::Qwen3_06b => "Qwen/Qwen3-0.6B",
             LlmModelName::Qwen3_4b => "Qwen/Qwen3-4B",
             LlmModelName::Qwen35_08b => "Qwen/Qwen3.5-0.8B",
             LlmModelName::Qwen35_4b => "Qwen/Qwen3.5-4B",
@@ -72,6 +76,7 @@ impl LlmModelName {
     pub fn is_qwen(&self) -> bool {
         match self {
             LlmModelName::Qwen25_7b
+            | LlmModelName::Qwen3_06b
             | LlmModelName::Qwen3_4b
             | LlmModelName::Qwen35_08b
             | LlmModelName::Qwen35_4b => true,
@@ -83,6 +88,7 @@ impl LlmModelName {
         match self {
             LlmModelName::Gpt4o => true,
             LlmModelName::Qwen25_7b
+            | LlmModelName::Qwen3_06b
             | LlmModelName::Qwen3_4b
             | LlmModelName::Qwen35_08b
             | LlmModelName::Qwen35_4b => false,
