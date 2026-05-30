@@ -1,4 +1,4 @@
-use std::{backtrace::Backtrace, sync::Arc};
+use std::{backtrace::Backtrace, io, sync::Arc};
 
 use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
@@ -12,6 +12,7 @@ use credit_assignment::{
     orchestrator::{OrchestrationProgress, Orchestrator},
     python_training_config::PythonTrainingConfigCommon,
 };
+use crossterm::{cursor::Show, event::DisableMouseCapture, execute, terminal::{LeaveAlternateScreen, disable_raw_mode}};
 use pyo3::Python;
 use research_utility::{log_message::log_info, progress_screen::ProgressScreen};
 use tokio::sync::Semaphore;
@@ -61,9 +62,16 @@ struct Args {
     ui: bool,
 }
 
+fn restore_terminal_after_panic() {
+    let _ = disable_raw_mode();
+    let mut stderr = io::stderr();
+    let _ = execute!(stderr, LeaveAlternateScreen, DisableMouseCapture, Show);
+}
+
 #[tokio::main]
 async fn main() {
     std::panic::set_hook(Box::new(|info| {
+        restore_terminal_after_panic();
         eprintln!("panic occurred: {}", info);
         let rust_backtrace = std::env::var("RUST_BACKTRACE").ok();
         if matches!(rust_backtrace.as_deref(), Some("1") | Some("full")) {
