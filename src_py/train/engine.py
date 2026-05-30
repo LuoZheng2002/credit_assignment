@@ -55,6 +55,7 @@ class ResumeState:
     adaptive_memory_utilization_ema: float = 0.0
     adaptive_previous_tokens_per_sample: float = 0.0
     adaptive_next_batch_size_float: float = 0.0
+    elapsed_training_time_sec: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -216,6 +217,7 @@ def _save_checkpoint(
     adaptive_memory_utilization_ema: float = 0.0,
     adaptive_previous_tokens_per_sample: float = 0.0,
     adaptive_next_batch_size_float: float = 0.0,
+    elapsed_training_time_sec: float = 0.0,
 ) -> None:
     assert global_step >= 0, "global_step must be non-negative"
     assert next_iteration_index >= 0, "next_iteration_index must be non-negative"
@@ -223,6 +225,8 @@ def _save_checkpoint(
     assert accumulation_step == 0, "checkpointing with partial gradient accumulation is not supported"
     assert next_sample_index >= 0, "next_sample_index must be non-negative"
     assert next_batch_size >= 0, "next_batch_size must be non-negative"
+    assert elapsed_training_time_sec >= 0.0, "elapsed_training_time_sec must be non-negative"
+    assert np.isfinite(elapsed_training_time_sec), "elapsed_training_time_sec must be finite"
 
     rank, _ = _get_rank_world_size()
     checkpoint_dir = output_dir / "checkpoints"
@@ -239,6 +243,7 @@ def _save_checkpoint(
         "adaptive_memory_utilization_ema": adaptive_memory_utilization_ema,
         "adaptive_previous_tokens_per_sample": adaptive_previous_tokens_per_sample,
         "adaptive_next_batch_size_float": adaptive_next_batch_size_float,
+        "elapsed_training_time_sec": elapsed_training_time_sec,
         "accumulation_step": accumulation_step,
         "training_plan": training_plan,
         "rank": rank,
@@ -498,6 +503,7 @@ def _load_checkpoint(
                 float(training_state.get("next_batch_size", 0)),
             )
         ),
+        elapsed_training_time_sec=float(training_state.get("elapsed_training_time_sec", 0.0)),
     )
     assert resume_state.global_step >= 0, "resume global_step must be non-negative"
     assert resume_state.next_iteration_index >= 0, "resume iteration index must be non-negative"
@@ -518,6 +524,8 @@ def _load_checkpoint(
     assert np.isfinite(
         resume_state.adaptive_next_batch_size_float
     ), "resume adaptive_next_batch_size_float must be finite"
+    assert np.isfinite(resume_state.elapsed_training_time_sec), "resume elapsed_training_time_sec must be finite"
+    assert resume_state.elapsed_training_time_sec >= 0.0, "resume elapsed_training_time_sec must be non-negative"
     assert (
         resume_state.accumulation_step == 0
     ), "resuming from partial gradient accumulation is not supported"
@@ -987,11 +995,15 @@ def train(config: TrainConfig) -> None:
 
         global_step = resume_state.global_step
         accumulation_step = resume_state.accumulation_step
-        training_start_time = time.monotonic()
-        training_end_time = training_start_time + config.training_time
-        last_checkpoint_save_time = training_start_time
+        resumed_elapsed_training_time_sec = min(
+            config.training_time,
+            max(0.0, resume_state.elapsed_training_time_sec),
+        )
+        run_start_time = time.monotonic()
+        training_end_time = run_start_time + max(0.0, config.training_time - resumed_elapsed_training_time_sec)
+        last_checkpoint_save_time = run_start_time
         last_log_time = last_checkpoint_save_time
-        last_master_progress_time = training_start_time - 1.0
+        last_master_progress_time = run_start_time - 1.0
         samples_trained = 0
         iteration_index = max(0, resume_state.next_iteration_index)
         local_batch_cursor = resume_state.next_batch_cursor
@@ -1002,7 +1014,10 @@ def train(config: TrainConfig) -> None:
         while time.monotonic() < training_end_time:
             now = time.monotonic()
             if _is_primary_rank() and now - last_master_progress_time >= 1.0:
-                elapsed_time = min(config.training_time, now - training_start_time)
+                elapsed_time = min(
+                    config.training_time,
+                    resumed_elapsed_training_time_sec + (now - run_start_time),
+                )
                 progress = min(1.0, elapsed_time / config.training_time)
                 label = (
                     f"Training: {samples_trained} samples trained "
@@ -1113,6 +1128,10 @@ def train(config: TrainConfig) -> None:
                             f"global_step={global_step} iteration={iteration_index} "
                             f"batch_index={resolved_batch.batch_index}"
                         )
+                    elapsed_time = min(
+                        config.training_time,
+                        resumed_elapsed_training_time_sec + (now - run_start_time),
+                    )
                     _save_checkpoint(
                         model=model,
                         optimizer=optimizer,
@@ -1124,6 +1143,7 @@ def train(config: TrainConfig) -> None:
                         next_batch_cursor=next_batch_cursor,
                         accumulation_step=accumulation_step,
                         next_batch_size=initial_batch_size,
+                        elapsed_training_time_sec=elapsed_time,
                     )
                     last_checkpoint_save_time = now
 
@@ -1139,6 +1159,10 @@ def train(config: TrainConfig) -> None:
             global_step += 1
             accumulation_step = 0
 
+        final_elapsed_training_time_sec = min(
+            config.training_time,
+            resumed_elapsed_training_time_sec + (time.monotonic() - run_start_time),
+        )
         _save_checkpoint(
             model=model,
             optimizer=optimizer,
@@ -1150,6 +1174,7 @@ def train(config: TrainConfig) -> None:
             next_batch_cursor=local_batch_cursor,
             accumulation_step=accumulation_step,
             next_batch_size=initial_batch_size,
+            elapsed_training_time_sec=final_elapsed_training_time_sec,
         )
         _save_final_model_folder(
             model=model,
@@ -1237,11 +1262,15 @@ def train(config: TrainConfig) -> None:
 
         global_step = resume_state.global_step
         accumulation_step = resume_state.accumulation_step
-        training_start_time = time.monotonic()
-        training_end_time = training_start_time + config.training_time
-        last_checkpoint_save_time = training_start_time
+        resumed_elapsed_training_time_sec = min(
+            config.training_time,
+            max(0.0, resume_state.elapsed_training_time_sec),
+        )
+        run_start_time = time.monotonic()
+        training_end_time = run_start_time + max(0.0, config.training_time - resumed_elapsed_training_time_sec)
+        last_checkpoint_save_time = run_start_time
         last_log_time = last_checkpoint_save_time
-        last_master_progress_time = training_start_time - 1.0
+        last_master_progress_time = run_start_time - 1.0
         samples_trained = 0
         optimizer.zero_grad(set_to_none=True)
 
@@ -1252,7 +1281,10 @@ def train(config: TrainConfig) -> None:
         while time.monotonic() < training_end_time:
             now = time.monotonic()
             if _is_primary_rank() and now - last_master_progress_time >= 1.0:
-                elapsed_time = min(config.training_time, now - training_start_time)
+                elapsed_time = min(
+                    config.training_time,
+                    resumed_elapsed_training_time_sec + (now - run_start_time),
+                )
                 progress = min(1.0, elapsed_time / config.training_time)
                 label = (
                     f"Training: {samples_trained} samples trained "
@@ -1438,6 +1470,10 @@ def train(config: TrainConfig) -> None:
                             f"global_step={global_step} iteration={iteration_index} "
                             f"batch_index={batch_index} next_sample_index={sample_index}"
                         )
+                    elapsed_time = min(
+                        config.training_time,
+                        resumed_elapsed_training_time_sec + (now - run_start_time),
+                    )
                     _save_checkpoint(
                         model=model,
                         optimizer=optimizer,
@@ -1456,6 +1492,7 @@ def train(config: TrainConfig) -> None:
                         adaptive_memory_utilization_ema=adaptive_state.memory_utilization_ema,
                         adaptive_previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
                         adaptive_next_batch_size_float=adaptive_state.next_batch_size_float,
+                        elapsed_training_time_sec=elapsed_time,
                     )
                     last_checkpoint_save_time = now
 
@@ -1465,6 +1502,10 @@ def train(config: TrainConfig) -> None:
             global_step += 1
             accumulation_step = 0
 
+        final_elapsed_training_time_sec = min(
+            config.training_time,
+            resumed_elapsed_training_time_sec + (time.monotonic() - run_start_time),
+        )
         _save_checkpoint(
             model=model,
             optimizer=optimizer,
@@ -1483,6 +1524,7 @@ def train(config: TrainConfig) -> None:
             adaptive_memory_utilization_ema=adaptive_state.memory_utilization_ema,
             adaptive_previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
             adaptive_next_batch_size_float=adaptive_state.next_batch_size_float,
+            elapsed_training_time_sec=final_elapsed_training_time_sec,
         )
         _save_final_model_folder(
             model=model,

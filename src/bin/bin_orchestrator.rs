@@ -54,7 +54,9 @@ struct Args {
     #[arg(long)]
     training_time: f32,
     #[arg(long)]
-    rollout_time_limit_secs: usize,
+    training_rollout_time_limit_secs: usize,
+    #[arg(long)]
+    validation_rollout_time_limit_secs: usize,
     #[arg(long, default_value_t = 1)]
     max_sqlite_connections: u32,
     #[arg(long)]
@@ -95,7 +97,8 @@ async fn main() {
         posterior_hyperparameters_path,
         num_total_epochs,
         ui,
-        rollout_time_limit_secs,
+        training_rollout_time_limit_secs,
+        validation_rollout_time_limit_secs,
         max_sqlite_connections,
         sglang_server_log_path,
         message_log_path,
@@ -156,7 +159,8 @@ async fn main() {
         training_set_rollout_config,
         posterior_calculation_config,
         num_total_epochs,
-        rollout_time_limit_secs,
+        training_rollout_time_limit_secs,
+        validation_rollout_time_limit_secs,
         max_sqlite_connections,
         client,
         question_semaphore: question_semaphore,

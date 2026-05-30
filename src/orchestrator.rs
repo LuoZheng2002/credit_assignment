@@ -30,7 +30,8 @@ pub struct Orchestrator {
     pub validation_rollout_config: DirectRolloutConfig,
     pub training_set_rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
-    pub rollout_time_limit_secs: usize,
+    pub training_rollout_time_limit_secs: usize,
+    pub validation_rollout_time_limit_secs: usize,
     pub max_sqlite_connections: u32,
     pub inference_server_handle: Option<InferenceServerHandle>,
     pub sglang_server_log_path: Option<String>,
@@ -271,7 +272,7 @@ impl Orchestrator {
                     .as_ref()
                     .and_then(|handle| handle.sglang_port),
             },
-            rollout_time_limit_secs: self.rollout_time_limit_secs,
+            rollout_time_limit_secs: self.validation_rollout_time_limit_secs,
             max_sqlite_connections: self.max_sqlite_connections,
         };
         rollout_all::<M>(validation_rollout_program_config).await;
@@ -294,7 +295,7 @@ impl Orchestrator {
             client: self.client.clone(),
             question_semaphore: self.question_semaphore.clone(),
             llm_cli_args,
-            rollout_time_limit_secs: self.rollout_time_limit_secs,
+            rollout_time_limit_secs: self.training_rollout_time_limit_secs,
             max_sqlite_connections: self.max_sqlite_connections,
         };
         rollout_all::<M>(training_set_rollout_program_config).await;

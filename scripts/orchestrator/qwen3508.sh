@@ -16,7 +16,8 @@ RUST_BACKTRACE=1 cargo run --bin bin_orchestrator -- \
     --advantage-calculation-policy tree-mappo-posterior \
     --training-config-common-path config/training/common.toml \
     --training-time 300 \
-    --rollout-time-limit-secs 300 \
+    --training-rollout-time-limit-secs 300 \
+    --validation-rollout-time-limit-secs 300 \
     --max-sqlite-connections 1 \
     --sglang-server-log-path logs/sglang_server.txt \
     --message-log-path logs/messages.txt \
