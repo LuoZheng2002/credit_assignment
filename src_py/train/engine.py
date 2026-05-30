@@ -8,6 +8,7 @@ import json
 import os
 import random
 import shutil
+import sys
 import time
 
 import numpy as np
@@ -121,6 +122,33 @@ def _shutdown_distributed_process_group() -> None:
         torch.distributed.barrier()
     finally:
         torch.distributed.destroy_process_group()
+
+
+def _is_cuda_oom_exception(exc: BaseException) -> bool:
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return True
+    if not isinstance(exc, RuntimeError):
+        return False
+    message = str(exc).lower()
+    return "out of memory" in message and "cuda" in message
+
+
+def _print_cuda_oom_stderr(
+    *,
+    rank: int,
+    iteration_index: int,
+    batch_index: int,
+    next_batch_size: int,
+    will_retry: bool,
+) -> None:
+    print(
+        "[error] "
+        f"cuda_oom=1 rank={rank} iteration={iteration_index} "
+        f"batch_index={batch_index} next_batch_size={next_batch_size} "
+        f"will_retry={1 if will_retry else 0}",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _init_distributed_device() -> torch.device:
@@ -879,16 +907,6 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                 worker_progress = float(local_batch_cursor + 1) / len(local_batches)
                 print(_json_worker_progress(f"rank{rank}", worker_progress, f"Batch {local_batch_cursor + 1}/{len(local_batches)}"))
                 resolved_batch = local_batches[local_batch_cursor]
-                collated = collate_training_samples(
-                    samples=resolved_batch.samples,
-                    pad_token_id=pad_token_id,
-                )
-
-                input_ids = collated.input_ids.to(device=device, non_blocking=True)
-                labels = collated.labels.to(device=device, non_blocking=True)
-                attention_mask = collated.attention_mask.to(device=device, non_blocking=True)
-                advantages = collated.advantages.to(device=device, non_blocking=True)
-
                 should_sync = (accumulation_step + 1) == config.grad_accum_steps
                 sync_context = nullcontext()
                 if (
@@ -900,17 +918,42 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                     sync_context = model.no_sync()
 
                 step_start = time.perf_counter()
-                with sync_context:
-                    logits = _forward_logits(model, input_ids=input_ids, attention_mask=attention_mask)
-                    loss_output = compute_advantage_weighted_causal_lm_loss(
-                        logits=logits,
-                        labels=labels,
-                        advantages=advantages,
-                        advantage_clip=config.advantage_clip,
+                try:
+                    collated = collate_training_samples(
+                        samples=resolved_batch.samples,
+                        pad_token_id=pad_token_id,
                     )
 
-                    loss = loss_output.loss / config.grad_accum_steps
-                    loss.backward()
+                    input_ids = collated.input_ids.to(device=device, non_blocking=True)
+                    labels = collated.labels.to(device=device, non_blocking=True)
+                    attention_mask = collated.attention_mask.to(device=device, non_blocking=True)
+                    advantages = collated.advantages.to(device=device, non_blocking=True)
+
+                    with sync_context:
+                        logits = _forward_logits(model, input_ids=input_ids, attention_mask=attention_mask)
+                        loss_output = compute_advantage_weighted_causal_lm_loss(
+                            logits=logits,
+                            labels=labels,
+                            advantages=advantages,
+                            advantage_clip=config.advantage_clip,
+                        )
+
+                        loss = loss_output.loss / config.grad_accum_steps
+                        loss.backward()
+                except RuntimeError as exc:
+                    if not _is_cuda_oom_exception(exc):
+                        raise
+                    optimizer.zero_grad(set_to_none=True)
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    _print_cuda_oom_stderr(
+                        rank=rank,
+                        iteration_index=iteration_index,
+                        batch_index=resolved_batch.batch_index,
+                        next_batch_size=initial_batch_size,
+                        will_retry=False,
+                    )
+                    raise
 
                 step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
                 throughput_samples_per_sec = float(len(resolved_batch.samples)) / step_elapsed_sec
@@ -1104,21 +1147,21 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                 assert max_input_token_id < model_vocab_size, "input_ids contain token id out of model vocab range"
                 assert max_label_token_id < model_vocab_size, "labels contain token id out of model vocab range"
 
-                collated = collate_training_samples(
-                    samples=resolved_batch.samples,
-                    pad_token_id=pad_token_id,
-                )
-
-                input_ids = collated.input_ids.to(device=device, non_blocking=True)
-                labels = collated.labels.to(device=device, non_blocking=True)
-                attention_mask = collated.attention_mask.to(device=device, non_blocking=True)
-                advantages = collated.advantages.to(device=device, non_blocking=True)
-
                 should_sync = (accumulation_step + 1) == config.grad_accum_steps
                 sync_context = nullcontext()
 
                 step_start = time.perf_counter()
                 try:
+                    collated = collate_training_samples(
+                        samples=resolved_batch.samples,
+                        pad_token_id=pad_token_id,
+                    )
+
+                    input_ids = collated.input_ids.to(device=device, non_blocking=True)
+                    labels = collated.labels.to(device=device, non_blocking=True)
+                    attention_mask = collated.attention_mask.to(device=device, non_blocking=True)
+                    advantages = collated.advantages.to(device=device, non_blocking=True)
+
                     with sync_context:
                         logits = _forward_logits(model, input_ids=input_ids, attention_mask=attention_mask)
                         loss_output = compute_advantage_weighted_causal_lm_loss(
@@ -1130,13 +1173,23 @@ def train_with_deepspeed(config: TrainConfig) -> None:
 
                         loss = loss_output.loss / config.grad_accum_steps
                         loss.backward()
-                except torch.cuda.OutOfMemoryError:
+                except RuntimeError as exc:
+                    if not _is_cuda_oom_exception(exc):
+                        raise
                     optimizer.zero_grad(set_to_none=True)
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
+                    reduced_batch_size = max(1, adaptive_state.next_batch_size // 2)
+                    will_retry = adaptive_state.next_batch_size > 1
+                    _print_cuda_oom_stderr(
+                        rank=rank,
+                        iteration_index=iteration_index,
+                        batch_index=batch_index,
+                        next_batch_size=reduced_batch_size,
+                        will_retry=will_retry,
+                    )
                     if adaptive_state.next_batch_size <= 1:
                         raise
-                    reduced_batch_size = max(1, adaptive_state.next_batch_size // 2)
                     adaptive_state = AdaptiveBatchState(
                         next_batch_size=reduced_batch_size,
                         velocity=0.0,
