@@ -42,7 +42,7 @@ struct Args {
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
     #[arg(long)]
-    first_n_samples: Option<usize>,
+    rollout_time_limit_secs: usize,
     #[arg(long, default_value_t = 1)]
     max_sqlite_connections: u32,
     #[arg(long)]
@@ -70,7 +70,7 @@ async fn main() {
         posterior_hyperparameters_path,
         epoch,
         ui,
-        first_n_samples,
+        rollout_time_limit_secs,
         max_sqlite_connections,
         sglang_server_log_path,
     } = Args::parse();
@@ -110,7 +110,7 @@ async fn main() {
         client,
         question_semaphore,
         llm_cli_args,
-        first_n_samples,
+        rollout_time_limit_secs,
         max_sqlite_connections,
     };
     match model_name {
