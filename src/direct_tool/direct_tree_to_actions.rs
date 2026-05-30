@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 use reqwest::Client;
-use research_utility::log_message::{log_info, log_key_value_pair, log_warning};
+use research_utility::log_message::{log_error, log_info, log_key_value_pair, log_warning};
 
 use crate::direct_tool::direct_trajectory::{DirectTrajectory, FinalAnswer, TrajectoryContent};
 use crate::judge_correctness::judge_final_answer;
@@ -507,7 +507,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
             let trajectory = self.get_trajectory(target_segment_id, &continuing_contents);
             if let Some(answer) = trajectory.try_get_answer() {
                 if continuing_contents.is_empty() {
-                    println!("trajectory contents: {}", trajectory.to_decoded_string());
+                    log_error(format!("trajectory contents: {}", trajectory.to_decoded_string()));
                     panic!(
                         "The trajectory should produce some continuing content before producing the answer"
                     );

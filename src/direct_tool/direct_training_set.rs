@@ -1,17 +1,16 @@
 use std::{
     cmp::Reverse,
     collections::{BTreeMap, BTreeSet, BinaryHeap},
-    sync::Arc,
 };
 
 use ordered_float::NotNan;
+use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 use research_utility::{
     asset_file::{AssetFile, Base64Hash, hash_file},
+    log_message::{log_info, log_key_value_pair, log_master_progress, log_warning},
     sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
 
 use crate::{
     direct_tool::{
@@ -58,36 +57,13 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     advantage_calculation_policy: AdvantageCalculationPolicy,
 ) -> Vec<DirectTrainingTrajectory<M>> {
     if max_num_training_trajectories == 0 {
-        let statistics = DirectTrainingSetStatistics {
-            average_absolute_advantages_sorted: Vec::new(),
-            max_average_absolute_advantage: 0.0,
-            min_average_absolute_advantage: 0.0,
-            average_absolute_advantage_cutoff: 0.0,
-            total_trajectories: 0,
-            adopted_trajectories: 0,
-        };
-        write_json(statistics_file_path.clone(), &statistics).unwrap();
-        println!(
-            "max_average_absolute_advantage: {}",
-            statistics.max_average_absolute_advantage
-        );
-        println!(
-            "min_average_absolute_advantage: {}",
-            statistics.min_average_absolute_advantage
-        );
-        println!(
-            "average_absolute_advantage_cutoff: {}",
-            statistics.average_absolute_advantage_cutoff
-        );
-        println!("total_trajectories: {}", statistics.total_trajectories);
-        println!("adopted_trajectories: {}", statistics.adopted_trajectories);
+        log_warning("Max num training trajectory is 0");
         return Vec::new();
     }
 
     // iterate through all action logs
     let mut keys = action_log_store.get_keys().await.unwrap();
     let num_keys = keys.len();
-    let log_interval = std::cmp::max(num_keys / 200, 1);
     // we want to make a histogram
 
     keys.sort(); // ensure deterministic order
@@ -97,61 +73,54 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     let mut min_heap: BinaryHeap<Reverse<TrajectoryHeapItem<M>>> = BinaryHeap::new();
     let mut all_average_absolute_advantages: Vec<f32> = Vec::new();
     let mut total_trajectories = 0_usize;
-    let mut join_set = JoinSet::new();
-    let mut pending_trajectories_by_index: BTreeMap<usize, Vec<DirectTrainingTrajectory<M>>> =
-        BTreeMap::new();
-    let mut next_index_to_reduce = 0usize;
-    let task_semaphore = Arc::new(Semaphore::new(30));
+    let mut finished_samples = 0usize;
+    let nproc = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1);
+    let num_worker_threads = std::cmp::max((nproc + 1) / 2, 1);
+    let worker_pool = ThreadPoolBuilder::new()
+        .num_threads(num_worker_threads)
+        .build()
+        .expect("Failed to build rayon worker pool for training trajectory conversion");
+    log_info(format!("Converting action logs to trajectories with rayon threads: {}", num_worker_threads));
+    let chunk_size = std::cmp::max(num_worker_threads * 4, 1);
+    let mut pending_chunk: Vec<(usize, DirectTreeActionLog<M>)> = Vec::with_capacity(chunk_size);
 
     for (index, key) in keys.iter().enumerate() {
-        if index % log_interval == 0 {
-            println!("Processing action logs: {}/{}", index, num_keys);
-        }
+        
         let action_log = action_log_store.get(*key).await.unwrap().unwrap();
-        let task_permit = task_semaphore.clone().acquire_owned().await.unwrap();
-        join_set.spawn_blocking(move || {
-            let _task_permit = task_permit;
-            (
-                index,
-                action_log_to_candidate_trajectories::<M>(action_log, advantage_calculation_policy),
-            )
-        });
-
-        while let Some(result) = join_set.try_join_next() {
-            let (finished_index, finished_trajectories) =
-                result.expect("action_log_to_candidate_trajectories task panicked");
-            pending_trajectories_by_index.insert(finished_index, finished_trajectories);
-
-            while let Some(trajectories) =
-                pending_trajectories_by_index.remove(&next_index_to_reduce)
-            {
-                fold_candidate_trajectories(
-                    trajectories,
-                    &mut total_trajectories,
-                    &mut all_average_absolute_advantages,
-                    &mut min_heap,
-                    max_num_training_trajectories,
-                );
-                next_index_to_reduce += 1;
-            }
-        }
-    }
-
-    while let Some(result) = join_set.join_next().await {
-        let (finished_index, finished_trajectories) =
-            result.expect("action_log_to_candidate_trajectories task panicked");
-        pending_trajectories_by_index.insert(finished_index, finished_trajectories);
-
-        while let Some(trajectories) = pending_trajectories_by_index.remove(&next_index_to_reduce) {
-            fold_candidate_trajectories(
-                trajectories,
+        pending_chunk.push((index, action_log));
+        if pending_chunk.len() >= chunk_size {
+            fold_processed_chunk(
+                run_parallel_action_log_chunk(
+                    &worker_pool,
+                    std::mem::take(&mut pending_chunk),
+                    advantage_calculation_policy,
+                ),
+                num_keys,
+                &mut finished_samples,
                 &mut total_trajectories,
                 &mut all_average_absolute_advantages,
                 &mut min_heap,
                 max_num_training_trajectories,
             );
-            next_index_to_reduce += 1;
         }
+    }
+
+    if !pending_chunk.is_empty() {
+        fold_processed_chunk(
+            run_parallel_action_log_chunk(
+                &worker_pool,
+                pending_chunk,
+                advantage_calculation_policy,
+            ),
+            num_keys,
+            &mut finished_samples,
+            &mut total_trajectories,
+            &mut all_average_absolute_advantages,
+            &mut min_heap,
+            max_num_training_trajectories,
+        );
     }
 
     let kept_items: Vec<TrajectoryHeapItem<M>> = min_heap.into_iter().map(|item| item.0).collect();
@@ -198,21 +167,61 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         adopted_trajectories,
     };
     write_json(statistics_file_path.clone(), &statistics).unwrap();
-    println!(
-        "max_average_absolute_advantage: {}",
-        statistics.max_average_absolute_advantage
-    );
-    println!(
-        "min_average_absolute_advantage: {}",
-        statistics.min_average_absolute_advantage
-    );
-    println!(
-        "average_absolute_advantage_cutoff: {}",
-        statistics.average_absolute_advantage_cutoff
-    );
-    println!("total_trajectories: {}", statistics.total_trajectories);
-    println!("adopted_trajectories: {}", statistics.adopted_trajectories);
+    log_key_value_pair("max_average_absolute_advantage", statistics.max_average_absolute_advantage.to_string());
+    log_key_value_pair("min_average_absolute_advantage", statistics.min_average_absolute_advantage.to_string());
+    log_key_value_pair("average_absolute_advantage_cutoff", statistics.average_absolute_advantage_cutoff.to_string());
+    log_info(format!("total_trajectories: {}, adopted_trajectories: {}", statistics.total_trajectories, statistics.adopted_trajectories));
     kept_trajectories
+}
+
+fn run_parallel_action_log_chunk<M: LlmModelMarker>(
+    worker_pool: &ThreadPool,
+    chunk: Vec<(usize, DirectTreeActionLog<M>)>,
+    advantage_calculation_policy: AdvantageCalculationPolicy,
+) -> Vec<(usize, Vec<DirectTrainingTrajectory<M>>)> {
+    let mut processed_chunk = worker_pool.install(|| {
+        chunk
+            .into_par_iter()
+            .map(|(index, action_log)| {
+                (
+                    index,
+                    action_log_to_candidate_trajectories::<M>(
+                        action_log,
+                        advantage_calculation_policy,
+                    ),
+                )
+            })
+            .collect::<Vec<(usize, Vec<DirectTrainingTrajectory<M>>)>>()
+    });
+    processed_chunk.sort_by_key(|(index, _)| *index);
+    processed_chunk
+}
+
+fn fold_processed_chunk<M: LlmModelMarker>(
+    processed_chunk: Vec<(usize, Vec<DirectTrainingTrajectory<M>>)>,
+    total_samples: usize,
+    finished_samples: &mut usize,
+    total_trajectories: &mut usize,
+    all_average_absolute_advantages: &mut Vec<f32>,
+    min_heap: &mut BinaryHeap<Reverse<TrajectoryHeapItem<M>>>,
+    max_num_training_trajectories: usize,
+) {
+    for (_, trajectories) in processed_chunk {
+        *finished_samples += 1;
+        let progress = if total_samples == 0 {
+            0.0
+        } else {
+            *finished_samples as f32 / total_samples as f32
+        };
+        log_master_progress(progress, "Rollout Samples Processed");
+        fold_candidate_trajectories(
+            trajectories,
+            total_trajectories,
+            all_average_absolute_advantages,
+            min_heap,
+            max_num_training_trajectories,
+        );
+    }
 }
 
 fn fold_candidate_trajectories<M: LlmModelMarker>(
@@ -464,7 +473,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             true
         };
         if stale {
-            println!("Training trajectories file is stale or does not exist. Regenerating...",);
+            log_warning("Training trajectories file is stale or does not exist. Regenerating...");
             // if so, we first delete the target file
             if std::path::Path::new(&self.file_path()).exists() {
                 std::fs::remove_file(&self.file_path()).unwrap();
@@ -486,7 +495,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
                     .await
                     .unwrap();
             }
-            println!("Finished generating training trajectories file.");
+            log_info("Finished generating training trajectories file.");
         }
         write_json(self.version_tracking_path(), &new_tracking_content).unwrap();
         hash_file(self.file_path()).expect("Failed to hash training trajectories file")

@@ -32,7 +32,7 @@ class TrainConfig:
     num_iterations: int
     grad_accum_steps: int
     log_interval_steps: int
-    save_interval_steps: int
+    checkpoint_save_time_interval: float
     lora_rank: int
     lora_alpha: int
     lora_dropout: float
@@ -289,6 +289,7 @@ def _save_final_model_folder(
                     shard_path.unlink()
 
     if rank == 0:
+        print(f"[status] preparing_final_output_model=1 output_parent_dir={final_model_output_parent_dir}")
         assert source_model_folder.exists(), f"source model folder does not exist: {source_model_folder}"
         assert source_model_folder.is_dir(), f"source model folder must be a directory: {source_model_folder}"
         if final_model_output_parent_dir.exists():
@@ -302,6 +303,7 @@ def _save_final_model_folder(
                 f"final_model_output_path must be a directory when it exists: {final_model_output_path}"
             )
             shutil.rmtree(final_model_output_path)
+        print(f"[status] writing_final_output_model=1 output_dir={final_model_output_path}")
         shutil.copytree(source_model_folder, final_model_output_path)
         _remove_existing_weight_files(final_model_output_path)
 
@@ -316,6 +318,7 @@ def _save_final_model_folder(
                 safe_serialization=True,
                 save_config=False,
             )
+            print(f"[status] written_final_output_model=1 output_dir={final_model_output_path}")
         _distributed_barrier()
         return
 
@@ -342,6 +345,7 @@ def _save_final_model_folder(
             safe_serialization=True,
             save_config=False,
         )
+        print(f"[status] written_final_output_model=1 output_dir={final_model_output_path}")
     _distributed_barrier()
 
 
@@ -731,7 +735,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     assert config.num_iterations > 0, "num_iterations must be positive"
     assert config.grad_accum_steps > 0, "grad_accum_steps must be positive"
     assert config.log_interval_steps > 0, "log_interval_steps must be positive"
-    assert config.save_interval_steps > 0, "save_interval_steps must be positive"
+    assert config.checkpoint_save_time_interval > 0.0, "checkpoint_save_time_interval must be positive"
     assert len(config.resume_checkpoint_tag.strip()) > 0, "resume_checkpoint_tag cannot be empty"
     assert len(config.checkpoints_parent_dir.strip()) > 0, "checkpoints_parent_dir cannot be empty"
     assert len(config.final_model_output_parent_dir.strip()) > 0, "final_model_output_parent_dir cannot be empty"
@@ -745,6 +749,8 @@ def train_with_deepspeed(config: TrainConfig) -> None:
     initial_batch_size = 1
     initial_adaptive_velocity = 0.12
 
+    if _is_primary_rank():
+        print(f"[status] loading_model=1 model_parent_dir={config.model_parent_dir}")
     resolved_model_path = _resolve_local_model_path(config.model_parent_dir)
     if _is_primary_rank():
         print(
@@ -884,6 +890,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
 
         global_step = resume_state.global_step
         accumulation_step = resume_state.accumulation_step
+        last_checkpoint_save_time = time.monotonic()
         optimizer.zero_grad(set_to_none=True)
 
         if resume_state.next_iteration_index >= config.num_iterations:
@@ -985,7 +992,8 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                             log_payload[key] = value
                         _log_json_line(logs_path, log_payload)
 
-                    if global_step % config.save_interval_steps == 0:
+                    now = time.monotonic()
+                    if now - last_checkpoint_save_time >= config.checkpoint_save_time_interval:
                         next_iteration_index, next_batch_cursor = _compute_next_position(
                             iteration_index=iteration_index,
                             local_batch_cursor=local_batch_cursor,
@@ -1004,6 +1012,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                             accumulation_step=accumulation_step,
                             next_batch_size=initial_batch_size,
                         )
+                        last_checkpoint_save_time = now
 
         if accumulation_step > 0:
             optimizer.step()
@@ -1095,6 +1104,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
 
         global_step = resume_state.global_step
         accumulation_step = resume_state.accumulation_step
+        last_checkpoint_save_time = time.monotonic()
         optimizer.zero_grad(set_to_none=True)
 
         if resume_state.next_iteration_index >= config.num_iterations:
@@ -1253,7 +1263,8 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                             log_payload[key] = value
                         _log_json_line(logs_path, log_payload)
 
-                    if global_step % config.save_interval_steps == 0:
+                    now = time.monotonic()
+                    if now - last_checkpoint_save_time >= config.checkpoint_save_time_interval:
                         next_iteration_index = iteration_index
                         next_sample_index = sample_index
                         if next_sample_index >= lazy_loader.sample_count:
@@ -1276,6 +1287,7 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                             adaptive_throughput_ema=adaptive_state.throughput_ema,
                             adaptive_best_throughput_ema=adaptive_state.best_throughput_ema,
                         )
+                        last_checkpoint_save_time = now
             resume_sample_index = 0
 
         if accumulation_step > 0:

@@ -13,6 +13,7 @@ use crate::{
     direct_tool::{
         direct_rollout_config::DirectRolloutConfig,
         direct_tree::DirectTree,
+        direct_tree_action::DirectTreeAction,
         direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
         hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
@@ -68,6 +69,18 @@ pub async fn rollout<M: LlmModelMarker>(
             )
             .await;
         for action in new_actions {
+            if matches!(
+                action,
+                DirectTreeAction::CreateAndJudgeTrunkTrajectory { .. }
+                    | DirectTreeAction::CreateAndJudgeBranchSegment { .. }
+            ) {
+                let finished =
+                    num_finished_branches.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                log_master_progress(
+                    finished as f32 / total_branches_to_finish as f32,
+                    "Branches Finished",
+                );
+            }
             action_log.actions.push(action);
         }
         rollout_store
@@ -80,11 +93,6 @@ pub async fn rollout<M: LlmModelMarker>(
             .unwrap();
     }
     log_info(format!("Rollout {} finished", question.flat_id));
-    let finished = num_finished_branches.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    log_master_progress(
-        finished as f32 / total_branches_to_finish as f32,
-        "Branches Finished",
-    );
 }
 
 pub struct RolloutProgramConfig {
@@ -100,6 +108,7 @@ pub struct RolloutProgramConfig {
 }
 
 pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig) {
+    log_master_progress(0.0, "Branches Finished");
     let RolloutProgramConfig {
         config_nickname,
         rollout_config,
@@ -180,5 +189,5 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     while let Some(result) = join_set.join_next().await {
         result.expect("direct rollout worker task panicked or was cancelled");
     }
-    log_master_progress(0.0, "All Branches Finished");
+    log_master_progress(1.0, "All Branches Finished");
 }

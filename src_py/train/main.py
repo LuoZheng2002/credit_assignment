@@ -18,7 +18,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-iterations", type=int, required=True)
     parser.add_argument("--grad-accum-steps", type=int, required=True)
     parser.add_argument("--log-interval-steps", type=int, required=True)
-    parser.add_argument("--save-interval-steps", type=int, required=True)
+    parser.add_argument("--checkpoint-save-time-interval", type=float, required=True)
     parser.add_argument("--lora-rank", type=int, required=True)
     parser.add_argument("--lora-alpha", type=int, required=True)
     parser.add_argument("--lora-dropout", type=float, required=True)
@@ -45,7 +45,7 @@ def main() -> None:
         num_iterations=args.num_iterations,
         grad_accum_steps=args.grad_accum_steps,
         log_interval_steps=args.log_interval_steps,
-        save_interval_steps=args.save_interval_steps,
+        checkpoint_save_time_interval=args.checkpoint_save_time_interval,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
