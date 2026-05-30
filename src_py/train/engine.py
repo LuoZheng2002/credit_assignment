@@ -993,13 +993,21 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                         _log_json_line(logs_path, log_payload)
 
                     now = time.monotonic()
-                    if now - last_checkpoint_save_time >= config.checkpoint_save_time_interval:
+                    elapsed_since_last_checkpoint_sec = now - last_checkpoint_save_time
+                    if elapsed_since_last_checkpoint_sec >= config.checkpoint_save_time_interval:
                         next_iteration_index, next_batch_cursor = _compute_next_position(
                             iteration_index=iteration_index,
                             local_batch_cursor=local_batch_cursor,
                             local_batch_count=len(local_batches),
                         )
                         checkpoint_tag = "checkpoints"
+                        if _is_primary_rank():
+                            print(
+                                "[status] "
+                                f"saving_periodic_checkpoint=1 elapsed_sec={elapsed_since_last_checkpoint_sec:.2f} "
+                                f"global_step={global_step} iteration={iteration_index} "
+                                f"batch_index={resolved_batch.batch_index}"
+                            )
                         _save_checkpoint(
                             model=model,
                             optimizer=optimizer,
@@ -1264,13 +1272,21 @@ def train_with_deepspeed(config: TrainConfig) -> None:
                         _log_json_line(logs_path, log_payload)
 
                     now = time.monotonic()
-                    if now - last_checkpoint_save_time >= config.checkpoint_save_time_interval:
+                    elapsed_since_last_checkpoint_sec = now - last_checkpoint_save_time
+                    if elapsed_since_last_checkpoint_sec >= config.checkpoint_save_time_interval:
                         next_iteration_index = iteration_index
                         next_sample_index = sample_index
                         if next_sample_index >= lazy_loader.sample_count:
                             next_iteration_index += 1
                             next_sample_index = 0
                         checkpoint_tag = "checkpoints"
+                        if _is_primary_rank():
+                            print(
+                                "[status] "
+                                f"saving_periodic_checkpoint=1 elapsed_sec={elapsed_since_last_checkpoint_sec:.2f} "
+                                f"global_step={global_step} iteration={iteration_index} "
+                                f"batch_index={batch_index} next_sample_index={next_sample_index}"
+                            )
                         _save_checkpoint(
                             model=model,
                             optimizer=optimizer,

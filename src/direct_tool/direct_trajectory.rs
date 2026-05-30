@@ -1,6 +1,9 @@
 use research_utility::log_message::log_warning;
 use serde::{Deserialize, Serialize};
-use std::marker::PhantomData;
+use std::{
+    collections::{HashMap, HashSet},
+    marker::PhantomData,
+};
 
 use crate::{
     constants::SGLANG_CONTEXT_LENGTH,
@@ -265,43 +268,64 @@ fn has_problematic_repetition(tokens: &[i32]) -> bool {
     let min_subsequence_length = 50; // minimum repeated subsequence length to avoid false positives
 
     let n = tokens.len();
-    if n < min_subsequence_length * 5 {
+    if n < min_subsequence_length + 4 {
         return false;
     }
 
-    // Rolling hash over token ids. Verify exact token equality on hash match.
+    // Fixed-size rolling hash over token ids.
     let base: u64 = 1_000_003;
-    let mut pow = vec![0_u64; n + 1];
-    let mut prefix = vec![0_u64; n + 1];
-    pow[0] = 1;
-    for i in 0..n {
-        pow[i + 1] = pow[i].wrapping_mul(base);
-        let token_as_u64 = (i64::from(tokens[i]) - i64::from(i32::MIN) + 1) as u64;
-        prefix[i + 1] = prefix[i].wrapping_mul(base).wrapping_add(token_as_u64);
+    let window_len = min_subsequence_length;
+    let num_windows = n - window_len + 1;
+
+    let mut highest_base_pow = 1_u64;
+    for _ in 1..window_len {
+        highest_base_pow = highest_base_pow.wrapping_mul(base);
     }
 
-    let hash = |start: usize, len: usize| -> u64 {
-        prefix[start + len].wrapping_sub(prefix[start].wrapping_mul(pow[len]))
-    };
+    let mut window_hash = 0_u64;
+    for &token in &tokens[..window_len] {
+        let token_as_u64 = (i64::from(token) - i64::from(i32::MIN) + 1) as u64;
+        window_hash = window_hash.wrapping_mul(base).wrapping_add(token_as_u64);
+    }
 
-    for len in min_subsequence_length..=(n / 5) {
-        for start in 0..=(n - 5 * len) {
-            let h1 = hash(start, len);
-            let h2 = hash(start + len, len);
-            let h3 = hash(start + 2 * len, len);
-            let h4 = hash(start + 3 * len, len);
-            let h5 = hash(start + 4 * len, len);
-            if h1 != h2 || h1 != h3 || h1 != h4 || h1 != h5 {
-                continue;
-            }
+    let mut positions_by_hash: HashMap<u64, Vec<usize>> = HashMap::new();
+    positions_by_hash.insert(window_hash, vec![0]);
 
-            let s1 = &tokens[start..start + len];
-            let s2 = &tokens[start + len..start + 2 * len];
-            let s3 = &tokens[start + 2 * len..start + 3 * len];
-            let s4 = &tokens[start + 3 * len..start + 4 * len];
-            let s5 = &tokens[start + 4 * len..start + 5 * len];
-            if s1 == s2 && s1 == s3 && s1 == s4 && s1 == s5 {
-                return true;
+    for start in 1..num_windows {
+        let outgoing = (i64::from(tokens[start - 1]) - i64::from(i32::MIN) + 1) as u64;
+        let incoming = (i64::from(tokens[start + window_len - 1]) - i64::from(i32::MIN) + 1) as u64;
+
+        window_hash = window_hash
+            .wrapping_sub(outgoing.wrapping_mul(highest_base_pow))
+            .wrapping_mul(base)
+            .wrapping_add(incoming);
+        positions_by_hash.entry(window_hash).or_default().push(start);
+    }
+
+    for positions in positions_by_hash.values() {
+        if positions.len() < 5 {
+            continue;
+        }
+
+        let position_set: HashSet<usize> = positions.iter().copied().collect();
+        let max_position = *positions.last().expect("positions is not empty");
+        for i in 0..positions.len() - 4 {
+            let first = positions[i];
+            for j in i + 1..positions.len() - 3 {
+                let stride = positions[j] - first;
+                if stride < window_len {
+                    continue;
+                }
+                if first + 4 * stride > max_position {
+                    break;
+                }
+
+                if position_set.contains(&(first + 2 * stride))
+                    && position_set.contains(&(first + 3 * stride))
+                    && position_set.contains(&(first + 4 * stride))
+                {
+                    return true;
+                }
             }
         }
     }
