@@ -74,7 +74,7 @@ impl Orchestrator {
             match self.progress.clone() {
                 OrchestrationProgress::WorkingOnValidation { epoch } => {
                     assert!(epoch <= self.num_total_epochs);
-                    self.ensure_inference_server_launched::<M>(epoch).await;
+                    self.ensure_inference_server_launched::<M>(epoch).await?;
                     self.validate_model::<M>(epoch).await?;
                     if epoch >= self.num_total_epochs {
                         log_info(&format!(
@@ -89,7 +89,7 @@ impl Orchestrator {
                     );
                 }
                 OrchestrationProgress::WorkingOnRolloutCollection { epoch } => {
-                    self.ensure_inference_server_launched::<M>(epoch).await;
+                    self.ensure_inference_server_launched::<M>(epoch).await?;
                     self.collect_training_rollout::<M>(epoch).await;
                     // after rollout collection, we can shut down the inference server
                     self.ensure_inference_server_shut_down().await;
@@ -129,24 +129,25 @@ impl Orchestrator {
         self.progress = progress;
     }
 
-    async fn ensure_inference_server_launched<M: LlmModelMarker>(&mut self, epoch: usize) {
+    async fn ensure_inference_server_launched<M: LlmModelMarker>(&mut self, epoch: usize) -> Result<(), String> {
         if let Some(handle) = &self.inference_server_handle {
             if handle.epoch == epoch {
                 // already launched for this epoch
-                return;
+                return Ok(());
             } else {
                 // first shut down the previous one
                 self.ensure_inference_server_shut_down().await;
                 // then continue to launch the new one
-                self.launch_inference_server::<M>(epoch).await;
+                self.launch_inference_server::<M>(epoch).await?;
             }
         } else {
             // not launched, just launch
-            self.launch_inference_server::<M>(epoch).await;
+            self.launch_inference_server::<M>(epoch).await?;
         }
+        Ok(())
     }
 
-    async fn launch_inference_server<M: LlmModelMarker>(&mut self, epoch: usize) {
+    async fn launch_inference_server<M: LlmModelMarker>(&mut self, epoch: usize) -> Result<(), String> {
         assert!(
             self.inference_server_handle.is_none(),
             "Inference server is already launched for epoch {}, cannot launch again without shutting down",
@@ -162,7 +163,12 @@ impl Orchestrator {
                 "Model {} does not need a local inference server",
                 M::CLI_NAME
             ));
-            return;
+            return Ok(());
+        }
+
+        if epoch == 0 {
+            crate::load_initial_model::load_initial_model(&self.epoch_dir::<M>(epoch), M::API_NAME)
+                .await?;
         }
 
         log_info(format!(
@@ -185,6 +191,7 @@ impl Orchestrator {
             process: Some(process),
         });
         log_info("Inference server launched");
+        Ok(())
     }
 
     async fn ensure_inference_server_shut_down(&mut self) {
@@ -203,10 +210,7 @@ impl Orchestrator {
 
     async fn validate_model<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
         assert!(self.validation_rollout_config.split == DatasetSplit::Validation);
-        if epoch == 0 {
-            crate::load_initial_model::load_initial_model(&self.epoch_dir::<M>(epoch), M::API_NAME)
-                .await?;
-        }
+        
         let validation_rollout_program_config = RolloutProgramConfig {
             config_nickname: self.config_nickname.clone(),
             rollout_config: self.validation_rollout_config.clone(),
