@@ -7,7 +7,6 @@ pub mod direct_tree_action;
 pub mod direct_tree_action_log;
 pub mod direct_tree_advantage;
 pub mod direct_tree_apply_action;
-pub mod direct_tree_experiment;
 pub mod direct_tree_posterior;
 pub mod direct_tree_spontaneous_branching;
 pub mod direct_tree_status;
