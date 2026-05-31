@@ -9,7 +9,7 @@ use research_utility::log_message::{log_error, log_info, log_key_value_pair, log
 
 use crate::direct_tool::direct_rollout::StopRequestedError;
 use crate::direct_tool::direct_trajectory::{DirectTrajectory, FinalAnswer, TrajectoryContent};
-use crate::judge_correctness::judge_final_answer;
+use crate::judge_correctness::{JudgeAnswerModel, judge_final_answer};
 use crate::llm_model::MyTokenizer;
 use crate::tool_call_python::{PythonToolResponse, PythonToolServerPool, execute_python_tool_call};
 use crate::{
@@ -184,6 +184,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                     &self.action_log.question.correct_answer,
                     &self.action_log.question.question,
                     client,
+                    JudgeAnswerModel::DeepseekV4Flash,
                 )
                 .await;
                 vec![DirectTreeAction::CreateAndJudgeTrunkTrajectory {
@@ -273,6 +274,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                     &self.action_log.question.correct_answer,
                     &self.action_log.question.question,
                     client,
+                    JudgeAnswerModel::DeepseekV4Flash,
                 )
                 .await;
                 let action = DirectTreeAction::CreateAndJudgeBranchSegment {
@@ -300,6 +302,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                     &self.action_log.question.correct_answer,
                     &self.action_log.question.question,
                     client,
+                    JudgeAnswerModel::DeepseekV4Flash,
                 )
                 .await;
                 log_info(format!(
