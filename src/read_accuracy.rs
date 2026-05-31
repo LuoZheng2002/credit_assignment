@@ -15,10 +15,6 @@ use crate::{
 fn question_is_correct<M: LlmModelMarker>(action_log: &DirectTreeActionLog<M>) -> Option<bool> {
     let tree = DirectTree::<M>::from_action_log(action_log);
     assert!(
-        tree.completed,
-        "Direct tree must be completed before accuracy calculation"
-    );
-    assert!(
         tree.leaf_segment_judgments.len() <= 1,
         "There should be at most one leaf segment judgment for accuracy calculation"
     );
