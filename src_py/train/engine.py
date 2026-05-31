@@ -171,6 +171,28 @@ def _gpu_memory_utilization(device: torch.device) -> float:
     return max(0.0, min(1.0, used_ratio))
 
 
+def _gpu_memory_allocated_ratio(device: torch.device) -> float:
+    if not torch.cuda.is_available() or device.type != "cuda":
+        return 0.0
+    total_bytes = torch.cuda.get_device_properties(device).total_memory
+    if total_bytes <= 0:
+        return 0.0
+    allocated_bytes = torch.cuda.memory_allocated(device=device)
+    used_ratio = float(allocated_bytes) / float(total_bytes)
+    return max(0.0, min(1.0, used_ratio))
+
+
+def _gpu_memory_reserved_ratio(device: torch.device) -> float:
+    if not torch.cuda.is_available() or device.type != "cuda":
+        return 0.0
+    total_bytes = torch.cuda.get_device_properties(device).total_memory
+    if total_bytes <= 0:
+        return 0.0
+    reserved_bytes = torch.cuda.memory_reserved(device=device)
+    used_ratio = float(reserved_bytes) / float(total_bytes)
+    return max(0.0, min(1.0, used_ratio))
+
+
 def _init_distributed_device() -> torch.device:
     local_rank_env = os.environ.get("LOCAL_RANK")
     if local_rank_env is None:
@@ -1086,10 +1108,14 @@ def train(config: TrainConfig) -> None:
             step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
             throughput_samples_per_sec = float(len(resolved_batch.samples)) / step_elapsed_sec
             gpu_memory_usage_pct = 100.0 * _gpu_memory_utilization(device)
+            gpu_memory_allocated_pct = 100.0 * _gpu_memory_allocated_ratio(device)
+            gpu_memory_reserved_pct = 100.0 * _gpu_memory_reserved_ratio(device)
             print(_json_key_value("throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"))
             print(_json_key_value("batch_size", str(len(resolved_batch.samples))))
             print(_json_key_value("batch_token_length", str(int(input_ids.shape[1]))))
             print(_json_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}"))
+            print(_json_key_value("gpu_memory_allocated_pct", f"{gpu_memory_allocated_pct:.2f}"))
+            print(_json_key_value("gpu_memory_reserved_pct", f"{gpu_memory_reserved_pct:.2f}"))
             if _is_primary_rank():
                 print(_json_key_value("global_step", str(global_step)))
                 print(_json_key_value("iteration", str(iteration_index)))
@@ -1419,6 +1445,8 @@ def train(config: TrainConfig) -> None:
             )
             gpu_memory_utilization = _gpu_memory_utilization(device)
             gpu_memory_usage_pct = 100.0 * gpu_memory_utilization
+            gpu_memory_allocated_pct = 100.0 * _gpu_memory_allocated_ratio(device)
+            gpu_memory_reserved_pct = 100.0 * _gpu_memory_reserved_ratio(device)
             print(_json_key_value("throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"))
             print(_json_key_value("batch_size", str(len(resolved_batch.samples))))
             print(_json_key_value("batch_token_length", str(int(input_ids.shape[1]))))
@@ -1427,6 +1455,8 @@ def train(config: TrainConfig) -> None:
             print(_json_key_value("next_batch_size_int", str(adaptive_state.next_batch_size)))
             print(_json_key_value("next_batch_size_float", f"{adaptive_state.next_batch_size_float:.2f}"))
             print(_json_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}"))
+            print(_json_key_value("gpu_memory_allocated_pct", f"{gpu_memory_allocated_pct:.2f}"))
+            print(_json_key_value("gpu_memory_reserved_pct", f"{gpu_memory_reserved_pct:.2f}"))
             if _is_primary_rank():
                 print(_json_key_value("global_step", str(global_step)))
                 print(_json_key_value("iteration", str(iteration_index)))
