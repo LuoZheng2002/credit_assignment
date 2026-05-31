@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use research_utility::log_message::log_info;
 use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep, timeout};
 
@@ -83,29 +84,65 @@ pub async fn launch_sglang_server_process<M: LlmModelMarker>(
 
 pub async fn shut_down_sglang_server_process(process: &mut Child) {
     match process.try_wait() {
-        Ok(Some(_)) => {}
+        Ok(Some(status)) => {
+            log_info(format!(
+                "SGLang shutdown: process already exited before shutdown call (status={})",
+                status
+            ));
+        }
         Ok(None) => {
+            let pid_for_log = process.id();
+            log_info(format!(
+                "SGLang shutdown: process is running before shutdown (pid={:?}), sending TERM",
+                pid_for_log
+            ));
             if let Some(pid) = process.id() {
                 send_signal_to_process_group(pid, "-TERM").await;
             }
 
             match timeout(Duration::from_secs(15), process.wait()).await {
-                Ok(Ok(_)) => return,
+                Ok(Ok(status)) => {
+                    log_info(format!(
+                        "SGLang shutdown: exited after TERM (pid={:?}, status={})",
+                        pid_for_log, status
+                    ));
+                    return;
+                }
                 Ok(Err(err)) => panic!("Failed to wait on inference server process: {}", err),
-                Err(_) => {}
+                Err(_) => {
+                    log_info(format!(
+                        "SGLang shutdown: TERM timed out after 15s (pid={:?}), escalating to KILL",
+                        pid_for_log
+                    ));
+                }
             }
 
             if let Some(pid) = process.id() {
                 send_signal_to_process_group(pid, "-KILL").await;
                 match timeout(Duration::from_secs(10), process.wait()).await {
-                    Ok(Ok(_)) => return,
+                    Ok(Ok(status)) => {
+                        log_info(format!(
+                            "SGLang shutdown: exited after KILL (pid={:?}, status={})",
+                            pid_for_log, status
+                        ));
+                        return;
+                    }
                     Ok(Err(err)) => {
                         panic!("Failed to wait on inference server process: {}", err)
                     }
-                    Err(_) => {}
+                    Err(_) => {
+                        log_info(format!(
+                            "SGLang shutdown: KILL wait timed out after 10s (pid={:?}), falling back to process.kill()",
+                            pid_for_log
+                        ));
+                    }
                 }
             }
 
+            log_info(format!(
+                "SGLang shutdown: invoking process.kill() fallback (pid={:?})",
+                pid_for_log
+            ));
             if let Err(err) = process.kill().await {
                 panic!("Failed to kill inference server process: {}", err);
             }

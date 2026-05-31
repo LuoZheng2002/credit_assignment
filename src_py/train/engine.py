@@ -1336,15 +1336,6 @@ def train(config: TrainConfig) -> None:
                 sample_index = 0
                 batch_index = 0
                 iteration_index += 1
-                adaptive_state = AdaptiveBatchState(
-                    next_batch_size=1,
-                    next_batch_size_float=1.0,
-                    velocity=0.0,
-                    throughput_ema=adaptive_state.throughput_ema,
-                    best_throughput_ema=adaptive_state.best_throughput_ema,
-                    memory_utilization_ema=adaptive_state.memory_utilization_ema,
-                    previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-                )
                 continue
 
             worker_progress = float(sample_index) / lazy_loader.sample_count
@@ -1477,15 +1468,6 @@ def train(config: TrainConfig) -> None:
                 sample_index = 0
                 batch_index = 0
                 iteration_index += 1
-                adaptive_state = AdaptiveBatchState(
-                    next_batch_size=1,
-                    next_batch_size_float=1.0,
-                    velocity=0.0,
-                    throughput_ema=adaptive_state.throughput_ema,
-                    best_throughput_ema=adaptive_state.best_throughput_ema,
-                    memory_utilization_ema=adaptive_state.memory_utilization_ema,
-                    previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-                )
 
             if accumulation_step == config.grad_accum_steps:
                 optimizer.step()
@@ -1496,7 +1478,7 @@ def train(config: TrainConfig) -> None:
                 adaptive_state = _update_adaptive_batch_state(
                     adaptive_state=adaptive_state,
                     measured_throughput=throughput_samples_per_sec,
-                    measured_memory_utilization=gpu_memory_utilization,
+                    measured_memory_utilization=gpu_memory_allocated_pct / 100.0,
                     measured_tokens_per_sample=measured_tokens_per_sample,
                     target_memory_utilization=target_gpu_memory_utilization,
                     min_batch_size=1,
