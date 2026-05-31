@@ -103,6 +103,10 @@ def _json_worker_progress(worker_name: str, progress: float, label: str) -> str:
     return json.dumps({"WorkerProgress": {"worker_name": worker_name, "progress": progress, "label": label}})
 
 
+def _json_delete_worker_bar(worker_name: str) -> str:
+    return json.dumps({"DeleteWorkerBar": {"worker_name": worker_name}})
+
+
 def _forward_logits(model_engine: torch.nn.Module, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     outputs = model_engine(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
     assert hasattr(outputs, "logits"), "model forward output must contain logits"
@@ -1218,6 +1222,7 @@ def train(config: TrainConfig) -> None:
         )
 
         _distributed_barrier()
+        print(_json_delete_worker_bar(f"rank{rank}"))
         if _is_primary_rank():
             print(
                 "[status] "
@@ -1594,6 +1599,7 @@ def train(config: TrainConfig) -> None:
         lazy_loader.close()
 
     _distributed_barrier()
+    print(_json_delete_worker_bar(f"rank{rank}"))
     if _is_primary_rank():
         print(
             "[status] "
