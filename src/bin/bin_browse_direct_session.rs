@@ -11,7 +11,7 @@ use credit_assignment::judge_correctness::CorrectnessJudgment;
 use credit_assignment::{
     direct_tool::{
         direct_rollout_config::DirectRolloutConfig,
-        direct_tree::{ContentIndex, DirectTree, SegmentContent, SegmentId},
+        direct_tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
         direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
         direct_tree_to_actions::TokenBranchingScore,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
@@ -133,7 +133,7 @@ struct TreePage<M: LlmModelMarker> {
     total_actions: usize,
     action_limit: usize,
     width_division_ratio: usize,
-    tree: DirectTree<M>,
+    tree_snapshot: TreeDisplaySnapshot<M>,
     root_segment_id: SegmentId,
     segment_advantages_from_posteriors: BTreeMap<SegmentId, f32>,
     segment_advantages_from_win_rate: BTreeMap<SegmentId, f32>,
@@ -204,7 +204,7 @@ struct ConversationRender {
 }
 
 struct TreePageState<M: LlmModelMarker> {
-    tree: DirectTree<M>,
+    tree_snapshot: TreeDisplaySnapshot<M>,
     root_segment_id: SegmentId,
     segment_advantages_from_posteriors: BTreeMap<SegmentId, f32>,
     segment_advantages_from_win_rate: BTreeMap<SegmentId, f32>,
@@ -216,6 +216,54 @@ struct TreePageState<M: LlmModelMarker> {
     segment_display_widths: BTreeMap<SegmentId, usize>,
     tree_lines: Vec<String>,
     rendered_segments: Vec<TreeRenderedSegment>,
+}
+
+struct TreeDisplaySnapshot<M: LlmModelMarker> {
+    segments: BTreeMap<SegmentId, Segment<M>>,
+    leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
+}
+
+impl<M: LlmModelMarker> TreeDisplaySnapshot<M> {
+    fn from_tree(tree: DirectTree<M>) -> Self {
+        tree
+            .root_segment_id
+            .expect("Direct tree browser requires root segment");
+        Self {
+            segments: tree.segments,
+            leaf_segment_judgments: tree.leaf_segment_judgments,
+        }
+    }
+
+    fn contains_segment(&self, segment_id: SegmentId) -> bool {
+        self.segments.contains_key(&segment_id)
+    }
+
+    fn get_trajectory_length_till_id(&self, segment_id: SegmentId) -> usize {
+        self.path_root_to_segment(segment_id)
+            .iter()
+            .map(|id| {
+                self.segments
+                    .get(id)
+                    .expect("segment in trajectory must exist")
+                    .token_length()
+            })
+            .sum()
+    }
+
+    fn path_root_to_segment(&self, segment_id: SegmentId) -> Vec<SegmentId> {
+        let mut path = Vec::new();
+        let mut cursor = Some(segment_id);
+        while let Some(current_id) = cursor {
+            path.push(current_id);
+            cursor = self
+                .segments
+                .get(&current_id)
+                .expect("segment in path must exist")
+                .parent_id;
+        }
+        path.reverse();
+        path
+    }
 }
 
 impl<M: LlmModelMarker> TreePage<M> {
@@ -239,7 +287,7 @@ impl<M: LlmModelMarker> TreePage<M> {
             total_actions,
             action_limit,
             width_division_ratio,
-            tree: state.tree,
+            tree_snapshot: state.tree_snapshot,
             root_segment_id: state.root_segment_id,
             segment_advantages_from_posteriors: state.segment_advantages_from_posteriors,
             segment_advantages_from_win_rate: state.segment_advantages_from_win_rate,
@@ -268,7 +316,7 @@ impl<M: LlmModelMarker> TreePage<M> {
             self.width_division_ratio,
             override_hyperparameters,
         );
-        self.tree = state.tree;
+        self.tree_snapshot = state.tree_snapshot;
         self.root_segment_id = state.root_segment_id;
         self.segment_advantages_from_posteriors = state.segment_advantages_from_posteriors;
         self.segment_advantages_from_win_rate = state.segment_advantages_from_win_rate;
@@ -280,12 +328,12 @@ impl<M: LlmModelMarker> TreePage<M> {
         self.segment_display_widths = state.segment_display_widths;
         self.tree_lines = state.tree_lines;
         self.rendered_segments = state.rendered_segments;
-        if !self.tree.segments.contains_key(&self.selected_segment_id) {
+        if !self.tree_snapshot.contains_segment(self.selected_segment_id) {
             self.selected_segment_id = self.root_segment_id;
         }
         if self
             .hovered_segment_id
-            .is_some_and(|id| !self.tree.segments.contains_key(&id))
+            .is_some_and(|id| !self.tree_snapshot.contains_segment(id))
         {
             self.hovered_segment_id = None;
         }
@@ -324,7 +372,8 @@ fn tree_page_state_from_action_log<M: LlmModelMarker>(
     width_division_ratio: usize,
     override_hyperparameters: Option<PosteriorHyperparameters>,
 ) -> TreePageState<M> {
-    let tree = tree_from_action_log_with_limit::<M>(action_log, action_limit);
+    let partial_log = partial_action_log(action_log, action_limit);
+    let tree = DirectTree::<M>::from_action_log(&partial_log);
     let root_segment_id = tree_root_segment_id(&tree);
     let segment_display_widths = segment_display_widths(&tree, Some(width_division_ratio));
     let segment_advantages_from_posteriors =
@@ -349,8 +398,9 @@ fn tree_page_state_from_action_log<M: LlmModelMarker>(
         &tree.leaf_segment_judgments,
         &segment_display_widths,
     );
+    let tree_snapshot = TreeDisplaySnapshot::from_tree(tree);
     TreePageState {
-        tree,
+        tree_snapshot,
         root_segment_id,
         segment_advantages_from_posteriors,
         segment_advantages_from_win_rate,
@@ -629,7 +679,7 @@ impl<M: LlmModelMarker> App<M> {
             return;
         };
         let selected_segment = tree_page
-            .tree
+            .tree_snapshot
             .segments
             .get(&tree_page.selected_segment_id)
             .expect("selected segment must exist");
@@ -651,7 +701,7 @@ impl<M: LlmModelMarker> App<M> {
             .split(frame.area());
 
         let judgment = tree_page
-            .tree
+            .tree_snapshot
             .leaf_segment_judgments
             .get(&tree_page.selected_segment_id);
         let posterior_stats = tree_page
@@ -679,7 +729,7 @@ impl<M: LlmModelMarker> App<M> {
             .copied()
             .unwrap_or(0.0);
         let selected_trajectory_length_tokens = tree_page
-            .tree
+            .tree_snapshot
             .get_trajectory_length_till_id(tree_page.selected_segment_id);
 
         let mut summary = format!(
@@ -785,7 +835,7 @@ impl<M: LlmModelMarker> App<M> {
         );
 
         let conversation_render = build_conversation_render(
-            &tree_page.tree,
+            &tree_page.tree_snapshot,
             &tree_page.segment_posterior_signal_scaled,
             tree_page.selected_segment_id,
         );
@@ -2092,26 +2142,19 @@ fn push_text_as_spans(
 }
 
 fn build_conversation_render<M: LlmModelMarker>(
-    tree: &DirectTree<M>,
+    tree_snapshot: &TreeDisplaySnapshot<M>,
     segment_posterior_signal_scaled: &BTreeMap<SegmentId, f32>,
     segment_id: SegmentId,
 ) -> ConversationRender {
-    let mut path = Vec::new();
-    let mut cursor = Some(segment_id);
-    while let Some(current_id) = cursor {
-        path.push(current_id);
-        cursor = tree
-            .segments
-            .get(&current_id)
-            .expect("path segment must exist")
-            .parent_id;
-    }
-    path.reverse();
+    let path = tree_snapshot.path_root_to_segment(segment_id);
 
     let mut plain = String::new();
     let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
     for sid in path {
-        let segment = tree.segments.get(&sid).expect("segment in path must exist");
+        let segment = tree_snapshot
+            .segments
+            .get(&sid)
+            .expect("segment in path must exist");
         let segment_color = segment_posterior_signal_scaled
             .get(&sid)
             .copied()
@@ -2154,10 +2197,10 @@ fn build_conversation_render<M: LlmModelMarker>(
     }
 }
 
-fn tree_from_action_log_with_limit<M: LlmModelMarker>(
+fn partial_action_log<M: LlmModelMarker>(
     action_log: &DirectTreeActionLog<M>,
     action_limit: usize,
-) -> DirectTree<M> {
+) -> DirectTreeActionLog<M> {
     let mut partial_log = action_log.clone();
     partial_log.actions = action_log
         .actions
@@ -2165,7 +2208,7 @@ fn tree_from_action_log_with_limit<M: LlmModelMarker>(
         .take(action_limit)
         .cloned()
         .collect();
-    DirectTree::<M>::from_action_log(&partial_log)
+    partial_log
 }
 
 fn tree_root_segment_id<M: LlmModelMarker>(tree: &DirectTree<M>) -> SegmentId {
@@ -2212,7 +2255,7 @@ fn width_division_ratio_for_tree<M: LlmModelMarker>(tree: &DirectTree<M>) -> usi
 fn question_stats_from_action_log<M: LlmModelMarker>(
     action_log: &DirectTreeActionLog<M>,
 ) -> (usize, usize, f64) {
-    let final_tree = tree_from_action_log_with_limit::<M>(action_log, action_log.actions.len());
+    let final_tree = DirectTree::<M>::from_action_log(action_log);
     let num_leaves = final_tree.leaf_segment_judgments.len();
     let num_correct = final_tree
         .leaf_segment_judgments
