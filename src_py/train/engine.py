@@ -1084,6 +1084,7 @@ def train(config: TrainConfig) -> None:
             gpu_memory_usage_pct = 100.0 * _gpu_memory_utilization(device)
             print(_json_key_value("throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"))
             print(_json_key_value("batch_size", str(len(resolved_batch.samples))))
+            print(_json_key_value("batch_token_length", str(int(input_ids.shape[1]))))
             print(_json_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}"))
             if _is_primary_rank():
                 print(_json_key_value("global_step", str(global_step)))
@@ -1406,6 +1407,7 @@ def train(config: TrainConfig) -> None:
             gpu_memory_usage_pct = 100.0 * gpu_memory_utilization
             print(_json_key_value("throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"))
             print(_json_key_value("batch_size", str(len(resolved_batch.samples))))
+            print(_json_key_value("batch_token_length", str(int(input_ids.shape[1]))))
             print(_json_key_value("requested_batch_size", str(requested_batch_size)))
             print(_json_key_value("next_batch_size", str(adaptive_state.next_batch_size)))
             print(_json_key_value("next_batch_size_int", str(adaptive_state.next_batch_size)))

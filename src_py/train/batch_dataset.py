@@ -44,8 +44,8 @@ def load_resolved_training_batches(
     for sample in iter_training_trajectories(training_trajectory_sqlite_path):
         key = _question_node_key(sample.id)
         assert key not in tokenized_by_id, f"duplicate sample id detected: {sample.id}"
-        assert sample.input_length >= previous_input_length, (
-            "training trajectories must be sorted by input_ids length in ascending order"
+        assert sample.input_length <= previous_input_length or previous_input_length == -1, (
+            "training trajectories must be sorted by input_ids length in descending order"
         )
         previous_input_length = sample.input_length
         tokenized_by_id[key] = sample
@@ -115,8 +115,8 @@ class LazyResolvedBatchLoader:
         previous_length = -1
         for trajectory_id in range(sample_index, end_sample_index):
             sample = self._store.get_sample(trajectory_id)
-            assert sample.input_length >= previous_length, (
-                "training trajectories must be sorted by input_ids length in ascending order"
+            assert sample.input_length <= previous_length or previous_length == -1, (
+                "training trajectories must be sorted by input_ids length in descending order"
             )
             previous_length = sample.input_length
             samples.append(sample)
