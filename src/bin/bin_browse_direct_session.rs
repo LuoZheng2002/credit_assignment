@@ -18,8 +18,7 @@ use credit_assignment::{
     },
     json_line_util::read_json,
     llm_model::{
-        Gpt4o, LlmModelMarker, LlmModelName, Qwen3_06B, Qwen3_4B, Qwen25_7B, Qwen35_4B,
-        Qwen35_08B,
+        Gpt4o, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
 };
 use crossterm::cursor::Show;

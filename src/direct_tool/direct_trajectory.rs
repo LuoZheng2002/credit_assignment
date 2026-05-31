@@ -306,7 +306,10 @@ fn has_problematic_repetition(tokens: &[i32]) -> bool {
             .wrapping_sub(outgoing.wrapping_mul(highest_base_pow))
             .wrapping_mul(base)
             .wrapping_add(incoming);
-        positions_by_hash.entry(window_hash).or_default().push(start);
+        positions_by_hash
+            .entry(window_hash)
+            .or_default()
+            .push(start);
     }
 
     for positions in positions_by_hash.values() {

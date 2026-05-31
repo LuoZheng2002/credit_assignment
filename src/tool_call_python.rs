@@ -1,9 +1,21 @@
-use std::{ffi::CString, time::Duration};
+use std::{
+    process::Stdio,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
-use pyo3::{prelude::*, types::PyDict};
 use research_utility::log_message::log_warning;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command},
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+    time::timeout,
+};
 
 use crate::{
     llm_model::{LlmModelMarker, MyTokenizer},
@@ -58,80 +70,9 @@ impl PythonToolResponse {
     }
 }
 
-fn blocking_python_code_task(code: String) -> PyResult<String> {
-    Python::attach(|py| -> PyResult<String> {
-        // Persistent REPL namespace
-        let globals = PyDict::new(py);
-
-        let io_redirect_code = r#"
-import ast
-import contextlib
-import io
-import sys
-import numpy as np
-import scipy
-import sympy as sp
-from sympy import *
-buf = io.StringIO()
-
-class _NullWriter:
-    def write(self, _text):
-        return 0
-
-    def flush(self):
-        return None
-
-_stderr_sink = _NullWriter()
-
-def _execute_with_trailing_expression(code_text: str, namespace: dict):
-    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(_stderr_sink):
-        tree = ast.parse(code_text, mode='exec')
-        if len(tree.body) == 0:
-            return
-
-        last_stmt = tree.body[-1]
-        if isinstance(last_stmt, ast.Expr):
-            prefix_module = ast.Module(body=tree.body[:-1], type_ignores=[])
-            ast.fix_missing_locations(prefix_module)
-            if len(prefix_module.body) > 0:
-                exec(compile(prefix_module, '<tool>', 'exec'), namespace, namespace)
-
-            expr = ast.Expression(last_stmt.value)
-            ast.fix_missing_locations(expr)
-            expr_value = eval(compile(expr, '<tool>', 'eval'), namespace, namespace)
-            if expr_value is not None:
-                print(repr(expr_value))
-        else:
-            exec(compile(tree, '<tool>', 'exec'), namespace, namespace)
-"#;
-
-        py.run(
-            CString::new(io_redirect_code).unwrap().as_c_str(),
-            Some(&globals),
-            Some(&globals),
-        )?;
-        globals.set_item("__code_input", code)?;
-        py.run(
-            CString::new("_execute_with_trailing_expression(__code_input, globals())")
-                .unwrap()
-                .as_c_str(),
-            Some(&globals),
-            Some(&globals),
-        )?;
-        // use eval to get the result of the last expression
-        let output = py
-            .eval(
-                CString::new("buf.getvalue()").unwrap().as_c_str(),
-                Some(&globals),
-                Some(&globals),
-            )?
-            .extract::<String>()?;
-        Ok(output)
-    })
-}
-
 const MAX_TOOL_OUTPUT_CHARS: usize = 2000;
-static PYTHON_EXECUTION_SEMAPHORE: Semaphore = Semaphore::const_new(1);
+const PYTHON_TOOL_TIMEOUT_MS: u64 = 5000;
+const PYTHON_TOOL_QUEUE_TIMEOUT_MS: u64 = PYTHON_TOOL_TIMEOUT_MS + 1000;
 
 fn format_limited_output(output: String, max_chars: usize) -> String {
     assert!(max_chars > 0, "max_chars must be greater than zero");
@@ -152,16 +93,173 @@ fn format_limited_output(output: String, max_chars: usize) -> String {
     )
 }
 
-async fn execute_python_code(code: String) -> PythonToolResponse {
-    let _python_permit = PYTHON_EXECUTION_SEMAPHORE
-        .acquire()
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PythonToolRequestWire {
+    id: u64,
+    code: String,
+    timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PythonToolResponseWire {
+    id: u64,
+    ok: bool,
+    output: Option<String>,
+    error: Option<String>,
+}
+
+struct ExecuteRequest {
+    code: String,
+    response_tx: oneshot::Sender<PythonToolResponse>,
+}
+
+struct PythonToolWorkerRuntime {
+    child: Child,
+    stdin: ChildStdin,
+    stdout_lines: tokio::io::Lines<BufReader<ChildStdout>>,
+    stderr_task: JoinHandle<()>,
+}
+
+pub struct PythonToolWorkerHandle {
+    request_tx: mpsc::Sender<ExecuteRequest>,
+    inflight: AtomicUsize,
+}
+
+impl PythonToolWorkerHandle {
+    async fn spawn(worker_id: usize, parent_pid: u32) -> Result<Self, String> {
+        let (request_tx, mut request_rx) = mpsc::channel::<ExecuteRequest>(1024);
+        tokio::spawn(async move {
+            let mut runtime: Option<PythonToolWorkerRuntime> = None;
+            let mut next_request_id: u64 = 1;
+            while let Some(request) = request_rx.recv().await {
+                if runtime.is_none() {
+                    match spawn_python_tool_server_runtime(worker_id, parent_pid).await {
+                        Ok(new_runtime) => {
+                            runtime = Some(new_runtime);
+                        }
+                        Err(error) => {
+                            let _ =
+                                request
+                                    .response_tx
+                                    .send(PythonToolResponse::PythonError(format!(
+                                        "Failed to spawn python tool server worker {}: {}",
+                                        worker_id, error
+                                    )));
+                            continue;
+                        }
+                    }
+                }
+
+                let worker_runtime = runtime
+                    .as_mut()
+                    .expect("runtime should exist after spawn success");
+                let (response, reset_runtime) = execute_request_on_runtime(
+                    worker_runtime,
+                    next_request_id,
+                    request.code,
+                    worker_id,
+                )
+                .await;
+                next_request_id = next_request_id.saturating_add(1);
+
+                if reset_runtime {
+                    if let Some(mut existing_runtime) = runtime.take() {
+                        shutdown_runtime(&mut existing_runtime).await;
+                    }
+                }
+                let _ = request.response_tx.send(response);
+            }
+
+            if let Some(mut existing_runtime) = runtime.take() {
+                shutdown_runtime(&mut existing_runtime).await;
+            }
+        });
+
+        Ok(Self {
+            request_tx,
+            inflight: AtomicUsize::new(0),
+        })
+    }
+
+    async fn execute(&self, code: String) -> PythonToolResponse {
+        self.inflight.fetch_add(1, Ordering::SeqCst);
+        let (response_tx, response_rx) = oneshot::channel();
+        let queued = self
+            .request_tx
+            .send(ExecuteRequest { code, response_tx })
+            .await;
+        if queued.is_err() {
+            self.inflight.fetch_sub(1, Ordering::SeqCst);
+            return PythonToolResponse::PythonError(
+                "Python tool worker queue closed unexpectedly.".to_string(),
+            );
+        }
+        let response = match timeout(
+            Duration::from_millis(PYTHON_TOOL_QUEUE_TIMEOUT_MS),
+            response_rx,
+        )
         .await
-        .expect("python execution semaphore closed");
-    let task = tokio::task::spawn_blocking(move || blocking_python_code_task(code));
-    let result = tokio::time::timeout(Duration::from_millis(5000), task).await;
-    match result {
-        Ok(join_result) => match join_result {
-            Ok(Ok(output)) => {
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => PythonToolResponse::PythonError(
+                "Python tool worker response channel closed unexpectedly.".to_string(),
+            ),
+            Err(_) => {
+                PythonToolResponse::PythonError("Python code execution timed out.".to_string())
+            }
+        };
+        self.inflight.fetch_sub(1, Ordering::SeqCst);
+        response
+    }
+
+    fn inflight(&self) -> usize {
+        self.inflight.load(Ordering::SeqCst)
+    }
+}
+
+pub struct PythonToolServerPool {
+    workers: Vec<Arc<PythonToolWorkerHandle>>,
+    round_robin_cursor: AtomicUsize,
+}
+
+impl PythonToolServerPool {
+    pub async fn new(num_servers: usize) -> Result<Self, String> {
+        if num_servers == 0 {
+            return Err("num_servers must be greater than zero".to_string());
+        }
+        let parent_pid = std::process::id();
+        let mut workers = Vec::with_capacity(num_servers);
+        for worker_id in 0..num_servers {
+            let worker = PythonToolWorkerHandle::spawn(worker_id, parent_pid).await?;
+            workers.push(Arc::new(worker));
+        }
+        Ok(Self {
+            workers,
+            round_robin_cursor: AtomicUsize::new(0),
+        })
+    }
+
+    fn pick_worker_index(&self) -> usize {
+        let num_workers = self.workers.len();
+        let start = self.round_robin_cursor.fetch_add(1, Ordering::Relaxed) % num_workers;
+        let mut best_index = start;
+        let mut best_inflight = usize::MAX;
+        for offset in 0..num_workers {
+            let index = (start + offset) % num_workers;
+            let inflight = self.workers[index].inflight();
+            if inflight < best_inflight {
+                best_inflight = inflight;
+                best_index = index;
+            }
+        }
+        best_index
+    }
+
+    pub async fn execute_code(&self, code: String) -> PythonToolResponse {
+        let worker_index = self.pick_worker_index();
+        let raw_response = self.workers[worker_index].execute(code).await;
+        match raw_response {
+            PythonToolResponse::PythonSuccess(output) => {
                 if output.trim().is_empty() {
                     log_warning("Python interpreter did not return any output.");
                     return PythonToolResponse::PythonSuccess(
@@ -173,16 +271,213 @@ async fn execute_python_code(code: String) -> PythonToolResponse {
                     MAX_TOOL_OUTPUT_CHARS,
                 ))
             }
-            Ok(Err(err)) => PythonToolResponse::PythonError(err.to_string()),
-            Err(_) => PythonToolResponse::PythonError(
-                "Sorry, unexpected error occurred. Please try again.".to_string(),
-            ),
-        },
-        Err(_) => PythonToolResponse::PythonError("Python code execution timed out.".to_string()),
+            PythonToolResponse::PythonError(error) => PythonToolResponse::PythonError(error),
+        }
     }
 }
 
-pub async fn execute_python_tool_call(tool_call: &str) -> PythonToolResponse {
+async fn spawn_python_tool_server_runtime(
+    worker_id: usize,
+    parent_pid: u32,
+) -> Result<PythonToolWorkerRuntime, String> {
+    let mut command = Command::new("uv");
+    command
+        .arg("run")
+        .arg("--project")
+        .arg("pyprojects/common")
+        .arg("-m")
+        .arg("src_py.tool_server.main")
+        .arg("--parent-pid")
+        .arg(parent_pid.to_string())
+        .arg("--worker-id")
+        .arg(worker_id.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to spawn uv python tool server process: {}", error))?;
+
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to capture python tool server stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to capture python tool server stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "failed to capture python tool server stderr".to_string())?;
+
+    let stderr_task = tokio::spawn(stream_worker_stderr(stderr, worker_id));
+    Ok(PythonToolWorkerRuntime {
+        child,
+        stdin,
+        stdout_lines: BufReader::new(stdout).lines(),
+        stderr_task,
+    })
+}
+
+async fn stream_worker_stderr(stderr: ChildStderr, worker_id: usize) {
+    let mut lines = BufReader::new(stderr).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                log_warning(format!("[PY_TOOL_WORKER:{}] {}", worker_id, line));
+            }
+            Ok(None) => {
+                break;
+            }
+            Err(error) => {
+                log_warning(format!(
+                    "[PY_TOOL_WORKER:{}] failed to read stderr: {}",
+                    worker_id, error
+                ));
+                break;
+            }
+        }
+    }
+}
+
+async fn shutdown_runtime(runtime: &mut PythonToolWorkerRuntime) {
+    let _ = runtime.stdin.shutdown().await;
+    let _ = timeout(Duration::from_millis(200), runtime.child.wait()).await;
+    let _ = runtime.child.start_kill();
+    let _ = runtime.child.wait().await;
+    runtime.stderr_task.abort();
+}
+
+async fn execute_request_on_runtime(
+    runtime: &mut PythonToolWorkerRuntime,
+    request_id: u64,
+    code: String,
+    worker_id: usize,
+) -> (PythonToolResponse, bool) {
+    let request_wire = PythonToolRequestWire {
+        id: request_id,
+        code,
+        timeout_ms: PYTHON_TOOL_TIMEOUT_MS,
+    };
+    let request_line = match serde_json::to_string(&request_wire) {
+        Ok(serialized) => serialized,
+        Err(error) => {
+            return (
+                PythonToolResponse::PythonError(format!(
+                    "Failed to serialize python tool request: {}",
+                    error
+                )),
+                false,
+            );
+        }
+    };
+
+    if let Err(error) = runtime.stdin.write_all(request_line.as_bytes()).await {
+        return (
+            PythonToolResponse::PythonError(format!(
+                "Failed to write python tool request to worker {}: {}",
+                worker_id, error
+            )),
+            true,
+        );
+    }
+    if let Err(error) = runtime.stdin.write_all(b"\n").await {
+        return (
+            PythonToolResponse::PythonError(format!(
+                "Failed to finalize python tool request to worker {}: {}",
+                worker_id, error
+            )),
+            true,
+        );
+    }
+    if let Err(error) = runtime.stdin.flush().await {
+        return (
+            PythonToolResponse::PythonError(format!(
+                "Failed to flush python tool request to worker {}: {}",
+                worker_id, error
+            )),
+            true,
+        );
+    }
+
+    let response_line = timeout(
+        Duration::from_millis(PYTHON_TOOL_TIMEOUT_MS),
+        runtime.stdout_lines.next_line(),
+    )
+    .await;
+
+    let line = match response_line {
+        Ok(Ok(Some(line))) => line,
+        Ok(Ok(None)) => {
+            return (
+                PythonToolResponse::PythonError(format!(
+                    "Python tool worker {} closed stdout unexpectedly.",
+                    worker_id
+                )),
+                true,
+            );
+        }
+        Ok(Err(error)) => {
+            return (
+                PythonToolResponse::PythonError(format!(
+                    "Failed to read python tool worker {} response: {}",
+                    worker_id, error
+                )),
+                true,
+            );
+        }
+        Err(_) => {
+            return (
+                PythonToolResponse::PythonError("Python code execution timed out.".to_string()),
+                true,
+            );
+        }
+    };
+
+    let response_wire = match serde_json::from_str::<PythonToolResponseWire>(&line) {
+        Ok(response_wire) => response_wire,
+        Err(error) => {
+            return (
+                PythonToolResponse::PythonError(format!(
+                    "Failed to parse python tool response from worker {}: {}",
+                    worker_id, error
+                )),
+                true,
+            );
+        }
+    };
+
+    if response_wire.id != request_id {
+        return (
+            PythonToolResponse::PythonError(format!(
+                "Python tool response id mismatch from worker {}: expected {}, got {}",
+                worker_id, request_id, response_wire.id
+            )),
+            true,
+        );
+    }
+
+    let response = if response_wire.ok {
+        PythonToolResponse::PythonSuccess(response_wire.output.unwrap_or_default())
+    } else {
+        PythonToolResponse::PythonError(
+            response_wire
+                .error
+                .unwrap_or_else(|| "Unknown python tool worker error".to_string()),
+        )
+    };
+    (response, false)
+}
+
+pub async fn execute_python_tool_call(
+    pool: &PythonToolServerPool,
+    tool_call: &str,
+) -> PythonToolResponse {
     let trimmed_tool_call = tool_call.trim_start().to_string();
     assert!(
         trimmed_tool_call.starts_with("```python"),
@@ -207,7 +502,7 @@ pub async fn execute_python_tool_call(tool_call: &str) -> PythonToolResponse {
         );
     }
     let code = &trimmed_tool_call[code_start..fence_end_index];
-    execute_python_code(code.to_string()).await
+    pool.execute_code(code.to_string()).await
 }
 
 #[cfg(test)]

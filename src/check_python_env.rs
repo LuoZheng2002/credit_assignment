@@ -1,25 +1,31 @@
-use pyo3::{PyResult, Python, types::PyAnyMethods};
+use std::process::Command;
 
 pub fn check_sympy_availability() -> Result<(), String> {
-    let result = Python::attach(|py| -> PyResult<Result<(), String>> {
-        let sys = py.import("sys")?;
-        let executable: String = sys.getattr("executable")?.extract()?;
-
-        let result = py.import("sympy");
-        match result {
-            Ok(_) => Ok(Ok(())),
-            Err(err) => Ok(Err(format!(
-                "Error importing sympy: {}. The python environment does not have sympy installed. Python executable is: {}",
-                err, executable
-            ))),
-        }
-    });
-    match result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(err)) => Err(format!("Error importing sympy: {}", err)),
-        Err(err) => Err(format!(
-            "Error acquiring GIL or executing Python code: {}",
-            err
-        )),
+    let output = Command::new("uv")
+        .arg("run")
+        .arg("--project")
+        .arg("pyprojects/common")
+        .arg("python")
+        .arg("-c")
+        .arg("import sympy, numpy, scipy")
+        .output()
+        .map_err(|error| {
+            format!(
+                "Failed to run python dependency check command for tool server runtime: {}",
+                error
+            )
+        })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(format!(
+            "Python tool server environment check failed. Command: `uv run --project pyprojects/common python -c \"import sympy, numpy, scipy\"`. stderr: {}",
+            if stderr.is_empty() {
+                "<empty>"
+            } else {
+                &stderr
+            }
+        ))
     }
 }

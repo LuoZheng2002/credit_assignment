@@ -11,7 +11,7 @@ use crate::direct_tool::direct_rollout::StopRequestedError;
 use crate::direct_tool::direct_trajectory::{DirectTrajectory, FinalAnswer, TrajectoryContent};
 use crate::judge_correctness::judge_final_answer;
 use crate::llm_model::MyTokenizer;
-use crate::tool_call_python::{PythonToolResponse, execute_python_tool_call};
+use crate::tool_call_python::{PythonToolResponse, PythonToolServerPool, execute_python_tool_call};
 use crate::{
     direct_tool::{
         direct_tree::{ContentIndex, DirectTree, SegmentContent, SegmentId},
@@ -160,6 +160,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
         &self,
         llm_callable: &M::Callable,
         client: Client,
+        python_tool_pool: Arc<PythonToolServerPool>,
         sglang_waiting_workers: Arc<AtomicUsize>,
         stop_signal: Arc<AtomicBool>,
     ) -> Result<Vec<DirectTreeAction<M>>, StopRequestedError> {
@@ -173,6 +174,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     .generate_continuing_segment_contents(
                         root_id,
                         llm_callable,
+                        python_tool_pool.clone(),
                         sglang_waiting_workers.clone(),
                         stop_signal.clone(),
                     )
@@ -265,6 +267,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     .generate_continuing_segment_contents(
                         focused_parent_segment_id,
                         llm_callable,
+                        python_tool_pool.clone(),
                         sglang_waiting_workers,
                         stop_signal.clone(),
                     )
@@ -296,6 +299,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     .generate_continuing_segment_contents(
                         root_id,
                         llm_callable,
+                        python_tool_pool.clone(),
                         sglang_waiting_workers.clone(),
                         stop_signal.clone(),
                     )
@@ -504,6 +508,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
         target_segment_id: SegmentId,
         // client: Client,
         llm_callable: &M::Callable,
+        python_tool_pool: Arc<PythonToolServerPool>,
         sglang_waiting_workers: Arc<AtomicUsize>,
         stop_signal: Arc<AtomicBool>,
         // rng: &mut StdRng,
@@ -513,7 +518,10 @@ impl<M: LlmModelMarker> DirectTree<M> {
             let trajectory = self.get_trajectory(target_segment_id, &continuing_contents);
             if let Some(answer) = trajectory.try_get_answer() {
                 if continuing_contents.is_empty() {
-                    log_error(format!("trajectory contents: {}", trajectory.to_decoded_string()));
+                    log_error(format!(
+                        "trajectory contents: {}",
+                        trajectory.to_decoded_string()
+                    ));
                     panic!(
                         "The trajectory should produce some continuing content before producing the answer"
                     );
@@ -524,6 +532,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 self.question.flat_id,
                 &trajectory,
                 llm_callable,
+                python_tool_pool.clone(),
                 sglang_waiting_workers.clone(),
                 stop_signal.clone(),
             )
@@ -674,6 +683,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
     // current_content: &[SegmentContent],
     // client: Client,
     llm_callable: &M::Callable,
+    python_tool_pool: Arc<PythonToolServerPool>,
     sglang_waiting_workers: Arc<AtomicUsize>,
     stop_signal: Arc<AtomicBool>,
     // rng: &mut StdRng,
@@ -699,7 +709,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
         TrajectoryContent::ReasoningOrToolCallComplete(_) => {
             if let Some(tool_call) = trajectory.try_get_last_content_tool_call() {
                 // log_key_value_pair("info".to_string(), "Executing a tool call".to_string());
-                let tool_response = execute_python_tool_call(&tool_call).await;
+                let tool_response = execute_python_tool_call(&python_tool_pool, &tool_call).await;
                 match &tool_response {
                     PythonToolResponse::PythonSuccess(_) => {
                         // log_key_value_pair(

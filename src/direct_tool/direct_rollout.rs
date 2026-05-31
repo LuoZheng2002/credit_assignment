@@ -23,6 +23,7 @@ use crate::{
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     llm_model::{LlmCallable, LlmCliArgs, LlmModelMarker},
+    tool_call_python::PythonToolServerPool,
 };
 
 struct RolloutExecutionContext<M: LlmModelMarker> {
@@ -34,6 +35,7 @@ struct RolloutExecutionContext<M: LlmModelMarker> {
     llm_callable: M::Callable,
     client: Client,
     question_semaphore: Arc<Semaphore>,
+    python_tool_pool: Arc<PythonToolServerPool>,
     sglang_waiting_workers: Arc<AtomicUsize>,
     stop_signal: Arc<AtomicBool>,
     num_finished_branches: Arc<AtomicUsize>,
@@ -104,6 +106,7 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
         llm_callable,
         client,
         question_semaphore,
+        python_tool_pool,
         sglang_waiting_workers,
         stop_signal,
         num_finished_branches,
@@ -136,6 +139,7 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
         let llm_callable_clone = llm_callable.clone();
         let client_clone = client.clone();
         let sglang_waiting_workers_clone = sglang_waiting_workers.clone();
+        let python_tool_pool_clone = python_tool_pool.clone();
         let stop_signal_clone = stop_signal.clone();
         let num_finished_branches = num_finished_branches.clone();
         let num_finished_trees = num_finished_trees.clone();
@@ -147,6 +151,7 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
                 rollout_store,
                 llm_callable_clone,
                 client_clone,
+                python_tool_pool_clone,
                 sglang_waiting_workers_clone,
                 stop_signal_clone,
                 num_finished_branches,
@@ -178,6 +183,7 @@ pub async fn rollout<M: LlmModelMarker>(
     rollout_store: SqliteStore<usize, DirectTreeActionLog<M>>,
     llm_callable: M::Callable,
     client: Client,
+    python_tool_pool: Arc<PythonToolServerPool>,
     sglang_waiting_workers: Arc<AtomicUsize>,
     stop_signal: Arc<AtomicBool>,
     num_finished_branches: Arc<AtomicUsize>,
@@ -204,6 +210,7 @@ pub async fn rollout<M: LlmModelMarker>(
             .produce_actions_from_direct_tree(
                 &llm_callable,
                 client.clone(),
+                python_tool_pool.clone(),
                 sglang_waiting_workers.clone(),
                 stop_signal.clone(),
             )
@@ -262,6 +269,7 @@ pub struct RolloutProgramConfig {
     pub llm_cli_args: LlmCliArgs,
     pub rollout_time_limit_secs: usize,
     pub max_sqlite_connections: u32,
+    pub num_python_tool_servers: usize,
 }
 
 pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig) {
@@ -275,7 +283,12 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         llm_cli_args,
         rollout_time_limit_secs,
         max_sqlite_connections,
+        num_python_tool_servers,
     } = program_config;
+    assert!(
+        num_python_tool_servers > 0,
+        "num_python_tool_servers must be positive"
+    );
     assert!(
         rollout_time_limit_secs > 0,
         "rollout_time_limit_secs must be positive"
@@ -286,6 +299,11 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let total_secs = rollout_time_limit_secs as f32;
 
     let stop_signal = Arc::new(AtomicBool::new(false));
+    let python_tool_pool = Arc::new(
+        PythonToolServerPool::new(num_python_tool_servers)
+            .await
+            .expect("failed to initialize python tool server pool"),
+    );
     let llm_callable = M::Callable::from_cli_args(client.clone(), &llm_cli_args);
     let asset_file_dataset = AssetFileHybridDataset {
         split: rollout_config.split.clone(),
@@ -322,6 +340,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         llm_callable,
         client,
         question_semaphore,
+        python_tool_pool,
         sglang_waiting_workers,
         stop_signal: stop_signal.clone(),
         num_finished_branches,

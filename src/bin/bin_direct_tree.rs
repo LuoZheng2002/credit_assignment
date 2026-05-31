@@ -10,10 +10,9 @@ use credit_assignment::{
     },
     json_line_util::read_json,
     llm_model::{
-        Gpt4o, LlmCliArgs, LlmModelName, Qwen3_06B, Qwen3_4B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
+        Gpt4o, LlmCliArgs, LlmModelName, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
 };
-use pyo3::Python;
 use reqwest::Client;
 use research_utility::{log_message::log_warning, progress_screen::ProgressScreen};
 use tokio::sync::Semaphore;
@@ -45,6 +44,8 @@ struct Args {
     rollout_time_limit_secs: usize,
     #[arg(long, default_value_t = 1)]
     max_sqlite_connections: u32,
+    #[arg(long, default_value_t = 1)]
+    num_python_tool_servers: usize,
     #[arg(long)]
     sglang_server_log_path: Option<String>,
 }
@@ -72,10 +73,14 @@ async fn main() {
         ui,
         rollout_time_limit_secs,
         max_sqlite_connections,
+        num_python_tool_servers,
         sglang_server_log_path,
     } = Args::parse();
-    Python::initialize();
     check_sympy_availability().unwrap();
+    assert!(
+        num_python_tool_servers > 0,
+        "num_python_tool_servers must be positive"
+    );
 
     println!("Starting direct rollout evaluation pipeline...");
     let client = Client::new();
@@ -112,6 +117,7 @@ async fn main() {
         llm_cli_args,
         rollout_time_limit_secs,
         max_sqlite_connections,
+        num_python_tool_servers,
     };
     match model_name {
         LlmModelName::Qwen25_7b => rollout_all::<Qwen25_7B>(program_config).await,

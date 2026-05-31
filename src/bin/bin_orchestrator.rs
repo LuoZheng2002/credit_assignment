@@ -20,7 +20,6 @@ use crossterm::{
     execute,
     terminal::{LeaveAlternateScreen, disable_raw_mode},
 };
-use pyo3::Python;
 use research_utility::{log_message::log_info, progress_screen::ProgressScreen};
 use tokio::sync::Semaphore;
 
@@ -61,6 +60,8 @@ struct Args {
     validation_rollout_time_limit_secs: usize,
     #[arg(long, default_value_t = 1)]
     max_sqlite_connections: u32,
+    #[arg(long, default_value_t = 1)]
+    num_python_tool_servers: usize,
     #[arg(long)]
     sglang_server_log_path: Option<String>,
     #[arg(long)]
@@ -102,6 +103,7 @@ async fn main() {
         training_rollout_time_limit_secs,
         validation_rollout_time_limit_secs,
         max_sqlite_connections,
+        num_python_tool_servers,
         sglang_server_log_path,
         message_log_path,
         cumulative_avg_abs_advantage_cutoff,
@@ -111,8 +113,11 @@ async fn main() {
         num_iterations_limit,
         num_gpus,
     } = Args::parse();
-    Python::initialize();
     check_sympy_availability().unwrap();
+    assert!(
+        num_python_tool_servers > 0,
+        "num_python_tool_servers must be positive"
+    );
 
     if ui {
         ProgressScreen::initialize("Orchestrator Progress", true, message_log_path)
@@ -165,6 +170,7 @@ async fn main() {
         training_rollout_time_limit_secs,
         validation_rollout_time_limit_secs,
         max_sqlite_connections,
+        num_python_tool_servers,
         client,
         question_semaphore: question_semaphore,
         inference_server_handle: None,

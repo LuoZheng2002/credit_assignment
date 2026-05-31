@@ -54,8 +54,7 @@ struct TrajectorySelectionState {
 impl TrajectorySelectionState {
     fn new(total_samples: usize, cumulative_avg_abs_advantage_cutoff: f32) -> Self {
         assert!(
-            cumulative_avg_abs_advantage_cutoff > 0.0
-                && cumulative_avg_abs_advantage_cutoff <= 1.0,
+            cumulative_avg_abs_advantage_cutoff > 0.0 && cumulative_avg_abs_advantage_cutoff <= 1.0,
             "cumulative_avg_abs_advantage_cutoff must be in (0.0, 1.0]"
         );
         Self {
@@ -88,8 +87,9 @@ impl TrajectorySelectionState {
     ) {
         for (trajectory_index, trajectory_summary) in trajectory_summaries.into_iter().enumerate() {
             self.total_trajectories += 1;
-            let average_absolute_advantage = NotNan::new(trajectory_summary.average_absolute_advantage)
-                .expect("Average absolute segment advantage must not be NaN");
+            let average_absolute_advantage =
+                NotNan::new(trajectory_summary.average_absolute_advantage)
+                    .expect("Average absolute segment advantage must not be NaN");
             self.all_average_absolute_advantages
                 .push(*average_absolute_advantage);
 
@@ -107,8 +107,10 @@ impl TrajectorySelectionState {
     fn into_output(mut self) -> TrainingTrajectorySelectionOutput {
         self.all_average_absolute_advantages
             .sort_by(|a, b| b.partial_cmp(a).unwrap());
-        self.candidate_metadata
-            .sort_by(|a, b| b.average_absolute_advantage.cmp(&a.average_absolute_advantage));
+        self.candidate_metadata.sort_by(|a, b| {
+            b.average_absolute_advantage
+                .cmp(&a.average_absolute_advantage)
+        });
         let total_average_absolute_advantage_sum: f32 = self
             .candidate_metadata
             .iter()
@@ -120,7 +122,8 @@ impl TrajectorySelectionState {
         let mut selected_average_absolute_advantage_sum = 0.0_f32;
         let mut selected_metadata: Vec<TrajectoryMetadata> = Vec::new();
         for item in self.candidate_metadata {
-            let next_sum = selected_average_absolute_advantage_sum + *item.average_absolute_advantage;
+            let next_sum =
+                selected_average_absolute_advantage_sum + *item.average_absolute_advantage;
             if next_sum <= max_selected_average_absolute_advantage_sum + tolerance {
                 selected_metadata.push(item);
                 selected_average_absolute_advantage_sum = next_sum;
@@ -134,8 +137,8 @@ impl TrajectorySelectionState {
             .min_by(|a, b| a.partial_cmp(b).unwrap())
             .unwrap_or(0.0);
         if total_average_absolute_advantage_sum > 0.0 {
-            let adopted_share = selected_average_absolute_advantage_sum
-                / total_average_absolute_advantage_sum;
+            let adopted_share =
+                selected_average_absolute_advantage_sum / total_average_absolute_advantage_sum;
             log_key_value_pair(
                 "adopted_cumulative_average_absolute_advantage_share",
                 format!("{:.6}", adopted_share),
@@ -175,23 +178,26 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     // we want to make a histogram
 
     keys.sort(); // ensure deterministic order
-    let mut selection_state = TrajectorySelectionState::new(num_keys, cumulative_avg_abs_advantage_cutoff);
+    let mut selection_state =
+        TrajectorySelectionState::new(num_keys, cumulative_avg_abs_advantage_cutoff);
     let nproc = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(1);
     let num_worker_threads = std::cmp::max((nproc + 1) / 2, 1);
     let worker_pool = Arc::new(
         ThreadPoolBuilder::new()
-        .num_threads(num_worker_threads)
-        .build()
-        .expect("Failed to build rayon worker pool for training trajectory conversion"),
+            .num_threads(num_worker_threads)
+            .build()
+            .expect("Failed to build rayon worker pool for training trajectory conversion"),
     );
-    log_info(format!("Converting action logs to trajectories with rayon threads: {}", num_worker_threads));
+    log_info(format!(
+        "Converting action logs to trajectories with rayon threads: {}",
+        num_worker_threads
+    ));
     let chunk_size = std::cmp::max(num_worker_threads, 1);
     let mut pending_chunk: Vec<(usize, DirectTreeActionLog<M>)> = Vec::with_capacity(chunk_size);
 
     for (index, key) in keys.iter().enumerate() {
-        
         let action_log = action_log_store.get(*key).await.unwrap().unwrap();
         pending_chunk.push((index, action_log));
         if pending_chunk.len() >= chunk_size {
@@ -222,7 +228,10 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     selected_metadata.sort_by(|a, b| {
         b.trajectory_token_length
             .cmp(&a.trajectory_token_length)
-            .then_with(|| b.average_absolute_advantage.cmp(&a.average_absolute_advantage))
+            .then_with(|| {
+                b.average_absolute_advantage
+                    .cmp(&a.average_absolute_advantage)
+            })
             .then_with(|| a.sample_index.cmp(&b.sample_index))
             .then_with(|| a.trajectory_index.cmp(&b.trajectory_index))
     });
@@ -241,7 +250,8 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
             .get(metadata.sample_index)
             .expect("sample index must reference an existing action log key");
         let action_log = action_log_store.get(*key).await.unwrap().unwrap();
-        let selected_trajectory_indices: BTreeSet<usize> = [metadata.trajectory_index].into_iter().collect();
+        let selected_trajectory_indices: BTreeSet<usize> =
+            [metadata.trajectory_index].into_iter().collect();
         let reconstructed_trajectories = action_log_to_selected_trajectories::<M>(
             action_log,
             advantage_calculation_policy,
@@ -257,23 +267,19 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
 
         for (trajectory_index, trajectory) in reconstructed_trajectories.into_iter() {
             assert_eq!(
-                trajectory.question.flat_id,
-                metadata.question_flat_id,
+                trajectory.question.flat_id, metadata.question_flat_id,
                 "reconstructed question flat_id mismatch at sample index {}, trajectory index {}",
-                metadata.sample_index,
-                trajectory_index
+                metadata.sample_index, trajectory_index
             );
             assert_eq!(
-                trajectory.leaf_segment_id,
-                metadata.leaf_segment_id,
+                trajectory.leaf_segment_id, metadata.leaf_segment_id,
                 "reconstructed leaf segment id mismatch at sample index {}, trajectory index {}",
-                metadata.sample_index,
-                trajectory_index
+                metadata.sample_index, trajectory_index
             );
             let expected_average_absolute_advantage = *metadata.average_absolute_advantage;
-            let diff =
-                (trajectory.average_absolute_segment_advantage - expected_average_absolute_advantage)
-                    .abs();
+            let diff = (trajectory.average_absolute_segment_advantage
+                - expected_average_absolute_advantage)
+                .abs();
             assert!(
                 diff <= tolerance,
                 "reconstructed average absolute advantage mismatch at sample index {}, trajectory index {}: expected {}, got {}, diff {}",
@@ -323,9 +329,18 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         adopted_trajectories,
     };
     write_json(statistics_file_path.clone(), &statistics).unwrap();
-    log_key_value_pair("max_average_absolute_advantage", statistics.max_average_absolute_advantage.to_string());
-    log_key_value_pair("min_average_absolute_advantage", statistics.min_average_absolute_advantage.to_string());
-    log_key_value_pair("average_absolute_advantage_cutoff", statistics.average_absolute_advantage_cutoff.to_string());
+    log_key_value_pair(
+        "max_average_absolute_advantage",
+        statistics.max_average_absolute_advantage.to_string(),
+    );
+    log_key_value_pair(
+        "min_average_absolute_advantage",
+        statistics.min_average_absolute_advantage.to_string(),
+    );
+    log_key_value_pair(
+        "average_absolute_advantage_cutoff",
+        statistics.average_absolute_advantage_cutoff.to_string(),
+    );
     log_info(format!(
         "selected_trajectories={} total_trajectories={}",
         statistics.adopted_trajectories, statistics.total_trajectories

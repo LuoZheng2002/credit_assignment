@@ -4,10 +4,7 @@ use research_utility::log_message::{log_info, log_warning};
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 
-pub async fn load_initial_model(
-    parent_dir: &str,
-    hf_model_name: &str,
-) -> Result<(), String> {
+pub async fn load_initial_model(parent_dir: &str, hf_model_name: &str) -> Result<(), String> {
     log_info(format!(
         "Loading initial model {} to parent dir {}",
         hf_model_name, parent_dir,
