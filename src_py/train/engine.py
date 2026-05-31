@@ -1305,6 +1305,15 @@ def train(config: TrainConfig) -> None:
                 sample_index = 0
                 batch_index = 0
                 iteration_index += 1
+                adaptive_state = AdaptiveBatchState(
+                    next_batch_size=1,
+                    next_batch_size_float=1.0,
+                    velocity=0.0,
+                    throughput_ema=adaptive_state.throughput_ema,
+                    best_throughput_ema=adaptive_state.best_throughput_ema,
+                    memory_utilization_ema=adaptive_state.memory_utilization_ema,
+                    previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
+                )
                 continue
 
             worker_progress = float(sample_index) / lazy_loader.sample_count
@@ -1433,6 +1442,15 @@ def train(config: TrainConfig) -> None:
                 sample_index = 0
                 batch_index = 0
                 iteration_index += 1
+                adaptive_state = AdaptiveBatchState(
+                    next_batch_size=1,
+                    next_batch_size_float=1.0,
+                    velocity=0.0,
+                    throughput_ema=adaptive_state.throughput_ema,
+                    best_throughput_ema=adaptive_state.best_throughput_ema,
+                    memory_utilization_ema=adaptive_state.memory_utilization_ema,
+                    previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
+                )
 
             if accumulation_step == config.grad_accum_steps:
                 optimizer.step()
