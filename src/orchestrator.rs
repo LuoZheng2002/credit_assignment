@@ -127,7 +127,15 @@ impl Orchestrator {
                 }
                 OrchestrationStatus::WorkingOnTraining => {
                     // we do not want inference server to be up during training
+                    log_info(format!(
+                        "Entering training stage for epoch {}. About to enforce inference-server shutdown.",
+                        epoch
+                    ));
                     self.ensure_inference_server_shut_down().await;
+                    log_info(format!(
+                        "Inference-server shutdown enforcement finished for epoch {}. Starting training.",
+                        epoch
+                    ));
                     self.train_model::<M>(epoch).await?;
                     assert!(epoch < self.num_total_epochs);
                     // do the final validation
@@ -192,17 +200,36 @@ impl Orchestrator {
         epoch: usize,
     ) -> Result<(), String> {
         if let Some(handle) = &self.inference_server_handle {
+            log_info(format!(
+                "ensure_inference_server_launched: found existing handle (stored_epoch={}, has_port={}, has_process={}) while requesting epoch {}",
+                handle.epoch,
+                handle.sglang_port.is_some(),
+                handle.process.is_some(),
+                epoch,
+            ));
             if handle.epoch == epoch {
                 // already launched for this epoch
+                log_info(format!(
+                    "ensure_inference_server_launched: reusing existing inference server handle for epoch {}",
+                    epoch
+                ));
                 return Ok(());
             } else {
                 // first shut down the previous one
+                log_info(format!(
+                    "ensure_inference_server_launched: existing handle epoch {} differs from requested epoch {}, shutting down first",
+                    handle.epoch, epoch
+                ));
                 self.ensure_inference_server_shut_down().await;
                 // then continue to launch the new one
                 self.launch_inference_server::<M>(epoch).await?;
             }
         } else {
             // not launched, just launch
+            log_info(format!(
+                "ensure_inference_server_launched: no existing handle for requested epoch {}, launching new server",
+                epoch
+            ));
             self.launch_inference_server::<M>(epoch).await?;
         }
         Ok(())
@@ -260,11 +287,39 @@ impl Orchestrator {
 
     async fn ensure_inference_server_shut_down(&mut self) {
         if let Some(handle) = self.inference_server_handle.take() {
-            log_info("Shutting down inference server...");
+            log_info(format!(
+                "Shutting down inference server (stored_epoch={}, has_port={}, has_process={})...",
+                handle.epoch,
+                handle.sglang_port.is_some(),
+                handle.process.is_some(),
+            ));
             if let Some(mut process) = handle.process {
+                let pid_for_log = process.id();
+                match process.try_wait() {
+                    Ok(Some(status)) => log_info(format!(
+                        "Inference server process already exited before shutdown (pid={:?}, status={})",
+                        pid_for_log, status
+                    )),
+                    Ok(None) => log_info(format!(
+                        "Inference server process appears alive before shutdown (pid={:?})",
+                        pid_for_log
+                    )),
+                    Err(err) => log_info(format!(
+                        "Failed to probe inference server process status before shutdown (pid={:?}): {}",
+                        pid_for_log, err
+                    )),
+                }
                 shut_down_sglang_server_process(&mut process).await;
+                log_info(format!(
+                    "Completed shutdown call for inference server process (pid={:?})",
+                    pid_for_log
+                ));
+            } else {
+                log_info("Inference server handle had no process to shut down");
             }
             log_info("Inference server shut down");
+        } else {
+            log_info("ensure_inference_server_shut_down: no inference server handle present; nothing to shut down");
         }
         assert!(
             self.inference_server_handle.is_none(),
@@ -339,6 +394,11 @@ impl Orchestrator {
     }
     async fn train_model<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
         log_info("Start training model.");
+        log_info(format!(
+            "train_model called for epoch {} with in-memory inference_server_handle_present={}",
+            epoch,
+            self.inference_server_handle.is_some()
+        ));
         let asset_file_training_trajectories = AssetFileTrainingTrajectories {
             config_nickname: self.config_nickname.clone(),
             epoch,
