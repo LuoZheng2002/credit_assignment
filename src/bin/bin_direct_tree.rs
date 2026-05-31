@@ -14,7 +14,7 @@ use credit_assignment::{
     },
 };
 use reqwest::Client;
-use research_utility::{log_message::log_warning, progress_screen::ProgressScreen};
+use research_utility::progress_screen::ProgressScreen;
 use tokio::sync::Semaphore;
 
 #[derive(Parser, Debug)]
@@ -85,11 +85,6 @@ async fn main() {
     println!("Starting direct rollout evaluation pipeline...");
     let client = Client::new();
     let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();
-    if rollout_config.accuracy_under_temperature.is_none() {
-        log_warning(
-            "rollout_config.accuracy_under_temperature is None; all segment posteriors will use mean=0 and std=1.",
-        );
-    }
     let posterior_hyperparameters =
         read_json::<PosteriorHyperparameters>(posterior_hyperparameters_path).unwrap();
     let posterior_calculation_config = PosteriorCalculationConfig {

@@ -87,23 +87,6 @@ and probit likelihood:
 
 - `p(y_l | params) = Phi(z_l)` where `Phi` is the standard normal CDF.
 
-### Accuracy-Conditioned Prior (Empirical Bayes)
-
-We use one optional scalar accuracy calibration value from rollout config, denoted `A_cfg in (0,1)`.
-
-- If `A_cfg` is provided, we set a shared prior mean:
-  - `mu_0 = c * Phi^{-1}(clip(A_cfg, delta, 1-delta))`
-  where `c > 0` is a scale factor and `delta` is a small clipping constant.
-- All segments in the tree use the same mean prior center:
-  - `m_i ~ N(mu_0, sigma_mean^2)`.
-
-If `A_cfg` is not provided (`None`), we disable posterior fitting for branch scoring and return neutral posteriors for all segments:
-
-- `m_i = 0`
-- `u_i = 0` (thus `std_i = 1`)
-
-This retains a valid uncertainty scale while avoiding unintended directional prior bias.
-
 ### MAP Objective
 
 We minimize negative log posterior:
@@ -113,7 +96,7 @@ We minimize negative log posterior:
 with:
 
 - `J_likelihood = -sum_l log Phi(z_l)`
-- `J_mean_prior = (1 / (2 * sigma_mean^2)) * sum_i (m_i - mu_0)^2`
+- `J_mean_prior = (1 / (2 * sigma_mean^2)) * sum_i m_i^2`
 - `J_log_std_prior = (1 / (2 * sigma_log_std^2)) * sum_i u_i^2`
 
 This objective encourages the signed trajectory contribution sum (`mu_l`) to move away from zero in the direction implied by outcome label `y_l`, while uncertainty regularization prevents degenerate variance inflation.
@@ -130,9 +113,7 @@ Numerical and optimization settings:
 Calibration workflow:
 
 1. Choose a rollout temperature `T_fixed` for tree generation.
-2. Optionally estimate a single held-out accuracy scalar `A_cfg` under that temperature.
-3. If `A_cfg` is provided, compute `mu_0` with the probit mapping above and fit posteriors.
-4. If `A_cfg` is omitted, use neutral posteriors (`m_i=0, u_i=0`) for all segments.
+2. Posterior means are initialized at zero (neutral prior center).
 
 ### Branching Scores from Segment Estimates
 

@@ -319,7 +319,9 @@ impl Orchestrator {
             }
             log_info("Inference server shut down");
         } else {
-            log_info("ensure_inference_server_shut_down: no inference server handle present; nothing to shut down");
+            log_info(
+                "ensure_inference_server_shut_down: no inference server handle present; nothing to shut down",
+            );
         }
         assert!(
             self.inference_server_handle.is_none(),

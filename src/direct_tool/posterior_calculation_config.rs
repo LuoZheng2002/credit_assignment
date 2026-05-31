@@ -12,8 +12,6 @@ pub const DEFAULT_EPS: f64 = 1e-6;
 pub const DEFAULT_MAX_ITERATIONS: usize = 120;
 pub const DEFAULT_LOG_STD_CLAMP_MIN: f64 = -4.0;
 pub const DEFAULT_LOG_STD_CLAMP_MAX: f64 = 2.0;
-pub const DEFAULT_PRIOR_SCALE: f64 = 1.0;
-pub const DEFAULT_PRIOR_CLIP_DELTA: f64 = 1e-6;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PosteriorHyperparameters {
@@ -23,8 +21,6 @@ pub struct PosteriorHyperparameters {
     pub max_iterations: usize,
     pub log_std_clamp_min: NotNan<f64>,
     pub log_std_clamp_max: NotNan<f64>,
-    pub prior_scale: NotNan<f64>,
-    pub prior_clip_delta: NotNan<f64>,
 }
 
 impl Default for PosteriorHyperparameters {
@@ -36,8 +32,6 @@ impl Default for PosteriorHyperparameters {
             max_iterations: DEFAULT_MAX_ITERATIONS,
             log_std_clamp_min: NotNan::new(DEFAULT_LOG_STD_CLAMP_MIN).unwrap(),
             log_std_clamp_max: NotNan::new(DEFAULT_LOG_STD_CLAMP_MAX).unwrap(),
-            prior_scale: NotNan::new(DEFAULT_PRIOR_SCALE).unwrap(),
-            prior_clip_delta: NotNan::new(DEFAULT_PRIOR_CLIP_DELTA).unwrap(),
         }
     }
 }

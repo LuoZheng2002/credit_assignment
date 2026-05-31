@@ -225,8 +225,7 @@ struct TreeDisplaySnapshot<M: LlmModelMarker> {
 
 impl<M: LlmModelMarker> TreeDisplaySnapshot<M> {
     fn from_tree(tree: DirectTree<M>) -> Self {
-        tree
-            .root_segment_id
+        tree.root_segment_id
             .expect("Direct tree browser requires root segment");
         Self {
             segments: tree.segments,
@@ -328,7 +327,10 @@ impl<M: LlmModelMarker> TreePage<M> {
         self.segment_display_widths = state.segment_display_widths;
         self.tree_lines = state.tree_lines;
         self.rendered_segments = state.rendered_segments;
-        if !self.tree_snapshot.contains_segment(self.selected_segment_id) {
+        if !self
+            .tree_snapshot
+            .contains_segment(self.selected_segment_id)
+        {
             self.selected_segment_id = self.root_segment_id;
         }
         if self

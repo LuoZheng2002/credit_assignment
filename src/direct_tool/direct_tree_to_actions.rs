@@ -185,7 +185,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     &self.question.question,
                     client,
                 )
-                .await;                
+                .await;
                 vec![DirectTreeAction::CreateAndJudgeTrunkTrajectory {
                     content_array,
                     correctness_judgment,
@@ -702,9 +702,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                 // log_key_value_pair("info".to_string(), "Executing a tool call".to_string());
                 let tool_response = execute_python_tool_call(&python_tool_pool, &tool_call).await;
                 match &tool_response {
-                    PythonToolResponse::PythonSuccess(_) => {
-
-                    }
+                    PythonToolResponse::PythonSuccess(_) => {}
                     PythonToolResponse::PythonError(error) => {
                         log_warning(format!(
                             "Tool call failed. flat_id={} reason={}",

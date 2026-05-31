@@ -256,8 +256,7 @@ pub async fn rollout<M: LlmModelMarker>(
                             finished, total_branches_to_finish
                         ),
                     );
-                    let running_accuracy = num_correct as f32
-                        / finished as f32;
+                    let running_accuracy = num_correct as f32 / finished as f32;
                     log_key_value_pair("Tree running accuracy", running_accuracy.to_string());
                 }
                 _ => {}

@@ -56,22 +56,6 @@ impl<M: LlmModelMarker> DirectTree<M> {
             return BTreeMap::new();
         }
 
-        if self.rollout_config.accuracy_under_temperature.is_none() {
-            return segment_ids
-                .iter()
-                .copied()
-                .map(|segment_id| {
-                    (
-                        segment_id,
-                        Posterior {
-                            mean: 0.0,
-                            log_std: 0.0,
-                        },
-                    )
-                })
-                .collect();
-        }
-
         assert!(
             !self.leaf_segment_judgments.is_empty(),
             "Cannot calculate posteriors without leaf judgments"
@@ -87,7 +71,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
             .collect();
         let leaf_paths = self.build_leaf_paths(&segment_index);
 
-        let prior_means_per_segment = self.accuracy_conditioned_prior_means(&segment_ids);
+        let prior_means_per_segment = vec![0.0; segment_ids.len()];
         let mut state = PosteriorOptimizationState {
             means: prior_means_per_segment.clone(),
             log_stds: vec![0.0; segment_ids.len()],
@@ -147,23 +131,6 @@ impl<M: LlmModelMarker> DirectTree<M> {
             });
         }
         leaf_paths
-    }
-
-    fn accuracy_conditioned_prior_means(&self, segment_ids: &[SegmentId]) -> Vec<f64> {
-        let hyperparameters = &self.posterior_calculation_config.hyperparameters;
-        let accuracy_under_temperature = self
-            .rollout_config
-            .accuracy_under_temperature
-            .expect("accuracy_under_temperature must be Some before optimization")
-            .into_inner() as f64;
-        let clipped = accuracy_under_temperature.clamp(
-            hyperparameters.prior_clip_delta.into_inner(),
-            1.0 - hyperparameters.prior_clip_delta.into_inner(),
-        );
-        let prior_mean =
-            hyperparameters.prior_scale.into_inner() * standard_normal_inverse_cdf(clipped);
-
-        segment_ids.iter().map(|_| prior_mean).collect()
     }
 
     fn optimize_posteriors(
@@ -385,56 +352,6 @@ fn standard_normal_pdf(z: f64) -> f64 {
 
 fn standard_normal_cdf(z: f64) -> f64 {
     0.5 * (1.0 + erf_approx(z * FRAC_1_SQRT_2))
-}
-
-fn standard_normal_inverse_cdf(p: f64) -> f64 {
-    assert!(
-        p.is_finite() && p > 0.0 && p < 1.0,
-        "p must be finite and in (0, 1)"
-    );
-
-    const A1: f64 = -3.969_683_028_665_376e1;
-    const A2: f64 = 2.209_460_984_245_205e2;
-    const A3: f64 = -2.759_285_104_469_687e2;
-    const A4: f64 = 1.383_577_518_672_69e2;
-    const A5: f64 = -3.066_479_806_614_716e1;
-    const A6: f64 = 2.506_628_277_459_239;
-    const B1: f64 = -5.447_609_879_822_406e1;
-    const B2: f64 = 1.615_858_368_580_409e2;
-    const B3: f64 = -1.556_989_798_598_866e2;
-    const B4: f64 = 6.680_131_188_771_972e1;
-    const B5: f64 = -1.328_068_155_288_572e1;
-    const C1: f64 = -7.784_894_002_430_293e-3;
-    const C2: f64 = -3.223_964_580_411_365e-1;
-    const C3: f64 = -2.400_758_277_161_838;
-    const C4: f64 = -2.549_732_539_343_734;
-    const C5: f64 = 4.374_664_141_464_968;
-    const C6: f64 = 2.938_163_982_698_783;
-    const D1: f64 = 7.784_695_709_041_462e-3;
-    const D2: f64 = 3.224_671_290_700_398e-1;
-    const D3: f64 = 2.445_134_137_142_996;
-    const D4: f64 = 3.754_408_661_907_416;
-    const P_LOW: f64 = 0.024_25;
-    const P_HIGH: f64 = 1.0 - P_LOW;
-
-    if p < P_LOW {
-        let q = (-2.0 * p.ln()).sqrt();
-        let num = ((((C1 * q + C2) * q + C3) * q + C4) * q + C5) * q + C6;
-        let den = (((D1 * q + D2) * q + D3) * q + D4) * q + 1.0;
-        return num / den;
-    }
-    if p <= P_HIGH {
-        let q = p - 0.5;
-        let r = q * q;
-        let num = (((((A1 * r + A2) * r + A3) * r + A4) * r + A5) * r + A6) * q;
-        let den = ((((B1 * r + B2) * r + B3) * r + B4) * r + B5) * r + 1.0;
-        return num / den;
-    }
-
-    let q = (-2.0 * (1.0 - p).ln()).sqrt();
-    let num = -(((((C1 * q + C2) * q + C3) * q + C4) * q + C5) * q + C6);
-    let den = (((D1 * q + D2) * q + D3) * q + D4) * q + 1.0;
-    num / den
 }
 
 fn erf_approx(x: f64) -> f64 {
