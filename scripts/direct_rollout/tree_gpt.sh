@@ -1,4 +1,3 @@
-source activate_environment.sh
 RUST_BACKTRACE=1 cargo run --bin bin_direct_tree -- \
     --model-cli-name gpt-4o \
     --max-concurrent-requests 100 \
