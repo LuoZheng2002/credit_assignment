@@ -69,6 +69,7 @@ import contextlib
 import io
 import sys
 import numpy as np
+import scipy
 import sympy as sp
 from sympy import *
 buf = io.StringIO()

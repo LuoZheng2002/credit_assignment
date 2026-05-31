@@ -24,21 +24,34 @@ use crate::{
     llm_model::LlmModelMarker,
 };
 
-pub struct CandidateTrajectory<M: LlmModelMarker> {
-    pub trajectory: DirectTrainingTrajectory<M>,
-    pub average_absolute_advantage: NotNan<f32>,
+#[derive(Debug, Clone)]
+struct TrajectoryMetadata {
+    sample_index: usize,
+    trajectory_index: usize,
+    question_flat_id: usize,
+    leaf_segment_id: SegmentId,
+    average_absolute_advantage: NotNan<f32>,
+    trajectory_token_length: usize,
 }
 
-struct TrajectorySelectionState<M: LlmModelMarker> {
+#[derive(Debug, Clone)]
+struct TrajectorySummary {
+    question_flat_id: usize,
+    leaf_segment_id: SegmentId,
+    average_absolute_advantage: f32,
+    trajectory_token_length: usize,
+}
+
+struct TrajectorySelectionState {
     total_samples: usize,
     finished_samples: usize,
     total_trajectories: usize,
     all_average_absolute_advantages: Vec<f32>,
-    candidate_trajectories: Vec<CandidateTrajectory<M>>,
+    candidate_metadata: Vec<TrajectoryMetadata>,
     cumulative_avg_abs_advantage_cutoff: f32,
 }
 
-impl<M: LlmModelMarker> TrajectorySelectionState<M> {
+impl TrajectorySelectionState {
     fn new(total_samples: usize, cumulative_avg_abs_advantage_cutoff: f32) -> Self {
         assert!(
             cumulative_avg_abs_advantage_cutoff > 0.0
@@ -50,50 +63,54 @@ impl<M: LlmModelMarker> TrajectorySelectionState<M> {
             finished_samples: 0,
             total_trajectories: 0,
             all_average_absolute_advantages: Vec::new(),
-            candidate_trajectories: Vec::new(),
+            candidate_metadata: Vec::new(),
             cumulative_avg_abs_advantage_cutoff,
         }
     }
 
-    fn fold_chunk(&mut self, processed_chunk: Vec<(usize, Vec<DirectTrainingTrajectory<M>>)>) {
-        for (_, trajectories) in processed_chunk {
+    fn fold_chunk(&mut self, processed_chunk: Vec<(usize, Vec<TrajectorySummary>)>) {
+        for (sample_index, trajectory_summaries) in processed_chunk {
             self.finished_samples += 1;
             let progress = if self.total_samples == 0 {
                 0.0
             } else {
                 self.finished_samples as f32 / self.total_samples as f32
             };
-            log_master_progress(progress, "Rollout Samples Processed");
-            self.fold_candidate_trajectories(trajectories);
+            log_master_progress(0.5 * progress, "Phase 1/2: Rollout Samples Processed");
+            self.fold_candidate_trajectories(sample_index, trajectory_summaries);
         }
     }
 
     fn fold_candidate_trajectories(
         &mut self,
-        candidate_trajectories: Vec<DirectTrainingTrajectory<M>>,
+        sample_index: usize,
+        trajectory_summaries: Vec<TrajectorySummary>,
     ) {
-        for trajectory in candidate_trajectories {
+        for (trajectory_index, trajectory_summary) in trajectory_summaries.into_iter().enumerate() {
             self.total_trajectories += 1;
-            let average_absolute_advantage =
-                NotNan::new(trajectory.average_absolute_segment_advantage)
-                    .expect("Average absolute segment advantage must not be NaN");
+            let average_absolute_advantage = NotNan::new(trajectory_summary.average_absolute_advantage)
+                .expect("Average absolute segment advantage must not be NaN");
             self.all_average_absolute_advantages
                 .push(*average_absolute_advantage);
 
-            self.candidate_trajectories.push(CandidateTrajectory {
-                trajectory,
+            self.candidate_metadata.push(TrajectoryMetadata {
+                sample_index,
+                trajectory_index,
+                question_flat_id: trajectory_summary.question_flat_id,
+                leaf_segment_id: trajectory_summary.leaf_segment_id,
                 average_absolute_advantage,
+                trajectory_token_length: trajectory_summary.trajectory_token_length,
             });
         }
     }
 
-    fn into_output(mut self) -> TrainingTrajectorySelectionOutput<M> {
+    fn into_output(mut self) -> TrainingTrajectorySelectionOutput {
         self.all_average_absolute_advantages
             .sort_by(|a, b| b.partial_cmp(a).unwrap());
-        self.candidate_trajectories
+        self.candidate_metadata
             .sort_by(|a, b| b.average_absolute_advantage.cmp(&a.average_absolute_advantage));
         let total_average_absolute_advantage_sum: f32 = self
-            .candidate_trajectories
+            .candidate_metadata
             .iter()
             .map(|item| *item.average_absolute_advantage)
             .sum();
@@ -101,19 +118,19 @@ impl<M: LlmModelMarker> TrajectorySelectionState<M> {
             self.cumulative_avg_abs_advantage_cutoff * total_average_absolute_advantage_sum;
         let tolerance = f32::EPSILON * total_average_absolute_advantage_sum.max(1.0);
         let mut selected_average_absolute_advantage_sum = 0.0_f32;
-        let mut kept_trajectories: Vec<DirectTrainingTrajectory<M>> = Vec::new();
-        for item in self.candidate_trajectories {
+        let mut selected_metadata: Vec<TrajectoryMetadata> = Vec::new();
+        for item in self.candidate_metadata {
             let next_sum = selected_average_absolute_advantage_sum + *item.average_absolute_advantage;
             if next_sum <= max_selected_average_absolute_advantage_sum + tolerance {
-                kept_trajectories.push(item.trajectory);
+                selected_metadata.push(item);
                 selected_average_absolute_advantage_sum = next_sum;
             } else {
                 break;
             }
         }
-        let average_absolute_advantage_cutoff = kept_trajectories
+        let average_absolute_advantage_cutoff = selected_metadata
             .iter()
-            .map(|trajectory| trajectory.average_absolute_segment_advantage)
+            .map(|item| *item.average_absolute_advantage)
             .min_by(|a, b| a.partial_cmp(b).unwrap())
             .unwrap_or(0.0);
         if total_average_absolute_advantage_sum > 0.0 {
@@ -124,9 +141,8 @@ impl<M: LlmModelMarker> TrajectorySelectionState<M> {
                 format!("{:.6}", adopted_share),
             );
         }
-        kept_trajectories.sort_by_key(|trajectory| trajectory.input_ids.len());
         TrainingTrajectorySelectionOutput {
-            kept_trajectories,
+            selected_metadata,
             all_average_absolute_advantages: self.all_average_absolute_advantages,
             total_trajectories: self.total_trajectories,
             average_absolute_advantage_cutoff,
@@ -134,8 +150,8 @@ impl<M: LlmModelMarker> TrajectorySelectionState<M> {
     }
 }
 
-struct TrainingTrajectorySelectionOutput<M: LlmModelMarker> {
-    kept_trajectories: Vec<DirectTrainingTrajectory<M>>,
+struct TrainingTrajectorySelectionOutput {
+    selected_metadata: Vec<TrajectoryMetadata>,
     all_average_absolute_advantages: Vec<f32>,
     total_trajectories: usize,
     average_absolute_advantage_cutoff: f32,
@@ -143,10 +159,11 @@ struct TrainingTrajectorySelectionOutput<M: LlmModelMarker> {
 
 pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     action_log_store: SqliteStore<usize, DirectTreeActionLog<M>>,
+    training_trajectory_store: &SqliteStore<usize, DirectTrainingTrajectory<M>>,
     cumulative_avg_abs_advantage_cutoff: f32,
     statistics_file_path: String,
     advantage_calculation_policy: AdvantageCalculationPolicy,
-) -> Vec<DirectTrainingTrajectory<M>> {
+) {
     assert!(
         cumulative_avg_abs_advantage_cutoff > 0.0 && cumulative_avg_abs_advantage_cutoff <= 1.0,
         "cumulative_avg_abs_advantage_cutoff must be in (0.0, 1.0]"
@@ -158,8 +175,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     // we want to make a histogram
 
     keys.sort(); // ensure deterministic order
-    let mut selection_state =
-        TrajectorySelectionState::<M>::new(num_keys, cumulative_avg_abs_advantage_cutoff);
+    let mut selection_state = TrajectorySelectionState::new(num_keys, cumulative_avg_abs_advantage_cutoff);
     let nproc = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(1);
@@ -171,7 +187,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         .expect("Failed to build rayon worker pool for training trajectory conversion"),
     );
     log_info(format!("Converting action logs to trajectories with rayon threads: {}", num_worker_threads));
-    let chunk_size = std::cmp::max(num_worker_threads * 4, 1);
+    let chunk_size = std::cmp::max(num_worker_threads, 1);
     let mut pending_chunk: Vec<(usize, DirectTreeActionLog<M>)> = Vec::with_capacity(chunk_size);
 
     for (index, key) in keys.iter().enumerate() {
@@ -197,32 +213,102 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     }
 
     let TrainingTrajectorySelectionOutput {
-        kept_trajectories,
+        mut selected_metadata,
         all_average_absolute_advantages,
         total_trajectories,
         average_absolute_advantage_cutoff,
     } = selection_state.into_output();
 
-    for trajectory in kept_trajectories.iter() {
-        assert_eq!(
-            trajectory.input_ids.len(),
-            trajectory.labels.len(),
-            "kept trajectory must satisfy input_ids.len() == labels.len(); question_flat_id={}",
-            trajectory.question.flat_id
-        );
-        assert_eq!(
-            trajectory.input_ids.len(),
-            trajectory.advantages.len(),
-            "kept trajectory must satisfy input_ids.len() == advantages.len(); question_flat_id={}",
-            trajectory.question.flat_id
-        );
-    }
+    selected_metadata.sort_by(|a, b| {
+        b.trajectory_token_length
+            .cmp(&a.trajectory_token_length)
+            .then_with(|| b.average_absolute_advantage.cmp(&a.average_absolute_advantage))
+            .then_with(|| a.sample_index.cmp(&b.sample_index))
+            .then_with(|| a.trajectory_index.cmp(&b.trajectory_index))
+    });
 
-    let adopted_trajectories = kept_trajectories.len();
+    let adopted_trajectories = selected_metadata.len();
     assert!(
         adopted_trajectories > 0,
         "cumulative_avg_abs_advantage_cutoff kept zero trajectories; increase cutoff"
     );
+
+    let tolerance = 10.0 * f32::EPSILON;
+    for (output_index, metadata) in selected_metadata.into_iter().enumerate() {
+        let progress = 0.5 + 0.5 * ((output_index + 1) as f32 / adopted_trajectories as f32);
+        log_master_progress(progress, "Phase 2/2: Selected Trajectories Materialized");
+        let key = keys
+            .get(metadata.sample_index)
+            .expect("sample index must reference an existing action log key");
+        let action_log = action_log_store.get(*key).await.unwrap().unwrap();
+        let selected_trajectory_indices: BTreeSet<usize> = [metadata.trajectory_index].into_iter().collect();
+        let reconstructed_trajectories = action_log_to_selected_trajectories::<M>(
+            action_log,
+            advantage_calculation_policy,
+            &selected_trajectory_indices,
+        );
+        assert_eq!(
+            reconstructed_trajectories.len(),
+            1,
+            "failed to reconstruct selected trajectory for sample index {}, trajectory index {}",
+            metadata.sample_index,
+            metadata.trajectory_index,
+        );
+
+        for (trajectory_index, trajectory) in reconstructed_trajectories.into_iter() {
+            assert_eq!(
+                trajectory.question.flat_id,
+                metadata.question_flat_id,
+                "reconstructed question flat_id mismatch at sample index {}, trajectory index {}",
+                metadata.sample_index,
+                trajectory_index
+            );
+            assert_eq!(
+                trajectory.leaf_segment_id,
+                metadata.leaf_segment_id,
+                "reconstructed leaf segment id mismatch at sample index {}, trajectory index {}",
+                metadata.sample_index,
+                trajectory_index
+            );
+            let expected_average_absolute_advantage = *metadata.average_absolute_advantage;
+            let diff =
+                (trajectory.average_absolute_segment_advantage - expected_average_absolute_advantage)
+                    .abs();
+            assert!(
+                diff <= tolerance,
+                "reconstructed average absolute advantage mismatch at sample index {}, trajectory index {}: expected {}, got {}, diff {}",
+                metadata.sample_index,
+                trajectory_index,
+                expected_average_absolute_advantage,
+                trajectory.average_absolute_segment_advantage,
+                diff
+            );
+            assert_eq!(
+                trajectory.input_ids.len(),
+                metadata.trajectory_token_length,
+                "reconstructed token length mismatch at sample index {}, trajectory index {}",
+                metadata.sample_index,
+                trajectory_index
+            );
+            assert_eq!(
+                trajectory.input_ids.len(),
+                trajectory.labels.len(),
+                "kept trajectory must satisfy input_ids.len() == labels.len(); question_flat_id={}",
+                trajectory.question.flat_id
+            );
+            assert_eq!(
+                trajectory.input_ids.len(),
+                trajectory.advantages.len(),
+                "kept trajectory must satisfy input_ids.len() == advantages.len(); question_flat_id={}",
+                trajectory.question.flat_id
+            );
+            training_trajectory_store
+                .upsert(output_index, &trajectory, SqliteBusyRetryConfig::none())
+                .await
+                .unwrap();
+        }
+    }
+    log_master_progress(1.0, "Phase 2/2: Selected Trajectories Materialized");
     let max_average_absolute_advantage = *all_average_absolute_advantages.first().unwrap_or(&0.0);
     let min_average_absolute_advantage = *all_average_absolute_advantages.last().unwrap_or(&0.0);
     // we want to output a histogram and the advantage cutoff
@@ -244,14 +330,13 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         "selected_trajectories={} total_trajectories={}",
         statistics.adopted_trajectories, statistics.total_trajectories
     ));
-    kept_trajectories
 }
 
 async fn run_parallel_action_log_chunk<M: LlmModelMarker>(
     worker_pool: Arc<ThreadPool>,
     chunk: Vec<(usize, DirectTreeActionLog<M>)>,
     advantage_calculation_policy: AdvantageCalculationPolicy,
-) -> Vec<(usize, Vec<DirectTrainingTrajectory<M>>)> {
+) -> Vec<(usize, Vec<TrajectorySummary>)> {
     let mut processed_chunk = tokio::task::spawn_blocking(move || {
         worker_pool.install(|| {
             chunk
@@ -259,13 +344,13 @@ async fn run_parallel_action_log_chunk<M: LlmModelMarker>(
                 .map(|(index, action_log)| {
                     (
                         index,
-                        action_log_to_candidate_trajectories::<M>(
+                        action_log_to_candidate_summaries::<M>(
                             action_log,
                             advantage_calculation_policy,
                         ),
                     )
                 })
-                .collect::<Vec<(usize, Vec<DirectTrainingTrajectory<M>>)>>()
+                .collect::<Vec<(usize, Vec<TrajectorySummary>)>>()
         })
     })
     .await
@@ -284,10 +369,10 @@ pub struct DirectTrainingSetStatistics {
     pub adopted_trajectories: usize,
 }
 
-fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
+fn action_log_to_candidate_summaries<M: LlmModelMarker>(
     action_log: DirectTreeActionLog<M>,
     advantage_calculation_policy: AdvantageCalculationPolicy,
-) -> Vec<DirectTrainingTrajectory<M>> {
+) -> Vec<TrajectorySummary> {
     let tree = DirectTree::<M>::from_action_log(&action_log);
     if !tree.completed {
         return Vec::new();
@@ -307,7 +392,7 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
     for segment_id in tree.segments.keys().copied() {
         segment_advantages.entry(segment_id).or_insert(0.0);
     }
-    let mut trajectories: Vec<DirectTrainingTrajectory<M>> = Vec::new();
+    let mut trajectory_summaries: Vec<TrajectorySummary> = Vec::new();
     let mut leaf_segment_ids: BTreeSet<SegmentId> =
         tree.leaf_segment_judgments.keys().cloned().collect();
     while !leaf_segment_ids.is_empty() {
@@ -331,6 +416,100 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
             .unwrap();
         let segment_ids = tree.get_trajectory_segments_till_id(best_leaf);
+        let mut sum_absolute_advantage = 0.0;
+        let mut non_root_segment_count = 0usize;
+        let mut trajectory_token_length = 0usize;
+        for segment_id in segment_ids.iter() {
+            let segment = tree.segments.get(segment_id).unwrap();
+            let segment_advantage = segment_advantages.get_mut(segment_id).unwrap();
+            if *segment_id != root_segment_id {
+                sum_absolute_advantage += segment_advantage.abs();
+                non_root_segment_count += 1;
+            }
+            for content in segment.content.iter() {
+                let token_count = match content {
+                    SegmentContent::Prompt(token_array)
+                    | SegmentContent::ToolResponse(token_array) => token_array.tokens.len(),
+                    SegmentContent::ReasoningOrToolCall {
+                        tokens,
+                        complete: _,
+                    } => tokens.tokens.len(),
+                };
+                trajectory_token_length += token_count;
+            }
+            *segment_advantage = 0.0; // we set the advantage of the taken segments to 0
+        }
+        let average_absolute_advantage =
+            sum_absolute_advantage / non_root_segment_count.max(1) as f32;
+        assert_eq!(average_absolute_advantage, best_average_absolute_advantage);
+        trajectory_summaries.push(TrajectorySummary {
+            question_flat_id: tree.question.flat_id,
+            leaf_segment_id: best_leaf,
+            average_absolute_advantage,
+            trajectory_token_length,
+        });
+        leaf_segment_ids.remove(&best_leaf);
+    }
+    trajectory_summaries
+}
+
+fn action_log_to_selected_trajectories<M: LlmModelMarker>(
+    action_log: DirectTreeActionLog<M>,
+    advantage_calculation_policy: AdvantageCalculationPolicy,
+    selected_trajectory_indices: &BTreeSet<usize>,
+) -> Vec<(usize, DirectTrainingTrajectory<M>)> {
+    if selected_trajectory_indices.is_empty() {
+        return Vec::new();
+    }
+    let tree = DirectTree::<M>::from_action_log(&action_log);
+    if !tree.completed {
+        return Vec::new();
+    }
+    let root_segment_id = tree
+        .root_segment_id
+        .expect("DirectTree must have root_segment_id");
+    let mut segment_advantages = match advantage_calculation_policy {
+        AdvantageCalculationPolicy::TreeMappoPosterior => {
+            tree.calculate_segment_advantages_from_posteriors(None)
+        }
+        AdvantageCalculationPolicy::TreeRpoWinRate => {
+            tree.calculate_segment_advantages_from_win_rate()
+        }
+    };
+    for segment_id in tree.segments.keys().copied() {
+        segment_advantages.entry(segment_id).or_insert(0.0);
+    }
+    let max_selected_trajectory_index = *selected_trajectory_indices
+        .iter()
+        .max()
+        .expect("selected trajectory indices should be non-empty");
+    let mut reconstructed: Vec<(usize, DirectTrainingTrajectory<M>)> = Vec::new();
+    let mut leaf_segment_ids: BTreeSet<SegmentId> =
+        tree.leaf_segment_judgments.keys().cloned().collect();
+    let mut trajectory_index = 0usize;
+    while !leaf_segment_ids.is_empty() && trajectory_index <= max_selected_trajectory_index {
+        let mut leaf_to_average_absolute_advantage = BTreeMap::new();
+        for leaf in leaf_segment_ids.iter() {
+            let segment_ids = tree.get_trajectory_segments_till_id(*leaf);
+            let non_root_segment_count = segment_ids
+                .iter()
+                .filter(|&&id| id != root_segment_id)
+                .count();
+            let average_absolute_advantage = segment_ids
+                .iter()
+                .filter(|&&id| id != root_segment_id)
+                .map(|id| segment_advantages.get(id).unwrap().abs())
+                .sum::<f32>()
+                / non_root_segment_count.max(1) as f32;
+            leaf_to_average_absolute_advantage.insert(*leaf, average_absolute_advantage);
+        }
+        let (best_leaf, best_average_absolute_advantage) = leaf_to_average_absolute_advantage
+            .into_iter()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .unwrap();
+
+        let should_materialize = selected_trajectory_indices.contains(&trajectory_index);
+        let segment_ids = tree.get_trajectory_segments_till_id(best_leaf);
         let mut input_ids: Vec<i32> = Vec::new();
         let mut labels: Vec<i32> = Vec::new();
         let mut advantages: Vec<f32> = Vec::new();
@@ -343,21 +522,23 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
                 sum_absolute_advantage += segment_advantage.abs();
                 non_root_segment_count += 1;
             }
-            for content in segment.content.iter() {
-                match content {
-                    SegmentContent::Prompt(token_array)
-                    | SegmentContent::ToolResponse(token_array) => {
-                        input_ids.extend(token_array.tokens.iter());
-                        labels.extend(vec![-100; token_array.tokens.len()]); // we set the labels for the prompt tokens to -100 so that they will be ignored in the loss calculation
-                        advantages.extend(vec![*segment_advantage; token_array.tokens.len()]); // we assign the same advantage to all tokens in the segment
-                    }
-                    SegmentContent::ReasoningOrToolCall {
-                        tokens,
-                        complete: _,
-                    } => {
-                        input_ids.extend(tokens.tokens.iter());
-                        labels.extend(tokens.tokens.iter());
-                        advantages.extend(vec![*segment_advantage; tokens.tokens.len()]);
+            if should_materialize {
+                for content in segment.content.iter() {
+                    match content {
+                        SegmentContent::Prompt(token_array)
+                        | SegmentContent::ToolResponse(token_array) => {
+                            input_ids.extend(token_array.tokens.iter());
+                            labels.extend(vec![-100; token_array.tokens.len()]); // we set the labels for the prompt tokens to -100 so that they will be ignored in the loss calculation
+                            advantages.extend(vec![*segment_advantage; token_array.tokens.len()]); // we assign the same advantage to all tokens in the segment
+                        }
+                        SegmentContent::ReasoningOrToolCall {
+                            tokens,
+                            complete: _,
+                        } => {
+                            input_ids.extend(tokens.tokens.iter());
+                            labels.extend(tokens.tokens.iter());
+                            advantages.extend(vec![*segment_advantage; tokens.tokens.len()]);
+                        }
                     }
                 }
             }
@@ -366,22 +547,32 @@ fn action_log_to_candidate_trajectories<M: LlmModelMarker>(
         let average_absolute_advantage =
             sum_absolute_advantage / non_root_segment_count.max(1) as f32;
         assert_eq!(average_absolute_advantage, best_average_absolute_advantage);
-        trajectories.push(DirectTrainingTrajectory {
-            question: tree.question.clone(),
-            input_ids,
-            labels,
-            advantages,
-            average_absolute_segment_advantage: average_absolute_advantage,
-            _phantom: std::marker::PhantomData::<M>,
-        });
+
+        if should_materialize {
+            reconstructed.push((
+                trajectory_index,
+                DirectTrainingTrajectory {
+                    question: tree.question.clone(),
+                    leaf_segment_id: best_leaf,
+                    input_ids,
+                    labels,
+                    advantages,
+                    average_absolute_segment_advantage: average_absolute_advantage,
+                    _phantom: std::marker::PhantomData::<M>,
+                },
+            ));
+        }
         leaf_segment_ids.remove(&best_leaf);
+        trajectory_index += 1;
     }
-    trajectories
+
+    reconstructed
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectTrainingTrajectory<M: LlmModelMarker> {
     pub question: HybridDatasetQuestion,
+    pub leaf_segment_id: SegmentId,
     pub input_ids: Vec<i32>,
     pub labels: Vec<i32>, // we may not need to let model learn to stop at tool-call boundaries or end since our framework already handled this
     pub advantages: Vec<f32>,
@@ -510,18 +701,14 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
                 SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(self.file_path(), 1)
                     .await;
             let rollout_logs = asset_file_rollout_logs.fetch().await;
-            let training_trajectories = rollout_logs_to_training_trajectories::<M>(
+            rollout_logs_to_training_trajectories::<M>(
                 rollout_logs,
+                &db,
                 self.cumulative_avg_abs_advantage_cutoff,
                 self.statistics_file_path(),
                 self.advantage_calculation_policy,
             )
             .await;
-            for (i, trajectory) in training_trajectories.into_iter().enumerate() {
-                db.upsert(i, &trajectory, SqliteBusyRetryConfig::none())
-                    .await
-                    .unwrap();
-            }
             log_info("Finished generating training trajectories file.");
         }
         write_json(self.version_tracking_path(), &new_tracking_content).unwrap();
