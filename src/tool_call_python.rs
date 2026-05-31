@@ -42,12 +42,18 @@ pub enum PythonToolResponse {
 }
 
 impl PythonToolResponse {
-    pub fn with_multi_turn_chat_template<M: LlmModelMarker>(&self) -> TokenArray<M> {
+    pub fn with_multi_turn_chat_template<M: LlmModelMarker>(
+        &self,
+        enable_thinking: bool,
+    ) -> TokenArray<M> {
         let raw_python_response = match self {
             PythonToolResponse::PythonSuccess(output) => output.clone(),
             PythonToolResponse::PythonError(error) => format!("Python error: {}", error),
         };
-        M::Tokenizer::apply_python_response_template_and_tokenize(raw_python_response)
+        M::Tokenizer::apply_python_response_template_and_tokenize(
+            raw_python_response,
+            enable_thinking,
+        )
     }
 }
 

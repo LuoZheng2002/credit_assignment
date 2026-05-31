@@ -4,8 +4,9 @@ use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
 use super::qwen_shared::{
-    SharedQwenLlmCallable, build_qwen_python_response_turn, decode_from_i32_ids,
-    encode_to_i32_ids, token_to_i32_id,
+    SharedQwenLlmCallable, build_qwen35_python_response_turn_disable_thinking,
+    build_qwen35_python_response_turn_enable_thinking, decode_from_i32_ids, encode_to_i32_ids,
+    token_to_i32_id,
 };
 use super::{
     LlmCallable, LlmCliArgs, LlmModelMarker, MyTokenizer, TokenArray, TokenArrayWithLogprob,
@@ -84,11 +85,13 @@ impl MyTokenizer<Qwen35_08B> for Qwen35_08BTokenizer {
 
     fn apply_python_response_template_and_tokenize(
         raw_python_response: String,
+        enable_thinking: bool,
     ) -> TokenArray<Qwen35_08B> {
-        let wrapped_turn = build_qwen_python_response_turn(
-            &raw_python_response,
-            "<|im_start|>assistant\n",
-        );
+        let wrapped_turn = if enable_thinking {
+            build_qwen35_python_response_turn_enable_thinking(&raw_python_response)
+        } else {
+            build_qwen35_python_response_turn_disable_thinking(&raw_python_response)
+        };
         Self::tokenize(wrapped_turn)
     }
 

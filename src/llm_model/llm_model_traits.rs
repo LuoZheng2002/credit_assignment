@@ -21,7 +21,10 @@ pub trait LlmModelMarker: Sized + Send + Sync + 'static {
 pub trait MyTokenizer<M: LlmModelMarker>: Send + Sync + 'static {
     fn tokenize(prompt: String) -> TokenArray<M>;
     fn apply_chat_template_and_tokenize(prompt: String, enable_thinking: bool) -> TokenArray<M>;
-    fn apply_python_response_template_and_tokenize(raw_python_response: String) -> TokenArray<M>;
+    fn apply_python_response_template_and_tokenize(
+        raw_python_response: String,
+        enable_thinking: bool,
+    ) -> TokenArray<M>;
     fn encode_to_i32_ids(text: &str) -> Vec<i32>;
     fn decode_i32_ids(token_ids: &[i32]) -> String;
     fn eos_token_id() -> i32;

@@ -14,8 +14,9 @@ use crate::{
 };
 
 use super::qwen_shared::{
-    SharedQwenLlmCallable, build_qwen_python_response_turn, decode_from_i32_ids,
-    encode_to_i32_ids, token_to_i32_id,
+    SharedQwenLlmCallable, build_qwen3_python_response_turn_disable_thinking,
+    build_qwen3_python_response_turn_enable_thinking, decode_from_i32_ids, encode_to_i32_ids,
+    token_to_i32_id,
 };
 
 static QWEN3_4B_TOKENIZER: LazyLock<Tokenizer> =
@@ -108,11 +109,13 @@ impl MyTokenizer<Qwen3_4B> for Qwen3_4BTokenizer {
 
     fn apply_python_response_template_and_tokenize(
         raw_python_response: String,
+        enable_thinking: bool,
     ) -> TokenArray<Qwen3_4B> {
-        let wrapped_turn = build_qwen_python_response_turn(
-            &raw_python_response,
-            "<|im_start|>assistant\n",
-        );
+        let wrapped_turn = if enable_thinking {
+            build_qwen3_python_response_turn_enable_thinking(&raw_python_response)
+        } else {
+            build_qwen3_python_response_turn_disable_thinking(&raw_python_response)
+        };
         Self::tokenize(wrapped_turn)
     }
 

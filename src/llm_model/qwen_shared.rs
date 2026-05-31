@@ -9,14 +9,41 @@ pub(crate) fn wrap_python_response_xml(raw_python_response: &str) -> String {
     format!("<tool_response>{}</tool_response>", raw_python_response)
 }
 
-pub(crate) fn build_qwen_python_response_turn(
-    raw_python_response: &str,
-    assistant_start: &str,
-) -> String {
+fn build_qwen_python_response_turn(raw_python_response: &str, assistant_response_start: &str) -> String {
     let wrapped_response = wrap_python_response_xml(raw_python_response);
     format!(
         "<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n{}",
-        wrapped_response, assistant_start
+        wrapped_response, assistant_response_start
+    )
+}
+
+pub(crate) fn build_qwen25_python_response_turn_enable_thinking(raw_python_response: &str) -> String {
+    build_qwen_python_response_turn(raw_python_response, "<|im_start|>assistant\n")
+}
+
+pub(crate) fn build_qwen25_python_response_turn_disable_thinking(raw_python_response: &str) -> String {
+    build_qwen_python_response_turn(raw_python_response, "<|im_start|>assistant\n")
+}
+
+pub(crate) fn build_qwen3_python_response_turn_enable_thinking(raw_python_response: &str) -> String {
+    build_qwen_python_response_turn(raw_python_response, "<|im_start|>assistant\n")
+}
+
+pub(crate) fn build_qwen3_python_response_turn_disable_thinking(raw_python_response: &str) -> String {
+    build_qwen_python_response_turn(
+        raw_python_response,
+        "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    )
+}
+
+pub(crate) fn build_qwen35_python_response_turn_enable_thinking(raw_python_response: &str) -> String {
+    build_qwen_python_response_turn(raw_python_response, "<|im_start|>assistant\n<think>\n")
+}
+
+pub(crate) fn build_qwen35_python_response_turn_disable_thinking(raw_python_response: &str) -> String {
+    build_qwen_python_response_turn(
+        raw_python_response,
+        "<|im_start|>assistant\n<think>\n\n</think>\n\n",
     )
 }
 

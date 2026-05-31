@@ -718,7 +718,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                         ));
                     }
                 }
-                let response_tokenized = tool_response.with_multi_turn_chat_template::<M>();
+                let response_tokenized = tool_response.with_multi_turn_chat_template::<M>(false);
                 Ok(SegmentContent::ToolResponse(response_tokenized))
             } else {
                 log_warning(format!(
