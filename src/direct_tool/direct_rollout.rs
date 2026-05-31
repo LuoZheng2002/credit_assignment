@@ -6,7 +6,9 @@ use std::sync::{
 use reqwest::Client;
 use research_utility::{
     asset_file::AssetFile,
-    log_message::{delete_worker_progress_bar, log_master_progress, log_worker_progress},
+    log_message::{
+        delete_worker_progress_bar, log_key_value_pair, log_master_progress, log_worker_progress,
+    },
     sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -40,6 +42,7 @@ struct RolloutExecutionContext<M: LlmModelMarker> {
     stop_signal: Arc<AtomicBool>,
     num_finished_branches: Arc<AtomicUsize>,
     num_finished_trees: Arc<AtomicUsize>,
+    num_correct_branches: Arc<AtomicUsize>,
     total_branches_to_finish: usize,
     total_trees_to_finish: usize,
 }
@@ -111,6 +114,7 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
         stop_signal,
         num_finished_branches,
         num_finished_trees,
+        num_correct_branches,
         total_branches_to_finish,
         total_trees_to_finish,
     } = ctx;
@@ -143,6 +147,7 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
         let stop_signal_clone = stop_signal.clone();
         let num_finished_branches = num_finished_branches.clone();
         let num_finished_trees = num_finished_trees.clone();
+        let num_correct_branches = num_correct_branches.clone();
         join_set.spawn(async move {
             let result = rollout::<M>(
                 question,
@@ -156,6 +161,7 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
                 stop_signal_clone,
                 num_finished_branches,
                 num_finished_trees,
+                num_correct_branches,
                 total_branches_to_finish,
                 total_trees_to_finish,
             )
@@ -188,6 +194,7 @@ pub async fn rollout<M: LlmModelMarker>(
     stop_signal: Arc<AtomicBool>,
     num_finished_branches: Arc<AtomicUsize>,
     num_finished_trees: Arc<AtomicUsize>,
+    num_correct_branches: Arc<AtomicUsize>,
     total_branches_to_finish: usize,
     total_trees_to_finish: usize,
 ) -> Result<(), StopRequestedError> {
@@ -219,21 +226,41 @@ pub async fn rollout<M: LlmModelMarker>(
             break;
         }
         for action in new_actions {
-            if matches!(
-                action,
-                DirectTreeAction::CreateAndJudgeTrunkTrajectory { .. }
-                    | DirectTreeAction::CreateAndJudgeBranchSegment { .. }
-            ) {
-                let finished =
-                    num_finished_branches.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                log_worker_progress(
-                    "branches",
-                    finished as f32 / total_branches_to_finish as f32,
-                    format!(
-                        "Num Branches Completed: {}/{}",
-                        finished, total_branches_to_finish
-                    ),
-                );
+            // if matches!(
+            //     action,
+            //     DirectTreeAction::CreateAndJudgeTrunkTrajectory { correctness_judgment, .. }
+            //         | DirectTreeAction::CreateAndJudgeBranchSegment { correctness_judgment, .. }
+            // ) {
+            match &action {
+                DirectTreeAction::CreateAndJudgeTrunkTrajectory {
+                    correctness_judgment,
+                    ..
+                }
+                | DirectTreeAction::CreateAndJudgeBranchSegment {
+                    correctness_judgment,
+                    ..
+                } => {
+                    let num_correct = if correctness_judgment.is_correct {
+                        num_correct_branches.fetch_add(1, Ordering::SeqCst) + 1
+                    } else {
+                        num_correct_branches.load(Ordering::SeqCst)
+                    };
+                    let finished = num_finished_branches
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        + 1;
+                    log_worker_progress(
+                        "branches",
+                        finished as f32 / total_branches_to_finish as f32,
+                        format!(
+                            "Num Branches Completed: {}/{}",
+                            finished, total_branches_to_finish
+                        ),
+                    );
+                    let running_accuracy = num_correct as f32
+                        / finished as f32;
+                    log_key_value_pair("Tree running accuracy", running_accuracy.to_string());
+                }
+                _ => {}
             }
             action_log.actions.push(action);
         }
@@ -329,6 +356,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let sglang_waiting_workers = Arc::new(AtomicUsize::new(0));
     let num_finished_branches = Arc::new(AtomicUsize::new(0));
     let num_finished_trees = Arc::new(AtomicUsize::new(0));
+    let num_correct_branches = Arc::new(AtomicUsize::new(0));
     let total_branches_to_finish = question_keys.len() * rollout_config.max_num_total_trajectories;
     let total_trees_to_finish = question_keys.len();
     let rollout_context = RolloutExecutionContext::<M> {
@@ -347,6 +375,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         num_finished_trees,
         total_branches_to_finish,
         total_trees_to_finish,
+        num_correct_branches,
     };
 
     tokio::join!(

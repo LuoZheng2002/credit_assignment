@@ -185,11 +185,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     &self.question.question,
                     client,
                 )
-                .await;
-                log_info(format!(
-                    "Question {}: Created and judged trunk trajectory, correctness: {}",
-                    self.question.flat_id, correctness_judgment.is_correct
-                ));
+                .await;                
                 vec![DirectTreeAction::CreateAndJudgeTrunkTrajectory {
                     content_array,
                     correctness_judgment,
@@ -279,15 +275,10 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     client,
                 )
                 .await;
-                let is_correct = correctness_judgment.is_correct;
                 let action = DirectTreeAction::CreateAndJudgeBranchSegment {
                     contents: new_contents,
                     correctness_judgment,
                 };
-                log_info(format!(
-                    "Question {}: Created and judged branch segment, correctness: {}",
-                    self.question.flat_id, is_correct
-                ));
                 vec![action]
             }
             DirectTreeStatus::SpontaneousBranching => {
@@ -712,17 +703,11 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                 let tool_response = execute_python_tool_call(&python_tool_pool, &tool_call).await;
                 match &tool_response {
                     PythonToolResponse::PythonSuccess(_) => {
-                        // log_key_value_pair(
-                        //     "info".to_string(),
-                        //     format!(
-                        //         "Tool call completed. success=true flat_id={}",
-                        //         question_flat_id
-                        //     ),
-                        // );
+
                     }
                     PythonToolResponse::PythonError(error) => {
                         log_warning(format!(
-                            "Tool call completed. success=false flat_id={} reason={}",
+                            "Tool call failed. flat_id={} reason={}",
                             question_flat_id,
                             concise_failure_reason(error)
                         ));
