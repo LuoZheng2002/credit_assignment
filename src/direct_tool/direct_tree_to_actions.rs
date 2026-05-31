@@ -584,22 +584,6 @@ pub struct NodeCandidate {
 // 2. context length exceeded
 // 3. other scenarios that require termination
 
-fn direct_trajectory_to_prompt_tokens<M: LlmModelMarker>(
-    trajectory: &DirectTrajectory<M>,
-) -> Vec<i32> {
-    let mut prompt_tokens: Vec<i32> = Vec::new();
-    for content in trajectory.trajectory_contents.iter() {
-        let tokens = match content {
-            TrajectoryContent::Prompt(tokens) => &tokens.tokens,
-            TrajectoryContent::ReasoningOrToolCallIncomplete(tokens) => &tokens.tokens,
-            TrajectoryContent::ReasoningOrToolCallComplete(tokens) => &tokens.tokens,
-            TrajectoryContent::ToolResponse(tokens) => &tokens.tokens,
-        };
-        prompt_tokens.extend_from_slice(tokens);
-    }
-    prompt_tokens
-}
-
 fn fallback_top8_for_token(token_id: i32) -> Top8Candidates {
     let mut top8 = [TokenLogprobCandidate {
         token_id,
@@ -639,7 +623,7 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     sglang_waiting_workers: Arc<AtomicUsize>,
     stop_signal: Arc<AtomicBool>,
 ) -> Result<SegmentContent<M>, StopRequestedError> {
-    let prompt_tokens = direct_trajectory_to_prompt_tokens(trajectory);
+    let prompt_tokens = trajectory.to_prompt_tokens();
     let mut response = None;
     for trial in 1..=3 {
         let num_waiting_workers = sglang_waiting_workers.fetch_add(1, Ordering::SeqCst) + 1;
@@ -734,8 +718,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                         ));
                     }
                 }
-                let tool_response_raw = tool_response.to_raw_content();
-                let response_tokenized = M::Tokenizer::tokenize(tool_response_raw);
+                let response_tokenized = tool_response.with_multi_turn_chat_template::<M>();
                 Ok(SegmentContent::ToolResponse(response_tokenized))
             } else {
                 log_warning(format!(

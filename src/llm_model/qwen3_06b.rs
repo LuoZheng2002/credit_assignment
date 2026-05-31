@@ -4,7 +4,8 @@ use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
 use super::qwen_shared::{
-    SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
+    SharedQwenLlmCallable, build_qwen_python_response_turn, decode_from_i32_ids,
+    encode_to_i32_ids, token_to_i32_id,
 };
 use super::{
     LlmCallable, LlmCliArgs, LlmModelMarker, MyTokenizer, TokenArray, TokenArrayWithLogprob,
@@ -81,6 +82,16 @@ impl MyTokenizer<Qwen3_06B> for Qwen3_06BTokenizer {
     ) -> TokenArray<Qwen3_06B> {
         let prompt_with_template = build_simple_qwen3_chatml_template(&prompt, enable_thinking);
         Self::tokenize(prompt_with_template)
+    }
+
+    fn apply_python_response_template_and_tokenize(
+        raw_python_response: String,
+    ) -> TokenArray<Qwen3_06B> {
+        let wrapped_turn = build_qwen_python_response_turn(
+            &raw_python_response,
+            "<|im_start|>assistant\n",
+        );
+        Self::tokenize(wrapped_turn)
     }
 
     fn encode_to_i32_ids(text: &str) -> Vec<i32> {

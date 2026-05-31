@@ -8,7 +8,8 @@ use tokenizers::Tokenizer;
 use crate::token_array::TokenArray;
 
 use super::qwen_shared::{
-    SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
+    SharedQwenLlmCallable, build_qwen_python_response_turn, decode_from_i32_ids,
+    encode_to_i32_ids, token_to_i32_id,
 };
 use super::{
     LlmCallable, LlmCliArgs, LlmModelMarker, MyTokenizer, TokenArrayWithLogprob,
@@ -109,6 +110,16 @@ impl MyTokenizer<Qwen25_7B> for Qwen25Tokenizer {
     ) -> TokenArray<Qwen25_7B> {
         let prompt_with_template = build_qwen25_chat_template(&prompt, enable_thinking);
         Self::tokenize(prompt_with_template)
+    }
+
+    fn apply_python_response_template_and_tokenize(
+        raw_python_response: String,
+    ) -> TokenArray<Qwen25_7B> {
+        let wrapped_turn = build_qwen_python_response_turn(
+            &raw_python_response,
+            "<|im_start|>assistant\n",
+        );
+        Self::tokenize(wrapped_turn)
     }
 
     fn encode_to_i32_ids(text: &str) -> Vec<i32> {

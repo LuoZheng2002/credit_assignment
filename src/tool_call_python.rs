@@ -4,6 +4,11 @@ use pyo3::{prelude::*, types::PyDict};
 use research_utility::log_message::log_warning;
 use serde::{Deserialize, Serialize};
 
+use crate::{
+    llm_model::{LlmModelMarker, MyTokenizer},
+    token_array::TokenArray,
+};
+
 pub fn extract_python_tool_call(response: String) -> Option<String> {
     let python_fence = "```python";
     let Some(python_start_position) = response.find(python_fence) else {
@@ -37,16 +42,12 @@ pub enum PythonToolResponse {
 }
 
 impl PythonToolResponse {
-    pub fn to_raw_content(&self) -> String {
-        match self {
-            PythonToolResponse::PythonSuccess(output) => {
-                format!("<tool_response>{}</tool_response>", output)
-            }
-            PythonToolResponse::PythonError(error) => {
-                format!("<tool_response>Python error: {}</tool_response>", error)
-            } // ToolResponse::Intervention(content) => content.clone(),
-              // ToolResponse::EmptyMessageHint => EMPTY_MESSAGE_HINT.to_string(),
-        }
+    pub fn with_multi_turn_chat_template<M: LlmModelMarker>(&self) -> TokenArray<M> {
+        let raw_python_response = match self {
+            PythonToolResponse::PythonSuccess(output) => output.clone(),
+            PythonToolResponse::PythonError(error) => format!("Python error: {}", error),
+        };
+        M::Tokenizer::apply_python_response_template_and_tokenize(raw_python_response)
     }
 }
 

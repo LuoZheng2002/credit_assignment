@@ -37,6 +37,13 @@ pub struct DirectTrajectory<M: LlmModelMarker> {
 }
 
 impl<M: LlmModelMarker> DirectTrajectory<M> {
+    pub fn to_prompt_tokens(&self) -> Vec<i32> {
+        let mut prompt_tokens: Vec<i32> = Vec::new();
+        for content in &self.trajectory_contents {
+            prompt_tokens.extend_from_slice(content.tokens());
+        }
+        prompt_tokens
+    }
     pub fn try_get_answer(&self) -> Option<FinalAnswer> {
         let trajectory_length = self
             .trajectory_contents

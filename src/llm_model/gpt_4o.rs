@@ -261,6 +261,11 @@ impl MyTokenizer<Gpt4o> for Gpt4oTokenizer {
         TokenArray::from_tokens(tokens)
     }
 
+    fn apply_python_response_template_and_tokenize(raw_python_response: String) -> TokenArray<Gpt4o> {
+        let wrapped = format!("<tool_response>{}</tool_response>", raw_python_response);
+        Self::tokenize(wrapped)
+    }
+
     fn encode_to_i32_ids(text: &str) -> Vec<i32> {
         GPT4O_TOKENIZER
             .encode_with_special_tokens(text)

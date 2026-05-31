@@ -5,6 +5,21 @@ use tokenizers::Tokenizer;
 use crate::constants::SGLANG_CONTEXT_LENGTH;
 use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate};
 
+pub(crate) fn wrap_python_response_xml(raw_python_response: &str) -> String {
+    format!("<tool_response>{}</tool_response>", raw_python_response)
+}
+
+pub(crate) fn build_qwen_python_response_turn(
+    raw_python_response: &str,
+    assistant_start: &str,
+) -> String {
+    let wrapped_response = wrap_python_response_xml(raw_python_response);
+    format!(
+        "<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n{}",
+        wrapped_response, assistant_start
+    )
+}
+
 fn remaining_generation_tokens(prompt_len: usize) -> Result<usize, String> {
     let remaining = SGLANG_CONTEXT_LENGTH
         .checked_sub(prompt_len + 1)
