@@ -51,7 +51,7 @@ struct Args {
     #[arg(long)]
     epoch: usize, // the epoch index
     #[arg(long)]
-    max_num_training_trajectories: usize,
+    cumulative_avg_abs_advantage_cutoff: f32,
     #[arg(long, value_enum)]
     advantage_calculation_policy: AdvantageCalculationPolicy,
 }
@@ -658,7 +658,7 @@ struct RunProgramArgs {
     rollout_config: DirectRolloutConfig,
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize, // the epoch index
-    max_num_training_trajectories: usize,
+    cumulative_avg_abs_advantage_cutoff: f32,
     advantage_calculation_policy: AdvantageCalculationPolicy,
 }
 
@@ -687,7 +687,7 @@ async fn main() {
         rollout_config_path,
         posterior_hyperparameters_path,
         epoch,
-        max_num_training_trajectories,
+        cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
     } = Args::parse();
     let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();
@@ -701,7 +701,7 @@ async fn main() {
         rollout_config,
         posterior_calculation_config,
         epoch,
-        max_num_training_trajectories,
+        cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
     };
     match model {
@@ -720,7 +720,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         rollout_config,
         posterior_calculation_config,
         epoch,
-        max_num_training_trajectories,
+        cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
     } = run_program_args;
     let asset_file_training_set = AssetFileTrainingTrajectories::<M> {
@@ -728,7 +728,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         rollout_config,
         posterior_calculation_config,
         epoch,
-        max_num_training_trajectories,
+        cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         _phantom: std::marker::PhantomData::<M>,
     };

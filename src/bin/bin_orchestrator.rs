@@ -46,13 +46,15 @@ struct Args {
     #[arg(long)]
     num_total_epochs: usize,
     #[arg(long)]
-    max_num_training_trajectories: usize,
+    cumulative_avg_abs_advantage_cutoff: f32,
     #[arg(long, value_enum)]
     advantage_calculation_policy: AdvantageCalculationPolicy,
     #[arg(long)]
     training_config_common_path: String,
     #[arg(long)]
     training_time: f32,
+    #[arg(long)]
+    num_iterations_limit: usize,
     #[arg(long)]
     training_rollout_time_limit_secs: usize,
     #[arg(long)]
@@ -102,10 +104,11 @@ async fn main() {
         max_sqlite_connections,
         sglang_server_log_path,
         message_log_path,
-        max_num_training_trajectories,
+        cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         training_config_common_path,
         training_time,
+        num_iterations_limit,
         num_gpus,
     } = Args::parse();
     Python::initialize();
@@ -166,10 +169,11 @@ async fn main() {
         question_semaphore: question_semaphore,
         inference_server_handle: None,
         sglang_server_log_path,
-        max_num_training_trajectories,
+        cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         training_config_common,
         training_time,
+        num_iterations_limit,
         progress,
         num_gpus,
     };

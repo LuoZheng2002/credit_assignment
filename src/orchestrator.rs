@@ -36,7 +36,7 @@ pub struct Orchestrator {
     pub inference_server_handle: Option<InferenceServerHandle>,
     pub sglang_server_log_path: Option<String>,
     // for training set generation
-    pub max_num_training_trajectories: usize,
+    pub cumulative_avg_abs_advantage_cutoff: f32,
     pub advantage_calculation_policy: AdvantageCalculationPolicy,
     // for orchestration
     pub num_total_epochs: usize,
@@ -48,6 +48,7 @@ pub struct Orchestrator {
     // for training
     pub training_config_common: PythonTrainingConfigCommon,
     pub training_time: f32,
+    pub num_iterations_limit: usize,
     pub num_gpus: usize,
 }
 
@@ -307,7 +308,7 @@ impl Orchestrator {
             epoch,
             rollout_config: self.training_set_rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
-            max_num_training_trajectories: self.max_num_training_trajectories,
+            cumulative_avg_abs_advantage_cutoff: self.cumulative_avg_abs_advantage_cutoff,
             advantage_calculation_policy: self.advantage_calculation_policy,
             _phantom: std::marker::PhantomData::<M>,
         };
@@ -319,7 +320,7 @@ impl Orchestrator {
             epoch,
             rollout_config: self.training_set_rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
-            max_num_training_trajectories: self.max_num_training_trajectories,
+            cumulative_avg_abs_advantage_cutoff: self.cumulative_avg_abs_advantage_cutoff,
             advantage_calculation_policy: self.advantage_calculation_policy,
             _phantom: std::marker::PhantomData::<M>,
         };
@@ -328,6 +329,7 @@ impl Orchestrator {
         let training_config = PythonTrainingConfig {
             common: self.training_config_common.clone(),
             training_time: self.training_time,
+            num_iterations_limit: self.num_iterations_limit,
             model_parent_dir: self.epoch_dir::<M>(epoch),
             training_trajectory_sqlite_path,
             checkpoints_parent_dir: self.epoch_dir::<M>(epoch),

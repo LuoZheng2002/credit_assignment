@@ -16,6 +16,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learning-rate", type=float, required=True)
     parser.add_argument("--weight-decay", type=float, required=True)
     parser.add_argument("--training-time", type=float, required=True)
+    parser.add_argument("--num-iterations-limit", type=int, required=True)
     parser.add_argument("--grad-accum-steps", type=int, required=True)
     parser.add_argument("--log-time-interval", type=float, required=True)
     parser.add_argument("--checkpoint-save-time-interval", type=float, required=True)
@@ -42,6 +43,7 @@ def main() -> None:
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         training_time=args.training_time,
+        num_iterations_limit=args.num_iterations_limit,
         grad_accum_steps=args.grad_accum_steps,
         log_time_interval=args.log_time_interval,
         checkpoint_save_time_interval=args.checkpoint_save_time_interval,

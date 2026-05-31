@@ -6,7 +6,7 @@ use std::sync::{
 use reqwest::Client;
 use research_utility::{
     asset_file::AssetFile,
-    log_message::{delete_worker_progress_bar, log_info, log_master_progress, log_worker_progress},
+    log_message::{delete_worker_progress_bar, log_master_progress, log_worker_progress},
     sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -195,11 +195,6 @@ pub async fn rollout<M: LlmModelMarker>(
             posterior_calculation_config: posterior_calculation_config.clone(),
             actions: vec![],
         });
-    log_info(format!(
-        "Loading {} existing actions for question flat id {}...",
-        action_log.actions.len(),
-        question.flat_id
-    ));
     loop {
         let tree = DirectTree::<M>::from_action_log(&action_log);
         if tree.completed {

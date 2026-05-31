@@ -5,6 +5,7 @@ pub struct PythonTrainingConfig {
     #[serde(flatten)]
     pub common: PythonTrainingConfigCommon,
     pub training_time: f32,
+    pub num_iterations_limit: usize,
     // paths
     pub model_parent_dir: String,
     pub training_trajectory_sqlite_path: String,

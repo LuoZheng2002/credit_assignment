@@ -718,13 +718,13 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                 let tool_response = execute_python_tool_call(&tool_call).await;
                 match &tool_response {
                     PythonToolResponse::PythonSuccess(_) => {
-                        log_key_value_pair(
-                            "info".to_string(),
-                            format!(
-                                "Tool call completed. success=true flat_id={}",
-                                question_flat_id
-                            ),
-                        );
+                        // log_key_value_pair(
+                        //     "info".to_string(),
+                        //     format!(
+                        //         "Tool call completed. success=true flat_id={}",
+                        //         question_flat_id
+                        //     ),
+                        // );
                     }
                     PythonToolResponse::PythonError(error) => {
                         log_warning(format!(

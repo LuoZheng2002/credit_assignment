@@ -1,6 +1,5 @@
 use std::{
-    cmp::Reverse,
-    collections::{BTreeMap, BTreeSet, BinaryHeap},
+    collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
 
@@ -25,7 +24,7 @@ use crate::{
     llm_model::LlmModelMarker,
 };
 
-pub struct TrajectoryHeapItem<M: LlmModelMarker> {
+pub struct CandidateTrajectory<M: LlmModelMarker> {
     pub trajectory: DirectTrainingTrajectory<M>,
     pub average_absolute_advantage: NotNan<f32>,
 }
@@ -35,19 +34,24 @@ struct TrajectorySelectionState<M: LlmModelMarker> {
     finished_samples: usize,
     total_trajectories: usize,
     all_average_absolute_advantages: Vec<f32>,
-    min_heap: BinaryHeap<Reverse<TrajectoryHeapItem<M>>>,
-    max_num_training_trajectories: usize,
+    candidate_trajectories: Vec<CandidateTrajectory<M>>,
+    cumulative_avg_abs_advantage_cutoff: f32,
 }
 
 impl<M: LlmModelMarker> TrajectorySelectionState<M> {
-    fn new(total_samples: usize, max_num_training_trajectories: usize) -> Self {
+    fn new(total_samples: usize, cumulative_avg_abs_advantage_cutoff: f32) -> Self {
+        assert!(
+            cumulative_avg_abs_advantage_cutoff > 0.0
+                && cumulative_avg_abs_advantage_cutoff <= 1.0,
+            "cumulative_avg_abs_advantage_cutoff must be in (0.0, 1.0]"
+        );
         Self {
             total_samples,
             finished_samples: 0,
             total_trajectories: 0,
             all_average_absolute_advantages: Vec::new(),
-            min_heap: BinaryHeap::new(),
-            max_num_training_trajectories,
+            candidate_trajectories: Vec::new(),
+            cumulative_avg_abs_advantage_cutoff,
         }
     }
 
@@ -76,28 +80,50 @@ impl<M: LlmModelMarker> TrajectorySelectionState<M> {
             self.all_average_absolute_advantages
                 .push(*average_absolute_advantage);
 
-            self.min_heap.push(Reverse(TrajectoryHeapItem {
+            self.candidate_trajectories.push(CandidateTrajectory {
                 trajectory,
                 average_absolute_advantage,
-            }));
-            if self.min_heap.len() > self.max_num_training_trajectories {
-                self.min_heap.pop();
-            }
+            });
         }
     }
 
     fn into_output(mut self) -> TrainingTrajectorySelectionOutput<M> {
         self.all_average_absolute_advantages
             .sort_by(|a, b| b.partial_cmp(a).unwrap());
-        let kept_items: Vec<TrajectoryHeapItem<M>> =
-            self.min_heap.into_iter().map(|item| item.0).collect();
-        let average_absolute_advantage_cutoff = kept_items
+        self.candidate_trajectories
+            .sort_by(|a, b| b.average_absolute_advantage.cmp(&a.average_absolute_advantage));
+        let total_average_absolute_advantage_sum: f32 = self
+            .candidate_trajectories
             .iter()
-            .map(|item| item.trajectory.average_absolute_segment_advantage)
+            .map(|item| *item.average_absolute_advantage)
+            .sum();
+        let max_selected_average_absolute_advantage_sum =
+            self.cumulative_avg_abs_advantage_cutoff * total_average_absolute_advantage_sum;
+        let tolerance = f32::EPSILON * total_average_absolute_advantage_sum.max(1.0);
+        let mut selected_average_absolute_advantage_sum = 0.0_f32;
+        let mut kept_trajectories: Vec<DirectTrainingTrajectory<M>> = Vec::new();
+        for item in self.candidate_trajectories {
+            let next_sum = selected_average_absolute_advantage_sum + *item.average_absolute_advantage;
+            if next_sum <= max_selected_average_absolute_advantage_sum + tolerance {
+                kept_trajectories.push(item.trajectory);
+                selected_average_absolute_advantage_sum = next_sum;
+            } else {
+                break;
+            }
+        }
+        let average_absolute_advantage_cutoff = kept_trajectories
+            .iter()
+            .map(|trajectory| trajectory.average_absolute_segment_advantage)
             .min_by(|a, b| a.partial_cmp(b).unwrap())
             .unwrap_or(0.0);
-        let mut kept_trajectories: Vec<DirectTrainingTrajectory<M>> =
-            kept_items.into_iter().map(|item| item.trajectory).collect();
+        if total_average_absolute_advantage_sum > 0.0 {
+            let adopted_share = selected_average_absolute_advantage_sum
+                / total_average_absolute_advantage_sum;
+            log_key_value_pair(
+                "adopted_cumulative_average_absolute_advantage_share",
+                format!("{:.6}", adopted_share),
+            );
+        }
         kept_trajectories.sort_by_key(|trajectory| trajectory.input_ids.len());
         TrainingTrajectorySelectionOutput {
             kept_trajectories,
@@ -115,37 +141,16 @@ struct TrainingTrajectorySelectionOutput<M: LlmModelMarker> {
     average_absolute_advantage_cutoff: f32,
 }
 
-impl<M: LlmModelMarker> PartialEq for TrajectoryHeapItem<M> {
-    fn eq(&self, other: &Self) -> bool {
-        self.average_absolute_advantage == other.average_absolute_advantage
-    }
-}
-
-impl<M: LlmModelMarker> Eq for TrajectoryHeapItem<M> {}
-
-impl<M: LlmModelMarker> PartialOrd for TrajectoryHeapItem<M> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<M: LlmModelMarker> Ord for TrajectoryHeapItem<M> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.average_absolute_advantage
-            .cmp(&other.average_absolute_advantage)
-    }
-}
-
 pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     action_log_store: SqliteStore<usize, DirectTreeActionLog<M>>,
-    max_num_training_trajectories: usize,
+    cumulative_avg_abs_advantage_cutoff: f32,
     statistics_file_path: String,
     advantage_calculation_policy: AdvantageCalculationPolicy,
 ) -> Vec<DirectTrainingTrajectory<M>> {
-    if max_num_training_trajectories == 0 {
-        log_warning("Max num training trajectory is 0");
-        return Vec::new();
-    }
+    assert!(
+        cumulative_avg_abs_advantage_cutoff > 0.0 && cumulative_avg_abs_advantage_cutoff <= 1.0,
+        "cumulative_avg_abs_advantage_cutoff must be in (0.0, 1.0]"
+    );
 
     // iterate through all action logs
     let mut keys = action_log_store.get_keys().await.unwrap();
@@ -154,7 +159,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
 
     keys.sort(); // ensure deterministic order
     let mut selection_state =
-        TrajectorySelectionState::<M>::new(num_keys, max_num_training_trajectories);
+        TrajectorySelectionState::<M>::new(num_keys, cumulative_avg_abs_advantage_cutoff);
     let nproc = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(1);
@@ -214,6 +219,10 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     }
 
     let adopted_trajectories = kept_trajectories.len();
+    assert!(
+        adopted_trajectories > 0,
+        "cumulative_avg_abs_advantage_cutoff kept zero trajectories; increase cutoff"
+    );
     let max_average_absolute_advantage = *all_average_absolute_advantages.first().unwrap_or(&0.0);
     let min_average_absolute_advantage = *all_average_absolute_advantages.last().unwrap_or(&0.0);
     // we want to output a histogram and the advantage cutoff
@@ -231,7 +240,10 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     log_key_value_pair("max_average_absolute_advantage", statistics.max_average_absolute_advantage.to_string());
     log_key_value_pair("min_average_absolute_advantage", statistics.min_average_absolute_advantage.to_string());
     log_key_value_pair("average_absolute_advantage_cutoff", statistics.average_absolute_advantage_cutoff.to_string());
-    log_info(format!("total_trajectories: {}, adopted_trajectories: {}", statistics.total_trajectories, statistics.adopted_trajectories));
+    log_info(format!(
+        "selected_trajectories={} total_trajectories={}",
+        statistics.adopted_trajectories, statistics.total_trajectories
+    ));
     kept_trajectories
 }
 
@@ -385,11 +397,11 @@ pub struct AssetFileTrainingTrajectories<M: LlmModelMarker> {
     pub posterior_calculation_config: PosteriorCalculationConfig,
     pub advantage_calculation_policy: AdvantageCalculationPolicy,
     pub epoch: usize, // the epoch index
-    pub max_num_training_trajectories: usize,
+    pub cumulative_avg_abs_advantage_cutoff: f32,
     pub _phantom: std::marker::PhantomData<M>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AssetFileTrainingTrajectoriesTracking {
     pub rollout_log_hash: Base64Hash,
     pub config_nickname: String,
@@ -397,7 +409,7 @@ pub struct AssetFileTrainingTrajectoriesTracking {
     pub posterior_calculation_config: PosteriorCalculationConfig,
     pub advantage_calculation_policy: AdvantageCalculationPolicy,
     pub epoch: usize, // the epoch index
-    pub max_num_training_trajectories: usize,
+    pub cumulative_avg_abs_advantage_cutoff: f32,
 }
 
 impl<M: LlmModelMarker> AssetFileTrainingTrajectories<M> {
@@ -470,7 +482,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             posterior_calculation_config: self.posterior_calculation_config.clone(),
             advantage_calculation_policy: self.advantage_calculation_policy.clone(),
             epoch: self.epoch,
-            max_num_training_trajectories: self.max_num_training_trajectories,
+            cumulative_avg_abs_advantage_cutoff: self.cumulative_avg_abs_advantage_cutoff,
         };
         let stale = if let Ok(tracking_content) =
             read_json::<AssetFileTrainingTrajectoriesTracking>(self.version_tracking_path())
@@ -500,7 +512,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             let rollout_logs = asset_file_rollout_logs.fetch().await;
             let training_trajectories = rollout_logs_to_training_trajectories::<M>(
                 rollout_logs,
-                self.max_num_training_trajectories,
+                self.cumulative_avg_abs_advantage_cutoff,
                 self.statistics_file_path(),
                 self.advantage_calculation_policy,
             )

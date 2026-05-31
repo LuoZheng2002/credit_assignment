@@ -30,6 +30,7 @@ class TrainConfig:
     learning_rate: float
     weight_decay: float
     training_time: float
+    num_iterations_limit: int
     grad_accum_steps: int
     log_time_interval: float
     checkpoint_save_time_interval: float
@@ -836,6 +837,7 @@ def train(config: TrainConfig) -> None:
     assert config.learning_rate > 0.0, "learning_rate must be positive"
     assert config.weight_decay >= 0.0, "weight_decay must be non-negative"
     assert config.training_time > 0.0, "training_time must be positive"
+    assert config.num_iterations_limit > 0, "num_iterations_limit must be positive"
     assert config.grad_accum_steps > 0, "grad_accum_steps must be positive"
     assert config.log_time_interval > 0.0, "log_time_interval must be positive"
     assert config.checkpoint_save_time_interval > 0.0, "checkpoint_save_time_interval must be positive"
@@ -1011,7 +1013,7 @@ def train(config: TrainConfig) -> None:
             local_batch_cursor = 0
         optimizer.zero_grad(set_to_none=True)
 
-        while time.monotonic() < training_end_time:
+        while time.monotonic() < training_end_time and iteration_index < config.num_iterations_limit:
             now = time.monotonic()
             if _is_primary_rank() and now - last_master_progress_time >= 1.0:
                 elapsed_time = min(
@@ -1278,7 +1280,7 @@ def train(config: TrainConfig) -> None:
         sample_index = resume_sample_index
         batch_index = max(0, resume_state.next_batch_cursor)
 
-        while time.monotonic() < training_end_time:
+        while time.monotonic() < training_end_time and iteration_index < config.num_iterations_limit:
             now = time.monotonic()
             if _is_primary_rank() and now - last_master_progress_time >= 1.0:
                 elapsed_time = min(

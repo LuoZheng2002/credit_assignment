@@ -12,7 +12,8 @@ RUST_BACKTRACE=1 cargo run --bin bin_orchestrator -- \
     --training-rollout-config-path config/rollout_config_training_qwen3_06_temp0_7.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --num-total-epochs 3 \
-    --max-num-training-trajectories 100 \
+    --cumulative-avg-abs-advantage-cutoff 0.5 \
+    --num-iterations-limit 5 \
     --advantage-calculation-policy tree-mappo-posterior \
     --training-config-common-path config/training/common.toml \
     --training-time 300 \
