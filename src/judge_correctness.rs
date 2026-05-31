@@ -1,5 +1,6 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use tokio::time::{Duration, sleep};
 
 use crate::{
     direct_tool::direct_trajectory::FinalAnswer,
@@ -27,23 +28,43 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
         question, model_answer, correct_answer
     );
     let gpt_callable = Gpt4oLlmCallable::new(client);
-    let evaluation_tokens = gpt_callable
-        .generate_tokens(
-            <Gpt4o as LlmModelMarker>::Tokenizer::tokenize(prompt).tokens,
-            false,
-        )
-        .await
-        .unwrap();
-    let evaluation = <Gpt4o as LlmModelMarker>::Tokenizer::decode_i32_ids(&evaluation_tokens)
-        .trim()
-        .to_lowercase();
-    if evaluation.contains("incorrect") {
-        false
-    } else if evaluation.contains("correct") {
-        true
-    } else {
-        panic!("Unexpected evaluation result: {}", evaluation);
+    let mut last_error: Option<String> = None;
+
+    for attempt in 1..=3 {
+        match gpt_callable
+            .generate_tokens(
+                <Gpt4o as LlmModelMarker>::Tokenizer::tokenize(prompt.clone()).tokens,
+                false,
+            )
+            .await
+        {
+            Ok(evaluation_tokens) => {
+                let evaluation =
+                    <Gpt4o as LlmModelMarker>::Tokenizer::decode_i32_ids(&evaluation_tokens)
+                        .trim()
+                        .to_lowercase();
+                if evaluation.contains("incorrect") {
+                    return false;
+                }
+                if evaluation.contains("correct") {
+                    return true;
+                }
+                last_error = Some(format!("Unexpected evaluation result: {}", evaluation));
+            }
+            Err(error) => {
+                last_error = Some(error.to_string());
+            }
+        }
+
+        if attempt < 3 {
+            sleep(Duration::from_secs(1)).await;
+        }
     }
+
+    panic!(
+        "Failed to judge answer after 3 attempts: {}",
+        last_error.unwrap_or_else(|| "unknown error".to_string())
+    );
 }
 
 pub async fn judge_final_answer(
