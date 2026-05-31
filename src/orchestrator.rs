@@ -1,6 +1,9 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use research_utility::{asset_file::AssetFile, log_message::{log_info, log_key_value_pair}};
+use research_utility::{
+    asset_file::AssetFile,
+    log_message::{log_info, log_key_value_pair},
+};
 use serde::{Deserialize, Serialize};
 use tokio::process::Child;
 use tokio::sync::Semaphore;
@@ -9,8 +12,8 @@ use crate::{
     direct_tool::{
         direct_rollout::{RolloutProgramConfig, rollout_all},
         direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
-        direct_tree_action_log::AssetFileDirectTreeActionLogs,
         direct_training_set::AssetFileTrainingTrajectories,
+        direct_tree_action_log::AssetFileDirectTreeActionLogs,
         hybrid_dataset::DatasetSplit,
         posterior_calculation_config::PosteriorCalculationConfig,
     },
@@ -116,7 +119,10 @@ impl Orchestrator {
                     // we do not need inference server for training set generation, and it won't be launched again until we do the training step
                     self.ensure_inference_server_shut_down().await;
                     self.generate_training_set::<M>(epoch).await;
-                    self.update_and_save_progress::<M>(OrchestrationStatus::WorkingOnTraining, epoch);
+                    self.update_and_save_progress::<M>(
+                        OrchestrationStatus::WorkingOnTraining,
+                        epoch,
+                    );
                 }
                 OrchestrationStatus::WorkingOnTraining => {
                     // we do not want inference server to be up during training
@@ -124,9 +130,12 @@ impl Orchestrator {
                     self.train_model::<M>(epoch).await?;
                     assert!(epoch < self.num_total_epochs);
                     // do the final validation
-                    self.update_and_save_progress::<M>(OrchestrationStatus::WorkingOnValidation, epoch + 1);
+                    self.update_and_save_progress::<M>(
+                        OrchestrationStatus::WorkingOnValidation,
+                        epoch + 1,
+                    );
                 }
-            }            
+            }
         }
         // for safety
         self.ensure_inference_server_shut_down().await;
@@ -149,6 +158,7 @@ impl Orchestrator {
         &mut self,
         epoch: usize,
     ) -> Result<(), String> {
+        log_info("Reading and logging validation accuracy...");
         let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
             nickname: self.config_nickname.clone(),
             rollout_config: self.validation_rollout_config.clone(),
@@ -169,6 +179,10 @@ impl Orchestrator {
         let progress_save_path =
             Orchestrator::progress_save_path(M::CLI_NAME.into(), &self.config_nickname);
         write_json(&progress_save_path, &self.progress).unwrap();
+        log_info(format!(
+            "Epoch {} validation accuracy: {} ({} wins out of {} plays)",
+            epoch, accuracy, win_rate.num_wins, win_rate.total_plays
+        ));
         Ok(())
     }
 
@@ -258,6 +272,7 @@ impl Orchestrator {
     }
 
     async fn validate_model<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
+        log_info("Start validating model.");
         assert!(self.validation_rollout_config.split == DatasetSplit::Validation);
 
         let validation_rollout_program_config = RolloutProgramConfig {
@@ -277,10 +292,12 @@ impl Orchestrator {
             max_sqlite_connections: self.max_sqlite_connections,
         };
         rollout_all::<M>(validation_rollout_program_config).await;
+        log_info("Finished validating model.");
         Ok(())
     }
 
     async fn collect_training_rollout<M: LlmModelMarker>(&self, epoch: usize) {
+        log_info("Collecting training rollout");
         let Some(sglang_server_handle) = &self.inference_server_handle else {
             panic!("Orchestrator did not launch the sglang server before generating training set");
         };
@@ -300,9 +317,11 @@ impl Orchestrator {
             max_sqlite_connections: self.max_sqlite_connections,
         };
         rollout_all::<M>(training_set_rollout_program_config).await;
+        log_info("Finished collecting training rollout");
     }
 
     async fn generate_training_set<M: LlmModelMarker>(&self, epoch: usize) {
+        log_info("Generating training set");
         let asset_file_training_trajectories = AssetFileTrainingTrajectories {
             config_nickname: self.config_nickname.clone(),
             epoch,
@@ -313,8 +332,10 @@ impl Orchestrator {
             _phantom: std::marker::PhantomData::<M>,
         };
         asset_file_training_trajectories.synchronize().await;
+        log_info("Finished generating training set");
     }
     async fn train_model<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
+        log_info("Start training model.");
         let asset_file_training_trajectories = AssetFileTrainingTrajectories {
             config_nickname: self.config_nickname.clone(),
             epoch,
@@ -355,6 +376,7 @@ impl Orchestrator {
                 exit_status
             ));
         }
+        log_info("Finished training model.");
         Ok(())
     }
 
