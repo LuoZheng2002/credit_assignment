@@ -42,8 +42,6 @@ def create_request_namespace() -> dict[str, Any]:
 def parent_alive(parent_pid: int) -> bool:
     if parent_pid <= 1:
         return False
-    if os.getppid() != parent_pid:
-        return False
     try:
         os.kill(parent_pid, 0)
     except ProcessLookupError:
