@@ -145,13 +145,16 @@ def _print_cuda_oom_stderr(
     rank: int,
     iteration_index: int,
     batch_index: int,
+    batch_token_length: int,
     next_batch_size: int,
     will_retry: bool,
 ) -> None:
+    assert batch_token_length > 0, "batch_token_length must be positive"
     print(
         "[error] "
         f"cuda_oom=1 rank={rank} iteration={iteration_index} "
-        f"batch_index={batch_index} next_batch_size={next_batch_size} "
+        f"batch_index={batch_index} batch_token_length={batch_token_length} "
+        f"next_batch_size={next_batch_size} "
         f"will_retry={1 if will_retry else 0}",
         file=sys.stderr,
         flush=True,
@@ -1074,6 +1077,7 @@ def train(config: TrainConfig) -> None:
                     rank=rank,
                     iteration_index=iteration_index,
                     batch_index=resolved_batch.batch_index,
+                    batch_token_length=max(sample.input_length for sample in resolved_batch.samples),
                     next_batch_size=initial_batch_size,
                     will_retry=False,
                 )
@@ -1370,6 +1374,7 @@ def train(config: TrainConfig) -> None:
                     rank=rank,
                     iteration_index=iteration_index,
                     batch_index=batch_index,
+                    batch_token_length=max(sample.input_length for sample in resolved_batch.samples),
                     next_batch_size=reduced_batch_size,
                     will_retry=will_retry,
                 )
