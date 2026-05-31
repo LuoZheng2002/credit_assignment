@@ -458,7 +458,7 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker>(
             sum_absolute_advantage / non_root_segment_count.max(1) as f32;
         assert_eq!(average_absolute_advantage, best_average_absolute_advantage);
         trajectory_summaries.push(TrajectorySummary {
-            question_flat_id: tree.question.flat_id,
+            question_flat_id: tree.action_log.question.flat_id,
             leaf_segment_id: best_leaf,
             average_absolute_advantage,
             trajectory_token_length,
@@ -567,7 +567,7 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
             reconstructed.push((
                 trajectory_index,
                 DirectTrainingTrajectory {
-                    question: tree.question.clone(),
+                    question: tree.action_log.question.clone(),
                     leaf_segment_id: best_leaf,
                     input_ids,
                     labels,

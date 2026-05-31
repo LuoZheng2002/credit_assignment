@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
+use rayon::{ThreadPoolBuilder, prelude::*};
 use research_utility::{asset_file::AssetFile, log_message::log_master_progress};
 
 use crate::{

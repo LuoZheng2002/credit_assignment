@@ -15,10 +15,10 @@ pub struct WinRate {
     pub total_plays: usize,
 }
 
-impl<M: LlmModelMarker> DirectTree<M> {
+impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
     pub fn calculate_segment_advantages_from_posteriors(
         &self,
-        override_hyperparameters: Option<PosteriorHyperparameters>,
+        override_hyperparameters: Option<&PosteriorHyperparameters>,
     ) -> BTreeMap<SegmentId, f32> {
         let posteriors = self.calculate_segment_posteriors(override_hyperparameters);
         self.segment_advantages_from_posteriors(posteriors)

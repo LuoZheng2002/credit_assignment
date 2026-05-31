@@ -8,8 +8,8 @@ use crate::{
     llm_model::{LlmModelMarker, TokenArrayWithLogprob},
 };
 
-impl<M: LlmModelMarker> DirectTree<M> {
-    pub fn apply_action(&mut self, action: DirectTreeAction<M>) {
+impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
+    pub fn apply_action(&mut self, action: &DirectTreeAction<M>) {
         match action {
             DirectTreeAction::CreateAndJudgeTrunkTrajectory {
                 content_array: content,
@@ -26,8 +26,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     segment_id,
                     Segment {
                         segment_id,
-                        content,
-                        llm_temperature: self.next_segment_temperature,
+                        content: content.clone(),
                         child_ids: vec![],
                         parent_id: Some(root_id),
                     },
@@ -42,20 +41,20 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 // register the judgment for this trunk
                 assert!(!self.leaf_segment_judgments.contains_key(&segment_id));
                 self.leaf_segment_judgments
-                    .insert(segment_id, correctness_judgment);
+                    .insert(segment_id, correctness_judgment.clone());
                 self.trunk_leaf_segments.insert(segment_id);
                 // update status
                 assert!(
-                    self.rollout_config.max_num_trunks
-                        <= self.rollout_config.max_num_total_trajectories
+                    self.action_log.rollout_config.max_num_trunks
+                        <= self.action_log.rollout_config.max_num_total_trajectories
                 );
                 self.current_num_trunks += 1;
-                if self.current_num_trunks < self.rollout_config.max_num_trunks {
+                if self.current_num_trunks < self.action_log.rollout_config.max_num_trunks {
                     self.status = DirectTreeStatus::CreatingTrunkTrajectory;
                 } else if self.leaf_segment_judgments.len()
-                    < self.rollout_config.max_num_total_trajectories
+                    < self.action_log.rollout_config.max_num_total_trajectories
                 {
-                    match self.rollout_config.branching_policy {
+                    match self.action_log.rollout_config.branching_policy {
                         BranchingPolicy::TreeMappoGuided => {
                             self.status = DirectTreeStatus::CreatingOrChoosingBranchPoint;
                         }
@@ -130,14 +129,12 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     content: first_half_content_array,
                     child_ids: vec![new_second_half_id],
                     parent_id: target_segment.parent_id,
-                    llm_temperature: target_segment.llm_temperature,
                 };
                 let second_half_segment = Segment {
                     segment_id: new_second_half_id,
                     content: second_half_content_array,
                     child_ids: target_segment.child_ids.clone(),
                     parent_id: Some(new_first_half_id),
-                    llm_temperature: target_segment.llm_temperature,
                 };
                 self.segments.insert(new_first_half_id, first_half_segment);
                 self.segments
@@ -176,7 +173,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 // after creating the branch point, we move to it and rollout until finding the answer
                 // the new branch point is at the end of the first half segment
                 self.focused_parent_segment_id = Some(new_first_half_id);
-                self.new_branch_start_token = Some(new_branch_start_token);
+                self.new_branch_start_token = Some(*new_branch_start_token);
                 // update status
                 self.status = DirectTreeStatus::CreatingBranchSegment;
             }
@@ -201,7 +198,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     .parent_id
                     .expect("Target segment must have a parent segment to branch from a node");
                 self.focused_parent_segment_id = Some(parent_id);
-                self.new_branch_start_token = Some(new_branch_start_token);
+                self.new_branch_start_token = Some(*new_branch_start_token);
                 // update status
                 self.status = DirectTreeStatus::CreatingBranchSegment;
             }
@@ -211,7 +208,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     DirectTreeStatus::CreatingOrChoosingBranchPoint
                 ));
                 assert!(matches!(
-                    self.rollout_config.branching_policy,
+                    self.action_log.rollout_config.branching_policy,
                     BranchingPolicy::TreeMappoGuided
                 ));
                 // this action does not change the tree structure, it only indicates that we have found no valid branching point and should conclude the tree
@@ -236,10 +233,9 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 self.next_segment_id += 1;
                 let new_segment = Segment {
                     segment_id: new_segment_id,
-                    content: contents,
+                    content: contents.clone(),
                     child_ids: vec![],
                     parent_id: Some(parent_id),
-                    llm_temperature: self.next_segment_temperature,
                 };
                 self.segments.insert(new_segment_id, new_segment);
                 let Some(parent_segment) = self.segments.get_mut(&parent_id) else {
@@ -250,14 +246,14 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 // update status
                 assert!(!self.leaf_segment_judgments.contains_key(&new_segment_id));
                 self.leaf_segment_judgments
-                    .insert(new_segment_id, correctness_judgment);
+                    .insert(new_segment_id, correctness_judgment.clone());
                 if self.leaf_segment_judgments.len()
-                    >= self.rollout_config.max_num_total_trajectories
+                    >= self.action_log.rollout_config.max_num_total_trajectories
                 {
                     self.status = DirectTreeStatus::Complete;
                     self.completed = true;
                 } else {
-                    match self.rollout_config.branching_policy {
+                    match self.action_log.rollout_config.branching_policy {
                         BranchingPolicy::TreeMappoGuided => {
                             self.status = DirectTreeStatus::CreatingOrChoosingBranchPoint;
                         }

@@ -16,7 +16,7 @@ pub struct LongestCommonPrefixResult {
     pub diverge_position_in_query: TokenPositionInSegment,
 }
 
-impl<M: LlmModelMarker> DirectTree<M> {
+impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
     // query does not include the root segment
     pub fn find_longest_common_prefix(
         &self,

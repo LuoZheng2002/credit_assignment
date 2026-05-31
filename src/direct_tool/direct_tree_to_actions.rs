@@ -37,7 +37,7 @@ pub struct TokenBranchingScore {
     pub branching_type: BranchingType,
 }
 
-impl<M: LlmModelMarker> DirectTree<M> {
+impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
     pub fn calculate_per_token_branching_scores(
         &self,
         segment_uncertainty_scores: &BTreeMap<SegmentId, f32>,
@@ -166,7 +166,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
     ) -> Result<Vec<DirectTreeAction<M>>, StopRequestedError> {
         let result = match self.status {
             DirectTreeStatus::CreatingTrunkTrajectory => {
-                assert!(self.current_num_trunks < self.rollout_config.max_num_trunks);
+                assert!(self.current_num_trunks < self.action_log.rollout_config.max_num_trunks);
                 let root_id = self
                     .root_segment_id
                     .expect("Root segment id must exist when creating trunk trajectory");
@@ -181,8 +181,8 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     .await?;
                 let correctness_judgment = judge_final_answer(
                     &final_answer,
-                    &self.question.correct_answer,
-                    &self.question.question,
+                    &self.action_log.question.correct_answer,
+                    &self.action_log.question.question,
                     client,
                 )
                 .await;
@@ -193,13 +193,13 @@ impl<M: LlmModelMarker> DirectTree<M> {
             }
             DirectTreeStatus::CreatingOrChoosingBranchPoint => {
                 assert!(
-                    self.current_num_trunks == self.rollout_config.max_num_trunks,
+                    self.current_num_trunks == self.action_log.rollout_config.max_num_trunks,
                     "Current number of trunks must be equal to the max number of trunks before creating branch point"
                 );
                 assert!(!self.leaf_segment_judgments.is_empty());
                 assert!(
                     self.leaf_segment_judgments.len()
-                        < self.rollout_config.max_num_total_trajectories
+                        < self.action_log.rollout_config.max_num_total_trajectories
                 );
 
                 let posteriors = self.calculate_segment_posteriors(None);
@@ -270,8 +270,8 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     .await?;
                 let correctness_judgment = judge_final_answer(
                     &final_answer,
-                    &self.question.correct_answer,
-                    &self.question.question,
+                    &self.action_log.question.correct_answer,
+                    &self.action_log.question.question,
                     client,
                 )
                 .await;
@@ -297,14 +297,14 @@ impl<M: LlmModelMarker> DirectTree<M> {
                     .await?;
                 let correctness_judgment = judge_final_answer(
                     &final_answer,
-                    &self.question.correct_answer,
-                    &self.question.question,
+                    &self.action_log.question.correct_answer,
+                    &self.action_log.question.question,
                     client,
                 )
                 .await;
                 log_info(format!(
                     "Question {}: Created and judged a spontaneous branching, correctness: {}",
-                    self.question.flat_id, correctness_judgment.is_correct
+                    self.action_log.question.flat_id, correctness_judgment.is_correct
                 ));
                 let prefix_result = self.find_longest_common_prefix(&content_array);
                 let branch_from_existing_node =
@@ -520,7 +520,7 @@ impl<M: LlmModelMarker> DirectTree<M> {
                 return Ok((continuing_contents, answer));
             }
             let next_content = generate_next_segment_content::<M>(
-                self.question.flat_id,
+                self.action_log.question.flat_id,
                 &trajectory,
                 llm_callable,
                 python_tool_pool.clone(),

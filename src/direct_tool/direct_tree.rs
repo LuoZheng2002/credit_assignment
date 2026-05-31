@@ -4,12 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     direct_tool::{
-        direct_rollout_config::DirectRolloutConfig,
         direct_tree_action::DirectTreeAction,
         direct_tree_action_log::DirectTreeActionLog,
         direct_tree_status::DirectTreeStatus,
-        hybrid_dataset::HybridDatasetQuestion,
-        posterior_calculation_config::PosteriorCalculationConfig,
         prompt::{prompt_with_tool_call, prompt_without_tool_call},
     },
     judge_correctness::CorrectnessJudgment,
@@ -21,10 +18,8 @@ use crate::llm_model::MyTokenizer;
 
 // this tree is similar to the completed tree in src/agent folder, but now it runs on a lightweight tool-calling context instead of a heavy agent framework
 #[derive(Debug, Clone)]
-pub struct DirectTree<M: LlmModelMarker> {
-    pub question: HybridDatasetQuestion,
-    pub rollout_config: DirectRolloutConfig,
-    pub posterior_calculation_config: PosteriorCalculationConfig,
+pub struct DirectTree<'a, M: LlmModelMarker> {
+    pub action_log: &'a DirectTreeActionLog<M>,
     // states
     pub status: DirectTreeStatus,
     pub segments: BTreeMap<SegmentId, Segment<M>>, // segment_id -> segment. A segment branched from the middle is destroyed and its id is not reused to avoid hiding sneaky bugs
@@ -34,7 +29,6 @@ pub struct DirectTree<M: LlmModelMarker> {
     pub leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
     pub current_num_trunks: usize,
     pub next_segment_id: usize,
-    pub next_segment_temperature: f32,
     pub focused_parent_segment_id: Option<SegmentId>, // the segment after which we create a new branch and rollout until finding the answer
     pub new_branch_start_token: Option<i32>, // the token id for the next branching point, which is determined when we create a branch and will be used in the rollout after branching to determine when to stop and judge the trajectory
     pub completed: bool,
@@ -43,12 +37,10 @@ pub struct DirectTree<M: LlmModelMarker> {
 
 // pub const NUM_TRUNKS: usize = 4;
 
-impl<M: LlmModelMarker> DirectTree<M> {
-    pub fn from_action_log(action_log: &DirectTreeActionLog<M>) -> Self {
+impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
+    pub fn from_action_log(action_log: &'a DirectTreeActionLog<M>) -> Self {
         let mut tree = Self {
-            question: action_log.question.clone(),
-            rollout_config: action_log.rollout_config.clone(),
-            posterior_calculation_config: action_log.posterior_calculation_config.clone(),
+            action_log,
             status: DirectTreeStatus::CreatingTrunkTrajectory, // this will be updated when applying actions
             segments: BTreeMap::new(),
             root_segment_id: None, // all the trunks share the same root segment, which is the prompt segment
@@ -56,7 +48,6 @@ impl<M: LlmModelMarker> DirectTree<M> {
             leaf_segment_judgments: BTreeMap::new(),
             current_num_trunks: 0,
             next_segment_id: 0,
-            next_segment_temperature: action_log.rollout_config.fixed_temperature.into_inner(),
             focused_parent_segment_id: None,
             new_branch_start_token: None,
             completed: false,
@@ -66,15 +57,14 @@ impl<M: LlmModelMarker> DirectTree<M> {
         let root_segment_id = SegmentId(tree.next_segment_id);
         tree.next_segment_id += 1;
         let prompt_segment = Self::create_prompt_segment(
-            tree.question.question.clone(),
-            tree.rollout_config.use_tool,
+            tree.action_log.question.question.clone(),
+            tree.action_log.rollout_config.use_tool,
             root_segment_id,
-            tree.next_segment_temperature,
         );
         tree.segments.insert(root_segment_id, prompt_segment);
         tree.root_segment_id = Some(root_segment_id);
-        for action in &action_log.actions {
-            tree.apply_action(action.clone());
+        for action in &tree.action_log.actions {
+            tree.apply_action(&action);
         }
         tree
     }
@@ -82,7 +72,6 @@ impl<M: LlmModelMarker> DirectTree<M> {
         question: String,
         use_tool: bool,
         segment_id: SegmentId,
-        temperature: f32,
     ) -> Segment<M> {
         let prompt_string = match use_tool {
             true => prompt_with_tool_call(question),
@@ -92,7 +81,6 @@ impl<M: LlmModelMarker> DirectTree<M> {
         Segment {
             segment_id,
             content: vec![SegmentContent::Prompt(tokenized)],
-            llm_temperature: temperature,
             child_ids: vec![],
             parent_id: None,
         }
@@ -108,7 +96,6 @@ pub type ContentIndex = usize;
 pub struct Segment<M> {
     pub segment_id: SegmentId,
     pub content: Vec<SegmentContent<M>>,
-    pub llm_temperature: f32,
     pub child_ids: Vec<SegmentId>,
     pub parent_id: Option<SegmentId>,
 }

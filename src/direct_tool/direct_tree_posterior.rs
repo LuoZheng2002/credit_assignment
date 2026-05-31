@@ -33,10 +33,10 @@ struct PosteriorObjectiveEvaluation {
     grad_log_stds: Vec<f64>,
 }
 
-impl<M: LlmModelMarker> DirectTree<M> {
+impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
     pub fn calculate_segment_posteriors(
         &self,
-        override_hyperparameters: Option<PosteriorHyperparameters>,
+        override_hyperparameters: Option<&PosteriorHyperparameters>,
     ) -> BTreeMap<SegmentId, Posterior> {
         if self.segments.is_empty() {
             return BTreeMap::new();
@@ -61,8 +61,8 @@ impl<M: LlmModelMarker> DirectTree<M> {
             "Cannot calculate posteriors without leaf judgments"
         );
 
-        let hyperparameters =
-            override_hyperparameters.unwrap_or(self.posterior_calculation_config.hyperparameters);
+        let hyperparameters = override_hyperparameters
+            .unwrap_or(&self.action_log.posterior_calculation_config.hyperparameters);
         let segment_index: BTreeMap<SegmentId, usize> = segment_ids
             .iter()
             .copied()

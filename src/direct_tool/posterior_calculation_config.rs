@@ -13,7 +13,7 @@ pub const DEFAULT_MAX_ITERATIONS: usize = 120;
 pub const DEFAULT_LOG_STD_CLAMP_MIN: f64 = -4.0;
 pub const DEFAULT_LOG_STD_CLAMP_MAX: f64 = 2.0;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PosteriorHyperparameters {
     pub sigma_mean: NotNan<f64>,
     pub sigma_log_std: NotNan<f64>,

@@ -145,7 +145,7 @@ impl<M: LlmModelMarker> TrajectoryContent<M> {
     }
 }
 
-impl<M: LlmModelMarker> DirectTree<M> {
+impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
     pub fn get_trajectory_segments_till_id(&self, segment_id: SegmentId) -> Vec<SegmentId> {
         let mut segments: Vec<SegmentId> = Vec::new();
         let mut current_segment_id = Some(segment_id);

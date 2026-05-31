@@ -269,7 +269,7 @@ impl<M: LlmModelMarker> TreePage<M> {
     fn new(
         entry_index: usize,
         entry: &QuestionEntry<M>,
-        override_hyperparameters: Option<PosteriorHyperparameters>,
+        override_hyperparameters: Option<&PosteriorHyperparameters>,
     ) -> Self {
         let total_actions = entry.action_log.actions.len();
         let action_limit = total_actions;
@@ -307,7 +307,7 @@ impl<M: LlmModelMarker> TreePage<M> {
     fn rebuild_snapshot(
         &mut self,
         entry: &QuestionEntry<M>,
-        override_hyperparameters: Option<PosteriorHyperparameters>,
+        override_hyperparameters: Option<&PosteriorHyperparameters>,
     ) {
         let state = tree_page_state_from_action_log::<M>(
             &entry.action_log,
@@ -345,7 +345,7 @@ impl<M: LlmModelMarker> TreePage<M> {
         &mut self,
         entry: &QuestionEntry<M>,
         new_limit: usize,
-        override_hyperparameters: Option<PosteriorHyperparameters>,
+        override_hyperparameters: Option<&PosteriorHyperparameters>,
     ) {
         if self.action_limit == new_limit {
             return;
@@ -358,7 +358,7 @@ impl<M: LlmModelMarker> TreePage<M> {
         &mut self,
         entry: &QuestionEntry<M>,
         new_ratio: usize,
-        override_hyperparameters: Option<PosteriorHyperparameters>,
+        override_hyperparameters: Option<&PosteriorHyperparameters>,
     ) {
         if self.width_division_ratio == new_ratio {
             return;
@@ -372,7 +372,7 @@ fn tree_page_state_from_action_log<M: LlmModelMarker>(
     action_log: &DirectTreeActionLog<M>,
     action_limit: usize,
     width_division_ratio: usize,
-    override_hyperparameters: Option<PosteriorHyperparameters>,
+    override_hyperparameters: Option<&PosteriorHyperparameters>,
 ) -> TreePageState<M> {
     let partial_log = partial_action_log(action_log, action_limit);
     let tree = DirectTree::<M>::from_action_log(&partial_log);
@@ -1161,7 +1161,7 @@ impl<M: LlmModelMarker> App<M> {
                                 tree_page.set_width_division_ratio(
                                     &entry,
                                     new_ratio,
-                                    self.override_hyperparameters,
+                                    self.override_hyperparameters.as_ref(),
                                 );
                             }
                         }
@@ -1171,7 +1171,7 @@ impl<M: LlmModelMarker> App<M> {
                         }
                         TreeScrollMode::Evolution => {
                             let next = tree_page.action_limit.saturating_sub(1);
-                            tree_page.set_action_limit(&entry, next, self.override_hyperparameters);
+                            tree_page.set_action_limit(&entry, next, self.override_hyperparameters.as_ref());
                         }
                     }
                 }
@@ -1206,7 +1206,7 @@ impl<M: LlmModelMarker> App<M> {
                             tree_page.set_width_division_ratio(
                                 &entry,
                                 new_ratio,
-                                self.override_hyperparameters,
+                                self.override_hyperparameters.as_ref(),
                             );
                         }
                         TreeScrollMode::Panning => {
@@ -1215,7 +1215,7 @@ impl<M: LlmModelMarker> App<M> {
                         }
                         TreeScrollMode::Evolution => {
                             let next = (tree_page.action_limit + 1).min(tree_page.total_actions);
-                            tree_page.set_action_limit(&entry, next, self.override_hyperparameters);
+                            tree_page.set_action_limit(&entry, next, self.override_hyperparameters.as_ref());
                         }
                     }
                 }
@@ -1235,7 +1235,7 @@ impl<M: LlmModelMarker> App<M> {
         self.tree_page = Some(TreePage::new(
             self.home_selected_index,
             &entry,
-            self.override_hyperparameters,
+            self.override_hyperparameters.as_ref(),
         ));
         self.mode = Mode::Tree;
         self.tree_focus = TreePaneFocus::Tree;
@@ -1358,7 +1358,7 @@ fn segment_branching_score_display<M: credit_assignment::llm_model::LlmModelMark
     tree: &DirectTree<M>,
     width_division_ratio: usize,
     segment_display_widths: &BTreeMap<SegmentId, usize>,
-    override_hyperparameters: Option<PosteriorHyperparameters>,
+    override_hyperparameters: Option<&PosteriorHyperparameters>,
 ) -> BTreeMap<SegmentId, Vec<Option<f32>>> {
     let mut displays = BTreeMap::new();
     if tree.segments.is_empty() {
@@ -1431,7 +1431,7 @@ fn segment_branching_score_display<M: credit_assignment::llm_model::LlmModelMark
 
 fn segment_posterior_stats<M: credit_assignment::llm_model::LlmModelMarker>(
     tree: &DirectTree<M>,
-    override_hyperparameters: Option<PosteriorHyperparameters>,
+    override_hyperparameters: Option<&PosteriorHyperparameters>,
 ) -> BTreeMap<SegmentId, SegmentPosteriorStats> {
     let mut stats_by_segment = BTreeMap::new();
     if tree.segments.is_empty() || tree.leaf_segment_judgments.is_empty() {
@@ -2220,7 +2220,7 @@ fn tree_root_segment_id<M: LlmModelMarker>(tree: &DirectTree<M>) -> SegmentId {
 
 fn segment_advantages_from_posteriors<M: LlmModelMarker>(
     tree: &DirectTree<M>,
-    override_hyperparameters: Option<PosteriorHyperparameters>,
+    override_hyperparameters: Option<&PosteriorHyperparameters>,
 ) -> BTreeMap<SegmentId, f32> {
     let mut advantages =
         tree.calculate_segment_advantages_from_posteriors(override_hyperparameters);
