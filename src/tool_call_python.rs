@@ -3,6 +3,7 @@ use std::{ffi::CString, time::Duration};
 use pyo3::{prelude::*, types::PyDict};
 use research_utility::log_message::log_warning;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 
 use crate::{
     llm_model::{LlmModelMarker, MyTokenizer},
@@ -129,6 +130,7 @@ def _execute_with_trailing_expression(code_text: str, namespace: dict):
 }
 
 const MAX_TOOL_OUTPUT_CHARS: usize = 2000;
+static PYTHON_EXECUTION_SEMAPHORE: Semaphore = Semaphore::const_new(1);
 
 fn format_limited_output(output: String, max_chars: usize) -> String {
     assert!(max_chars > 0, "max_chars must be greater than zero");
@@ -150,6 +152,10 @@ fn format_limited_output(output: String, max_chars: usize) -> String {
 }
 
 async fn execute_python_code(code: String) -> PythonToolResponse {
+    let _python_permit = PYTHON_EXECUTION_SEMAPHORE
+        .acquire()
+        .await
+        .expect("python execution semaphore closed");
     let task = tokio::task::spawn_blocking(move || blocking_python_code_task(code));
     let result = tokio::time::timeout(Duration::from_millis(5000), task).await;
     match result {
