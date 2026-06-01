@@ -96,8 +96,8 @@ async fn fetch_judge_evaluation(
         "temperature": 0.0,
     });
     if matches!(judge_model, JudgeAnswerModel::DeepseekV4Flash) {
-        body["extra_body"] = serde_json::json!({
-            "thinking": {"type": "disabled"}
+        body["thinking"] = serde_json::json!({
+            "type": "disabled"
         });
     }
 
