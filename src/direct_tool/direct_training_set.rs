@@ -389,7 +389,7 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker>(
     advantage_calculation_policy: AdvantageCalculationPolicy,
 ) -> Vec<TrajectorySummary> {
     let tree = DirectTree::<M>::from_action_log(&action_log);
-    if !tree.completed {
+    if !tree.completed() {
         return Vec::new();
     }
     let root_segment_id = tree
@@ -477,7 +477,7 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
         return Vec::new();
     }
     let tree = DirectTree::<M>::from_action_log(&action_log);
-    if !tree.completed {
+    if !tree.completed() {
         return Vec::new();
     }
     let root_segment_id = tree

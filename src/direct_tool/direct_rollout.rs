@@ -210,7 +210,7 @@ pub async fn rollout<M: LlmModelMarker>(
         });
     loop {
         let tree = DirectTree::<M>::from_action_log(&action_log);
-        if tree.completed {
+        if tree.completed() {
             break;
         }
         let new_actions = tree
@@ -226,20 +226,9 @@ pub async fn rollout<M: LlmModelMarker>(
             break;
         }
         for action in new_actions {
-            // if matches!(
-            //     action,
-            //     DirectTreeAction::CreateAndJudgeTrunkTrajectory { correctness_judgment, .. }
-            //         | DirectTreeAction::CreateAndJudgeBranchSegment { correctness_judgment, .. }
-            // ) {
+            // to do: put it to the to_action function
             match &action {
-                DirectTreeAction::CreateAndJudgeTrunkTrajectory {
-                    correctness_judgment,
-                    ..
-                }
-                | DirectTreeAction::CreateAndJudgeBranchSegment {
-                    correctness_judgment,
-                    ..
-                } => {
+                DirectTreeAction::JudgeAnswer(correctness_judgment) => {
                     let num_correct = if correctness_judgment.is_correct {
                         num_correct_branches.fetch_add(1, Ordering::SeqCst) + 1
                     } else {

@@ -6,7 +6,7 @@ use crate::{
     direct_tool::{
         direct_tree_action::DirectTreeAction,
         direct_tree_action_log::DirectTreeActionLog,
-        direct_tree_status::DirectTreeStatus,
+        direct_tree_status::{DirectTreeStatus, TrunkSubStatus},
         prompt::{prompt_with_tool_call, prompt_without_tool_call},
     },
     judge_correctness::CorrectnessJudgment,
@@ -21,7 +21,7 @@ use crate::llm_model::MyTokenizer;
 pub struct DirectTree<'a, M: LlmModelMarker> {
     pub action_log: &'a DirectTreeActionLog<M>,
     // states
-    pub status: DirectTreeStatus,
+    pub status: DirectTreeStatus<M>,
     pub segments: BTreeMap<SegmentId, Segment<M>>, // segment_id -> segment. A segment branched from the middle is destroyed and its id is not reused to avoid hiding sneaky bugs
     // pub root_segment_ids: Vec<SegmentId>,
     pub root_segment_id: Option<SegmentId>, // all the trunks share the same root segment, which is the prompt segment
@@ -29,9 +29,8 @@ pub struct DirectTree<'a, M: LlmModelMarker> {
     pub leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
     pub current_num_trunks: usize,
     pub next_segment_id: usize,
-    pub focused_parent_segment_id: Option<SegmentId>, // the segment after which we create a new branch and rollout until finding the answer
-    pub new_branch_start_token: Option<i32>, // the token id for the next branching point, which is determined when we create a branch and will be used in the rollout after branching to determine when to stop and judge the trajectory
-    pub completed: bool,
+    // pub focused_parent_segment_id: Option<SegmentId>, // the segment after which we create a new branch and rollout until finding the answer
+    // pub new_branch_start_token: Option<i32>, // the token id for the next branching point, which is determined when we create a branch and will be used in the rollout after branching to determine when to stop and judge the trajectory
     _phantom: std::marker::PhantomData<M>, // for tokenizer utility
 }
 
@@ -41,16 +40,15 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
     pub fn from_action_log(action_log: &'a DirectTreeActionLog<M>) -> Self {
         let mut tree = Self {
             action_log,
-            status: DirectTreeStatus::CreatingTrunkTrajectory, // this will be updated when applying actions
+            status: DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::CollectingSegmentContents {
+                cumulative_content_array: Vec::new(),
+            }), // this will be updated when applying actions
             segments: BTreeMap::new(),
             root_segment_id: None, // all the trunks share the same root segment, which is the prompt segment
             trunk_leaf_segments: BTreeSet::new(), // the leaf segments of the trunk trajectories
             leaf_segment_judgments: BTreeMap::new(),
             current_num_trunks: 0,
             next_segment_id: 0,
-            focused_parent_segment_id: None,
-            new_branch_start_token: None,
-            completed: false,
             _phantom: std::marker::PhantomData::<M>,
         };
         // we push the prompt segment to the tree before applying any action
@@ -84,6 +82,9 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
             child_ids: vec![],
             parent_id: None,
         }
+    }
+    pub fn completed(&self) -> bool {
+        matches!(self.status, DirectTreeStatus::Complete)
     }
 }
 

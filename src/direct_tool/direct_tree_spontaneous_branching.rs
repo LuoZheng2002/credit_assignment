@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::{
     direct_tool::{
         direct_tree::{ContentIndex, DirectTree, SegmentContent, SegmentId},
@@ -6,6 +8,7 @@ use crate::{
     llm_model::LlmModelMarker,
 };
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TokenPositionInSegment {
     pub content_index: ContentIndex,
     pub offset: usize,

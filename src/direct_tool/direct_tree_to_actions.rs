@@ -5,10 +5,15 @@ use std::sync::{
 };
 
 use reqwest::Client;
-use research_utility::log_message::{log_error, log_info, log_key_value_pair, log_warning};
+use research_utility::log_message::{log_key_value_pair, log_warning};
 
 use crate::direct_tool::direct_rollout::StopRequestedError;
-use crate::direct_tool::direct_trajectory::{DirectTrajectory, FinalAnswer, TrajectoryContent};
+use crate::direct_tool::direct_trajectory::{DirectTrajectory, TrajectoryContent};
+use crate::direct_tool::direct_tree_action::DirectTreeAction::SubmitAnswer;
+use crate::direct_tool::direct_tree_spontaneous_branching::TokenPositionInSegment;
+use crate::direct_tool::direct_tree_status::{
+    GuidedBranchingSubStatus, SpontaneousBranchingSubStatus, TrunkSubStatus,
+};
 use crate::judge_correctness::{JudgeAnswerModel, judge_final_answer};
 use crate::llm_model::MyTokenizer;
 use crate::tool_call_python::{PythonToolResponse, PythonToolServerPool, execute_python_tool_call};
@@ -164,111 +169,52 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
         sglang_waiting_workers: Arc<AtomicUsize>,
         stop_signal: Arc<AtomicBool>,
     ) -> Result<Vec<DirectTreeAction<M>>, StopRequestedError> {
-        let result = match self.status {
-            DirectTreeStatus::CreatingTrunkTrajectory => {
-                assert!(self.current_num_trunks < self.action_log.rollout_config.max_num_trunks);
-                let root_id = self
-                    .root_segment_id
-                    .expect("Root segment id must exist when creating trunk trajectory");
-                let (content_array, final_answer) = self
-                    .generate_continuing_segment_contents(
-                        root_id,
-                        llm_callable,
-                        python_tool_pool.clone(),
-                        sglang_waiting_workers.clone(),
-                        stop_signal.clone(),
-                    )
-                    .await?;
-                let correctness_judgment = judge_final_answer(
-                    &final_answer,
-                    &self.action_log.question.correct_answer,
-                    &self.action_log.question.question,
-                    client,
-                    JudgeAnswerModel::DeepseekV4Flash,
-                )
-                .await;
-                vec![DirectTreeAction::CreateAndJudgeTrunkTrajectory {
-                    content_array,
-                    correctness_judgment,
-                }]
-            }
-            DirectTreeStatus::CreatingOrChoosingBranchPoint => {
-                assert!(
-                    self.current_num_trunks == self.action_log.rollout_config.max_num_trunks,
-                    "Current number of trunks must be equal to the max number of trunks before creating branch point"
-                );
-                assert!(!self.leaf_segment_judgments.is_empty());
-                assert!(
-                    self.leaf_segment_judgments.len()
-                        < self.action_log.rollout_config.max_num_total_trajectories
-                );
-
-                let posteriors = self.calculate_segment_posteriors(None);
-                let segment_uncertainty_scores =
-                    self.posteriors_to_segment_uncertainty_scores(&posteriors);
-
-                let per_token_branching_scores =
-                    self.calculate_per_token_branching_scores(&segment_uncertainty_scores);
-
-                let mut best_token_position: Option<TokenPositionInTree> = None;
-                let mut best_token_branching_score: Option<TokenBranchingScore> = None;
-                let mut best_branching_score = f32::NEG_INFINITY;
-
-                for (segment_id, content_scores) in per_token_branching_scores.iter() {
-                    for (content_index, offset_scores) in content_scores.iter() {
-                        for (offset, token_branching_score) in offset_scores.iter() {
-                            if token_branching_score.branching_score > best_branching_score {
-                                best_branching_score = token_branching_score.branching_score;
-                                best_token_position = Some(TokenPositionInTree {
-                                    segment_id: *segment_id,
-                                    content_index: *content_index,
-                                    offset: *offset,
-                                });
-                                best_token_branching_score = Some(*token_branching_score);
-                            }
-                        }
+        let result = match &self.status {
+            DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::CollectingSegmentContents {
+                cumulative_content_array,
+            })
+            | DirectTreeStatus::WorkingOnGuidedBranching(
+                GuidedBranchingSubStatus::CollectingSegmentContents {
+                    cumulative_content_array,
+                    ..
+                },
+            )
+            | DirectTreeStatus::WorkingOnSpontaneousBranching(
+                SpontaneousBranchingSubStatus::CollectingSegmentContents {
+                    cumulative_content_array,
+                },
+            ) => {
+                let target_segment_id = self.root_segment_id.expect("Root segment id must exist when creating trunk trajectory or spontaneous branch");
+                let trajectory = self.get_trajectory(target_segment_id, cumulative_content_array);
+                match trajectory.try_get_answer() {
+                    Some(final_answer) => {
+                        vec![SubmitAnswer(final_answer)]
+                    }
+                    None => {
+                        // generate the next segment content
+                        let next_content = generate_next_segment_content(
+                            self.action_log.question.flat_id,
+                            &trajectory,
+                            llm_callable,
+                            python_tool_pool,
+                            sglang_waiting_workers,
+                            stop_signal,
+                        )
+                        .await?;
+                        vec![DirectTreeAction::AppendSegmentContent(next_content)]
                     }
                 }
-                if let Some(best_token_position) = best_token_position {
-                    let best_token_branching_score = best_token_branching_score
-                        .expect("Best token score must exist if best token position exists");
-                    let action = if matches!(
-                        best_token_branching_score.branching_type,
-                        BranchingType::Node
-                    ) {
-                        assert!(best_token_position.content_index == 0);
-                        assert!(best_token_position.offset == 0);
-                        DirectTreeAction::BranchFromNode {
-                            position: best_token_position,
-                            new_branch_start_token: best_token_branching_score.token_id,
-                        }
-                    } else {
-                        assert!(
-                            best_token_position.content_index > 0 || best_token_position.offset > 0
-                        );
-                        DirectTreeAction::BranchFromSegment {
-                            position: best_token_position,
-                            new_branch_start_token: best_token_branching_score.token_id,
-                        }
-                    };
-                    vec![action]
-                } else {
-                    vec![DirectTreeAction::NoAvailableBranchPoint]
-                }
             }
-            DirectTreeStatus::CreatingBranchSegment => {
-                let focused_parent_segment_id = self
-                    .focused_parent_segment_id
-                    .expect("Focused parent segment id must exist when creating branch segment");
-                let (new_contents, final_answer) = self
-                    .generate_continuing_segment_contents(
-                        focused_parent_segment_id,
-                        llm_callable,
-                        python_tool_pool.clone(),
-                        sglang_waiting_workers,
-                        stop_signal.clone(),
-                    )
-                    .await?;
+            DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::JudgingSegment {
+                final_answer,
+                ..
+            })
+            | DirectTreeStatus::WorkingOnGuidedBranching(
+                GuidedBranchingSubStatus::JudgingSegment { final_answer, .. },
+            )
+            | DirectTreeStatus::WorkingOnSpontaneousBranching(
+                SpontaneousBranchingSubStatus::JudgingSegment { final_answer, .. },
+            ) => {
                 let correctness_judgment = judge_final_answer(
                     &final_answer,
                     &self.action_log.question.correct_answer,
@@ -277,83 +223,76 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                     JudgeAnswerModel::DeepseekV4Flash,
                 )
                 .await;
-                let action = DirectTreeAction::CreateAndJudgeBranchSegment {
-                    contents: new_contents,
-                    correctness_judgment,
-                };
-                vec![action]
+                vec![DirectTreeAction::JudgeAnswer(correctness_judgment)]
             }
-            DirectTreeStatus::SpontaneousBranching => {
-                // this is equivalent to determining a branching point and doing a rollout to the end
-                let root_id = self
-                    .root_segment_id
-                    .expect("Root segment id must exist when creating trunk trajectory");
-                let (content_array, final_answer) = self
-                    .generate_continuing_segment_contents(
-                        root_id,
-                        llm_callable,
-                        python_tool_pool.clone(),
-                        sglang_waiting_workers.clone(),
-                        stop_signal.clone(),
-                    )
-                    .await?;
-                let correctness_judgment = judge_final_answer(
-                    &final_answer,
-                    &self.action_log.question.correct_answer,
-                    &self.action_log.question.question,
-                    client,
-                    JudgeAnswerModel::DeepseekV4Flash,
-                )
-                .await;
-                log_info(format!(
-                    "Question {}: Created and judged a spontaneous branching, correctness: {}",
-                    self.action_log.question.flat_id, correctness_judgment.is_correct
-                ));
-                let prefix_result = self.find_longest_common_prefix(&content_array);
-                let branch_from_existing_node =
-                    prefix_result.diverge_position_in_tree.content_index == 0
-                        && prefix_result.diverge_position_in_tree.offset == 0;
-                let mut remaining_contents: Vec<SegmentContent<M>> = vec![];
-                if let Some(first_trimmed) = content_array
-                    [prefix_result.diverge_position_in_query.content_index]
-                    .trim_prefix(prefix_result.diverge_position_in_query.offset)
-                {
-                    remaining_contents.push(first_trimmed);
-                }
-                for content in content_array
-                    .into_iter()
-                    .skip(prefix_result.diverge_position_in_query.content_index + 1)
-                {
-                    remaining_contents.push(content);
-                }
-                assert!(matches!(
-                    remaining_contents[0],
-                    SegmentContent::ReasoningOrToolCall { .. }
-                ));
-                let new_branch_start_token = remaining_contents
-                    .first()
-                    .expect("There should be at least one content in the new trajectory")
-                    .tokens()
-                    .first()
-                    .expect(
-                        "The first content in the new trajectory should have at least one token",
-                    )
-                    .to_owned();
-                let branching_action = match branch_from_existing_node {
-                    true => DirectTreeAction::BranchFromNode {
-                        position: prefix_result.diverge_position_in_tree,
-                        new_branch_start_token,
-                    },
-                    false => DirectTreeAction::BranchFromSegment {
-                        position: prefix_result.diverge_position_in_tree,
-                        new_branch_start_token,
-                    },
-                };
-                let create_branch_segment_action = DirectTreeAction::CreateAndJudgeBranchSegment {
-                    contents: remaining_contents,
+            DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::AttachingToTree {
+                correctness_judgment,
+                parent_segment_id,
+                finalized_content_array,
+            })
+            | DirectTreeStatus::WorkingOnGuidedBranching(
+                GuidedBranchingSubStatus::AttachingToTree {
                     correctness_judgment,
-                };
-                vec![branching_action, create_branch_segment_action]
+                    parent_segment_id,
+                    finalized_content_array,
+                },
+            )
+            | DirectTreeStatus::WorkingOnSpontaneousBranching(
+                SpontaneousBranchingSubStatus::AttachingToTree {
+                    correctness_judgment,
+                    parent_segment_id,
+                    prefix_trimmed_content_array: finalized_content_array,
+                    ..
+                },
+            ) => {
+                vec![DirectTreeAction::AttachSegmentToTree {
+                    parent_segment_id: *parent_segment_id,
+                    finalized_content_array: finalized_content_array.clone(),
+                    correctness_judgment: correctness_judgment.clone(),
+                }]
+            }
+            DirectTreeStatus::WorkingOnGuidedBranching(
+                GuidedBranchingSubStatus::SplittingTargetSegment {
+                    position,
+                    branch_from_node,
+                    ..
+                },
+            )
+            | DirectTreeStatus::WorkingOnSpontaneousBranching(
+                SpontaneousBranchingSubStatus::SplittingTargetSegment {
+                    position,
+                    branch_from_node,
+                    ..
+                },
+            ) => {
+                vec![DirectTreeAction::SplitTreeSegment {
+                    position: position.clone(),
+                    branch_from_node: *branch_from_node,
+                }]
+            }
+            DirectTreeStatus::WorkingOnGuidedBranching(
+                GuidedBranchingSubStatus::DeterminingBranchingPoint,
+            ) => {
+                vec![self.determine_guided_branch_action()]
+            }
+            DirectTreeStatus::WorkingOnSpontaneousBranching(
+                SpontaneousBranchingSubStatus::DeterminingBranchingPoint {
+                    finalized_content_array,
+                    ..
+                },
+            ) => {
+                vec![self.determine_spontaneous_branch_action(finalized_content_array)]
+            }
+            DirectTreeStatus::WorkingOnSpontaneousBranching(
+                SpontaneousBranchingSubStatus::PrefixTrimmingNewSegment {
+                    position: _,
+                    position_in_segment,
+                    finalized_content_array: _,
+                    ..
+                },
+            ) => {
+                let trim_position = position_in_segment.clone();
+                vec![DirectTreeAction::PrefixTrimNewSegment { trim_position }]
             }
             DirectTreeStatus::Complete => {
                 // the tree is complete, no more actions can be taken
@@ -496,53 +435,53 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
             .collect();
         uncertainty_scores
     }
-    async fn generate_continuing_segment_contents(
-        &self,
-        // mut current_contents: Vec<SegmentContent>,
-        target_segment_id: SegmentId,
-        // client: Client,
-        llm_callable: &M::Callable,
-        python_tool_pool: Arc<PythonToolServerPool>,
-        sglang_waiting_workers: Arc<AtomicUsize>,
-        stop_signal: Arc<AtomicBool>,
-        // rng: &mut StdRng,
-    ) -> Result<(Vec<SegmentContent<M>>, FinalAnswer), StopRequestedError> {
-        let mut continuing_contents = Vec::new();
-        loop {
-            let trajectory = self.get_trajectory(target_segment_id, &continuing_contents);
-            if let Some(answer) = trajectory.try_get_answer() {
-                if continuing_contents.is_empty() {
-                    log_error(format!(
-                        "trajectory contents: {}",
-                        trajectory.to_decoded_string()
-                    ));
-                    panic!(
-                        "The trajectory should produce some continuing content before producing the answer"
-                    );
-                }
-                return Ok((continuing_contents, answer));
-            }
-            let next_content = generate_next_segment_content::<M>(
-                self.action_log.question.flat_id,
-                &trajectory,
-                llm_callable,
-                python_tool_pool.clone(),
-                sglang_waiting_workers.clone(),
-                stop_signal.clone(),
-            )
-            .await?;
-            if matches!(next_content, SegmentContent::ReasoningOrToolCall { .. }) {
-                if let Some(SegmentContent::ReasoningOrToolCall { complete, .. }) =
-                    continuing_contents.last_mut()
-                {
-                    if *complete {
-                        *complete = false;
-                    }
-                }
-            }
-            continuing_contents.push(next_content);
-        }
-    }
+    // async fn generate_continuing_segment_contents(
+    //     &self,
+    //     // mut current_contents: Vec<SegmentContent>,
+    //     target_segment_id: SegmentId,
+    //     // client: Client,
+    //     llm_callable: &M::Callable,
+    //     python_tool_pool: Arc<PythonToolServerPool>,
+    //     sglang_waiting_workers: Arc<AtomicUsize>,
+    //     stop_signal: Arc<AtomicBool>,
+    //     // rng: &mut StdRng,
+    // ) -> Result<(Vec<SegmentContent<M>>, FinalAnswer), StopRequestedError> {
+    //     let mut continuing_contents = Vec::new();
+    //     loop {
+    //         let trajectory = self.get_trajectory(target_segment_id, &continuing_contents);
+    //         if let Some(answer) = trajectory.try_get_answer() {
+    //             if continuing_contents.is_empty() {
+    //                 log_error(format!(
+    //                     "trajectory contents: {}",
+    //                     trajectory.to_decoded_string()
+    //                 ));
+    //                 panic!(
+    //                     "The trajectory should produce some continuing content before producing the answer"
+    //                 );
+    //             }
+    //             return Ok((continuing_contents, answer));
+    //         }
+    //         let next_content = generate_next_segment_content::<M>(
+    //             self.action_log.question.flat_id,
+    //             &trajectory,
+    //             llm_callable,
+    //             python_tool_pool.clone(),
+    //             sglang_waiting_workers.clone(),
+    //             stop_signal.clone(),
+    //         )
+    //         .await?;
+    //         if matches!(next_content, SegmentContent::ReasoningOrToolCall { .. }) {
+    //             if let Some(SegmentContent::ReasoningOrToolCall { complete, .. }) =
+    //                 continuing_contents.last_mut()
+    //             {
+    //                 if *complete {
+    //                     *complete = false;
+    //                 }
+    //             }
+    //         }
+    //         continuing_contents.push(next_content);
+    //     }
+    // }
     pub fn trajectory_reasoning_token_length(&self, segment_id: SegmentId) -> usize {
         let mut trajectory_segments = Vec::new();
         let mut current_segment = Some(
@@ -562,6 +501,109 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
             .iter()
             .map(|segment| segment.reasoning_only_token_length())
             .sum()
+    }
+
+    fn determine_guided_branch_action(&self) -> DirectTreeAction<M> {
+        if self.leaf_segment_judgments.is_empty() {
+            return DirectTreeAction::NoAvailableBranchPoint;
+        }
+
+        let posteriors = self.calculate_segment_posteriors(None);
+        if posteriors.is_empty() {
+            return DirectTreeAction::NoAvailableBranchPoint;
+        }
+        let mut segment_uncertainty_scores = self.posteriors_to_segment_uncertainty_scores(&posteriors);
+        for segment_id in self.segments.keys().copied() {
+            segment_uncertainty_scores.entry(segment_id).or_insert(0.0);
+        }
+        let per_token_branching_scores =
+            self.calculate_per_token_branching_scores(&segment_uncertainty_scores);
+
+        let mut best_candidate: Option<(SegmentId, ContentIndex, usize, TokenBranchingScore)> =
+            None;
+        for (segment_id, content_map) in per_token_branching_scores {
+            for (content_index, offset_map) in content_map {
+                for (offset, token_score) in offset_map {
+                    if !token_score.branching_score.is_finite() {
+                        continue;
+                    }
+                    let replace = match best_candidate {
+                        None => true,
+                        Some((_, _, _, best)) => token_score.branching_score > best.branching_score,
+                    };
+                    if replace {
+                        best_candidate = Some((segment_id, content_index, offset, token_score));
+                    }
+                }
+            }
+        }
+
+        let Some((segment_id, content_index, offset, token_score)) = best_candidate else {
+            return DirectTreeAction::NoAvailableBranchPoint;
+        };
+        if token_score.branching_score <= 0.0 {
+            return DirectTreeAction::NoAvailableBranchPoint;
+        }
+
+        let (position, branch_from_node) = match token_score.branching_type {
+            BranchingType::Node => (
+                TokenPositionInTree {
+                    segment_id,
+                    content_index: 0,
+                    offset: 0,
+                },
+                true,
+            ),
+            BranchingType::Segment => (
+                TokenPositionInTree {
+                    segment_id,
+                    content_index,
+                    offset,
+                },
+                false,
+            ),
+        };
+
+        DirectTreeAction::BranchFromSegmentOrNode {
+            position,
+            new_branch_start_token: token_score.token_id,
+            branch_from_node,
+            position_in_segment: None,
+        }
+    }
+
+    fn determine_spontaneous_branch_action(
+        &self,
+        finalized_content_array: &[SegmentContent<M>],
+    ) -> DirectTreeAction<M> {
+        if finalized_content_array.is_empty() {
+            return DirectTreeAction::NoAvailableBranchPoint;
+        }
+        let prefix_result = self.find_longest_common_prefix(finalized_content_array);
+        let Some(new_branch_start_token) = Self::token_from_segment_position(
+            finalized_content_array,
+            &prefix_result.diverge_position_in_query,
+        ) else {
+            return DirectTreeAction::NoAvailableBranchPoint;
+        };
+
+        let position = prefix_result.diverge_position_in_tree;
+        let branch_from_node = position.content_index == 0 && position.offset == 0;
+
+        DirectTreeAction::BranchFromSegmentOrNode {
+            position,
+            new_branch_start_token,
+            branch_from_node,
+            position_in_segment: Some(prefix_result.diverge_position_in_query),
+        }
+    }
+
+    fn token_from_segment_position(
+        content_array: &[SegmentContent<M>],
+        position: &TokenPositionInSegment,
+    ) -> Option<i32> {
+        let content = content_array.get(position.content_index)?;
+        content.tokens().get(position.offset).copied()
     }
 }
 

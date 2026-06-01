@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    direct_tool::direct_tree::{ContentIndex, SegmentContent, SegmentId},
+    direct_tool::{
+        direct_trajectory::FinalAnswer,
+        direct_tree::{ContentIndex, SegmentContent, SegmentId}, direct_tree_spontaneous_branching::TokenPositionInSegment,
+    },
     judge_correctness::CorrectnessJudgment,
 };
 
@@ -15,22 +18,26 @@ pub struct TokenPositionInTree {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(bound(serialize = "", deserialize = ""))]
 pub enum DirectTreeAction<M> {
-    CreateAndJudgeTrunkTrajectory {
-        content_array: Vec<SegmentContent<M>>,
-        correctness_judgment: CorrectnessJudgment,
-    },
-    // guided branching mode
-    BranchFromSegment {
+    AppendSegmentContent(SegmentContent<M>),
+    SubmitAnswer(FinalAnswer),
+    BranchFromSegmentOrNode {
         position: TokenPositionInTree, // at least one of content_index and offset must be > 0, indicating the branching happens in the middle of a segment
         new_branch_start_token: i32,
-    },
-    BranchFromNode {
-        position: TokenPositionInTree, // content index and offset must be both 0, indicating the branching happens at the boundary between segments
-        new_branch_start_token: i32,
+        branch_from_node: bool,
+        position_in_segment: Option<TokenPositionInSegment>,
     },
     NoAvailableBranchPoint, // this is in parallel with BranchFromSegment and BranchFromNode, indicating a failure in finding a valid branching token, in which case the agent should conclude the tree
-    CreateAndJudgeBranchSegment {
-        contents: Vec<SegmentContent<M>>,
+    PrefixTrimNewSegment {
+        trim_position: TokenPositionInSegment,
+    },
+    SplitTreeSegment {
+        position: TokenPositionInTree, // must point to a ReasoningOrToolCall content, and the offset must be > 0 and < the length of the content tokens, indicating the splitting happens in the middle of a segment
+        branch_from_node: bool, // if true, the branching happens at the boundary between segments, and the position points to the segment boundary
+    },
+    JudgeAnswer(CorrectnessJudgment),
+    AttachSegmentToTree {
+        parent_segment_id: SegmentId,
+        finalized_content_array: Vec<SegmentContent<M>>,
         correctness_judgment: CorrectnessJudgment,
     },
 }
@@ -38,35 +45,48 @@ pub enum DirectTreeAction<M> {
 impl<M> Clone for DirectTreeAction<M> {
     fn clone(&self) -> Self {
         match self {
-            DirectTreeAction::CreateAndJudgeTrunkTrajectory {
-                content_array,
-                correctness_judgment,
-            } => DirectTreeAction::CreateAndJudgeTrunkTrajectory {
-                content_array: content_array.clone(),
-                correctness_judgment: correctness_judgment.clone(),
-            },
-            DirectTreeAction::BranchFromSegment {
+            DirectTreeAction::AppendSegmentContent(content) => {
+                DirectTreeAction::AppendSegmentContent(content.clone())
+            }
+            DirectTreeAction::SubmitAnswer(final_answer) => {
+                DirectTreeAction::SubmitAnswer(final_answer.clone())
+            }
+            DirectTreeAction::BranchFromSegmentOrNode {
                 position,
                 new_branch_start_token,
-            } => DirectTreeAction::BranchFromSegment {
+                branch_from_node,
+                position_in_segment,
+            } => DirectTreeAction::BranchFromSegmentOrNode {
                 position: position.clone(),
                 new_branch_start_token: *new_branch_start_token,
-            },
-            DirectTreeAction::BranchFromNode {
-                position,
-                new_branch_start_token,
-            } => DirectTreeAction::BranchFromNode {
-                position: position.clone(),
-                new_branch_start_token: *new_branch_start_token,
+                branch_from_node: *branch_from_node,
+                position_in_segment: position_in_segment.clone(),
             },
             DirectTreeAction::NoAvailableBranchPoint => DirectTreeAction::NoAvailableBranchPoint,
-            DirectTreeAction::CreateAndJudgeBranchSegment {
-                contents,
+            DirectTreeAction::AttachSegmentToTree {
+                parent_segment_id,
+                finalized_content_array,
                 correctness_judgment,
-            } => DirectTreeAction::CreateAndJudgeBranchSegment {
-                contents: contents.clone(),
+            } => DirectTreeAction::AttachSegmentToTree {
+                parent_segment_id: *parent_segment_id,
+                finalized_content_array: finalized_content_array.clone(),
                 correctness_judgment: correctness_judgment.clone(),
             },
+            DirectTreeAction::PrefixTrimNewSegment { trim_position } => {
+                DirectTreeAction::PrefixTrimNewSegment {
+                    trim_position: trim_position.clone(),
+                }
+            }
+            DirectTreeAction::SplitTreeSegment {
+                position,
+                branch_from_node,
+            } => DirectTreeAction::SplitTreeSegment {
+                position: position.clone(),
+                branch_from_node: *branch_from_node,
+            },
+            DirectTreeAction::JudgeAnswer(judgment) => {
+                DirectTreeAction::JudgeAnswer(judgment.clone())
+            }
         }
     }
 }
