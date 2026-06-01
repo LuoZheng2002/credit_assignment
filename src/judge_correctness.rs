@@ -8,7 +8,7 @@ use crate::direct_tool::direct_trajectory::FinalAnswer;
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
 const OPENROUTER_CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const OPENAI_GPT4O_MODEL: &str = "gpt-4o";
-const OPENROUTER_DEEPSEEK_V4_FLASH_MODEL: &str = "deepseek/deepseek-chat-v4-flash";
+const OPENROUTER_DEEPSEEK_V4_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
 
 #[derive(Clone, Copy)]
 pub enum JudgeAnswerModel {

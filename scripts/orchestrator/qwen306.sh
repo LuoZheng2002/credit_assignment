@@ -1,7 +1,7 @@
-RUST_BACKTRACE=1 cargo run --bin bin_orchestrator -- \
+cargo run --bin bin_orchestrator -- \
     --model-cli-name qwen3-0.6b \
     --max-rollout-concurrency 200 \
-    --config-nickname tra16 \
+    --config-nickname tra16_2 \
     --validation-rollout-config-path config/rollout_config_validation.json \
     --training-rollout-config-path config/rollout_config_training_qwen3_06_temp0_7.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
