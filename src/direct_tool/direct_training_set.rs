@@ -1,10 +1,7 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
+use futures::stream::{self, StreamExt};
 use ordered_float::NotNan;
-use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 use research_utility::{
     asset_file::{AssetFile, Base64Hash, hash_file},
     log_message::{log_info, log_key_value_pair, log_master_progress, log_warning},
@@ -67,17 +64,15 @@ impl TrajectorySelectionState {
         }
     }
 
-    fn fold_chunk(&mut self, processed_chunk: Vec<(usize, Vec<TrajectorySummary>)>) {
-        for (sample_index, trajectory_summaries) in processed_chunk {
-            self.finished_samples += 1;
-            let progress = if self.total_samples == 0 {
-                0.0
-            } else {
-                self.finished_samples as f32 / self.total_samples as f32
-            };
-            log_master_progress(0.5 * progress, "Phase 1/2: Rollout Samples Processed");
-            self.fold_candidate_trajectories(sample_index, trajectory_summaries);
-        }
+    fn fold_item(&mut self, sample_index: usize, trajectory_summaries: Vec<TrajectorySummary>) {
+        self.finished_samples += 1;
+        let progress = if self.total_samples == 0 {
+            0.0
+        } else {
+            self.finished_samples as f32 / self.total_samples as f32
+        };
+        log_master_progress(0.5 * progress, "Phase 1/2: Rollout Samples Processed");
+        self.fold_candidate_trajectories(sample_index, trajectory_summaries);
     }
 
     fn fold_candidate_trajectories(
@@ -180,42 +175,25 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     keys.sort(); // ensure deterministic order
     let mut selection_state =
         TrajectorySelectionState::new(num_keys, cumulative_avg_abs_advantage_cutoff);
-    let nproc = std::thread::available_parallelism()
-        .map(|value| value.get())
-        .unwrap_or(1);
-    let num_worker_threads = std::cmp::max((nproc + 1) / 2, 1);
-    let worker_pool = Arc::new(
-        ThreadPoolBuilder::new()
-            .num_threads(num_worker_threads)
-            .build()
-            .expect("Failed to build rayon worker pool for training trajectory conversion"),
-    );
-    log_info(format!(
-        "Converting action logs to trajectories with rayon threads: {}",
-        num_worker_threads
-    ));
-    let chunk_size = std::cmp::max(num_worker_threads, 1);
-    let mut pending_chunk: Vec<(usize, DirectTreeActionLog<M>)> = Vec::with_capacity(chunk_size);
+    log_info("Converting action logs to trajectories with tokio tasks (max concurrency: 200)"
+        .to_string());
 
-    for (index, key) in keys.iter().enumerate() {
-        let action_log = action_log_store.get(*key).await.unwrap().unwrap();
-        pending_chunk.push((index, action_log));
-        if pending_chunk.len() >= chunk_size {
-            let processed_chunk = run_parallel_action_log_chunk(
-                worker_pool.clone(),
-                std::mem::take(&mut pending_chunk),
-                advantage_calculation_policy,
-            )
-            .await;
-            selection_state.fold_chunk(processed_chunk);
-        }
-    }
+    const MAX_CONCURRENT_TASKS: usize = 200;
+    let mut processed_stream = stream::iter(keys.iter().copied().enumerate())
+        .map(|(index, key)| {
+            let action_log_store = action_log_store.clone();
+            async move {
+                let action_log = action_log_store.get(key).await.unwrap().unwrap();
+                (
+                    index,
+                    action_log_to_candidate_summaries::<M>(action_log, advantage_calculation_policy),
+                )
+            }
+        })
+        .buffer_unordered(MAX_CONCURRENT_TASKS);
 
-    if !pending_chunk.is_empty() {
-        let processed_chunk =
-            run_parallel_action_log_chunk(worker_pool, pending_chunk, advantage_calculation_policy)
-                .await;
-        selection_state.fold_chunk(processed_chunk);
+    while let Some((index, trajectory_summaries)) = processed_stream.next().await {
+        selection_state.fold_item(index, trajectory_summaries);
     }
 
     let TrainingTrajectorySelectionOutput {
@@ -345,33 +323,6 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         "selected_trajectories={} total_trajectories={}",
         statistics.adopted_trajectories, statistics.total_trajectories
     ));
-}
-
-async fn run_parallel_action_log_chunk<M: LlmModelMarker>(
-    worker_pool: Arc<ThreadPool>,
-    chunk: Vec<(usize, DirectTreeActionLog<M>)>,
-    advantage_calculation_policy: AdvantageCalculationPolicy,
-) -> Vec<(usize, Vec<TrajectorySummary>)> {
-    let mut processed_chunk = tokio::task::spawn_blocking(move || {
-        worker_pool.install(|| {
-            chunk
-                .into_par_iter()
-                .map(|(index, action_log)| {
-                    (
-                        index,
-                        action_log_to_candidate_summaries::<M>(
-                            action_log,
-                            advantage_calculation_policy,
-                        ),
-                    )
-                })
-                .collect::<Vec<(usize, Vec<TrajectorySummary>)>>()
-        })
-    })
-    .await
-    .expect("blocking task for training trajectory conversion panicked");
-    processed_chunk.sort_by_key(|(index, _)| *index);
-    processed_chunk
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

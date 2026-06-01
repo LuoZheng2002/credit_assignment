@@ -619,7 +619,6 @@ dependencies = [
  "rand 0.10.0",
  "ratatui",
  "ratatui-core",
- "rayon",
  "regex",
  "reqwest",
  "research-utility",

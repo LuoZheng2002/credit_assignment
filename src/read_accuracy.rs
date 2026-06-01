@@ -1,6 +1,4 @@
-use std::sync::Arc;
-
-use rayon::{ThreadPoolBuilder, prelude::*};
+use futures::stream::{self, StreamExt};
 use research_utility::{asset_file::AssetFile, log_message::log_master_progress};
 
 use crate::{
@@ -31,59 +29,41 @@ pub async fn read_accuracy<M: LlmModelMarker>(
     let mut keys = action_logs_store.get_keys().await.unwrap();
     keys.sort();
 
-    let nproc = std::thread::available_parallelism()
-        .map(|value| value.get())
-        .unwrap_or(1);
-    let num_worker_threads = std::cmp::max((nproc + 1) / 2, 1);
-    let worker_pool = Arc::new(
-        ThreadPoolBuilder::new()
-            .num_threads(num_worker_threads)
-            .build()
-            .expect("Failed to build rayon worker pool for accuracy calculation"),
-    );
-
     log_master_progress(0.0, "Accuracy: Calculating");
 
     let num_keys = keys.len();
-    let chunk_size = std::cmp::max(num_worker_threads, 1);
     let mut num_wins = 0usize;
     let mut total_plays = 0usize;
-    let mut finished = 0usize;
 
-    for chunk_keys in keys.chunks(chunk_size) {
-        let mut chunk: Vec<DirectTreeActionLog<M>> = Vec::with_capacity(chunk_keys.len());
-        for key in chunk_keys {
-            chunk.push(
-                action_logs_store
-                    .get(*key)
+    const MAX_CONCURRENT_TASKS: usize = 200;
+    let mut result_stream = stream::iter(keys.into_iter())
+        .map(|key| {
+            let action_logs_store = action_logs_store.clone();
+            async move {
+                let action_log = action_logs_store
+                    .get(key)
                     .await
                     .unwrap()
-                    .expect("key from sqlite key set must exist"),
-            );
-        }
-
-        let pool = worker_pool.clone();
-        let chunk_results: Vec<Option<bool>> = tokio::task::spawn_blocking(move || {
-            pool.install(|| {
-                chunk
-                    .into_par_iter()
-                    .map(|action_log| question_is_correct::<M>(&action_log))
-                    .collect()
-            })
-        })
-        .await
-        .expect("blocking task for accuracy calculation panicked");
-
-        for result in chunk_results {
-            if let Some(is_correct) = result {
-                if is_correct {
-                    num_wins += 1;
-                }
-                total_plays += 1;
+                    .expect("key from sqlite key set must exist");
+                question_is_correct::<M>(&action_log)
             }
+        })
+        .buffer_unordered(MAX_CONCURRENT_TASKS);
+
+    let mut finished = 0usize;
+    while let Some(result) = result_stream.next().await {
+        finished += 1;
+        if let Some(is_correct) = result {
+            if is_correct {
+                num_wins += 1;
+            }
+            total_plays += 1;
         }
-        finished += chunk_keys.len();
-        let progress = finished as f32 / num_keys as f32;
+        let progress = if num_keys == 0 {
+            1.0
+        } else {
+            finished as f32 / num_keys as f32
+        };
         log_master_progress(progress, "Accuracy: Calculating");
     }
 
