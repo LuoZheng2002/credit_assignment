@@ -260,6 +260,29 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                 assert!(!self.leaf_segment_judgments.contains_key(&new_segment_id));
                 self.leaf_segment_judgments
                     .insert(new_segment_id, correctness_judgment.clone());
+                match &self.status {
+                    DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::AttachingToTree {
+                        ..
+                    }) => {
+                        // we are still working on the trunk, so we add the new segment to trunk leaf segments
+                        self.trunk_leaf_segments.insert(new_segment_id);
+                    }
+                    DirectTreeStatus::WorkingOnGuidedBranching(
+                        GuidedBranchingSubStatus::AttachingToTree { .. },
+                    )
+                    | DirectTreeStatus::WorkingOnSpontaneousBranching(
+                        SpontaneousBranchingSubStatus::AttachingToTree { .. },
+                    ) => {
+                        // do nothing
+                    }
+                    _ => unreachable!(),
+                }
+                if let DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::AttachingToTree {
+                    ..
+                }) = &self.status
+                {
+                    self.trunk_leaf_segments.insert(new_segment_id);
+                }
                 self.status = self.determine_status_after_segment_attachment();
             }
         };
