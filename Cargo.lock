@@ -627,6 +627,7 @@ dependencies = [
  "tiktoken-rs",
  "tokenizers",
  "tokio",
+ "tokio-stream",
  "toml",
 ]
 

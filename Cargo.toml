@@ -28,5 +28,6 @@ serde_json = "1.0.149"
 tokenizers = {version="0.22.2", features=["http"]}
 tiktoken-rs = "0.11.0"
 tokio = {version="1.50.0", features=["full"]}
+tokio-stream = "0.1.17"
 ordered-float = {version="5.3.0", features=["serde"]}
 toml = "1.1.2"
