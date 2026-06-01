@@ -55,7 +55,7 @@ struct RolloutExecutionContext<M: LlmModelMarker> {
 }
 
 enum RolloutOutcome {
-    Completed { llm_calls: usize },
+    Completed,
     Requeue { flat_id: usize },
 }
 
@@ -261,20 +261,9 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
     let handle_rollout_result =
         |result: Result<RolloutOutcome, StopRequestedError>, pending: &mut VecDeque<usize>| {
             match result {
-                Ok(RolloutOutcome::Completed { llm_calls }) => {
-                    let summary = llm_call_stats
-                        .write()
-                        .unwrap()
-                        .update_and_get_summary(llm_calls);
-                    log_key_value_pair("min_llm_calls_per_tree", summary.min.to_string());
-                    log_key_value_pair("median_llm_calls_per_tree", summary.median.to_string());
-                    log_key_value_pair("third_quartile_llm_calls_per_tree", summary.q3.to_string());
-                    log_key_value_pair("max_llm_calls_per_tree", summary.max.to_string());
-                }
+                Ok(RolloutOutcome::Completed) => {}
                 Ok(RolloutOutcome::Requeue { flat_id }) => {
                     pending.push_back(flat_id);
-                    let new_num_requeued = num_requeued.fetch_add(1, Ordering::SeqCst) + 1;
-                    log_key_value_pair("num_requeued", new_num_requeued.to_string());
                 }
                 Err(StopRequestedError) => {}
             }
@@ -311,6 +300,7 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
                 let num_finished_trees = num_finished_trees.clone();
                 let num_correct_branches = num_correct_branches.clone();
                 let llm_call_stats = llm_call_stats.clone();
+                let num_requeued = num_requeued.clone();
                 let num_long_running_rollouts = num_long_running_rollouts.clone();
                 join_set.spawn(async move {
                     let result = rollout::<M>(
@@ -327,6 +317,7 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
                         num_finished_trees,
                         num_correct_branches,
                         llm_call_stats,
+                        num_requeued,
                         num_long_running_rollouts,
                         max_num_long_running_rollouts,
                         total_branches_to_finish,
@@ -370,6 +361,7 @@ async fn rollout<M: LlmModelMarker>(
     num_finished_trees: Arc<AtomicUsize>,
     num_correct_branches: Arc<AtomicUsize>,
     llm_call_stats: Arc<RwLock<LlmCallStats>>,
+    num_requeued: Arc<AtomicUsize>,
     num_long_running_rollouts: Arc<AtomicUsize>,
     max_num_long_running_rollouts: usize,
     total_branches_to_finish: usize,
@@ -448,6 +440,8 @@ async fn rollout<M: LlmModelMarker>(
                 if llm_calls_so_far > q3
                     && !long_running_guard.try_acquire_slot(max_num_long_running_rollouts)
                 {
+                    let new_num_requeued = num_requeued.fetch_add(1, Ordering::SeqCst) + 1;
+                    log_key_value_pair("num_requeued", new_num_requeued.to_string());
                     return Ok(RolloutOutcome::Requeue {
                         flat_id: question.flat_id,
                     });
@@ -465,7 +459,15 @@ async fn rollout<M: LlmModelMarker>(
             finished, total_trees_to_finish
         ),
     );
-    Ok(RolloutOutcome::Completed { llm_calls: llm_calls_so_far })
+    let summary = llm_call_stats
+        .write()
+        .unwrap()
+        .update_and_get_summary(llm_calls_so_far);
+    log_key_value_pair("min_llm_calls_per_tree", summary.min.to_string());
+    log_key_value_pair("median_llm_calls_per_tree", summary.median.to_string());
+    log_key_value_pair("third_quartile_llm_calls_per_tree", summary.q3.to_string());
+    log_key_value_pair("max_llm_calls_per_tree", summary.max.to_string());
+    Ok(RolloutOutcome::Completed)
 }
 
 pub struct RolloutProgramConfig {
