@@ -1,9 +1,13 @@
 use crate::{
     direct_tool::{
-        direct_rollout_config::BranchingPolicy, direct_tree::{DirectTree, Segment, SegmentContent, SegmentId}, direct_tree_action::{DirectTreeAction, TokenPositionInTree}, direct_tree_spontaneous_branching::TokenPositionInSegment, direct_tree_status::{
+        direct_rollout_config::BranchingPolicy,
+        direct_tree::{DirectTree, Segment, SegmentContent, SegmentId},
+        direct_tree_action::{DirectTreeAction, TokenPositionInTree},
+        direct_tree_spontaneous_branching::TokenPositionInSegment,
+        direct_tree_status::{
             DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus,
             TrunkSubStatus,
-        }
+        },
     },
     llm_model::{LlmModelMarker, TokenArrayWithLogprob},
 };
@@ -96,9 +100,8 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                     ) => DirectTreeStatus::WorkingOnSpontaneousBranching(
                         SpontaneousBranchingSubStatus::PrefixTrimmingNewSegment {
                             position,
-                            position_in_segment: position_in_segment.expect(
-                                "Spontaneous branching requires position_in_segment",
-                            ),
+                            position_in_segment: position_in_segment
+                                .expect("Spontaneous branching requires position_in_segment"),
                             finalized_content_array,
                             branch_from_node,
                             final_answer,
@@ -113,10 +116,9 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                     self.status,
                     DirectTreeStatus::WorkingOnGuidedBranching(
                         GuidedBranchingSubStatus::DeterminingBranchingPoint
+                    ) | DirectTreeStatus::WorkingOnSpontaneousBranching(
+                        SpontaneousBranchingSubStatus::DeterminingBranchingPoint { .. }
                     )
-                        | DirectTreeStatus::WorkingOnSpontaneousBranching(
-                            SpontaneousBranchingSubStatus::DeterminingBranchingPoint { .. }
-                        )
                 ));
                 self.status = DirectTreeStatus::Complete;
             }
@@ -151,9 +153,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                 branch_from_node,
             } => {
                 let parent_segment_id = if !branch_from_node {
-                    let SplitResult {
-                        new_first_half_id,
-                    } = self.split_segment(position);
+                    let SplitResult { new_first_half_id } = self.split_segment(position);
                     new_first_half_id
                 } else {
                     assert!(
@@ -266,7 +266,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
     }
     fn determine_status_after_segment_attachment(&self) -> DirectTreeStatus<M> {
         // we can choose to work on trunk, (guided branch or spontaneous branch), or conclude the tree
-        if self.current_num_trunks < self.action_log.rollout_config.max_num_trunks {
+        if self.trunk_leaf_segments.len() < self.action_log.rollout_config.max_num_trunks {
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::CollectingSegmentContents {
                 cumulative_content_array: vec![],
             })
@@ -384,9 +384,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
         if let true = self.trunk_leaf_segments.remove(&position.segment_id) {
             self.trunk_leaf_segments.insert(new_second_half_id);
         }
-        SplitResult {
-            new_first_half_id,
-        }
+        SplitResult { new_first_half_id }
     }
     fn prefix_trim_content_array(
         content_array: Vec<SegmentContent<M>>,

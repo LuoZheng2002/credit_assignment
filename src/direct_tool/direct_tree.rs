@@ -27,7 +27,7 @@ pub struct DirectTree<'a, M: LlmModelMarker> {
     pub root_segment_id: Option<SegmentId>, // all the trunks share the same root segment, which is the prompt segment
     pub trunk_leaf_segments: BTreeSet<SegmentId>, // the leaf segments of the trunk trajectories
     pub leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
-    pub current_num_trunks: usize,
+    // pub current_num_trunks: usize,
     pub next_segment_id: usize,
     // pub focused_parent_segment_id: Option<SegmentId>, // the segment after which we create a new branch and rollout until finding the answer
     // pub new_branch_start_token: Option<i32>, // the token id for the next branching point, which is determined when we create a branch and will be used in the rollout after branching to determine when to stop and judge the trajectory
@@ -47,7 +47,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
             root_segment_id: None, // all the trunks share the same root segment, which is the prompt segment
             trunk_leaf_segments: BTreeSet::new(), // the leaf segments of the trunk trajectories
             leaf_segment_judgments: BTreeMap::new(),
-            current_num_trunks: 0,
+            // current_num_trunks: 0,
             next_segment_id: 0,
             _phantom: std::marker::PhantomData::<M>,
         };
