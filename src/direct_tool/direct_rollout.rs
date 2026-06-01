@@ -351,7 +351,6 @@ async fn rollout<M: LlmModelMarker>(
             llm_calls_so_far += 1;
         }
         action_log.actions.push(action);
-        log_info("test1");
         rollout_store
             .upsert(
                 question.flat_id,
@@ -360,11 +359,9 @@ async fn rollout<M: LlmModelMarker>(
             )
             .await
             .unwrap();
-        log_info("test2");
 
         if long_running_permit.is_none() {
             let q3 = llm_call_stats.read().await.q3();
-            log_info("test3");
             if let Some(q3) = q3 {
                 if llm_calls_so_far > q3 {
                     match long_running_rollout_semaphore.clone().try_acquire_owned() {
@@ -388,7 +385,6 @@ async fn rollout<M: LlmModelMarker>(
                             }
                             let new_num_requeued = num_requeued.fetch_add(1, Ordering::SeqCst) + 1;
                             log_key_value_pair("num_requeued", new_num_requeued.to_string());
-                            log_info("test5");
                             return Ok(RolloutOutcome::Requeue {
                                 flat_id: question.flat_id,
                             });
@@ -398,7 +394,6 @@ async fn rollout<M: LlmModelMarker>(
             }
         }
     }
-    log_info("test4");
     // log_info(format!("Rollout {} finished", question.flat_id));
     if long_running_permit.take().is_some() {
         let num_long_running_questions =
