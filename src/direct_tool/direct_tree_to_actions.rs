@@ -169,6 +169,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
         python_tool_pool: Arc<PythonToolServerPool>,
         sglang_waiting_workers: Arc<AtomicUsize>,
         judge_waiting_workers: Arc<AtomicUsize>,
+        tool_waiting_workers: Arc<AtomicUsize>,
         stop_signal: Arc<AtomicBool>,
     ) -> Result<DirectTreeAction<M>, StopRequestedError> {
         let result = match &self.status {
@@ -198,6 +199,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                             llm_callable,
                             python_tool_pool,
                             sglang_waiting_workers,
+                            tool_waiting_workers,
                             stop_signal,
                         )
                         .await?;
@@ -703,6 +705,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
     llm_callable: &M::Callable,
     python_tool_pool: Arc<PythonToolServerPool>,
     sglang_waiting_workers: Arc<AtomicUsize>,
+    tool_waiting_workers: Arc<AtomicUsize>,
     stop_signal: Arc<AtomicBool>,
     // rng: &mut StdRng,
 ) -> Result<SegmentContent<M>, StopRequestedError> {
@@ -727,6 +730,10 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
         TrajectoryContent::ReasoningOrToolCallComplete(_) => {
             if let Some(tool_call) = trajectory.try_get_last_content_tool_call() {
                 // log_key_value_pair("info".to_string(), "Executing a tool call".to_string());
+                let _num_tool_waiting_workers_guard = AtomicCountGuard::new(
+                    tool_waiting_workers,
+                    "tool_waiting_workers".to_string(),
+                );
                 let tool_response = execute_python_tool_call(&python_tool_pool, &tool_call).await;
                 match &tool_response {
                     PythonToolResponse::PythonSuccess(_) => {}

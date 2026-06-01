@@ -144,6 +144,7 @@ pub struct RolloutSharedStates {
     python_tool_pool: Arc<PythonToolServerPool>,
     sglang_waiting_workers: Arc<AtomicUsize>,
     judge_waiting_workers: Arc<AtomicUsize>,
+    tool_waiting_workers: Arc<AtomicUsize>,
     stop_signal: Arc<AtomicBool>,
     num_finished_branches: Arc<AtomicUsize>,
     num_finished_trees: Arc<AtomicUsize>,
@@ -177,6 +178,7 @@ async fn rollout<M: LlmModelMarker>(
         python_tool_pool,
         sglang_waiting_workers,
         judge_waiting_workers,
+        tool_waiting_workers,
         stop_signal,
         num_finished_branches,
         num_finished_trees,
@@ -222,6 +224,7 @@ async fn rollout<M: LlmModelMarker>(
                 python_tool_pool.clone(),
                 sglang_waiting_workers.clone(),
                 judge_waiting_workers.clone(),
+                tool_waiting_workers.clone(),
                 stop_signal.clone(),
             )
             .await?;
@@ -391,6 +394,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let stop_signal = Arc::new(AtomicBool::new(false));
     let sglang_waiting_workers = Arc::new(AtomicUsize::new(0));
     let judge_waiting_workers = Arc::new(AtomicUsize::new(0));
+    let tool_waiting_workers = Arc::new(AtomicUsize::new(0));
     let num_finished_branches = Arc::new(AtomicUsize::new(0));
     let num_finished_trees = Arc::new(AtomicUsize::new(0));
     let newly_finished_trees = Arc::new(AtomicUsize::new(0));
@@ -407,6 +411,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         python_tool_pool,
         sglang_waiting_workers,
         judge_waiting_workers,
+        tool_waiting_workers,
         stop_signal,
         num_finished_branches,
         num_finished_trees,
