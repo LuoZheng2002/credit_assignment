@@ -1,4 +1,4 @@
-use std::{backtrace::Backtrace, sync::Arc};
+use std::backtrace::Backtrace;
 
 use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
@@ -15,7 +15,6 @@ use credit_assignment::{
 };
 use reqwest::Client;
 use research_utility::progress_screen::ProgressScreen;
-use tokio::sync::Semaphore;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -91,7 +90,6 @@ async fn main() {
         hyperparameters: posterior_hyperparameters,
     };
 
-    let question_semaphore = Arc::new(Semaphore::new(max_rollout_concurrency));
     let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
     if ui {
         ProgressScreen::initialize(
@@ -108,7 +106,6 @@ async fn main() {
         posterior_calculation_config,
         epoch,
         client,
-        question_semaphore,
         max_rollout_concurrency,
         llm_cli_args,
         rollout_time_limit_secs,

@@ -1,10 +1,12 @@
+use std::sync::{Arc, atomic::AtomicUsize};
+
 use reqwest::Client;
 use research_utility::log_message::log_warning;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::{Duration, sleep};
 
-use crate::direct_tool::direct_trajectory::FinalAnswer;
+use crate::{atomic_count_guard::AtomicCountGuard, direct_tool::direct_trajectory::FinalAnswer};
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
 const OPENROUTER_CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
@@ -58,7 +60,10 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
                 last_error = Some(error.to_string());
             }
         }
-        log_warning(format!("Judger returned invalid response, attempt {}", attempt));
+        log_warning(format!(
+            "Judger returned invalid response, attempt {}",
+            attempt
+        ));
 
         if attempt < num_attempts {
             sleep(Duration::from_secs(1)).await;
@@ -92,8 +97,8 @@ async fn fetch_judge_evaluation(
         ),
     };
 
-    let api_key =
-        std::env::var(api_key_env).map_err(|_| format!("{api_key_env} environment variable not set"))?;
+    let api_key = std::env::var(api_key_env)
+        .map_err(|_| format!("{api_key_env} environment variable not set"))?;
     let mut body = serde_json::json!({
         "model": model_name,
         "messages": [{"role": "user", "content": prompt}],
@@ -158,9 +163,14 @@ pub async fn judge_final_answer(
     question: &str,
     client: Client,
     judge_model: JudgeAnswerModel,
+    num_judge_waiting_workers: Arc<AtomicUsize>,
 ) -> CorrectnessJudgment {
     let is_correct = match final_answer {
         FinalAnswer::ModelProvided(model_answer) => {
+            let _num_judge_waiting_workers_guard = AtomicCountGuard::new(
+                num_judge_waiting_workers.clone(),
+                "judge_waiting_workers".to_string(),
+            );
             judge_answer_task(
                 model_answer.clone(),
                 correct_answer.to_string(),

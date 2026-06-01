@@ -1,4 +1,4 @@
-use std::{backtrace::Backtrace, io, sync::Arc};
+use std::{backtrace::Backtrace, io};
 
 use clap::{ArgAction, Parser, ValueEnum};
 use std::collections::BTreeMap;
@@ -21,7 +21,6 @@ use crossterm::{
     terminal::{LeaveAlternateScreen, disable_raw_mode},
 };
 use research_utility::{log_message::log_info, progress_screen::ProgressScreen};
-use tokio::sync::Semaphore;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -137,7 +136,6 @@ async fn main() {
         read_toml(training_config_common_path).unwrap();
     // do the rest of the orchestrator work here
     let client = reqwest::Client::new();
-    let question_semaphore = Arc::new(Semaphore::new(max_rollout_concurrency));
     let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
     let progress_save_path =
         Orchestrator::progress_save_path(&model_name.cli_name(), &config_nickname);
@@ -172,7 +170,6 @@ async fn main() {
         max_sqlite_connections,
         num_python_tool_servers,
         client,
-        question_semaphore: question_semaphore,
         max_rollout_concurrency,
         inference_server_handle: None,
         sglang_server_log_path,

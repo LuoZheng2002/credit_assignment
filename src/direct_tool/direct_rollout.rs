@@ -6,7 +6,6 @@ use std::sync::{
 
 use kll_rs::KllFloatSketch;
 use reqwest::Client;
-use research_utility::log_message::log_info;
 use research_utility::{
     asset_file::AssetFile,
     log_message::{
@@ -25,28 +24,12 @@ use crate::{
         direct_tree::{DirectTree, SegmentContent},
         direct_tree_action::DirectTreeAction,
         direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
-        hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion, HybridDatasetStore},
+        hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     llm_model::{LlmCallable, LlmCliArgs, LlmModelMarker},
     tool_call_python::PythonToolServerPool,
 };
-
-struct RolloutExecutionContext<M: LlmModelMarker> {
-    question_keys: Vec<usize>,
-    dataset: HybridDatasetStore,
-    rollout_config: DirectRolloutConfig,
-    posterior_calculation_config: PosteriorCalculationConfig,
-    rollout_store: SqliteStore<usize, DirectTreeActionLog<M>>,
-    llm_callable: M::Callable,
-    client: Client,
-    question_semaphore: Arc<Semaphore>,
-    python_tool_pool: Arc<PythonToolServerPool>,
-    max_rollout_concurrency: usize,
-    start_time: Instant,
-    deadline: Instant,
-    total_secs: f32,
-}
 
 enum RolloutOutcome {
     Completed,
@@ -161,6 +144,7 @@ pub struct RolloutSharedStates {
     question_semaphore: Arc<Semaphore>,
     python_tool_pool: Arc<PythonToolServerPool>,
     sglang_waiting_workers: Arc<AtomicUsize>,
+    judge_waiting_workers: Arc<AtomicUsize>,
     stop_signal: Arc<AtomicBool>,
     num_finished_branches: Arc<AtomicUsize>,
     num_finished_trees: Arc<AtomicUsize>,
@@ -174,126 +158,6 @@ pub struct RolloutSharedStates {
     max_num_long_running_rollouts: usize,
     total_branches_to_finish: usize,
     total_trees_to_finish: usize,
-}
-
-async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionContext<M>) {
-    let RolloutExecutionContext {
-        question_keys,
-        dataset,
-        rollout_config,
-        posterior_calculation_config,
-        rollout_store,
-        llm_callable,
-        client,
-        question_semaphore,
-        python_tool_pool,
-        max_rollout_concurrency,
-        start_time,
-        deadline,
-        total_secs,
-    } = ctx;
-
-    let stop_signal = Arc::new(AtomicBool::new(false));
-    let sglang_waiting_workers = Arc::new(AtomicUsize::new(0));
-    let num_finished_branches = Arc::new(AtomicUsize::new(0));
-    let num_finished_trees = Arc::new(AtomicUsize::new(0));
-    let newly_finished_trees = Arc::new(AtomicUsize::new(0));
-    let num_correct_branches = Arc::new(AtomicUsize::new(0));
-    let num_active_rollouts = Arc::new(AtomicUsize::new(0));
-    let llm_call_stats = Arc::new(RwLock::new(LlmCallStats::new()));
-    let num_requeued = Arc::new(AtomicUsize::new(0));
-    let max_num_long_running_rollouts = std::cmp::max(1, max_rollout_concurrency / 4);
-    let long_running_rollout_semaphore = Arc::new(Semaphore::new(max_num_long_running_rollouts));
-    let total_branches_to_finish = question_keys.len() * rollout_config.max_num_total_trajectories;
-    let total_trees_to_finish = question_keys.len();
-
-    let shared_states = RolloutSharedStates {
-        question_semaphore,
-        python_tool_pool,
-        sglang_waiting_workers,
-        stop_signal,
-        num_finished_branches,
-        num_finished_trees,
-        newly_finished_trees,
-        num_correct_branches,
-        llm_call_stats,
-        num_requeued,
-        num_active_rollouts,
-        long_running_rollout_semaphore,
-        max_rollout_concurrency,
-        max_num_long_running_rollouts,
-        total_branches_to_finish,
-        total_trees_to_finish,
-    };
-
-    let handle_rollout_result = |result: Result<RolloutOutcome, StopRequestedError>,
-                                 pending: &mut VecDeque<usize>| {
-        match result {
-            Ok(RolloutOutcome::Completed) => {}
-            Ok(RolloutOutcome::Requeue { flat_id }) => {
-                pending.push_back(flat_id);
-            }
-            Err(StopRequestedError) => {}
-        }
-    };
-
-    let mut join_set = JoinSet::new();
-    let mut pending_question_keys: VecDeque<usize> = question_keys.into();
-
-    let progress_timer_handle = tokio::spawn(run_progress_timer(
-        start_time,
-        deadline,
-        total_secs,
-        shared_states.stop_signal.clone(),
-    ));
-
-    while !pending_question_keys.is_empty() || !join_set.is_empty() {
-        tokio::select! {
-            owned_permit_result = shared_states.question_semaphore.clone().acquire_owned(), if !pending_question_keys.is_empty() => {
-                let owned_permit = owned_permit_result.unwrap();
-
-                let question_key = pending_question_keys
-                    .pop_front()
-                    .expect("queue should not be empty");
-                let question = dataset.get(question_key).await.unwrap().unwrap();
-                let rollout_config_clone = rollout_config.clone();
-                let posterior_calculation_config_clone = posterior_calculation_config.clone();
-                let rollout_store = rollout_store.clone();
-                let llm_callable_clone = llm_callable.clone();
-                let client_clone = client.clone();
-                let shared_states_clone = shared_states.clone();
-                join_set.spawn(async move {
-                    let result = rollout::<M>(
-                        question,
-                        rollout_config_clone,
-                        posterior_calculation_config_clone,
-                        rollout_store,
-                        llm_callable_clone,
-                        client_clone,
-                        shared_states_clone,
-                    )
-                    .await;
-                    drop(owned_permit);
-                    result
-                });
-            }
-            maybe_result = join_set.join_next(), if !join_set.is_empty() => {
-                let result = maybe_result.expect("join_set should have at least one task");
-                let task_result = result.expect("direct rollout worker task panicked or was cancelled");
-                handle_rollout_result(task_result, &mut pending_question_keys);
-            }
-        }
-    }
-
-    while let Some(result) = join_set.join_next().await {
-        let task_result = result.expect("direct rollout worker task panicked or was cancelled");
-        handle_rollout_result(task_result, &mut pending_question_keys);
-    }
-
-    shared_states.stop_signal.store(true, Ordering::Relaxed);
-    progress_timer_handle
-        .await
-        .expect("progress timer task panicked");
 }
 
 const NUM_WARMUP_TREES: usize = 200;
@@ -314,6 +178,7 @@ async fn rollout<M: LlmModelMarker>(
         question_semaphore,
         python_tool_pool,
         sglang_waiting_workers,
+        judge_waiting_workers,
         stop_signal,
         num_finished_branches,
         num_finished_trees,
@@ -357,6 +222,7 @@ async fn rollout<M: LlmModelMarker>(
                 client.clone(),
                 python_tool_pool.clone(),
                 sglang_waiting_workers.clone(),
+                judge_waiting_workers.clone(),
                 stop_signal.clone(),
             )
             .await?;
@@ -469,7 +335,6 @@ pub struct RolloutProgramConfig {
     pub posterior_calculation_config: PosteriorCalculationConfig,
     pub epoch: usize, // the epoch index
     pub client: Client,
-    pub question_semaphore: Arc<Semaphore>,
     pub max_rollout_concurrency: usize,
     pub llm_cli_args: LlmCliArgs,
     pub rollout_time_limit_secs: usize,
@@ -484,7 +349,6 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         posterior_calculation_config,
         epoch,
         client,
-        question_semaphore,
         max_rollout_concurrency,
         llm_cli_args,
         rollout_time_limit_secs,
@@ -535,23 +399,110 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let mut question_keys = dataset.get_keys().await.unwrap();
     // sort by question id to ensure deterministic order
     question_keys.sort();
-    let rollout_context = RolloutExecutionContext::<M> {
-        question_keys,
-        dataset,
-        rollout_config,
-        posterior_calculation_config,
-        rollout_store,
-        llm_callable,
-        client,
+    let question_semaphore = Arc::new(Semaphore::new(max_rollout_concurrency));
+    let stop_signal = Arc::new(AtomicBool::new(false));
+    let sglang_waiting_workers = Arc::new(AtomicUsize::new(0));
+    let judge_waiting_workers = Arc::new(AtomicUsize::new(0));
+    let num_finished_branches = Arc::new(AtomicUsize::new(0));
+    let num_finished_trees = Arc::new(AtomicUsize::new(0));
+    let newly_finished_trees = Arc::new(AtomicUsize::new(0));
+    let num_correct_branches = Arc::new(AtomicUsize::new(0));
+    let num_active_rollouts = Arc::new(AtomicUsize::new(0));
+    let llm_call_stats = Arc::new(RwLock::new(LlmCallStats::new()));
+    let num_requeued = Arc::new(AtomicUsize::new(0));
+    let max_num_long_running_rollouts = std::cmp::max(1, max_rollout_concurrency / 4);
+    let long_running_rollout_semaphore = Arc::new(Semaphore::new(max_num_long_running_rollouts));
+    let total_branches_to_finish = question_keys.len() * rollout_config.max_num_total_trajectories;
+    let total_trees_to_finish = question_keys.len();
+
+    let shared_states = RolloutSharedStates {
         question_semaphore,
         python_tool_pool,
+        sglang_waiting_workers,
+        judge_waiting_workers,
+        stop_signal,
+        num_finished_branches,
+        num_finished_trees,
+        newly_finished_trees,
+        num_correct_branches,
+        llm_call_stats,
+        num_requeued,
+        num_active_rollouts,
+        long_running_rollout_semaphore,
         max_rollout_concurrency,
+        max_num_long_running_rollouts,
+        total_branches_to_finish,
+        total_trees_to_finish,
+    };
+
+    let handle_rollout_result = |result: Result<RolloutOutcome, StopRequestedError>,
+                                 pending: &mut VecDeque<usize>| {
+        match result {
+            Ok(RolloutOutcome::Completed) => {}
+            Ok(RolloutOutcome::Requeue { flat_id }) => {
+                pending.push_back(flat_id);
+            }
+            Err(StopRequestedError) => {}
+        }
+    };
+
+    let mut join_set = JoinSet::new();
+    let mut pending_question_keys: VecDeque<usize> = question_keys.into();
+
+    let progress_timer_handle = tokio::spawn(run_progress_timer(
         start_time,
         deadline,
         total_secs,
-    };
+        shared_states.stop_signal.clone(),
+    ));
 
-    run_rollout_orchestration::<M>(rollout_context).await;
+    while !pending_question_keys.is_empty() || !join_set.is_empty() {
+        tokio::select! {
+            owned_permit_result = shared_states.question_semaphore.clone().acquire_owned(), if !pending_question_keys.is_empty() => {
+                let owned_permit = owned_permit_result.unwrap();
+
+                let question_key = pending_question_keys
+                    .pop_front()
+                    .expect("queue should not be empty");
+                let question = dataset.get(question_key).await.unwrap().unwrap();
+                let rollout_config_clone = rollout_config.clone();
+                let posterior_calculation_config_clone = posterior_calculation_config.clone();
+                let rollout_store = rollout_store.clone();
+                let llm_callable_clone = llm_callable.clone();
+                let client_clone = client.clone();
+                let shared_states_clone = shared_states.clone();
+                join_set.spawn(async move {
+                    let result = rollout::<M>(
+                        question,
+                        rollout_config_clone,
+                        posterior_calculation_config_clone,
+                        rollout_store,
+                        llm_callable_clone,
+                        client_clone,
+                        shared_states_clone,
+                    )
+                    .await;
+                    drop(owned_permit);
+                    result
+                });
+            }
+            maybe_result = join_set.join_next(), if !join_set.is_empty() => {
+                let result = maybe_result.expect("join_set should have at least one task");
+                let task_result = result.expect("direct rollout worker task panicked or was cancelled");
+                handle_rollout_result(task_result, &mut pending_question_keys);
+            }
+        }
+    }
+
+    while let Some(result) = join_set.join_next().await {
+        let task_result = result.expect("direct rollout worker task panicked or was cancelled");
+        handle_rollout_result(task_result, &mut pending_question_keys);
+    }
+
+    shared_states.stop_signal.store(true, Ordering::Relaxed);
+    progress_timer_handle
+        .await
+        .expect("progress timer task panicked");
     // restore the progress bars
     delete_worker_progress_bar("branches");
     delete_worker_progress_bar("trees");

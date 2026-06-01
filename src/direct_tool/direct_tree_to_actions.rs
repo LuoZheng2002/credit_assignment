@@ -5,8 +5,9 @@ use std::sync::{
 };
 
 use reqwest::Client;
-use research_utility::log_message::{log_key_value_pair, log_warning};
+use research_utility::log_message::{log_warning};
 
+use crate::atomic_count_guard::AtomicCountGuard;
 use crate::direct_tool::direct_rollout::StopRequestedError;
 use crate::direct_tool::direct_trajectory::{DirectTrajectory, TrajectoryContent};
 use crate::direct_tool::direct_tree_action::DirectTreeAction::SubmitAnswer;
@@ -167,6 +168,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
         client: Client,
         python_tool_pool: Arc<PythonToolServerPool>,
         sglang_waiting_workers: Arc<AtomicUsize>,
+        judge_waiting_workers: Arc<AtomicUsize>,
         stop_signal: Arc<AtomicBool>,
     ) -> Result<DirectTreeAction<M>, StopRequestedError> {
         let result = match &self.status {
@@ -219,6 +221,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                     &self.action_log.question.question,
                     client,
                     JudgeAnswerModel::DeepseekV4Flash,
+                    judge_waiting_workers,
                 )
                 .await;
                 DirectTreeAction::JudgeAnswer(correctness_judgment)
@@ -648,7 +651,6 @@ fn concise_failure_reason(error: &str) -> String {
 
 async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     _question_flat_id: usize,
-    // current_content: &[SegmentContent],
     trajectory: &DirectTrajectory<M>,
     llm_callable: &M::Callable,
     sglang_waiting_workers: Arc<AtomicUsize>,
@@ -657,19 +659,13 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     let prompt_tokens = trajectory.to_prompt_tokens();
     let mut response = None;
     for trial in 1..=3 {
-        let num_waiting_workers = sglang_waiting_workers.fetch_add(1, Ordering::SeqCst) + 1;
-        log_key_value_pair("sglang_waiting_workers", num_waiting_workers.to_string());
+        let _num_sglang_waiting_workers_guard = AtomicCountGuard::new(sglang_waiting_workers.clone(), "sglang_waiting_workers".to_string());
         if stop_signal.load(Ordering::Relaxed) {
             return Err(StopRequestedError);
         }
         let generation_result = llm_callable
             .generate_tokens_with_logprobs(prompt_tokens.clone(), true, 1.0, true)
             .await;
-        let num_waiting_workers = sglang_waiting_workers.fetch_sub(1, Ordering::SeqCst) - 1;
-        log_key_value_pair(
-            "sglang_waiting_workers".to_string(),
-            num_waiting_workers.to_string(),
-        );
         match generation_result {
             Ok(result) => {
                 response = Some(result);

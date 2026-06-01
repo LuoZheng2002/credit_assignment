@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 use research_utility::{
     asset_file::AssetFile,
@@ -6,7 +6,6 @@ use research_utility::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::process::Child;
-use tokio::sync::Semaphore;
 
 use crate::{
     direct_tool::{
@@ -46,7 +45,6 @@ pub struct Orchestrator {
     pub num_total_epochs: usize,
     // utilities
     pub client: reqwest::Client,
-    pub question_semaphore: Arc<Semaphore>,
     pub max_rollout_concurrency: usize,
     // state
     pub progress: OrchestrationProgress,
@@ -340,7 +338,6 @@ impl Orchestrator {
             posterior_calculation_config: self.posterior_calculation_config.clone(),
             epoch,
             client: self.client.clone(),
-            question_semaphore: self.question_semaphore.clone(),
             max_rollout_concurrency: self.max_rollout_concurrency,
             llm_cli_args: LlmCliArgs {
                 sglang_port: self
@@ -372,7 +369,6 @@ impl Orchestrator {
             posterior_calculation_config: self.posterior_calculation_config.clone(),
             epoch,
             client: self.client.clone(),
-            question_semaphore: self.question_semaphore.clone(),
             max_rollout_concurrency: self.max_rollout_concurrency,
             llm_cli_args,
             rollout_time_limit_secs: self.training_rollout_time_limit_secs,
