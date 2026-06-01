@@ -89,12 +89,17 @@ async fn fetch_judge_evaluation(
 
     let api_key =
         std::env::var(api_key_env).map_err(|_| format!("{api_key_env} environment variable not set"))?;
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model_name,
         "messages": [{"role": "user", "content": prompt}],
         "max_completion_tokens": 32,
         "temperature": 0.0,
     });
+    if matches!(judge_model, JudgeAnswerModel::DeepseekV4Flash) {
+        body["extra_body"] = serde_json::json!({
+            "thinking": {"type": "disabled"}
+        });
+    }
 
     let mut request_builder = client.post(url).json(&body);
     if auth_is_bearer {
