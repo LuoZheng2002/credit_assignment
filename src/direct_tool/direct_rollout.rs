@@ -145,6 +145,7 @@ pub struct RolloutSharedStates {
     sglang_waiting_workers: Arc<AtomicUsize>,
     judge_waiting_workers: Arc<AtomicUsize>,
     tool_waiting_workers: Arc<AtomicUsize>,
+    sqlite_waiting_workers: Arc<AtomicUsize>,
     stop_signal: Arc<AtomicBool>,
     num_finished_branches: Arc<AtomicUsize>,
     num_finished_trees: Arc<AtomicUsize>,
@@ -179,6 +180,7 @@ async fn rollout<M: LlmModelMarker>(
         sglang_waiting_workers,
         judge_waiting_workers,
         tool_waiting_workers,
+        sqlite_waiting_workers,
         stop_signal,
         num_finished_branches,
         num_finished_trees,
@@ -196,16 +198,22 @@ async fn rollout<M: LlmModelMarker>(
 
     let _active_rollouts_guard =
         AtomicCountGuard::new(num_active_rollouts.clone(), "num_active_rollouts");
-    let mut action_log = rollout_store
-        .get(question.flat_id)
-        .await
-        .unwrap()
-        .unwrap_or_else(|| DirectTreeActionLog {
-            question: question.clone(),
-            rollout_config: rollout_config.clone(),
-            posterior_calculation_config: posterior_calculation_config.clone(),
-            actions: vec![],
-        });
+    let mut action_log = {
+        let _sqlite_waiting_workers_guard = AtomicCountGuard::new(
+            sqlite_waiting_workers.clone(),
+            "sqlite_waiting_workers",
+        );
+        rollout_store
+            .get(question.flat_id)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| DirectTreeActionLog {
+                question: question.clone(),
+                rollout_config: rollout_config.clone(),
+                posterior_calculation_config: posterior_calculation_config.clone(),
+                actions: vec![],
+            })
+    };
     let mut llm_calls_so_far = action_log
         .actions
         .iter()
@@ -255,14 +263,20 @@ async fn rollout<M: LlmModelMarker>(
             llm_calls_so_far += 1;
         }
         action_log.actions.push(action);
-        rollout_store
-            .upsert(
-                question.flat_id,
-                &action_log,
-                SqliteBusyRetryConfig::aggressive(),
-            )
-            .await
-            .unwrap();
+        {
+            let _sqlite_waiting_workers_guard = AtomicCountGuard::new(
+                sqlite_waiting_workers.clone(),
+                "sqlite_waiting_workers",
+            );
+            rollout_store
+                .upsert(
+                    question.flat_id,
+                    &action_log,
+                    SqliteBusyRetryConfig::aggressive(),
+                )
+                .await
+                .unwrap();
+        }
 
         if long_running_guard.is_none() {
             let q3 = llm_call_stats.read().await.q3();
@@ -395,6 +409,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let sglang_waiting_workers = Arc::new(AtomicUsize::new(0));
     let judge_waiting_workers = Arc::new(AtomicUsize::new(0));
     let tool_waiting_workers = Arc::new(AtomicUsize::new(0));
+    let sqlite_waiting_workers = Arc::new(AtomicUsize::new(0));
     let num_finished_branches = Arc::new(AtomicUsize::new(0));
     let num_finished_trees = Arc::new(AtomicUsize::new(0));
     let newly_finished_trees = Arc::new(AtomicUsize::new(0));
@@ -412,6 +427,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         sglang_waiting_workers,
         judge_waiting_workers,
         tool_waiting_workers,
+        sqlite_waiting_workers,
         stop_signal,
         num_finished_branches,
         num_finished_trees,
