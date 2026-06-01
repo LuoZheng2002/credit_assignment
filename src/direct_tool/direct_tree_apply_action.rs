@@ -277,12 +277,6 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                     }
                     _ => unreachable!(),
                 }
-                if let DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::AttachingToTree {
-                    ..
-                }) = &self.status
-                {
-                    self.trunk_leaf_segments.insert(new_segment_id);
-                }
                 self.status = self.determine_status_after_segment_attachment();
             }
         };

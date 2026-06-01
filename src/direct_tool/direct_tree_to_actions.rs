@@ -494,14 +494,10 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
     }
 
     fn determine_guided_branch_action(&self) -> DirectTreeAction<M> {
-        if self.leaf_segment_judgments.is_empty() {
-            return DirectTreeAction::NoAvailableBranchPoint;
-        }
+        assert!(!self.leaf_segment_judgments.is_empty());
 
         let posteriors = self.calculate_segment_posteriors(None);
-        if posteriors.is_empty() {
-            return DirectTreeAction::NoAvailableBranchPoint;
-        }
+        assert!(!posteriors.is_empty(), "Posteriors must not be empty when determining guided branching action");
         let mut segment_uncertainty_scores = self.posteriors_to_segment_uncertainty_scores(&posteriors);
         for segment_id in self.segments.keys().copied() {
             segment_uncertainty_scores.entry(segment_id).or_insert(0.0);
