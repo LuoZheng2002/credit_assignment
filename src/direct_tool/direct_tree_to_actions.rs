@@ -175,37 +175,51 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
         let result = match &self.status {
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::CollectingSegmentContents {
                 cumulative_content_array,
-            })
-            | DirectTreeStatus::WorkingOnGuidedBranching(
+            }) => {
+                self.produce_collecting_segment_action(
+                    cumulative_content_array,
+                    None,
+                    llm_callable,
+                    python_tool_pool,
+                    sglang_waiting_workers,
+                    tool_waiting_workers,
+                    stop_signal,
+                )
+                .await?
+            }
+            DirectTreeStatus::WorkingOnGuidedBranching(
                 GuidedBranchingSubStatus::CollectingSegmentContents {
                     cumulative_content_array,
+                    new_branch_start_token,
                     ..
                 },
-            )
-            | DirectTreeStatus::WorkingOnSpontaneousBranching(
+            ) => {
+                self.produce_collecting_segment_action(
+                    cumulative_content_array,
+                    Some(*new_branch_start_token),
+                    llm_callable,
+                    python_tool_pool,
+                    sglang_waiting_workers,
+                    tool_waiting_workers,
+                    stop_signal,
+                )
+                .await?
+            }
+            DirectTreeStatus::WorkingOnSpontaneousBranching(
                 SpontaneousBranchingSubStatus::CollectingSegmentContents {
                     cumulative_content_array,
                 },
             ) => {
-                let target_segment_id = self.root_segment_id.expect("Root segment id must exist when creating trunk trajectory or spontaneous branch");
-                let trajectory = self.get_trajectory(target_segment_id, cumulative_content_array);
-                match trajectory.try_get_answer() {
-                    Some(final_answer) => SubmitAnswer(final_answer),
-                    None => {
-                        // generate the next segment content
-                        let next_content = generate_next_segment_content(
-                            self.action_log.question.flat_id,
-                            &trajectory,
-                            llm_callable,
-                            python_tool_pool,
-                            sglang_waiting_workers,
-                            tool_waiting_workers,
-                            stop_signal,
-                        )
-                        .await?;
-                        DirectTreeAction::AppendSegmentContent(next_content)
-                    }
-                }
+                self.produce_collecting_segment_action(
+                    cumulative_content_array,
+                    None,
+                    llm_callable,
+                    python_tool_pool,
+                    sglang_waiting_workers,
+                    tool_waiting_workers,
+                    stop_signal,
+                )
+                .await?
             }
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::JudgingSegment {
                 final_answer,
@@ -296,6 +310,45 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
         };
         Ok(result)
     }
+
+    async fn produce_collecting_segment_action(
+        &self,
+        cumulative_content_array: &[SegmentContent<M>],
+        new_branch_start_token: Option<i32>,
+        llm_callable: &M::Callable,
+        python_tool_pool: Arc<PythonToolServerPool>,
+        sglang_waiting_workers: Arc<AtomicUsize>,
+        tool_waiting_workers: Arc<AtomicUsize>,
+        stop_signal: Arc<AtomicBool>,
+    ) -> Result<DirectTreeAction<M>, StopRequestedError> {
+        let target_segment_id = self
+            .root_segment_id
+            .expect("Root segment id must exist when creating trunk trajectory or spontaneous branch");
+        let trajectory = self.get_trajectory(target_segment_id, cumulative_content_array);
+        match trajectory.try_get_answer() {
+            Some(final_answer) => Ok(SubmitAnswer(final_answer)),
+            None => {
+                let generation_start_token = if cumulative_content_array.is_empty() {
+                    new_branch_start_token
+                } else {
+                    None
+                };
+                let next_content = generate_next_segment_content(
+                    self.action_log.question.flat_id,
+                    &trajectory,
+                    generation_start_token,
+                    llm_callable,
+                    python_tool_pool,
+                    sglang_waiting_workers,
+                    tool_waiting_workers,
+                    stop_signal,
+                )
+                .await?;
+                Ok(DirectTreeAction::AppendSegmentContent(next_content))
+            }
+        }
+    }
+
     fn node_uncertainty_score_from_parent_and_children(
         parent_uncertainty_score: f32,
         children_uncertainty_score: &[f32],
@@ -658,11 +711,15 @@ fn concise_failure_reason(error: &str) -> String {
 async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     _question_flat_id: usize,
     trajectory: &DirectTrajectory<M>,
+    new_branch_start_token: Option<i32>,
     llm_callable: &M::Callable,
     sglang_waiting_workers: Arc<AtomicUsize>,
     stop_signal: Arc<AtomicBool>,
 ) -> Result<SegmentContent<M>, StopRequestedError> {
-    let prompt_tokens = trajectory.to_prompt_tokens();
+    let mut prompt_tokens = trajectory.to_prompt_tokens();
+    if let Some(start_token) = new_branch_start_token {
+        prompt_tokens.push(start_token);
+    }
     let mut response = None;
     for trial in 1..=3 {
         let _num_sglang_waiting_workers_guard = AtomicCountGuard::new(
@@ -689,13 +746,17 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
         }
     }
 
-    let response = response.unwrap_or_else(|| single_eos_response::<M>());
+    let mut response = response.unwrap_or_else(|| single_eos_response::<M>());
     let decoded_response = response.decode();
     if response.tokens.is_empty() {
         panic!(
             "LLM returned empty response. Decoded string: '{}', tokens: {:?}",
             decoded_response, response.tokens
         );
+    }
+    if let Some(start_token) = new_branch_start_token {
+        response.tokens.insert(0, start_token);
+        response.logprobs.insert(0, fallback_top8_for_token(start_token));
     }
     let result = SegmentContent::ReasoningOrToolCall {
         tokens: response,
@@ -707,6 +768,7 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
 async fn generate_next_segment_content<M: LlmModelMarker>(
     question_flat_id: usize,
     trajectory: &DirectTrajectory<M>,
+    new_branch_start_token: Option<i32>,
     // current_content: &[SegmentContent],
     // client: Client,
     llm_callable: &M::Callable,
@@ -727,6 +789,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
             let new_content = generate_reasoning_or_tool_call_content::<M>(
                 question_flat_id,
                 trajectory,
+                new_branch_start_token,
                 llm_callable,
                 sglang_waiting_workers,
                 stop_signal,
@@ -760,6 +823,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                 generate_reasoning_or_tool_call_content::<M>(
                     question_flat_id,
                     trajectory,
+                    new_branch_start_token,
                     llm_callable,
                     sglang_waiting_workers,
                     stop_signal,
