@@ -13,7 +13,9 @@ use crate::{
     direct_tool::{
         direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         direct_tree::{DirectTree, SegmentContent, SegmentId},
-        direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
+        direct_tree_action_log::{
+            AssetFileDirectTreeActionLogs, DirectTreeActionLog, DirectTreeActionLogStore,
+        },
         hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
@@ -156,7 +158,7 @@ struct TrainingTrajectorySelectionOutput {
 }
 
 pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
-    action_log_store: SqliteStore<usize, DirectTreeActionLog<M>>,
+    action_log_store: DirectTreeActionLogStore<M>,
     training_trajectory_store: &SqliteStore<usize, DirectTrainingTrajectory<M>>,
     cumulative_avg_abs_advantage_cutoff: f32,
     statistics_file_path: String,

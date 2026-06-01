@@ -12,7 +12,9 @@ use credit_assignment::{
     direct_tool::{
         direct_rollout_config::DirectRolloutConfig,
         direct_tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
-        direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
+        direct_tree_action_log::{
+            AssetFileDirectTreeActionLogs, DirectTreeActionLog, DirectTreeActionLogStore,
+        },
         direct_tree_to_actions::TokenBranchingScore,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
@@ -39,7 +41,6 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui_core::buffer::Buffer;
 use research_utility::asset_file::AssetFile;
-use research_utility::sqlite_store::SqliteStore;
 use std::collections::hash_map::DefaultHasher;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -420,7 +421,7 @@ fn tree_page_state_from_action_log<M: LlmModelMarker>(
 struct App<M: LlmModelMarker> {
     _model_marker: PhantomData<M>,
     override_hyperparameters: Option<PosteriorHyperparameters>,
-    action_log_store: SqliteStore<usize, DirectTreeActionLog<M>>,
+    action_log_store: DirectTreeActionLogStore<M>,
     entry_keys: Vec<usize>,
     entry_cache: Vec<EntryLoadState<M>>,
     entry_load_tx: UnboundedSender<EntryLoadResult<M>>,
@@ -445,7 +446,7 @@ struct App<M: LlmModelMarker> {
 
 impl<M: LlmModelMarker> App<M> {
     fn new(
-        action_log_store: SqliteStore<usize, DirectTreeActionLog<M>>,
+        action_log_store: DirectTreeActionLogStore<M>,
         entry_keys: Vec<usize>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> Self {

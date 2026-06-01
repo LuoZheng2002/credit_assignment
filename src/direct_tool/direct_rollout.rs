@@ -11,7 +11,6 @@ use research_utility::{
     log_message::{
         delete_worker_progress_bar, log_key_value_pair, log_master_progress, log_worker_progress,
     },
-    sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
 };
 use tokio::sync::{RwLock, mpsc};
 use tokio::time::{Duration, Instant, sleep_until};
@@ -23,7 +22,10 @@ use crate::{
         direct_rollout_config::DirectRolloutConfig,
         direct_tree::{DirectTree, SegmentContent},
         direct_tree_action::DirectTreeAction,
-        direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
+        direct_tree_action_log::{
+            AssetFileDirectTreeActionLogs, DirectTreeActionLogMetadata,
+            DirectTreeActionLogStore,
+        },
         hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
@@ -170,7 +172,7 @@ async fn rollout<M: LlmModelMarker>(
     question: HybridDatasetQuestion,
     rollout_config: DirectRolloutConfig,
     posterior_calculation_config: PosteriorCalculationConfig,
-    rollout_store: SqliteStore<usize, DirectTreeActionLog<M>>,
+    rollout_store: DirectTreeActionLogStore<M>,
     llm_callable: M::Callable,
     client: Client,
     shared_states: RolloutSharedStates,
@@ -198,6 +200,23 @@ async fn rollout<M: LlmModelMarker>(
 
     let _active_rollouts_guard =
         AtomicCountGuard::new(num_active_rollouts.clone(), "num_active_rollouts");
+    {
+        let _sqlite_waiting_workers_guard = AtomicCountGuard::new(
+            sqlite_waiting_workers.clone(),
+            "sqlite_waiting_workers",
+        );
+        rollout_store
+            .get_or_init_metadata(
+                question.flat_id,
+                &DirectTreeActionLogMetadata {
+                    question: question.clone(),
+                    rollout_config: rollout_config.clone(),
+                    posterior_calculation_config: posterior_calculation_config.clone(),
+                },
+            )
+            .await
+            .unwrap();
+    }
     let mut action_log = {
         let _sqlite_waiting_workers_guard = AtomicCountGuard::new(
             sqlite_waiting_workers.clone(),
@@ -207,12 +226,7 @@ async fn rollout<M: LlmModelMarker>(
             .get(question.flat_id)
             .await
             .unwrap()
-            .unwrap_or_else(|| DirectTreeActionLog {
-                question: question.clone(),
-                rollout_config: rollout_config.clone(),
-                posterior_calculation_config: posterior_calculation_config.clone(),
-                actions: vec![],
-            })
+            .expect("metadata must exist right after initialization")
     };
     let mut llm_calls_so_far = action_log
         .actions
@@ -262,6 +276,7 @@ async fn rollout<M: LlmModelMarker>(
         if action_is_llm_call(&action) {
             llm_calls_so_far += 1;
         }
+        let newest_action_index = action_log.actions.len();
         action_log.actions.push(action);
         {
             let _sqlite_waiting_workers_guard = AtomicCountGuard::new(
@@ -269,10 +284,10 @@ async fn rollout<M: LlmModelMarker>(
                 "sqlite_waiting_workers",
             );
             rollout_store
-                .upsert(
+                .append_action_at(
                     question.flat_id,
-                    &action_log,
-                    SqliteBusyRetryConfig::aggressive(),
+                    newest_action_index,
+                    action_log.actions.last().unwrap(),
                 )
                 .await
                 .unwrap();
@@ -397,7 +412,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     };
     asset_file_action_logs.delete_target_file_if_stale();
     asset_file_action_logs.create_tracking_file();
-    let rollout_store = SqliteStore::<usize, DirectTreeActionLog<M>>::initialize_if_missing(
+    let rollout_store = DirectTreeActionLogStore::<M>::initialize_if_missing(
         asset_file_action_logs.file_path(),
         max_sqlite_connections,
     )
