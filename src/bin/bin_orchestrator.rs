@@ -58,8 +58,6 @@ struct Args {
     #[arg(long)]
     validation_rollout_time_limit_secs: usize,
     #[arg(long, default_value_t = 1)]
-    max_sqlite_connections: u32,
-    #[arg(long, default_value_t = 1)]
     num_python_tool_servers: usize,
     #[arg(long)]
     sglang_server_log_path: Option<String>,
@@ -101,7 +99,6 @@ async fn main() {
         ui,
         training_rollout_time_limit_secs,
         validation_rollout_time_limit_secs,
-        max_sqlite_connections,
         num_python_tool_servers,
         sglang_server_log_path,
         message_log_path,
@@ -167,7 +164,6 @@ async fn main() {
         num_total_epochs,
         training_rollout_time_limit_secs,
         validation_rollout_time_limit_secs,
-        max_sqlite_connections,
         num_python_tool_servers,
         client,
         max_rollout_concurrency,

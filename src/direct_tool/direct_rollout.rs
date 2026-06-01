@@ -12,7 +12,7 @@ use research_utility::{
         delete_worker_progress_bar, log_key_value_pair, log_master_progress, log_worker_progress,
     },
 };
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant, sleep_until};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -23,8 +23,7 @@ use crate::{
         direct_tree::{DirectTree, SegmentContent},
         direct_tree_action::DirectTreeAction,
         direct_tree_action_log::{
-            AssetFileDirectTreeActionLogs, DirectTreeActionLogMetadata,
-            DirectTreeActionLogStore,
+            AssetFileDirectTreeActionLogs, DirectTreeActionLogMetadata, DirectTreeActionLogStore,
         },
         hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
@@ -153,7 +152,7 @@ pub struct RolloutSharedStates {
     num_finished_trees: Arc<AtomicUsize>,
     newly_finished_trees: Arc<AtomicUsize>,
     num_correct_branches: Arc<AtomicUsize>,
-    llm_call_stats: Arc<RwLock<LlmCallStats>>,
+    llm_call_stats: Arc<tokio::sync::RwLock<LlmCallStats>>,
     num_requeued: Arc<AtomicUsize>,
     num_active_rollouts: Arc<AtomicUsize>,
     num_active_long_running_rollouts: Arc<AtomicUsize>,
@@ -201,10 +200,8 @@ async fn rollout<M: LlmModelMarker>(
     let _active_rollouts_guard =
         AtomicCountGuard::new(num_active_rollouts.clone(), "num_active_rollouts");
     {
-        let _sqlite_waiting_workers_guard = AtomicCountGuard::new(
-            sqlite_waiting_workers.clone(),
-            "sqlite_waiting_workers",
-        );
+        let _sqlite_waiting_workers_guard =
+            AtomicCountGuard::new(sqlite_waiting_workers.clone(), "sqlite_waiting_workers");
         rollout_store
             .get_or_init_metadata(
                 question.flat_id,
@@ -218,10 +215,8 @@ async fn rollout<M: LlmModelMarker>(
             .unwrap();
     }
     let mut action_log = {
-        let _sqlite_waiting_workers_guard = AtomicCountGuard::new(
-            sqlite_waiting_workers.clone(),
-            "sqlite_waiting_workers",
-        );
+        let _sqlite_waiting_workers_guard =
+            AtomicCountGuard::new(sqlite_waiting_workers.clone(), "sqlite_waiting_workers");
         rollout_store
             .get(question.flat_id)
             .await
@@ -279,10 +274,8 @@ async fn rollout<M: LlmModelMarker>(
         let newest_action_index = action_log.actions.len();
         action_log.actions.push(action);
         {
-            let _sqlite_waiting_workers_guard = AtomicCountGuard::new(
-                sqlite_waiting_workers.clone(),
-                "sqlite_waiting_workers",
-            );
+            let _sqlite_waiting_workers_guard =
+                AtomicCountGuard::new(sqlite_waiting_workers.clone(), "sqlite_waiting_workers");
             rollout_store
                 .append_action_at(
                     question.flat_id,
@@ -359,7 +352,6 @@ pub struct RolloutProgramConfig {
     pub max_rollout_concurrency: usize,
     pub llm_cli_args: LlmCliArgs,
     pub rollout_time_limit_secs: usize,
-    pub max_sqlite_connections: u32,
     pub num_python_tool_servers: usize,
 }
 
@@ -373,7 +365,6 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         max_rollout_concurrency,
         llm_cli_args,
         rollout_time_limit_secs,
-        max_sqlite_connections,
         num_python_tool_servers,
     } = program_config;
     assert!(
@@ -402,7 +393,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let asset_file_dataset = AssetFileHybridDataset {
         split: rollout_config.split.clone(),
     };
-    let dataset = asset_file_dataset.fetch().await;
+    let dataset = Arc::new(tokio::sync::Mutex::new(asset_file_dataset.fetch().await));
     let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
         nickname: config_nickname,
         rollout_config: rollout_config.clone(),
@@ -412,12 +403,13 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     };
     asset_file_action_logs.delete_target_file_if_stale();
     asset_file_action_logs.create_tracking_file();
-    let rollout_store = DirectTreeActionLogStore::<M>::initialize_if_missing(
-        asset_file_action_logs.file_path(),
-        max_sqlite_connections,
-    )
-    .await;
-    let mut question_keys = dataset.get_keys().await.unwrap();
+    let rollout_store =
+        DirectTreeActionLogStore::<M>::initialize_if_missing(asset_file_action_logs.file_path())
+            .await;
+    let mut question_keys = {
+        let dataset_guard = dataset.lock().await;
+        dataset_guard.get_keys().await.unwrap()
+    };
     // sort by question id to ensure deterministic order
     question_keys.sort();
     let stop_signal = Arc::new(AtomicBool::new(false));
@@ -430,7 +422,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let newly_finished_trees = Arc::new(AtomicUsize::new(0));
     let num_correct_branches = Arc::new(AtomicUsize::new(0));
     let num_active_rollouts = Arc::new(AtomicUsize::new(0));
-    let llm_call_stats = Arc::new(RwLock::new(LlmCallStats::new()));
+    let llm_call_stats = Arc::new(tokio::sync::RwLock::new(LlmCallStats::new()));
     let num_requeued = Arc::new(AtomicUsize::new(0));
     let max_num_long_running_rollouts = std::cmp::max(1, max_rollout_concurrency / 4);
     let num_active_long_running_rollouts = Arc::new(AtomicUsize::new(0));
@@ -489,11 +481,14 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
             let client_clone = client.clone();
             let shared_states_clone = shared_states.clone();
             async move {
-                let question = dataset
-                    .get(question_key)
-                    .await
-                    .unwrap()
-                    .expect("question key from rollout queue must exist");
+                let question = {
+                    let dataset_guard = dataset.lock().await;
+                    dataset_guard
+                        .get(question_key)
+                        .await
+                        .unwrap()
+                        .expect("question key from rollout queue must exist")
+                };
                 rollout::<M>(
                     question,
                     rollout_config_clone,

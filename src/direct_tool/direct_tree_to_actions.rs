@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 use reqwest::Client;
-use research_utility::log_message::{log_warning};
+use research_utility::log_message::log_warning;
 
 use crate::atomic_count_guard::AtomicCountGuard;
 use crate::direct_tool::direct_rollout::StopRequestedError;
@@ -502,8 +502,12 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
         assert!(!self.leaf_segment_judgments.is_empty());
 
         let posteriors = self.calculate_segment_posteriors(None);
-        assert!(!posteriors.is_empty(), "Posteriors must not be empty when determining guided branching action");
-        let mut segment_uncertainty_scores = self.posteriors_to_segment_uncertainty_scores(&posteriors);
+        assert!(
+            !posteriors.is_empty(),
+            "Posteriors must not be empty when determining guided branching action"
+        );
+        let mut segment_uncertainty_scores =
+            self.posteriors_to_segment_uncertainty_scores(&posteriors);
         for segment_id in self.segments.keys().copied() {
             segment_uncertainty_scores.entry(segment_id).or_insert(0.0);
         }
@@ -661,7 +665,10 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     let prompt_tokens = trajectory.to_prompt_tokens();
     let mut response = None;
     for trial in 1..=3 {
-        let _num_sglang_waiting_workers_guard = AtomicCountGuard::new(sglang_waiting_workers.clone(), "sglang_waiting_workers".to_string());
+        let _num_sglang_waiting_workers_guard = AtomicCountGuard::new(
+            sglang_waiting_workers.clone(),
+            "sglang_waiting_workers".to_string(),
+        );
         if stop_signal.load(Ordering::Relaxed) {
             return Err(StopRequestedError);
         }
@@ -730,10 +737,8 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
         TrajectoryContent::ReasoningOrToolCallComplete(_) => {
             if let Some(tool_call) = trajectory.try_get_last_content_tool_call() {
                 // log_key_value_pair("info".to_string(), "Executing a tool call".to_string());
-                let _num_tool_waiting_workers_guard = AtomicCountGuard::new(
-                    tool_waiting_workers,
-                    "tool_waiting_workers".to_string(),
-                );
+                let _num_tool_waiting_workers_guard =
+                    AtomicCountGuard::new(tool_waiting_workers, "tool_waiting_workers".to_string());
                 let tool_response = execute_python_tool_call(&python_tool_pool, &tool_call).await;
                 match &tool_response {
                     PythonToolResponse::PythonSuccess(_) => {}

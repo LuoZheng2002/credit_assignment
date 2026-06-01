@@ -177,8 +177,10 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     keys.sort(); // ensure deterministic order
     let mut selection_state =
         TrajectorySelectionState::new(num_keys, cumulative_avg_abs_advantage_cutoff);
-    log_info("Converting action logs to trajectories with tokio tasks (max concurrency: 200)"
-        .to_string());
+    log_info(
+        "Converting action logs to trajectories with tokio tasks (max concurrency: 200)"
+            .to_string(),
+    );
 
     const MAX_CONCURRENT_TASKS: usize = 200;
     let mut processed_stream = stream::iter(keys.iter().copied().enumerate())
@@ -188,7 +190,10 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
                 let action_log = action_log_store.get(key).await.unwrap().unwrap();
                 (
                     index,
-                    action_log_to_candidate_summaries::<M>(action_log, advantage_calculation_policy),
+                    action_log_to_candidate_summaries::<M>(
+                        action_log,
+                        advantage_calculation_policy,
+                    ),
                 )
             }
         })
@@ -618,7 +623,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
     type FileModel = SqliteStore<usize, DirectTrainingTrajectory<M>>;
     async fn fetch(&self) -> Self::FileModel {
         self.synchronize().await;
-        SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(self.file_path(), 1)
+        SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(self.file_path())
             .await
     }
     async fn synchronize(&self) -> Base64Hash {
@@ -666,7 +671,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             }
             // initialize database
             let db =
-                SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(self.file_path(), 1)
+                SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(self.file_path())
                     .await;
             let rollout_logs = asset_file_rollout_logs.fetch().await;
             rollout_logs_to_training_trajectories::<M>(

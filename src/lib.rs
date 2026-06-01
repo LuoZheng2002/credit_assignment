@@ -1,3 +1,4 @@
+pub mod atomic_count_guard;
 pub mod check_python_env;
 pub mod constants;
 pub mod direct_tool;
@@ -13,6 +14,5 @@ pub mod read_accuracy;
 pub mod token_array;
 pub mod tool_call_python;
 pub mod util;
-pub mod atomic_count_guard;
 
 pub use research_utility::{asset_file, message, progress_screen, sqlite_store};

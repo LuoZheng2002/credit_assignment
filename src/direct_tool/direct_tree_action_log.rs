@@ -4,7 +4,7 @@ use research_utility::{
     sqlite_table_array_store::SqliteTableArrayStore,
 };
 use serde::{Deserialize, Serialize};
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::Arc};
 
 use crate::{
     direct_tool::{
@@ -37,49 +37,56 @@ pub struct DirectTreeActionLogMetadata {
 
 #[derive(Debug)]
 pub struct DirectTreeActionLogStore<M: LlmModelMarker> {
-    metadata_store: SqliteStore<usize, DirectTreeActionLogMetadata>,
-    action_store: SqliteTableArrayStore<usize, DirectTreeAction<M>>,
+    metadata_store: Arc<tokio::sync::Mutex<SqliteStore<usize, DirectTreeActionLogMetadata>>>,
+    action_store: Arc<tokio::sync::Mutex<SqliteTableArrayStore<usize, DirectTreeAction<M>>>>,
     _phantom: PhantomData<M>,
 }
 
 impl<M: LlmModelMarker> Clone for DirectTreeActionLogStore<M> {
     fn clone(&self) -> Self {
         Self {
-            metadata_store: self.metadata_store.clone(),
-            action_store: self.action_store.clone(),
+            metadata_store: Arc::clone(&self.metadata_store),
+            action_store: Arc::clone(&self.action_store),
             _phantom: PhantomData,
         }
     }
 }
 
 impl<M: LlmModelMarker> DirectTreeActionLogStore<M> {
-    pub async fn initialize_if_missing(db_path: impl Into<String>, max_connections: u32) -> Self {
+    pub async fn initialize_if_missing(db_path: impl Into<String>) -> Self {
         let db_path = db_path.into();
         let metadata_store =
             SqliteStore::<usize, DirectTreeActionLogMetadata>::initialize_if_missing(
                 db_path.clone(),
-                max_connections,
             )
             .await;
-        let action_store = SqliteTableArrayStore::<usize, DirectTreeAction<M>>::new_with_max_connections(db_path, max_connections)
+        let action_store = SqliteTableArrayStore::<usize, DirectTreeAction<M>>::new(db_path)
             .await
             .expect("failed to initialize sqlite table array store for direct action log actions");
         Self {
-            metadata_store,
-            action_store,
+            metadata_store: Arc::new(tokio::sync::Mutex::new(metadata_store)),
+            action_store: Arc::new(tokio::sync::Mutex::new(action_store)),
             _phantom: PhantomData,
         }
     }
 
     pub async fn get_keys(&self) -> Result<Vec<usize>, String> {
-        self.metadata_store.get_keys().await
+        let metadata_store = self.metadata_store.lock().await;
+        metadata_store.get_keys().await
     }
 
     pub async fn get(&self, key: usize) -> Result<Option<DirectTreeActionLog<M>>, String> {
-        let Some(metadata) = self.metadata_store.get(key).await? else {
+        let metadata = {
+            let metadata_store = self.metadata_store.lock().await;
+            metadata_store.get(key).await?
+        };
+        let Some(metadata) = metadata else {
             return Ok(None);
         };
-        let indexed_actions = self.action_store.load_table_with_indices(key).await?;
+        let indexed_actions = {
+            let action_store = self.action_store.lock().await;
+            action_store.load_table_with_indices(key).await?
+        };
         for (expected_index, (stored_index, _)) in indexed_actions.iter().enumerate() {
             if *stored_index != expected_index {
                 return Err(format!(
@@ -105,16 +112,19 @@ impl<M: LlmModelMarker> DirectTreeActionLogStore<M> {
         key: usize,
         default_metadata: &DirectTreeActionLogMetadata,
     ) -> Result<DirectTreeActionLogMetadata, String> {
-        if let Some(existing) = self.metadata_store.get(key).await? {
+        let existing = {
+            let metadata_store = self.metadata_store.lock().await;
+            metadata_store.get(key).await?
+        };
+        if let Some(existing) = existing {
             return Ok(existing);
         }
-        self.metadata_store
-            .upsert(
-                key,
-                default_metadata,
-                SqliteBusyRetryConfig::aggressive(),
-            )
-            .await?;
+        {
+            let metadata_store = self.metadata_store.lock().await;
+            metadata_store
+                .upsert(key, default_metadata, SqliteBusyRetryConfig::aggressive())
+                .await?;
+        }
         Ok(default_metadata.clone())
     }
 
@@ -124,7 +134,8 @@ impl<M: LlmModelMarker> DirectTreeActionLogStore<M> {
         action_index: usize,
         action: &DirectTreeAction<M>,
     ) -> Result<(), String> {
-        self.action_store.append_at(key, action_index, action).await
+        let action_store = self.action_store.lock().await;
+        action_store.append_at(key, action_index, action).await
     }
 }
 
@@ -302,6 +313,6 @@ impl<M: LlmModelMarker> AssetFile for AssetFileDirectTreeActionLogs<M> {
     }
     async fn fetch(&self) -> Self::FileModel {
         self.synchronize().await;
-        DirectTreeActionLogStore::<M>::initialize_if_missing(self.file_path(), 1).await
+        DirectTreeActionLogStore::<M>::initialize_if_missing(self.file_path()).await
     }
 }

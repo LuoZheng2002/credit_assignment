@@ -1172,7 +1172,11 @@ impl<M: LlmModelMarker> App<M> {
                         }
                         TreeScrollMode::Evolution => {
                             let next = tree_page.action_limit.saturating_sub(1);
-                            tree_page.set_action_limit(&entry, next, self.override_hyperparameters.as_ref());
+                            tree_page.set_action_limit(
+                                &entry,
+                                next,
+                                self.override_hyperparameters.as_ref(),
+                            );
                         }
                     }
                 }
@@ -1216,7 +1220,11 @@ impl<M: LlmModelMarker> App<M> {
                         }
                         TreeScrollMode::Evolution => {
                             let next = (tree_page.action_limit + 1).min(tree_page.total_actions);
-                            tree_page.set_action_limit(&entry, next, self.override_hyperparameters.as_ref());
+                            tree_page.set_action_limit(
+                                &entry,
+                                next,
+                                self.override_hyperparameters.as_ref(),
+                            );
                         }
                     }
                 }

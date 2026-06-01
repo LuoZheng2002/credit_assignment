@@ -13,7 +13,6 @@ RUST_BACKTRACE=1 cargo run --bin bin_orchestrator -- \
     --training-time 300 \
     --training-rollout-time-limit-secs 300 \
     --validation-rollout-time-limit-secs 300 \
-    --max-sqlite-connections 1 \
     --num-python-tool-servers 4 \
     --sglang-server-log-path logs/sglang_server.txt \
     --message-log-path logs/messages.txt \

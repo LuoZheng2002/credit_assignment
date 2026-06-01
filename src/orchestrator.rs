@@ -34,7 +34,6 @@ pub struct Orchestrator {
     pub posterior_calculation_config: PosteriorCalculationConfig,
     pub training_rollout_time_limit_secs: usize,
     pub validation_rollout_time_limit_secs: usize,
-    pub max_sqlite_connections: u32,
     pub num_python_tool_servers: usize,
     pub inference_server_handle: Option<InferenceServerHandle>,
     pub sglang_server_log_path: Option<String>,
@@ -346,7 +345,6 @@ impl Orchestrator {
                     .and_then(|handle| handle.sglang_port),
             },
             rollout_time_limit_secs: self.validation_rollout_time_limit_secs,
-            max_sqlite_connections: self.max_sqlite_connections,
             num_python_tool_servers: self.num_python_tool_servers,
         };
         rollout_all::<M>(validation_rollout_program_config).await;
@@ -372,7 +370,6 @@ impl Orchestrator {
             max_rollout_concurrency: self.max_rollout_concurrency,
             llm_cli_args,
             rollout_time_limit_secs: self.training_rollout_time_limit_secs,
-            max_sqlite_connections: self.max_sqlite_connections,
             num_python_tool_servers: self.num_python_tool_servers,
         };
         rollout_all::<M>(training_set_rollout_program_config).await;

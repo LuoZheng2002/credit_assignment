@@ -42,8 +42,6 @@ struct Args {
     #[arg(long)]
     rollout_time_limit_secs: usize,
     #[arg(long, default_value_t = 1)]
-    max_sqlite_connections: u32,
-    #[arg(long, default_value_t = 1)]
     num_python_tool_servers: usize,
     #[arg(long)]
     sglang_server_log_path: Option<String>,
@@ -71,7 +69,6 @@ async fn main() {
         epoch,
         ui,
         rollout_time_limit_secs,
-        max_sqlite_connections,
         num_python_tool_servers,
         sglang_server_log_path,
     } = Args::parse();
@@ -109,7 +106,6 @@ async fn main() {
         max_rollout_concurrency,
         llm_cli_args,
         rollout_time_limit_secs,
-        max_sqlite_connections,
         num_python_tool_servers,
     };
     match model_name {
