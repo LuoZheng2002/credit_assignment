@@ -213,8 +213,8 @@ pub async fn rollout<M: LlmModelMarker>(
         if tree.completed() {
             break;
         }
-        let new_actions = tree
-            .produce_actions_from_direct_tree(
+        let action = tree
+            .produce_action_from_direct_tree(
                 &llm_callable,
                 client.clone(),
                 python_tool_pool.clone(),
@@ -222,36 +222,31 @@ pub async fn rollout<M: LlmModelMarker>(
                 stop_signal.clone(),
             )
             .await?;
-        if new_actions.is_empty() {
-            break;
-        }
-        for action in new_actions {
-            // to do: put it to the to_action function
-            match &action {
-                DirectTreeAction::JudgeAnswer(correctness_judgment) => {
-                    let num_correct = if correctness_judgment.is_correct {
-                        num_correct_branches.fetch_add(1, Ordering::SeqCst) + 1
-                    } else {
-                        num_correct_branches.load(Ordering::SeqCst)
-                    };
-                    let finished = num_finished_branches
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                        + 1;
-                    log_worker_progress(
-                        "branches",
-                        finished as f32 / total_branches_to_finish as f32,
-                        format!(
-                            "Num Branches Completed: {}/{}",
-                            finished, total_branches_to_finish
-                        ),
-                    );
-                    let running_accuracy = num_correct as f32 / finished as f32;
-                    log_key_value_pair("Tree running accuracy", running_accuracy.to_string());
-                }
-                _ => {}
+        // to do: put it to the to_action function
+        match &action {
+            DirectTreeAction::JudgeAnswer(correctness_judgment) => {
+                let num_correct = if correctness_judgment.is_correct {
+                    num_correct_branches.fetch_add(1, Ordering::SeqCst) + 1
+                } else {
+                    num_correct_branches.load(Ordering::SeqCst)
+                };
+                let finished = num_finished_branches
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    + 1;
+                log_worker_progress(
+                    "branches",
+                    finished as f32 / total_branches_to_finish as f32,
+                    format!(
+                        "Num Branches Completed: {}/{}",
+                        finished, total_branches_to_finish
+                    ),
+                );
+                let running_accuracy = num_correct as f32 / finished as f32;
+                log_key_value_pair("Tree running accuracy", running_accuracy.to_string());
             }
-            action_log.actions.push(action);
+            _ => {}
         }
+        action_log.actions.push(action);
         rollout_store
             .upsert(
                 question.flat_id,

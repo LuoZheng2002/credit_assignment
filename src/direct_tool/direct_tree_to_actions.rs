@@ -161,14 +161,14 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
         per_token_branching_scores
     }
 
-    pub async fn produce_actions_from_direct_tree(
+    pub async fn produce_action_from_direct_tree(
         &self,
         llm_callable: &M::Callable,
         client: Client,
         python_tool_pool: Arc<PythonToolServerPool>,
         sglang_waiting_workers: Arc<AtomicUsize>,
         stop_signal: Arc<AtomicBool>,
-    ) -> Result<Vec<DirectTreeAction<M>>, StopRequestedError> {
+    ) -> Result<DirectTreeAction<M>, StopRequestedError> {
         let result = match &self.status {
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::CollectingSegmentContents {
                 cumulative_content_array,
@@ -187,9 +187,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                 let target_segment_id = self.root_segment_id.expect("Root segment id must exist when creating trunk trajectory or spontaneous branch");
                 let trajectory = self.get_trajectory(target_segment_id, cumulative_content_array);
                 match trajectory.try_get_answer() {
-                    Some(final_answer) => {
-                        vec![SubmitAnswer(final_answer)]
-                    }
+                    Some(final_answer) => SubmitAnswer(final_answer),
                     None => {
                         // generate the next segment content
                         let next_content = generate_next_segment_content(
@@ -201,7 +199,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                             stop_signal,
                         )
                         .await?;
-                        vec![DirectTreeAction::AppendSegmentContent(next_content)]
+                        DirectTreeAction::AppendSegmentContent(next_content)
                     }
                 }
             }
@@ -223,7 +221,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                     JudgeAnswerModel::DeepseekV4Flash,
                 )
                 .await;
-                vec![DirectTreeAction::JudgeAnswer(correctness_judgment)]
+                DirectTreeAction::JudgeAnswer(correctness_judgment)
             }
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::AttachingToTree {
                 correctness_judgment,
@@ -244,13 +242,11 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                     prefix_trimmed_content_array: finalized_content_array,
                     ..
                 },
-            ) => {
-                vec![DirectTreeAction::AttachSegmentToTree {
-                    parent_segment_id: *parent_segment_id,
-                    finalized_content_array: finalized_content_array.clone(),
-                    correctness_judgment: correctness_judgment.clone(),
-                }]
-            }
+            ) => DirectTreeAction::AttachSegmentToTree {
+                parent_segment_id: *parent_segment_id,
+                finalized_content_array: finalized_content_array.clone(),
+                correctness_judgment: correctness_judgment.clone(),
+            },
             DirectTreeStatus::WorkingOnGuidedBranching(
                 GuidedBranchingSubStatus::SplittingTargetSegment {
                     position,
@@ -264,25 +260,19 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                     branch_from_node,
                     ..
                 },
-            ) => {
-                vec![DirectTreeAction::SplitTreeSegment {
-                    position: position.clone(),
-                    branch_from_node: *branch_from_node,
-                }]
-            }
+            ) => DirectTreeAction::SplitTreeSegment {
+                position: position.clone(),
+                branch_from_node: *branch_from_node,
+            },
             DirectTreeStatus::WorkingOnGuidedBranching(
                 GuidedBranchingSubStatus::DeterminingBranchingPoint,
-            ) => {
-                vec![self.determine_guided_branch_action()]
-            }
+            ) => self.determine_guided_branch_action(),
             DirectTreeStatus::WorkingOnSpontaneousBranching(
                 SpontaneousBranchingSubStatus::DeterminingBranchingPoint {
                     finalized_content_array,
                     ..
                 },
-            ) => {
-                vec![self.determine_spontaneous_branch_action(finalized_content_array)]
-            }
+            ) => self.determine_spontaneous_branch_action(finalized_content_array),
             DirectTreeStatus::WorkingOnSpontaneousBranching(
                 SpontaneousBranchingSubStatus::PrefixTrimmingNewSegment {
                     position: _,
@@ -292,7 +282,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                 },
             ) => {
                 let trim_position = position_in_segment.clone();
-                vec![DirectTreeAction::PrefixTrimNewSegment { trim_position }]
+                DirectTreeAction::PrefixTrimNewSegment { trim_position }
             }
             DirectTreeStatus::Complete => {
                 // the tree is complete, no more actions can be taken
