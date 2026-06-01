@@ -1,9 +1,8 @@
+use std::collections::VecDeque;
 use std::sync::{
     Arc,
-    RwLock,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
-use std::collections::VecDeque;
 
 use kll_rs::KllFloatSketch;
 use reqwest::Client;
@@ -14,7 +13,7 @@ use research_utility::{
     },
     sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep, sleep_until};
 
@@ -169,7 +168,9 @@ impl LongRunningRolloutGuard {
 impl Drop for LongRunningRolloutGuard {
     fn drop(&mut self) {
         if self.has_slot {
-            let previous = self.num_long_running_rollouts.fetch_sub(1, Ordering::SeqCst);
+            let previous = self
+                .num_long_running_rollouts
+                .fetch_sub(1, Ordering::SeqCst);
             assert!(previous > 0, "num_long_running_rollouts underflow");
             let new_count = previous - 1;
             log_key_value_pair("num_long_running_questions", new_count.to_string());
@@ -282,16 +283,16 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
         total_trees_to_finish,
     } = ctx;
 
-    let handle_rollout_result =
-        |result: Result<RolloutOutcome, StopRequestedError>, pending: &mut VecDeque<usize>| {
-            match result {
-                Ok(RolloutOutcome::Completed) => {}
-                Ok(RolloutOutcome::Requeue { flat_id }) => {
-                    pending.push_back(flat_id);
-                }
-                Err(StopRequestedError) => {}
+    let handle_rollout_result = |result: Result<RolloutOutcome, StopRequestedError>,
+                                 pending: &mut VecDeque<usize>| {
+        match result {
+            Ok(RolloutOutcome::Completed) => {}
+            Ok(RolloutOutcome::Requeue { flat_id }) => {
+                pending.push_back(flat_id);
             }
-        };
+            Err(StopRequestedError) => {}
+        }
+    };
 
     let mut join_set = JoinSet::new();
     let mut pending_question_keys: VecDeque<usize> = question_keys.into();
@@ -436,9 +437,8 @@ async fn rollout<M: LlmModelMarker>(
                 } else {
                     num_correct_branches.load(Ordering::SeqCst)
                 };
-                let finished = num_finished_branches
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    + 1;
+                let finished =
+                    num_finished_branches.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 log_worker_progress(
                     "branches",
                     finished as f32 / total_branches_to_finish as f32,
@@ -466,13 +466,14 @@ async fn rollout<M: LlmModelMarker>(
             .unwrap();
 
         if !long_running_guard.has_slot() {
-            let q3 = llm_call_stats.read().unwrap().q3();
+            let q3 = llm_call_stats.read().await.q3();
             if let Some(q3) = q3 {
                 if llm_calls_so_far > q3
                     && !long_running_guard.try_acquire_slot(max_num_long_running_rollouts)
                 {
                     let current_concurrency = num_active_rollouts.load(Ordering::SeqCst);
-                    if (current_concurrency as u128) * 100 <= (max_rollout_concurrency as u128) * 95 {
+                    if (current_concurrency as u128) * 100 <= (max_rollout_concurrency as u128) * 95
+                    {
                         continue;
                     }
                     let new_num_requeued = num_requeued.fetch_add(1, Ordering::SeqCst) + 1;
@@ -496,7 +497,7 @@ async fn rollout<M: LlmModelMarker>(
     );
     let summary = llm_call_stats
         .write()
-        .unwrap()
+        .await
         .update_and_get_summary(llm_calls_so_far);
     log_key_value_pair("min_llm_calls_per_tree", summary.min.to_string());
     log_key_value_pair("median_llm_calls_per_tree", summary.median.to_string());
