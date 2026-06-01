@@ -6,6 +6,7 @@ use std::sync::{
 
 use kll_rs::KllFloatSketch;
 use reqwest::Client;
+use research_utility::log_message::log_info;
 use research_utility::{
     asset_file::AssetFile,
     log_message::{
@@ -374,7 +375,7 @@ async fn rollout<M: LlmModelMarker>(
                     ),
                 );
                 let running_accuracy = num_correct as f32 / finished as f32;
-                log_key_value_pair("Tree running accuracy", running_accuracy.to_string());
+                log_key_value_pair("Rollout running accuracy", running_accuracy.to_string());
             }
             _ => {}
         }
@@ -428,6 +429,7 @@ async fn rollout<M: LlmModelMarker>(
             }
         }
     }
+    log_info("test1");
     // log_info(format!("Rollout {} finished", question.flat_id));
     if long_running_permit.take().is_some() {
         let num_long_running_questions =
