@@ -173,6 +173,7 @@ async fn main() {
         num_python_tool_servers,
         client,
         question_semaphore: question_semaphore,
+        max_rollout_concurrency,
         inference_server_handle: None,
         sglang_server_log_path,
         cumulative_avg_abs_advantage_cutoff,

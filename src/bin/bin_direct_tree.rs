@@ -109,6 +109,7 @@ async fn main() {
         epoch,
         client,
         question_semaphore,
+        max_rollout_concurrency,
         llm_cli_args,
         rollout_time_limit_secs,
         max_sqlite_connections,

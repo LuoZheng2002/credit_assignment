@@ -1,8 +1,11 @@
 use std::sync::{
     Arc,
+    RwLock,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+use std::collections::VecDeque;
 
+use kll_rs::KllFloatSketch;
 use reqwest::Client;
 use research_utility::{
     asset_file::AssetFile,
@@ -18,7 +21,7 @@ use tokio::time::{Duration, Instant, sleep, sleep_until};
 use crate::{
     direct_tool::{
         direct_rollout_config::DirectRolloutConfig,
-        direct_tree::DirectTree,
+        direct_tree::{DirectTree, SegmentContent},
         direct_tree_action::DirectTreeAction,
         direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
         hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion, HybridDatasetStore},
@@ -43,8 +46,140 @@ struct RolloutExecutionContext<M: LlmModelMarker> {
     num_finished_branches: Arc<AtomicUsize>,
     num_finished_trees: Arc<AtomicUsize>,
     num_correct_branches: Arc<AtomicUsize>,
+    llm_call_stats: Arc<RwLock<LlmCallStats>>,
+    num_requeued: Arc<AtomicUsize>,
+    num_long_running_rollouts: Arc<AtomicUsize>,
+    max_num_long_running_rollouts: usize,
     total_branches_to_finish: usize,
     total_trees_to_finish: usize,
+}
+
+enum RolloutOutcome {
+    Completed { llm_calls: usize },
+    Requeue { flat_id: usize },
+}
+
+struct LlmCallStats {
+    sketch: KllFloatSketch,
+    num_samples: usize,
+    min: usize,
+    max: usize,
+}
+
+impl LlmCallStats {
+    fn new() -> Self {
+        Self {
+            sketch: KllFloatSketch::new().expect("failed to initialize KLL sketch"),
+            num_samples: 0,
+            min: 0,
+            max: 0,
+        }
+    }
+
+    fn update_and_get_summary(&mut self, llm_calls: usize) -> LlmCallSummary {
+        self.sketch.update(llm_calls as f32);
+        if self.num_samples == 0 {
+            self.min = llm_calls;
+            self.max = llm_calls;
+        } else {
+            self.min = std::cmp::min(self.min, llm_calls);
+            self.max = std::cmp::max(self.max, llm_calls);
+        }
+        self.num_samples += 1;
+
+        LlmCallSummary {
+            min: self.min,
+            median: quantile_to_usize(self.sketch.get_quantile(0.5)),
+            q3: quantile_to_usize(self.sketch.get_quantile(0.75)),
+            max: self.max,
+        }
+    }
+
+    fn q3(&self) -> Option<usize> {
+        if self.num_samples == 0 {
+            return None;
+        }
+        Some(quantile_to_usize(self.sketch.get_quantile(0.75)))
+    }
+}
+
+struct LlmCallSummary {
+    min: usize,
+    median: usize,
+    q3: usize,
+    max: usize,
+}
+
+fn quantile_to_usize(value: f32) -> usize {
+    if !value.is_finite() {
+        return 0;
+    }
+    value.round().max(0.0) as usize
+}
+
+struct LongRunningRolloutGuard {
+    num_long_running_rollouts: Arc<AtomicUsize>,
+    has_slot: bool,
+}
+
+impl LongRunningRolloutGuard {
+    fn new(num_long_running_rollouts: Arc<AtomicUsize>) -> Self {
+        Self {
+            num_long_running_rollouts,
+            has_slot: false,
+        }
+    }
+
+    fn has_slot(&self) -> bool {
+        self.has_slot
+    }
+
+    fn try_acquire_slot(&mut self, max_num_long_running_rollouts: usize) -> bool {
+        if self.has_slot {
+            return true;
+        }
+
+        let mut current = self.num_long_running_rollouts.load(Ordering::SeqCst);
+        loop {
+            if current >= max_num_long_running_rollouts {
+                return false;
+            }
+            match self.num_long_running_rollouts.compare_exchange(
+                current,
+                current + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    self.has_slot = true;
+                    let new_count = current + 1;
+                    log_key_value_pair("num_long_running_questions", new_count.to_string());
+                    return true;
+                }
+                Err(actual) => {
+                    current = actual;
+                }
+            }
+        }
+    }
+}
+
+impl Drop for LongRunningRolloutGuard {
+    fn drop(&mut self) {
+        if self.has_slot {
+            let previous = self.num_long_running_rollouts.fetch_sub(1, Ordering::SeqCst);
+            assert!(previous > 0, "num_long_running_rollouts underflow");
+            let new_count = previous - 1;
+            log_key_value_pair("num_long_running_questions", new_count.to_string());
+        }
+    }
+}
+
+fn action_is_llm_call<M: LlmModelMarker>(action: &DirectTreeAction<M>) -> bool {
+    matches!(
+        action,
+        DirectTreeAction::AppendSegmentContent(SegmentContent::ReasoningOrToolCall { .. })
+    )
 }
 
 async fn run_progress_timer(
@@ -115,65 +250,104 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
         num_finished_branches,
         num_finished_trees,
         num_correct_branches,
+        llm_call_stats,
+        num_requeued,
+        num_long_running_rollouts,
+        max_num_long_running_rollouts,
         total_branches_to_finish,
         total_trees_to_finish,
     } = ctx;
 
-    let mut join_set = JoinSet::new();
-    for question_key in question_keys {
-        if stop_signal.load(Ordering::Relaxed) {
-            break;
-        }
-
-        let maybe_owned_permit =
-            wait_for_permit_or_stop(question_semaphore.clone(), stop_signal.clone()).await;
-        let Some(owned_permit) = maybe_owned_permit else {
-            break;
+    let handle_rollout_result =
+        |result: Result<RolloutOutcome, StopRequestedError>, pending: &mut VecDeque<usize>| {
+            match result {
+                Ok(RolloutOutcome::Completed { llm_calls }) => {
+                    let summary = llm_call_stats
+                        .write()
+                        .unwrap()
+                        .update_and_get_summary(llm_calls);
+                    log_key_value_pair("min_llm_calls_per_tree", summary.min.to_string());
+                    log_key_value_pair("median_llm_calls_per_tree", summary.median.to_string());
+                    log_key_value_pair("third_quartile_llm_calls_per_tree", summary.q3.to_string());
+                    log_key_value_pair("max_llm_calls_per_tree", summary.max.to_string());
+                }
+                Ok(RolloutOutcome::Requeue { flat_id }) => {
+                    pending.push_back(flat_id);
+                    let new_num_requeued = num_requeued.fetch_add(1, Ordering::SeqCst) + 1;
+                    log_key_value_pair("num_requeued", new_num_requeued.to_string());
+                }
+                Err(StopRequestedError) => {}
+            }
         };
 
-        if stop_signal.load(Ordering::Relaxed) {
-            drop(owned_permit);
-            break;
-        }
+    let mut join_set = JoinSet::new();
+    let mut pending_question_keys: VecDeque<usize> = question_keys.into();
+    while (!pending_question_keys.is_empty() || !join_set.is_empty())
+        && !stop_signal.load(Ordering::Relaxed)
+    {
+        tokio::select! {
+            maybe_owned_permit = wait_for_permit_or_stop(question_semaphore.clone(), stop_signal.clone()), if !pending_question_keys.is_empty() => {
+                let Some(owned_permit) = maybe_owned_permit else {
+                    break;
+                };
+                if stop_signal.load(Ordering::Relaxed) {
+                    drop(owned_permit);
+                    break;
+                }
 
-        let question = dataset.get(question_key).await.unwrap().unwrap();
-        let rollout_config_clone = rollout_config.clone();
-        let posterior_calculation_config_clone = posterior_calculation_config.clone();
-        let rollout_store = rollout_store.clone();
-        let llm_callable_clone = llm_callable.clone();
-        let client_clone = client.clone();
-        let sglang_waiting_workers_clone = sglang_waiting_workers.clone();
-        let python_tool_pool_clone = python_tool_pool.clone();
-        let stop_signal_clone = stop_signal.clone();
-        let num_finished_branches = num_finished_branches.clone();
-        let num_finished_trees = num_finished_trees.clone();
-        let num_correct_branches = num_correct_branches.clone();
-        join_set.spawn(async move {
-            let result = rollout::<M>(
-                question,
-                rollout_config_clone,
-                posterior_calculation_config_clone,
-                rollout_store,
-                llm_callable_clone,
-                client_clone,
-                python_tool_pool_clone,
-                sglang_waiting_workers_clone,
-                stop_signal_clone,
-                num_finished_branches,
-                num_finished_trees,
-                num_correct_branches,
-                total_branches_to_finish,
-                total_trees_to_finish,
-            )
-            .await;
-            // we do not care about whether the rollout is interrupted by stop signal
-            let _ = result;
-            drop(owned_permit);
-        });
+                let question_key = pending_question_keys
+                    .pop_front()
+                    .expect("queue should not be empty");
+                let question = dataset.get(question_key).await.unwrap().unwrap();
+                let rollout_config_clone = rollout_config.clone();
+                let posterior_calculation_config_clone = posterior_calculation_config.clone();
+                let rollout_store = rollout_store.clone();
+                let llm_callable_clone = llm_callable.clone();
+                let client_clone = client.clone();
+                let sglang_waiting_workers_clone = sglang_waiting_workers.clone();
+                let python_tool_pool_clone = python_tool_pool.clone();
+                let stop_signal_clone = stop_signal.clone();
+                let num_finished_branches = num_finished_branches.clone();
+                let num_finished_trees = num_finished_trees.clone();
+                let num_correct_branches = num_correct_branches.clone();
+                let llm_call_stats = llm_call_stats.clone();
+                let num_long_running_rollouts = num_long_running_rollouts.clone();
+                join_set.spawn(async move {
+                    let result = rollout::<M>(
+                        question,
+                        rollout_config_clone,
+                        posterior_calculation_config_clone,
+                        rollout_store,
+                        llm_callable_clone,
+                        client_clone,
+                        python_tool_pool_clone,
+                        sglang_waiting_workers_clone,
+                        stop_signal_clone,
+                        num_finished_branches,
+                        num_finished_trees,
+                        num_correct_branches,
+                        llm_call_stats,
+                        num_long_running_rollouts,
+                        max_num_long_running_rollouts,
+                        total_branches_to_finish,
+                        total_trees_to_finish,
+                    )
+                    .await;
+                    drop(owned_permit);
+                    result
+                });
+            }
+            maybe_result = join_set.join_next(), if !join_set.is_empty() => {
+                let result = maybe_result.expect("join_set should have at least one task");
+                let task_result = result.expect("direct rollout worker task panicked or was cancelled");
+                handle_rollout_result(task_result, &mut pending_question_keys);
+            }
+        }
     }
 
     while let Some(result) = join_set.join_next().await {
-        result.expect("direct rollout worker task panicked or was cancelled");
+        let task_result = result.expect("direct rollout worker task panicked or was cancelled");
+        handle_rollout_result(task_result, &mut pending_question_keys);
     }
 
     stop_signal.store(true, Ordering::Relaxed);
@@ -182,7 +356,7 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
 #[derive(Debug, Clone, Copy)]
 pub struct StopRequestedError;
 
-pub async fn rollout<M: LlmModelMarker>(
+async fn rollout<M: LlmModelMarker>(
     question: HybridDatasetQuestion,
     rollout_config: DirectRolloutConfig,
     posterior_calculation_config: PosteriorCalculationConfig,
@@ -195,9 +369,12 @@ pub async fn rollout<M: LlmModelMarker>(
     num_finished_branches: Arc<AtomicUsize>,
     num_finished_trees: Arc<AtomicUsize>,
     num_correct_branches: Arc<AtomicUsize>,
+    llm_call_stats: Arc<RwLock<LlmCallStats>>,
+    num_long_running_rollouts: Arc<AtomicUsize>,
+    max_num_long_running_rollouts: usize,
     total_branches_to_finish: usize,
     total_trees_to_finish: usize,
-) -> Result<(), StopRequestedError> {
+) -> Result<RolloutOutcome, StopRequestedError> {
     let mut action_log = rollout_store
         .get(question.flat_id)
         .await
@@ -208,6 +385,12 @@ pub async fn rollout<M: LlmModelMarker>(
             posterior_calculation_config: posterior_calculation_config.clone(),
             actions: vec![],
         });
+    let mut llm_calls_so_far = action_log
+        .actions
+        .iter()
+        .filter(|action| action_is_llm_call(action))
+        .count();
+    let mut long_running_guard = LongRunningRolloutGuard::new(num_long_running_rollouts);
     loop {
         let tree = DirectTree::<M>::from_action_log(&action_log);
         if tree.completed() {
@@ -246,6 +429,9 @@ pub async fn rollout<M: LlmModelMarker>(
             }
             _ => {}
         }
+        if action_is_llm_call(&action) {
+            llm_calls_so_far += 1;
+        }
         action_log.actions.push(action);
         rollout_store
             .upsert(
@@ -255,6 +441,19 @@ pub async fn rollout<M: LlmModelMarker>(
             )
             .await
             .unwrap();
+
+        if !long_running_guard.has_slot() {
+            let q3 = llm_call_stats.read().unwrap().q3();
+            if let Some(q3) = q3 {
+                if llm_calls_so_far > q3
+                    && !long_running_guard.try_acquire_slot(max_num_long_running_rollouts)
+                {
+                    return Ok(RolloutOutcome::Requeue {
+                        flat_id: question.flat_id,
+                    });
+                }
+            }
+        }
     }
     // log_info(format!("Rollout {} finished", question.flat_id));
     let finished = num_finished_trees.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -266,7 +465,7 @@ pub async fn rollout<M: LlmModelMarker>(
             finished, total_trees_to_finish
         ),
     );
-    Ok(())
+    Ok(RolloutOutcome::Completed { llm_calls: llm_calls_so_far })
 }
 
 pub struct RolloutProgramConfig {
@@ -276,6 +475,7 @@ pub struct RolloutProgramConfig {
     pub epoch: usize, // the epoch index
     pub client: Client,
     pub question_semaphore: Arc<Semaphore>,
+    pub max_rollout_concurrency: usize,
     pub llm_cli_args: LlmCliArgs,
     pub rollout_time_limit_secs: usize,
     pub max_sqlite_connections: u32,
@@ -290,6 +490,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         epoch,
         client,
         question_semaphore,
+        max_rollout_concurrency,
         llm_cli_args,
         rollout_time_limit_secs,
         max_sqlite_connections,
@@ -302,6 +503,10 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     assert!(
         rollout_time_limit_secs > 0,
         "rollout_time_limit_secs must be positive"
+    );
+    assert!(
+        max_rollout_concurrency > 0,
+        "max_rollout_concurrency must be positive"
     );
     let rollout_time_limit = Duration::from_secs(rollout_time_limit_secs as u64);
     let start_time = Instant::now();
@@ -340,6 +545,10 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let num_finished_branches = Arc::new(AtomicUsize::new(0));
     let num_finished_trees = Arc::new(AtomicUsize::new(0));
     let num_correct_branches = Arc::new(AtomicUsize::new(0));
+    let llm_call_stats = Arc::new(RwLock::new(LlmCallStats::new()));
+    let num_requeued = Arc::new(AtomicUsize::new(0));
+    let num_long_running_rollouts = Arc::new(AtomicUsize::new(0));
+    let max_num_long_running_rollouts = std::cmp::max(1, max_rollout_concurrency / 4);
     let total_branches_to_finish = question_keys.len() * rollout_config.max_num_total_trajectories;
     let total_trees_to_finish = question_keys.len();
     let rollout_context = RolloutExecutionContext::<M> {
@@ -356,6 +565,10 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         stop_signal: stop_signal.clone(),
         num_finished_branches,
         num_finished_trees,
+        llm_call_stats,
+        num_requeued,
+        num_long_running_rollouts,
+        max_num_long_running_rollouts,
         total_branches_to_finish,
         total_trees_to_finish,
         num_correct_branches,

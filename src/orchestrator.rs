@@ -47,6 +47,7 @@ pub struct Orchestrator {
     // utilities
     pub client: reqwest::Client,
     pub question_semaphore: Arc<Semaphore>,
+    pub max_rollout_concurrency: usize,
     // state
     pub progress: OrchestrationProgress,
     // for training
@@ -340,6 +341,7 @@ impl Orchestrator {
             epoch,
             client: self.client.clone(),
             question_semaphore: self.question_semaphore.clone(),
+            max_rollout_concurrency: self.max_rollout_concurrency,
             llm_cli_args: LlmCliArgs {
                 sglang_port: self
                     .inference_server_handle
@@ -371,6 +373,7 @@ impl Orchestrator {
             epoch,
             client: self.client.clone(),
             question_semaphore: self.question_semaphore.clone(),
+            max_rollout_concurrency: self.max_rollout_concurrency,
             llm_cli_args,
             rollout_time_limit_secs: self.training_rollout_time_limit_secs,
             max_sqlite_connections: self.max_sqlite_connections,
