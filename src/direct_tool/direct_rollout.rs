@@ -49,6 +49,8 @@ struct RolloutExecutionContext<M: LlmModelMarker> {
     llm_call_stats: Arc<RwLock<LlmCallStats>>,
     num_requeued: Arc<AtomicUsize>,
     num_long_running_rollouts: Arc<AtomicUsize>,
+    num_active_rollouts: Arc<AtomicUsize>,
+    max_rollout_concurrency: usize,
     max_num_long_running_rollouts: usize,
     total_branches_to_finish: usize,
     total_trees_to_finish: usize,
@@ -175,6 +177,26 @@ impl Drop for LongRunningRolloutGuard {
     }
 }
 
+struct ActiveRolloutGuard {
+    num_active_rollouts: Arc<AtomicUsize>,
+}
+
+impl ActiveRolloutGuard {
+    fn new(num_active_rollouts: Arc<AtomicUsize>) -> Self {
+        num_active_rollouts.fetch_add(1, Ordering::SeqCst);
+        Self {
+            num_active_rollouts,
+        }
+    }
+}
+
+impl Drop for ActiveRolloutGuard {
+    fn drop(&mut self) {
+        let previous = self.num_active_rollouts.fetch_sub(1, Ordering::SeqCst);
+        assert!(previous > 0, "num_active_rollouts underflow");
+    }
+}
+
 fn action_is_llm_call<M: LlmModelMarker>(action: &DirectTreeAction<M>) -> bool {
     matches!(
         action,
@@ -253,6 +275,8 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
         llm_call_stats,
         num_requeued,
         num_long_running_rollouts,
+        num_active_rollouts,
+        max_rollout_concurrency,
         max_num_long_running_rollouts,
         total_branches_to_finish,
         total_trees_to_finish,
@@ -302,7 +326,10 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
                 let llm_call_stats = llm_call_stats.clone();
                 let num_requeued = num_requeued.clone();
                 let num_long_running_rollouts = num_long_running_rollouts.clone();
+                let num_active_rollouts = num_active_rollouts.clone();
                 join_set.spawn(async move {
+                    let active_rollouts_for_task = num_active_rollouts.clone();
+                    let _active_rollout_guard = ActiveRolloutGuard::new(num_active_rollouts);
                     let result = rollout::<M>(
                         question,
                         rollout_config_clone,
@@ -319,6 +346,8 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
                         llm_call_stats,
                         num_requeued,
                         num_long_running_rollouts,
+                        max_rollout_concurrency,
+                        active_rollouts_for_task,
                         max_num_long_running_rollouts,
                         total_branches_to_finish,
                         total_trees_to_finish,
@@ -363,6 +392,8 @@ async fn rollout<M: LlmModelMarker>(
     llm_call_stats: Arc<RwLock<LlmCallStats>>,
     num_requeued: Arc<AtomicUsize>,
     num_long_running_rollouts: Arc<AtomicUsize>,
+    max_rollout_concurrency: usize,
+    num_active_rollouts: Arc<AtomicUsize>,
     max_num_long_running_rollouts: usize,
     total_branches_to_finish: usize,
     total_trees_to_finish: usize,
@@ -440,6 +471,10 @@ async fn rollout<M: LlmModelMarker>(
                 if llm_calls_so_far > q3
                     && !long_running_guard.try_acquire_slot(max_num_long_running_rollouts)
                 {
+                    let current_concurrency = num_active_rollouts.load(Ordering::SeqCst);
+                    if (current_concurrency as u128) * 100 <= (max_rollout_concurrency as u128) * 95 {
+                        continue;
+                    }
                     let new_num_requeued = num_requeued.fetch_add(1, Ordering::SeqCst) + 1;
                     log_key_value_pair("num_requeued", new_num_requeued.to_string());
                     return Ok(RolloutOutcome::Requeue {
@@ -550,6 +585,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let llm_call_stats = Arc::new(RwLock::new(LlmCallStats::new()));
     let num_requeued = Arc::new(AtomicUsize::new(0));
     let num_long_running_rollouts = Arc::new(AtomicUsize::new(0));
+    let num_active_rollouts = Arc::new(AtomicUsize::new(0));
     let max_num_long_running_rollouts = std::cmp::max(1, max_rollout_concurrency / 4);
     let total_branches_to_finish = question_keys.len() * rollout_config.max_num_total_trajectories;
     let total_trees_to_finish = question_keys.len();
@@ -570,6 +606,8 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         llm_call_stats,
         num_requeued,
         num_long_running_rollouts,
+        num_active_rollouts,
+        max_rollout_concurrency,
         max_num_long_running_rollouts,
         total_branches_to_finish,
         total_trees_to_finish,
