@@ -1,3 +1,5 @@
+use research_utility::log_message::log_info;
+
 use crate::{
     direct_tool::{
         direct_rollout_config::BranchingPolicy,
@@ -282,6 +284,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
         };
     }
     fn determine_status_after_segment_attachment(&self) -> DirectTreeStatus<M> {
+        log_info("test2");
         // we can choose to work on trunk, (guided branch or spontaneous branch), or conclude the tree
         if self.trunk_leaf_segments.len() < self.action_log.rollout_config.max_num_trunks {
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::CollectingSegmentContents {
@@ -303,6 +306,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                 }
             }
         } else {
+            log_info("test3");
             DirectTreeStatus::Complete
         }
     }
