@@ -1,4 +1,5 @@
 use reqwest::Client;
+use research_utility::log_message::log_warning;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::{Duration, sleep};
@@ -39,7 +40,9 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
     );
     let mut last_error: Option<String> = None;
 
-    for attempt in 1..=3 {
+    let num_attempts: usize = 20;
+
+    for attempt in 0..=num_attempts {
         match fetch_judge_evaluation(&client, &prompt, judge_model).await {
             Ok(evaluation) => {
                 let evaluation = evaluation.trim().to_lowercase();
@@ -55,14 +58,16 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
                 last_error = Some(error.to_string());
             }
         }
+        log_warning(format!("Judger returned invalid response, attempt {}", attempt));
 
-        if attempt < 3 {
+        if attempt < num_attempts {
             sleep(Duration::from_secs(1)).await;
         }
     }
 
     panic!(
-        "Failed to judge answer after 3 attempts: {}",
+        "Failed to judge answer after {} attempts: {}",
+        num_attempts,
         last_error.unwrap_or_else(|| "unknown error".to_string())
     );
 }

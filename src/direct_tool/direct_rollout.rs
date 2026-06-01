@@ -6,7 +6,6 @@ use std::sync::{
 
 use kll_rs::KllFloatSketch;
 use reqwest::Client;
-use research_utility::log_message::log_info;
 use research_utility::{
     asset_file::AssetFile,
     log_message::{
