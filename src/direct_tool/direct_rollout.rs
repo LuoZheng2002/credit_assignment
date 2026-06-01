@@ -164,6 +164,7 @@ pub struct RolloutSharedStates {
     stop_signal: Arc<AtomicBool>,
     num_finished_branches: Arc<AtomicUsize>,
     num_finished_trees: Arc<AtomicUsize>,
+    newly_finished_trees: Arc<AtomicUsize>,
     num_correct_branches: Arc<AtomicUsize>,
     llm_call_stats: Arc<RwLock<LlmCallStats>>,
     num_requeued: Arc<AtomicUsize>,
@@ -196,6 +197,7 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
     let sglang_waiting_workers = Arc::new(AtomicUsize::new(0));
     let num_finished_branches = Arc::new(AtomicUsize::new(0));
     let num_finished_trees = Arc::new(AtomicUsize::new(0));
+    let newly_finished_trees = Arc::new(AtomicUsize::new(0));
     let num_correct_branches = Arc::new(AtomicUsize::new(0));
     let num_active_rollouts = Arc::new(AtomicUsize::new(0));
     let llm_call_stats = Arc::new(RwLock::new(LlmCallStats::new()));
@@ -212,6 +214,7 @@ async fn run_rollout_orchestration<M: LlmModelMarker>(ctx: RolloutExecutionConte
         stop_signal,
         num_finished_branches,
         num_finished_trees,
+        newly_finished_trees,
         num_correct_branches,
         llm_call_stats,
         num_requeued,
@@ -314,6 +317,7 @@ async fn rollout<M: LlmModelMarker>(
         stop_signal,
         num_finished_branches,
         num_finished_trees,
+        newly_finished_trees,
         num_correct_branches,
         llm_call_stats,
         num_requeued,
@@ -414,8 +418,8 @@ async fn rollout<M: LlmModelMarker>(
                             {
                                 continue;
                             }
-                            let current_finished_trees = num_finished_trees.load(Ordering::SeqCst);
-                            if current_finished_trees < NUM_WARMUP_TREES {
+                            let newly_finished_trees = newly_finished_trees.load(Ordering::SeqCst);
+                            if newly_finished_trees < NUM_WARMUP_TREES {
                                 continue;
                             }
                             let new_num_requeued = num_requeued.fetch_add(1, Ordering::SeqCst) + 1;
@@ -429,7 +433,6 @@ async fn rollout<M: LlmModelMarker>(
             }
         }
     }
-    log_info("test1");
     // log_info(format!("Rollout {} finished", question.flat_id));
     if long_running_permit.take().is_some() {
         let num_long_running_questions =
@@ -440,6 +443,7 @@ async fn rollout<M: LlmModelMarker>(
         );
     }
     let finished = num_finished_trees.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    newly_finished_trees.fetch_add(1, Ordering::SeqCst);
     log_worker_progress(
         "trees",
         finished as f32 / total_trees_to_finish as f32,
