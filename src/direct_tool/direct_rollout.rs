@@ -388,6 +388,7 @@ async fn rollout<M: LlmModelMarker>(
                             }
                             let new_num_requeued = num_requeued.fetch_add(1, Ordering::SeqCst) + 1;
                             log_key_value_pair("num_requeued", new_num_requeued.to_string());
+                            log_info("test5");
                             return Ok(RolloutOutcome::Requeue {
                                 flat_id: question.flat_id,
                             });
