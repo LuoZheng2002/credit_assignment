@@ -155,6 +155,54 @@ pub async fn shut_down_sglang_server_process(process: &mut Child) {
     }
 }
 
+pub async fn best_effort_shutdown_stale_sglang_server() {
+    let port = resolve_sglang_port();
+    if !is_port_listening(port).await {
+        log_info(format!(
+            "SGLang stale-shutdown check: no listener on configured port {}, nothing to clean up",
+            port
+        ));
+        return;
+    }
+
+    log_info(format!(
+        "SGLang stale-shutdown check: detected listener on configured port {}, attempting pkill cleanup",
+        port
+    ));
+    let pattern = format!("sglang.launch_server.*--port {}", port);
+    match Command::new("pkill").arg("-f").arg(&pattern).status().await {
+        Ok(status) => {
+            log_info(format!(
+                "SGLang stale-shutdown check: pkill finished with status {} for pattern '{}'",
+                status, pattern
+            ));
+        }
+        Err(err) => {
+            log_info(format!(
+                "SGLang stale-shutdown check: failed to execute pkill for pattern '{}': {}",
+                pattern, err
+            ));
+            return;
+        }
+    }
+
+    for _ in 0..20 {
+        if !is_port_listening(port).await {
+            log_info(format!(
+                "SGLang stale-shutdown check: port {} is no longer listening after cleanup",
+                port
+            ));
+            return;
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+
+    log_info(format!(
+        "SGLang stale-shutdown check: port {} is still listening after pkill cleanup",
+        port
+    ));
+}
+
 async fn send_signal_to_process_group(pid: u32, signal: &str) {
     let status = Command::new("kill")
         .arg(signal)
@@ -173,12 +221,22 @@ async fn send_signal_to_process_group(pid: u32, signal: &str) {
     }
 }
 
-fn resolve_sglang_port() -> u16 {
+pub fn resolve_sglang_port() -> u16 {
     std::env::var("SGLANG_PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .filter(|port| *port > 0)
         .unwrap_or(30000)
+}
+
+async fn is_port_listening(port: u16) -> bool {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    timeout(
+        Duration::from_millis(250),
+        tokio::net::TcpStream::connect(address),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok())
 }
 
 async fn wait_for_sglang_ready(port: u16, process: &mut Child) {

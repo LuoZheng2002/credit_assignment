@@ -19,7 +19,8 @@ use crate::{
     json_line_util::{write_json, write_toml},
     launch_python_training::launch_python_training_process,
     launch_sglang_server::{
-        launch_sglang_server_process, model_uses_sglang, shut_down_sglang_server_process,
+        best_effort_shutdown_stale_sglang_server, launch_sglang_server_process,
+        model_uses_sglang, shut_down_sglang_server_process,
     },
     llm_model::{LlmCliArgs, LlmModelMarker},
     python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
@@ -96,7 +97,7 @@ impl Orchestrator {
                             "Finished all {} epochs of orchestration",
                             self.num_total_epochs
                         ));
-                        self.ensure_inference_server_shut_down().await;
+                        self.ensure_inference_server_shut_down::<M>().await;
                         break;
                     }
                     self.update_and_save_progress::<M>(
@@ -108,7 +109,7 @@ impl Orchestrator {
                     self.ensure_inference_server_launched::<M>(epoch).await?;
                     self.collect_training_rollout::<M>(epoch).await;
                     // after rollout collection, we can shut down the inference server
-                    self.ensure_inference_server_shut_down().await;
+                    self.ensure_inference_server_shut_down::<M>().await;
                     self.update_and_save_progress::<M>(
                         OrchestrationStatus::WorkingOnTrainingSetGeneration,
                         epoch,
@@ -116,7 +117,7 @@ impl Orchestrator {
                 }
                 OrchestrationStatus::WorkingOnTrainingSetGeneration => {
                     // we do not need inference server for training set generation, and it won't be launched again until we do the training step
-                    self.ensure_inference_server_shut_down().await;
+                    self.ensure_inference_server_shut_down::<M>().await;
                     self.generate_training_set::<M>(epoch).await;
                     self.update_and_save_progress::<M>(
                         OrchestrationStatus::WorkingOnTraining,
@@ -129,7 +130,7 @@ impl Orchestrator {
                         "Entering training stage for epoch {}. About to enforce inference-server shutdown.",
                         epoch
                     ));
-                    self.ensure_inference_server_shut_down().await;
+                    self.ensure_inference_server_shut_down::<M>().await;
                     log_info(format!(
                         "Inference-server shutdown enforcement finished for epoch {}. Starting training.",
                         epoch
@@ -145,7 +146,7 @@ impl Orchestrator {
             }
         }
         // for safety
-        self.ensure_inference_server_shut_down().await;
+        self.ensure_inference_server_shut_down::<M>().await;
         Ok(())
     }
 
@@ -218,7 +219,7 @@ impl Orchestrator {
                     "ensure_inference_server_launched: existing handle epoch {} differs from requested epoch {}, shutting down first",
                     handle.epoch, epoch
                 ));
-                self.ensure_inference_server_shut_down().await;
+                self.ensure_inference_server_shut_down::<M>().await;
                 // then continue to launch the new one
                 self.launch_inference_server::<M>(epoch).await?;
             }
@@ -283,7 +284,7 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn ensure_inference_server_shut_down(&mut self) {
+    async fn ensure_inference_server_shut_down<M: LlmModelMarker>(&mut self) {
         if let Some(handle) = self.inference_server_handle.take() {
             log_info(format!(
                 "Shutting down inference server (stored_epoch={}, has_port={}, has_process={})...",
@@ -317,9 +318,16 @@ impl Orchestrator {
             }
             log_info("Inference server shut down");
         } else {
-            log_info(
-                "ensure_inference_server_shut_down: no inference server handle present; nothing to shut down",
-            );
+            if model_uses_sglang::<M>() {
+                log_info(
+                    "ensure_inference_server_shut_down: no inference server handle present; checking for stale sglang process on configured port",
+                );
+                best_effort_shutdown_stale_sglang_server().await;
+            } else {
+                log_info(
+                    "ensure_inference_server_shut_down: no inference server handle present; nothing to shut down",
+                );
+            }
         }
         assert!(
             self.inference_server_handle.is_none(),
