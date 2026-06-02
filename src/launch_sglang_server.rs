@@ -36,7 +36,14 @@ pub async fn launch_sglang_server_process<M: LlmModelMarker>(
         .arg("--port")
         .arg(sglang_port.to_string())
         .arg("--context-length")
-        .arg(SGLANG_CONTEXT_LENGTH.to_string());
+        .arg(SGLANG_CONTEXT_LENGTH.to_string())
+        .arg("--load-balance-method")
+        .arg("total_tokens")
+        .arg("--chunked-prefill-size")
+        .arg("4096")
+        .arg("--enable-mixed-chunk")
+        .arg("--schedule-policy")
+        .arg("lpm");
     #[cfg(unix)]
     command.process_group(0);
 

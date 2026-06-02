@@ -11,6 +11,10 @@ uv run --project pyprojects/sglang python -m sglang.launch_server \
   --host "$HOST" \
   --port "$PORT" \
   --context-length "$CONTEXT_LENGTH" \
+  --load-balance-method total_tokens \
+  --chunked-prefill-size 4096 \
+  --enable-mixed-chunk \
+  --schedule-policy lpm \
   "$@"
 
 
