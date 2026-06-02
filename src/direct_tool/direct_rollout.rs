@@ -195,13 +195,14 @@ pub struct RolloutSharedStates {
     num_active_rollouts: Arc<AtomicUsize>,
     num_active_long_running_rollouts: Arc<AtomicUsize>,
     total_llm_calls: Arc<AtomicUsize>,
+    #[allow(dead_code)]
     max_rollout_concurrency: usize,
     max_num_long_running_rollouts: usize,
     total_branches_to_finish: usize,
     total_trees_to_finish: usize,
 }
 
-const NUM_WARMUP_TREES: usize = 200;
+const NUM_WARMUP_TREES: usize = 100;
 
 #[derive(Debug, Clone, Copy)]
 pub struct StopRequestedError;
@@ -231,7 +232,7 @@ async fn rollout<M: LlmModelMarker>(
         num_active_rollouts,
         num_active_long_running_rollouts,
         total_llm_calls,
-        max_rollout_concurrency,
+        max_rollout_concurrency: _,
         max_num_long_running_rollouts,
         total_branches_to_finish,
         total_trees_to_finish,
@@ -340,12 +341,12 @@ async fn rollout<M: LlmModelMarker>(
                             long_running_guard = Some(guard);
                         }
                         None => {
-                            let current_concurrency = num_active_rollouts.load(Ordering::SeqCst);
-                            if (current_concurrency as u128) * 100
-                                <= (max_rollout_concurrency as u128) * 95
-                            {
-                                continue;
-                            }
+                            // let current_concurrency = num_active_rollouts.load(Ordering::SeqCst);
+                            // if (current_concurrency as u128) * 100
+                            //     <= (max_rollout_concurrency as u128) * 95
+                            // {
+                            //     continue;
+                            // }
                             let newly_finished_trees = newly_finished_trees.load(Ordering::SeqCst);
                             if newly_finished_trees < NUM_WARMUP_TREES {
                                 continue;

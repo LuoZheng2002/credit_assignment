@@ -1,5 +1,3 @@
-use research_utility::log_message::log_info;
-
 use crate::{
     direct_tool::{
         direct_rollout_config::BranchingPolicy,
