@@ -2,6 +2,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+use std::collections::VecDeque;
 
 use futures::StreamExt;
 use kll_rs::KllFloatSketch;
@@ -107,6 +108,7 @@ async fn run_progress_timer(
     deadline: Instant,
     total_secs: f32,
     stop_signal: Arc<AtomicBool>,
+    total_llm_calls: Arc<AtomicUsize>,
 ) {
     let log_time_progress = |now: Instant| {
         let elapsed_secs = (now - start_time).as_secs_f32().min(total_secs);
@@ -116,6 +118,10 @@ async fn run_progress_timer(
     };
 
     let mut next_progress_log_time = start_time;
+    let mut next_throughput_log_time = start_time;
+    let throughput_window = Duration::from_secs(5);
+    let throughput_log_interval = Duration::from_millis(500);
+    let mut llm_call_samples: VecDeque<(Instant, usize)> = VecDeque::new();
     loop {
         if stop_signal.load(Ordering::Relaxed) {
             break;
@@ -130,8 +136,40 @@ async fn run_progress_timer(
             next_progress_log_time += Duration::from_secs(1);
         }
 
+        if now >= next_throughput_log_time {
+            let current_llm_calls = total_llm_calls.load(Ordering::Relaxed);
+            llm_call_samples.push_back((now, current_llm_calls));
+            while let Some((sample_time, _)) = llm_call_samples.front() {
+                if now.duration_since(*sample_time) > throughput_window {
+                    llm_call_samples.pop_front();
+                } else {
+                    break;
+                }
+            }
+
+            let llm_call_throughput = if let Some((oldest_time, oldest_count)) = llm_call_samples.front() {
+                let elapsed_secs = now.duration_since(*oldest_time).as_secs_f64();
+                if elapsed_secs <= f64::EPSILON {
+                    0.0
+                } else {
+                    (current_llm_calls.saturating_sub(*oldest_count)) as f64 / elapsed_secs
+                }
+            } else {
+                0.0
+            };
+
+            log_key_value_pair(
+                "llm_call_throughput_per_sec_5s_window",
+                format!("{llm_call_throughput:.2}"),
+            );
+            next_throughput_log_time += throughput_log_interval;
+        }
+
         let wake_time = std::cmp::min(
-            std::cmp::min(next_progress_log_time, deadline),
+            std::cmp::min(
+                std::cmp::min(next_progress_log_time, next_throughput_log_time),
+                deadline,
+            ),
             Instant::now() + Duration::from_millis(100),
         );
         sleep_until(wake_time).await;
@@ -156,6 +194,7 @@ pub struct RolloutSharedStates {
     num_requeued: Arc<AtomicUsize>,
     num_active_rollouts: Arc<AtomicUsize>,
     num_active_long_running_rollouts: Arc<AtomicUsize>,
+    total_llm_calls: Arc<AtomicUsize>,
     max_rollout_concurrency: usize,
     max_num_long_running_rollouts: usize,
     total_branches_to_finish: usize,
@@ -191,6 +230,7 @@ async fn rollout<M: LlmModelMarker>(
         num_requeued,
         num_active_rollouts,
         num_active_long_running_rollouts,
+        total_llm_calls,
         max_rollout_concurrency,
         max_num_long_running_rollouts,
         total_branches_to_finish,
@@ -270,6 +310,7 @@ async fn rollout<M: LlmModelMarker>(
         }
         if action_is_llm_call(&action) {
             llm_calls_so_far += 1;
+            total_llm_calls.fetch_add(1, Ordering::Relaxed);
         }
         let newest_action_index = action_log.actions.len();
         action_log.actions.push(action);
@@ -423,6 +464,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let num_requeued = Arc::new(AtomicUsize::new(0));
     let max_num_long_running_rollouts = std::cmp::max(1, max_rollout_concurrency / 4);
     let num_active_long_running_rollouts = Arc::new(AtomicUsize::new(0));
+    let total_llm_calls = Arc::new(AtomicUsize::new(0));
     let total_branches_to_finish = question_keys.len() * rollout_config.max_num_total_trajectories;
     let total_trees_to_finish = question_keys.len();
 
@@ -441,6 +483,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         num_requeued,
         num_active_rollouts,
         num_active_long_running_rollouts,
+        total_llm_calls,
         max_rollout_concurrency,
         max_num_long_running_rollouts,
         total_branches_to_finish,
@@ -452,6 +495,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         deadline,
         total_secs,
         shared_states.stop_signal.clone(),
+        shared_states.total_llm_calls.clone(),
     ));
 
     let (queue_tx, queue_rx) = mpsc::unbounded_channel::<usize>();

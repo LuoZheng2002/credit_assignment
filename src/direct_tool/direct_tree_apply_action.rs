@@ -305,7 +305,6 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                 }
             }
         } else {
-            log_info("test3");
             DirectTreeStatus::Complete
         }
     }
