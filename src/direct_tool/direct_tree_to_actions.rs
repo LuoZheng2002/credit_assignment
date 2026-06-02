@@ -29,6 +29,8 @@ use crate::{
     },
 };
 
+const ENABLE_FORCED_NEW_BRANCH_START_TOKEN: bool = false;
+
 #[derive(Debug, Clone, Copy)]
 pub enum BranchingType {
     Node,
@@ -765,6 +767,11 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
     stop_signal: Arc<AtomicBool>,
     // rng: &mut StdRng,
 ) -> Result<SegmentContent<M>, StopRequestedError> {
+    let new_branch_start_token = if ENABLE_FORCED_NEW_BRANCH_START_TOKEN {
+        new_branch_start_token
+    } else {
+        None
+    };
     let last_trajectory_content = trajectory
         .trajectory_contents
         .last()
