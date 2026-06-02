@@ -14,7 +14,7 @@ use research_utility::{
 };
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant, sleep_until};
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::atomic_count_guard::AtomicCountGuard;
 use crate::{
@@ -457,17 +457,15 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         shared_states.stop_signal.clone(),
     ));
 
-    let queue_capacity = std::cmp::max(1, max_rollout_concurrency * 4);
-    let (queue_tx, queue_rx) = mpsc::channel::<usize>(queue_capacity);
+    let (queue_tx, queue_rx) = mpsc::unbounded_channel::<usize>();
     for question_key in question_keys {
         queue_tx
             .send(question_key)
-            .await
             .expect("initial rollout queue send should not fail");
     }
 
     let stop_signal_for_take_while = shared_states.stop_signal.clone();
-    let result_stream = ReceiverStream::new(queue_rx)
+    let result_stream = UnboundedReceiverStream::new(queue_rx)
         .take_while(move |_| {
             let stop_signal = stop_signal_for_take_while.clone();
             async move { !stop_signal.load(Ordering::Relaxed) }
@@ -516,7 +514,6 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
                 } else {
                     queue_tx
                         .send(flat_id)
-                        .await
                         .expect("requeue send should not fail while stream is active");
                 }
             }
