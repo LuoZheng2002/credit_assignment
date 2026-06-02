@@ -1,7 +1,7 @@
 cargo run --bin bin_orchestrator -- \
     --model-cli-name qwen3-0.6b \
-    --max-rollout-concurrency 200 \
-    --config-nickname tra16_2 \
+    --max-rollout-concurrency 400 \
+    --config-nickname tra16_3 \
     --validation-rollout-config-path config/rollout_config_validation.json \
     --training-rollout-config-path config/rollout_config_training_qwen3_06_temp0_7.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
