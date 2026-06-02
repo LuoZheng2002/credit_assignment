@@ -81,15 +81,26 @@ impl<M: LlmModelMarker> DirectTrajectory<M> {
             final_answer = Some(FinalAnswer::ModelProvided(boxed_content));
         }
         // check for problematic repetition
+        // if final_answer.is_none() {
+        //     let mut all_tokens: Vec<i32> = vec![];
+        //     for content in &self.trajectory_contents {
+        //         all_tokens.extend_from_slice(content.tokens());
+        //     }
+        //     if has_problematic_repetition(&all_tokens) {
+        //         final_answer = Some(FinalAnswer::Failure(
+        //             "Generation has problematic repetition.".to_string(),
+        //         ));
+        //     }
+        // }
+
         if final_answer.is_none() {
-            let mut all_tokens: Vec<i32> = vec![];
-            for content in &self.trajectory_contents {
-                all_tokens.extend_from_slice(content.tokens());
-            }
-            if has_problematic_repetition(&all_tokens) {
-                final_answer = Some(FinalAnswer::Failure(
-                    "Generation has problematic repetition.".to_string(),
-                ));
+            let number_of_turn = self.trajectory_contents.len();
+            let limit = 20;
+            if number_of_turn > limit {
+                final_answer = Some(FinalAnswer::Failure(format!(
+                    "Number of turn exceeded (number_of_turn={}, limit={})",
+                    number_of_turn, limit
+                )));
             }
         }
         final_answer
@@ -271,6 +282,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
 //     }
 // }
 
+#[allow(dead_code)]
 fn has_problematic_repetition(tokens: &[i32]) -> bool {
     let min_subsequence_length = 50; // minimum repeated subsequence length to avoid false positives
 

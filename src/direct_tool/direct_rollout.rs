@@ -1,8 +1,8 @@
+use std::collections::VecDeque;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
-use std::collections::VecDeque;
 
 use futures::StreamExt;
 use kll_rs::KllFloatSketch;
@@ -147,16 +147,17 @@ async fn run_progress_timer(
                 }
             }
 
-            let llm_call_throughput = if let Some((oldest_time, oldest_count)) = llm_call_samples.front() {
-                let elapsed_secs = now.duration_since(*oldest_time).as_secs_f64();
-                if elapsed_secs <= f64::EPSILON {
-                    0.0
+            let llm_call_throughput =
+                if let Some((oldest_time, oldest_count)) = llm_call_samples.front() {
+                    let elapsed_secs = now.duration_since(*oldest_time).as_secs_f64();
+                    if elapsed_secs <= f64::EPSILON {
+                        0.0
+                    } else {
+                        (current_llm_calls.saturating_sub(*oldest_count)) as f64 / elapsed_secs
+                    }
                 } else {
-                    (current_llm_calls.saturating_sub(*oldest_count)) as f64 / elapsed_secs
-                }
-            } else {
-                0.0
-            };
+                    0.0
+                };
 
             log_key_value_pair(
                 "llm_call_throughput_per_sec_5s_window",
@@ -190,7 +191,7 @@ pub struct RolloutSharedStates {
     num_finished_trees: Arc<AtomicUsize>,
     newly_finished_trees: Arc<AtomicUsize>,
     num_correct_branches: Arc<AtomicUsize>,
-    llm_call_stats: Arc<tokio::sync::RwLock<LlmCallStats>>,
+    llm_call_stats: Arc<parking_lot::RwLock<LlmCallStats>>,
     num_requeued: Arc<AtomicUsize>,
     num_active_rollouts: Arc<AtomicUsize>,
     num_active_long_running_rollouts: Arc<AtomicUsize>,
@@ -329,7 +330,7 @@ async fn rollout<M: LlmModelMarker>(
         }
 
         if long_running_guard.is_none() {
-            let q3 = llm_call_stats.read().await.q3();
+            let q3 = llm_call_stats.read().q3();
             if let Some(q3) = q3 {
                 if llm_calls_so_far > q3 {
                     match AtomicCountGuard::try_new_with_max(
@@ -376,7 +377,6 @@ async fn rollout<M: LlmModelMarker>(
     );
     let summary = llm_call_stats
         .write()
-        .await
         .update_and_get_summary(llm_calls_so_far);
     log_key_value_pair("min_llm_calls_per_tree", summary.min.to_string());
     log_key_value_pair("median_llm_calls_per_tree", summary.median.to_string());
@@ -461,7 +461,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let newly_finished_trees = Arc::new(AtomicUsize::new(0));
     let num_correct_branches = Arc::new(AtomicUsize::new(0));
     let num_active_rollouts = Arc::new(AtomicUsize::new(0));
-    let llm_call_stats = Arc::new(tokio::sync::RwLock::new(LlmCallStats::new()));
+    let llm_call_stats = Arc::new(parking_lot::RwLock::new(LlmCallStats::new()));
     let num_requeued = Arc::new(AtomicUsize::new(0));
     let max_num_long_running_rollouts = std::cmp::max(1, max_rollout_concurrency / 4);
     let num_active_long_running_rollouts = Arc::new(AtomicUsize::new(0));
