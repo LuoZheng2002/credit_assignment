@@ -393,7 +393,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let asset_file_dataset = AssetFileHybridDataset {
         split: rollout_config.split.clone(),
     };
-    let dataset = Arc::new(tokio::sync::Mutex::new(asset_file_dataset.fetch().await));
+    let dataset = Arc::new(asset_file_dataset.fetch().await);
     let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
         nickname: config_nickname,
         rollout_config: rollout_config.clone(),
@@ -406,10 +406,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let rollout_store =
         DirectTreeActionLogStore::<M>::initialize_if_missing(asset_file_action_logs.file_path())
             .await;
-    let mut question_keys = {
-        let dataset_guard = dataset.lock().await;
-        dataset_guard.get_keys().await.unwrap()
-    };
+    let mut question_keys = dataset.get_keys().await.unwrap();
     // sort by question id to ensure deterministic order
     question_keys.sort();
     let stop_signal = Arc::new(AtomicBool::new(false));
@@ -479,14 +476,11 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
             let client_clone = client.clone();
             let shared_states_clone = shared_states.clone();
             async move {
-                let question = {
-                    let dataset_guard = dataset.lock().await;
-                    dataset_guard
-                        .get(question_key)
-                        .await
-                        .unwrap()
-                        .expect("question key from rollout queue must exist")
-                };
+                let question = dataset
+                    .get(question_key)
+                    .await
+                    .unwrap()
+                    .expect("question key from rollout queue must exist");
                 rollout::<M>(
                     question,
                     rollout_config_clone,
