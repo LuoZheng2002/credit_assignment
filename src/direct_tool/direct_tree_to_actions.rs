@@ -11,7 +11,6 @@ use crate::atomic_count_guard::AtomicCountGuard;
 use crate::direct_tool::direct_rollout::StopRequestedError;
 use crate::direct_tool::direct_trajectory::{DirectTrajectory, TrajectoryContent};
 use crate::direct_tool::direct_tree_action::DirectTreeAction::SubmitAnswer;
-use crate::direct_tool::direct_tree_spontaneous_branching::TokenPositionInSegment;
 use crate::direct_tool::direct_tree_status::{
     GuidedBranchingSubStatus, SpontaneousBranchingSubStatus, TrunkSubStatus,
 };
@@ -194,9 +193,13 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                     ..
                 },
             ) => {
+                // Inject the branch-start token only on the first generation step of the new branch.
+                let generation_start_token = cumulative_content_array
+                    .is_empty()
+                    .then_some(*new_branch_start_token);
                 self.produce_collecting_segment_action(
                     cumulative_content_array,
-                    Some(*new_branch_start_token),
+                    generation_start_token,
                     llm_callable,
                     python_tool_pool,
                     sglang_waiting_workers,
@@ -612,11 +615,10 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
             ),
         };
 
-        DirectTreeAction::BranchFromSegmentOrNode {
+        DirectTreeAction::BranchFromSegmentOrNodeGuided {
             position,
             new_branch_start_token: token_score.token_id,
             branch_from_node,
-            position_in_segment: None,
         }
     }
 
@@ -628,30 +630,15 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
             return DirectTreeAction::NoAvailableBranchPoint;
         }
         let prefix_result = self.find_longest_common_prefix(finalized_content_array);
-        let Some(new_branch_start_token) = Self::token_from_segment_position(
-            finalized_content_array,
-            &prefix_result.diverge_position_in_query,
-        ) else {
-            return DirectTreeAction::NoAvailableBranchPoint;
-        };
 
         let position = prefix_result.diverge_position_in_tree;
         let branch_from_node = position.content_index == 0 && position.offset == 0;
 
-        DirectTreeAction::BranchFromSegmentOrNode {
+        DirectTreeAction::BranchFromSegmentOrNodeSpontaneous {
             position,
-            new_branch_start_token,
             branch_from_node,
-            position_in_segment: Some(prefix_result.diverge_position_in_query),
+            position_in_segment: prefix_result.diverge_position_in_query,
         }
-    }
-
-    fn token_from_segment_position(
-        content_array: &[SegmentContent<M>],
-        position: &TokenPositionInSegment,
-    ) -> Option<i32> {
-        let content = content_array.get(position.content_index)?;
-        content.tokens().get(position.offset).copied()
     }
 }
 

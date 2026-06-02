@@ -74,16 +74,14 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                 };
                 self.status = new_status;
             }
-            DirectTreeAction::BranchFromSegmentOrNode {
+            DirectTreeAction::BranchFromSegmentOrNodeGuided {
                 position,
                 new_branch_start_token,
                 branch_from_node,
-                position_in_segment,
             } => {
                 let position = position.clone();
                 let new_branch_start_token = *new_branch_start_token;
                 let branch_from_node = *branch_from_node;
-                let position_in_segment = position_in_segment.clone();
                 let new_status = match self.status.clone() {
                     DirectTreeStatus::WorkingOnGuidedBranching(
                         GuidedBranchingSubStatus::DeterminingBranchingPoint,
@@ -94,6 +92,19 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                             new_branch_start_token,
                         },
                     ),
+                    _ => unreachable!(),
+                };
+                self.status = new_status;
+            }
+            DirectTreeAction::BranchFromSegmentOrNodeSpontaneous {
+                position,
+                branch_from_node,
+                position_in_segment,
+            } => {
+                let position = position.clone();
+                let branch_from_node = *branch_from_node;
+                let position_in_segment = position_in_segment.clone();
+                let new_status = match self.status.clone() {
                     DirectTreeStatus::WorkingOnSpontaneousBranching(
                         SpontaneousBranchingSubStatus::DeterminingBranchingPoint {
                             finalized_content_array,
@@ -102,8 +113,7 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
                     ) => DirectTreeStatus::WorkingOnSpontaneousBranching(
                         SpontaneousBranchingSubStatus::PrefixTrimmingNewSegment {
                             position,
-                            position_in_segment: position_in_segment
-                                .expect("Spontaneous branching requires position_in_segment"),
+                            position_in_segment,
                             finalized_content_array,
                             branch_from_node,
                             final_answer,

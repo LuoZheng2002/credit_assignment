@@ -21,11 +21,15 @@ pub struct TokenPositionInTree {
 pub enum DirectTreeAction<M> {
     AppendSegmentContent(SegmentContent<M>),
     SubmitAnswer(FinalAnswer),
-    BranchFromSegmentOrNode {
+    BranchFromSegmentOrNodeGuided {
         position: TokenPositionInTree, // at least one of content_index and offset must be > 0, indicating the branching happens in the middle of a segment
         new_branch_start_token: i32,
         branch_from_node: bool,
-        position_in_segment: Option<TokenPositionInSegment>,
+    },
+    BranchFromSegmentOrNodeSpontaneous {
+        position: TokenPositionInTree,
+        branch_from_node: bool,
+        position_in_segment: TokenPositionInSegment,
     },
     NoAvailableBranchPoint, // this is in parallel with BranchFromSegment and BranchFromNode, indicating a failure in finding a valid branching token, in which case the agent should conclude the tree
     PrefixTrimNewSegment {
@@ -52,14 +56,21 @@ impl<M> Clone for DirectTreeAction<M> {
             DirectTreeAction::SubmitAnswer(final_answer) => {
                 DirectTreeAction::SubmitAnswer(final_answer.clone())
             }
-            DirectTreeAction::BranchFromSegmentOrNode {
+            DirectTreeAction::BranchFromSegmentOrNodeGuided {
                 position,
                 new_branch_start_token,
                 branch_from_node,
-                position_in_segment,
-            } => DirectTreeAction::BranchFromSegmentOrNode {
+            } => DirectTreeAction::BranchFromSegmentOrNodeGuided {
                 position: position.clone(),
                 new_branch_start_token: *new_branch_start_token,
+                branch_from_node: *branch_from_node,
+            },
+            DirectTreeAction::BranchFromSegmentOrNodeSpontaneous {
+                position,
+                branch_from_node,
+                position_in_segment,
+            } => DirectTreeAction::BranchFromSegmentOrNodeSpontaneous {
+                position: position.clone(),
                 branch_from_node: *branch_from_node,
                 position_in_segment: position_in_segment.clone(),
             },
