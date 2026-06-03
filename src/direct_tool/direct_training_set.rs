@@ -4,7 +4,7 @@ use futures::stream::{self, StreamExt};
 use ordered_float::NotNan;
 use research_utility::{
     asset_file::{AssetFile, Base64Hash, hash_file},
-    log_message::{log_info, log_key_value_pair, log_master_progress, log_warning},
+    progress_tui_server::{log_info, log_key_value_pair, log_master_progress, log_warning},
     sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
 };
 use serde::{Deserialize, Serialize};

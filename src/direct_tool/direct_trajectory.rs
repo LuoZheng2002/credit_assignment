@@ -1,4 +1,4 @@
-use research_utility::log_message::log_warning;
+use research_utility::progress_tui_server::log_warning;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},

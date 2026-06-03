@@ -1,6 +1,6 @@
 use std::sync::{Arc, atomic::AtomicUsize};
 
-use research_utility::log_message::log_key_value_pair;
+use research_utility::progress_tui_server::log_key_value_pair;
 
 pub struct AtomicCountGuard {
     count: Arc<AtomicUsize>,

@@ -1,5 +1,5 @@
 use futures::stream::{self, StreamExt};
-use research_utility::{asset_file::AssetFile, log_message::log_master_progress};
+use research_utility::{asset_file::AssetFile, progress_tui_server::log_master_progress};
 
 use crate::{
     direct_tool::{

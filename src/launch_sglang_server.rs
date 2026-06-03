@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use research_utility::log_message::log_info;
+use research_utility::progress_tui_server::log_info;
 use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep, timeout};
 

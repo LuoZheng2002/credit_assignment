@@ -1,7 +1,7 @@
 use std::sync::{Arc, atomic::AtomicUsize};
 
 use reqwest::Client;
-use research_utility::log_message::log_warning;
+use research_utility::progress_tui_server::log_warning;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::{Duration, sleep};

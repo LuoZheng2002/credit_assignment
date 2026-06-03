@@ -9,7 +9,7 @@ use kll_rs::KllFloatSketch;
 use reqwest::Client;
 use research_utility::{
     asset_file::AssetFile,
-    log_message::{
+    progress_tui_server::{
         delete_worker_progress_bar, log_key_value_pair, log_master_progress, log_worker_progress,
     },
 };

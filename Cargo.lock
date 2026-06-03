@@ -2582,13 +2582,16 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "blake3",
+ "clap",
  "crossterm",
+ "futures-util",
  "parking_lot",
  "ratatui",
  "rmp-serde",
  "rusqlite",
  "serde",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

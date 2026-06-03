@@ -1,4 +1,4 @@
-use std::{backtrace::Backtrace, io};
+use std::backtrace::Backtrace;
 
 use clap::{ArgAction, Parser, ValueEnum};
 use std::collections::BTreeMap;
@@ -14,13 +14,9 @@ use credit_assignment::{
     orchestrator::{OrchestrationProgress, OrchestrationStatus, Orchestrator},
     python_training_config::PythonTrainingConfigCommon,
 };
-use crossterm::{
-    cursor::Show,
-    event::DisableMouseCapture,
-    execute,
-    terminal::{LeaveAlternateScreen, disable_raw_mode},
+use research_utility::progress_tui_server::{
+    ProgressTuiServer, log_exit_hint, log_info, log_warning,
 };
-use research_utility::{log_message::log_info, progress_screen::ProgressScreen};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -69,16 +65,9 @@ struct Args {
     ui: bool,
 }
 
-fn restore_terminal_after_panic() {
-    let _ = disable_raw_mode();
-    let mut stderr = io::stderr();
-    let _ = execute!(stderr, LeaveAlternateScreen, DisableMouseCapture, Show);
-}
-
 #[tokio::main]
 async fn main() {
     std::panic::set_hook(Box::new(|info| {
-        restore_terminal_after_panic();
         eprintln!("panic occurred: {}", info);
         let rust_backtrace = std::env::var("RUST_BACKTRACE").ok();
         if matches!(rust_backtrace.as_deref(), Some("1") | Some("full")) {
@@ -116,7 +105,7 @@ async fn main() {
     );
 
     if ui {
-        ProgressScreen::initialize("Orchestrator Progress", true, message_log_path)
+        ProgressTuiServer::initialize(message_log_path, |_command| {})
             .await
             .unwrap();
     }
@@ -187,9 +176,10 @@ async fn main() {
         LlmModelName::Qwen35_4b => orchestrator.orchestrate::<Qwen35_4B>().await,
     };
     if let Err(e) = result {
-        ProgressScreen::set_persist_exit_hint(format!("Orchestrator exits with error: {}", e));
+        log_exit_hint(format!("Orchestrator exits with error: {}", e));
+        log_warning(format!("Orchestrator exits with error: {}", e));
     }
     if ui {
-        ProgressScreen::shutdown().await.unwrap();
+        ProgressTuiServer::shutdown().await.unwrap();
     }
 }

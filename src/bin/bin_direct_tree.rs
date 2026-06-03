@@ -14,7 +14,7 @@ use credit_assignment::{
     },
 };
 use reqwest::Client;
-use research_utility::progress_screen::ProgressScreen;
+use research_utility::progress_tui_server::ProgressTuiServer;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -89,13 +89,9 @@ async fn main() {
 
     let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
     if ui {
-        ProgressScreen::initialize(
-            "Bin Direct Tree Rollout Progress",
-            true,
-            sglang_server_log_path.clone(),
-        )
-        .await
-        .unwrap();
+        ProgressTuiServer::initialize(sglang_server_log_path.clone(), |_command| {})
+            .await
+            .unwrap();
     }
     let program_config = RolloutProgramConfig {
         config_nickname,
@@ -117,6 +113,6 @@ async fn main() {
         LlmModelName::Gpt4o => rollout_all::<Gpt4o>(program_config).await,
     }
     if ui {
-        ProgressScreen::shutdown().await.unwrap();
+        ProgressTuiServer::shutdown().await.unwrap();
     }
 }

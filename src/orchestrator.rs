@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use research_utility::{
     asset_file::AssetFile,
-    log_message::{log_info, log_key_value_pair},
+    progress_tui_server::{log_info, log_key_value_pair},
 };
 use serde::{Deserialize, Serialize};
 use tokio::process::Child;

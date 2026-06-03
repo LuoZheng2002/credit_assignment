@@ -15,4 +15,7 @@ pub mod token_array;
 pub mod tool_call_python;
 pub mod util;
 
-pub use research_utility::{asset_file, message, progress_screen, sqlite_store};
+pub use research_utility::{
+    asset_file, message, progress_tui_client, progress_tui_protocol, progress_tui_server,
+    sqlite_store,
+};
