@@ -10,8 +10,7 @@ fi
 hostname="$1"
 port="$2"
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$script_dir/../research-utility"
+cd "../research-utility"
 
 cargo run --bin bin_progress_tui -- \
     --addr "$hostname:$port"
