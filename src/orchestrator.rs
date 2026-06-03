@@ -294,10 +294,10 @@ impl Orchestrator {
             ));
             return Ok(());
         }
-
-        if epoch == 0 {
-            let model_parent_dir =
+        let model_parent_dir =
                 model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+        if epoch == 0 {
+            
             crate::load_initial_model::load_initial_model(&model_parent_dir, M::API_NAME).await?;
         }
 
@@ -305,12 +305,12 @@ impl Orchestrator {
             "Launching inference server for model {}",
             M::CLI_NAME,
         ));
-        let mut model_path = model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
-        model_path += "/model";
+        // let mut model_path = model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+        let model_path = format!("{}/model", model_parent_dir);
         log_info(format!("Using model folder path: {}", model_path));
         let (sglang_port, process) =
             launch_sglang_server_process::<M>(&model_path, self.sglang_server_log_path.as_deref())
-                .await;
+                .await?;
         log_info(format!(
             "SGLang server is listening on port {}",
             sglang_port

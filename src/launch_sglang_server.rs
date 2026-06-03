@@ -19,7 +19,7 @@ pub fn model_uses_sglang<M: LlmModelMarker>() -> bool {
 pub async fn launch_sglang_server_process<M: LlmModelMarker>(
     model_path: &str,
     sglang_server_log_path: Option<&str>,
-) -> (u16, Child) {
+) -> Result<(u16, Child), String> {
     let sglang_port = resolve_sglang_port();
     let mut command = Command::new("uv");
     command
@@ -84,8 +84,8 @@ pub async fn launch_sglang_server_process<M: LlmModelMarker>(
         )
     });
 
-    wait_for_sglang_ready(sglang_port, &mut process).await;
-    (sglang_port, process)
+    wait_for_sglang_ready(sglang_port, &mut process).await?;
+    Ok((sglang_port, process))
 }
 
 pub async fn shut_down_sglang_server_process(process: &mut Child) {
@@ -245,7 +245,7 @@ async fn is_port_listening(port: u16) -> bool {
     .is_ok_and(|result| result.is_ok())
 }
 
-async fn wait_for_sglang_ready(port: u16, process: &mut Child) {
+async fn wait_for_sglang_ready(port: u16, process: &mut Child) -> Result<(), String> {
     let timeout_duration = Duration::from_secs(180);
     let sleep_interval = Duration::from_millis(500);
     let start = Instant::now();
@@ -259,31 +259,31 @@ async fn wait_for_sglang_ready(port: u16, process: &mut Child) {
         .await
         .is_ok_and(|result| result.is_ok())
         {
-            return;
+            return Ok(());
         }
 
         match process.try_wait() {
             Ok(Some(status)) => {
-                panic!(
+                return Err(format!(
                     "Sglang process exited before becoming ready (status: {}).",
                     status
-                );
+                ));
             }
             Ok(None) => {}
             Err(err) => {
-                panic!(
+                return Err(format!(
                     "Failed to check sglang process status while waiting: {}",
                     err
-                );
+                ));
             }
         }
 
         if start.elapsed() >= timeout_duration {
-            panic!(
+            return Err(format!(
                 "Timed out waiting for sglang to listen on port {} after {} seconds",
                 port,
                 timeout_duration.as_secs()
-            );
+            ));
         }
         sleep(sleep_interval).await;
     }
