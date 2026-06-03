@@ -1,4 +1,17 @@
+#!/usr/bin/env bash
 
-cd ../research-utility
+set -euo pipefail
+
+if [ "$#" -ne 2 ]; then
+    echo "Usage: $0 <hostname> <port>"
+    exit 1
+fi
+
+hostname="$1"
+port="$2"
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$script_dir/../research-utility"
+
 cargo run --bin bin_progress_tui -- \
-    --addr 127.0.0.1:7878
+    --addr "$hostname:$port"
