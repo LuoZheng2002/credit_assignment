@@ -70,28 +70,8 @@ impl PythonToolResponse {
     }
 }
 
-const MAX_TOOL_OUTPUT_CHARS: usize = 2000;
 const PYTHON_TOOL_TIMEOUT_MS: u64 = 5000;
 const PYTHON_TOOL_QUEUE_TIMEOUT_MS: u64 = PYTHON_TOOL_TIMEOUT_MS + 1000;
-
-fn format_limited_output(output: String, max_chars: usize) -> String {
-    assert!(max_chars > 0, "max_chars must be greater than zero");
-    let output_len = output.chars().count();
-    if output_len <= max_chars {
-        return output;
-    }
-    log_warning(format!(
-        "Python output length limit exceeded, truncated to {} characters.",
-        max_chars
-    ));
-
-    let truncated: String = output.chars().take(max_chars).collect();
-    let omitted_len = output_len - max_chars;
-    format!(
-        "{}\n[Output truncated: original_length={}, shown={}, omitted={}]",
-        truncated, output_len, max_chars, omitted_len
-    )
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PythonToolRequestWire {
@@ -266,10 +246,7 @@ impl PythonToolServerPool {
                         "Python interpreter did not return any output. Please use print statements to retrieve results.".to_string(),
                     );
                 }
-                PythonToolResponse::PythonSuccess(format_limited_output(
-                    output,
-                    MAX_TOOL_OUTPUT_CHARS,
-                ))
+                PythonToolResponse::PythonSuccess(output)
             }
             PythonToolResponse::PythonError(error) => PythonToolResponse::PythonError(error),
         }
@@ -503,45 +480,4 @@ pub async fn execute_python_tool_call(
     }
     let code = &trimmed_tool_call[code_start..fence_end_index];
     pool.execute_code(code.to_string()).await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::format_limited_output;
-
-    #[test]
-    fn no_truncation_when_below_limit() {
-        let output = "hello".to_string();
-        let result = format_limited_output(output.clone(), 2000);
-        assert_eq!(result, output);
-    }
-
-    #[test]
-    fn no_truncation_when_equal_to_limit() {
-        let output = "a".repeat(2000);
-        let result = format_limited_output(output.clone(), 2000);
-        assert_eq!(result, output);
-    }
-
-    #[test]
-    fn truncates_when_exceeding_limit() {
-        let output = "b".repeat(2005);
-        let result = format_limited_output(output, 2000);
-        let expected_prefix = "b".repeat(2000);
-        assert!(result.starts_with(&expected_prefix));
-        assert!(
-            result.ends_with("[Output truncated: original_length=2005, shown=2000, omitted=5]")
-        );
-    }
-
-    #[test]
-    fn truncates_unicode_by_character_count() {
-        let output = "你".repeat(2001);
-        let result = format_limited_output(output, 2000);
-        let expected_prefix = "你".repeat(2000);
-        assert!(result.starts_with(&expected_prefix));
-        assert!(
-            result.ends_with("[Output truncated: original_length=2001, shown=2000, omitted=1]")
-        );
-    }
 }

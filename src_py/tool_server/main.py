@@ -29,6 +29,9 @@ class _ExecutionTimeoutError(Exception):
     pass
 
 
+MAX_TOOL_OUTPUT_CHARS = 2000
+
+
 def _load_dotenv_if_present(dotenv_path: str = ".env") -> None:
     path = Path(dotenv_path)
     if not path.exists() or not path.is_file():
@@ -106,6 +109,22 @@ def execute_with_trailing_expression(
         signal.signal(signal.SIGALRM, previous_handler)
 
 
+def format_limited_output(output: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        raise ValueError("max_chars must be greater than zero")
+    output_len = len(output)
+    if output_len <= max_chars:
+        return output
+
+    truncated = output[:max_chars]
+    omitted_len = output_len - max_chars
+    return (
+        f"{truncated}\n"
+        "[Output truncated: "
+        f"original_length={output_len}, shown={max_chars}, omitted={omitted_len}]"
+    )
+
+
 def main() -> int:
     _load_dotenv_if_present()
 
@@ -145,6 +164,7 @@ def main() -> int:
             try:
                 namespace = create_request_namespace()
                 output = execute_with_trailing_expression(code, namespace, timeout_ms)
+                output = format_limited_output(output, MAX_TOOL_OUTPUT_CHARS)
                 response = {"id": request_id, "ok": True, "output": output}
             except _ExecutionTimeoutError as error:
                 response = {"id": request_id, "ok": False, "error": str(error)}

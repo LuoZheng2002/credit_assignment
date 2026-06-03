@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::LazyLock};
+use std::{collections::BTreeMap, path::Path, sync::LazyLock};
 
 use minijinja::context;
 use research_utility::{
@@ -29,41 +29,99 @@ use crate::{
 };
 
 pub const MODEL_PARENT_DIR_TEMPLATE_PATH: &str = "config/training/model_parent_dir.jinja";
+pub const MODEL_CHECKPOINT_DIR_TEMPLATE_PATH: &str = "config/training/model_checkpoint_dir.jinja";
+pub const MODEL_METRICS_PATH_TEMPLATE_PATH: &str = "config/training/model_metrics_path.jinja";
 
-pub static MODEL_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
-    Result<minijinja::Environment<'static>, String>,
-> = LazyLock::new(|| {
-    let template_source = std::fs::read_to_string(MODEL_PARENT_DIR_TEMPLATE_PATH)
-        .map_err(|err| format!("Failed to read {}: {}", MODEL_PARENT_DIR_TEMPLATE_PATH, err))?;
+fn load_template_environment(
+    template_path: &str,
+    template_name: &'static str,
+) -> Result<minijinja::Environment<'static>, String> {
+    let template_source =
+        std::fs::read_to_string(template_path).map_err(|err| format!("Failed to read {}: {}", template_path, err))?;
     let mut env = minijinja::Environment::new();
-    env.add_template_owned("model_parent_dir", template_source)
-        .map_err(|err| format!("Failed to parse model_parent_dir template: {}", err))?;
+    env.add_template_owned(template_name, template_source)
+        .map_err(|err| format!("Failed to parse {} template: {}", template_name, err))?;
     Ok(env)
-});
+}
 
-pub fn model_parent_dir_from_template(
+fn render_template_for_epoch(
+    template_env: &LazyLock<Result<minijinja::Environment<'static>, String>>,
+    template_name: &'static str,
     model_cli_name: &str,
     config_nickname: &str,
     epoch: usize,
 ) -> Result<String, String> {
-    let env = MODEL_PARENT_DIR_TEMPLATE_ENVIRONMENT
-        .as_ref()
-        .map_err(|err| err.clone())?;
+    let env = template_env.as_ref().map_err(|err| err.clone())?;
     let template = env
-        .get_template("model_parent_dir")
-        .map_err(|err| format!("Failed to load model_parent_dir template: {}", err))?;
+        .get_template(template_name)
+        .map_err(|err| format!("Failed to load {} template: {}", template_name, err))?;
     let rendered = template
         .render(context! {
             model_cli_name => model_cli_name,
             config_nickname => config_nickname,
             epoch => epoch,
         })
-        .map_err(|err| format!("Failed to render model_parent_dir template: {}", err))?;
+        .map_err(|err| format!("Failed to render {} template: {}", template_name, err))?;
     let rendered = rendered.trim().to_string();
     if rendered.is_empty() {
-        return Err("Rendered model_parent_dir template is empty".to_string());
+        return Err(format!("Rendered {} template is empty", template_name));
     }
     Ok(rendered)
+}
+
+pub static MODEL_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| load_template_environment(MODEL_PARENT_DIR_TEMPLATE_PATH, "model_parent_dir"));
+
+pub static MODEL_CHECKPOINT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> =
+    LazyLock::new(|| load_template_environment(MODEL_CHECKPOINT_DIR_TEMPLATE_PATH, "model_checkpoint_dir"));
+
+pub static MODEL_METRICS_PATH_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| load_template_environment(MODEL_METRICS_PATH_TEMPLATE_PATH, "model_metrics_path"));
+
+pub fn model_parent_dir_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+) -> Result<String, String> {
+    render_template_for_epoch(
+        &MODEL_PARENT_DIR_TEMPLATE_ENVIRONMENT,
+        "model_parent_dir",
+        model_cli_name,
+        config_nickname,
+        epoch,
+    )
+}
+
+pub fn model_checkpoint_dir_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+) -> Result<String, String> {
+    render_template_for_epoch(
+        &MODEL_CHECKPOINT_DIR_TEMPLATE_ENVIRONMENT,
+        "model_checkpoint_dir",
+        model_cli_name,
+        config_nickname,
+        epoch,
+    )
+}
+
+pub fn model_metrics_path_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+) -> Result<String, String> {
+    render_template_for_epoch(
+        &MODEL_METRICS_PATH_TEMPLATE_ENVIRONMENT,
+        "model_metrics_path",
+        model_cli_name,
+        config_nickname,
+        epoch,
+    )
 }
 
 pub struct Orchestrator {
@@ -146,7 +204,7 @@ impl Orchestrator {
                 }
                 OrchestrationStatus::WorkingOnRolloutCollection => {
                     self.ensure_inference_server_launched::<M>(epoch).await?;
-                    self.collect_training_rollout::<M>(epoch).await;
+                    self.collect_training_rollout::<M>(epoch).await?;
                     // after rollout collection, we can shut down the inference server
                     self.ensure_inference_server_shut_down::<M>().await;
                     self.update_and_save_progress::<M>(
@@ -401,8 +459,9 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn collect_training_rollout<M: LlmModelMarker>(&self, epoch: usize) {
+    async fn collect_training_rollout<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
         log_info("Collecting training rollout");
+        self.remove_epoch_training_checkpoints::<M>(epoch)?;
         let Some(sglang_server_handle) = &self.inference_server_handle else {
             panic!("Orchestrator did not launch the sglang server before generating training set");
         };
@@ -423,6 +482,59 @@ impl Orchestrator {
         };
         rollout_all::<M>(training_set_rollout_program_config).await;
         log_info("Finished collecting training rollout");
+        Ok(())
+    }
+
+    fn remove_epoch_training_checkpoints<M: LlmModelMarker>(
+        &self,
+        epoch: usize,
+    ) -> Result<(), String> {
+        let checkpoint_parent_dir =
+            model_checkpoint_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+        let metrics_path = model_metrics_path_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+        let checkpoints_dir = format!("{}/checkpoints", checkpoint_parent_dir);
+        let latest_checkpoint_path = format!("{}/latest_checkpoint.txt", checkpoint_parent_dir);
+
+        if Path::new(&checkpoints_dir).exists() {
+            std::fs::remove_dir_all(&checkpoints_dir).map_err(|err| {
+                format!(
+                    "Failed to remove checkpoint directory for epoch {} ({}): {}",
+                    epoch, checkpoints_dir, err
+                )
+            })?;
+            log_info(format!(
+                "Removed stale checkpoint directory for epoch {}: {}",
+                epoch, checkpoints_dir
+            ));
+        }
+
+        if Path::new(&latest_checkpoint_path).exists() {
+            std::fs::remove_file(&latest_checkpoint_path).map_err(|err| {
+                format!(
+                    "Failed to remove latest checkpoint pointer for epoch {} ({}): {}",
+                    epoch, latest_checkpoint_path, err
+                )
+            })?;
+            log_info(format!(
+                "Removed stale latest checkpoint pointer for epoch {}: {}",
+                epoch, latest_checkpoint_path
+            ));
+        }
+
+        if Path::new(&metrics_path).exists() {
+            std::fs::remove_file(&metrics_path).map_err(|err| {
+                format!(
+                    "Failed to remove training metrics file for epoch {} ({}): {}",
+                    epoch, metrics_path, err
+                )
+            })?;
+            log_info(format!(
+                "Removed stale training metrics file for epoch {}: {}",
+                epoch, metrics_path
+            ));
+        }
+
+        Ok(())
     }
 
     async fn generate_training_set<M: LlmModelMarker>(&self, epoch: usize) {
@@ -458,6 +570,8 @@ impl Orchestrator {
         let training_trajectory_sqlite_path = asset_file_training_trajectories.file_path();
         let model_parent_dir =
             model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+        let checkpoints_parent_dir =
+            model_checkpoint_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
         let final_model_output_parent_dir =
             model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch + 1)?;
         // first we need to write the training config to the expected location
@@ -467,7 +581,7 @@ impl Orchestrator {
             num_iterations_limit: self.num_iterations_limit,
             model_parent_dir,
             training_trajectory_sqlite_path,
-            checkpoints_parent_dir: self.epoch_dir::<M>(epoch),
+            checkpoints_parent_dir,
             final_model_output_parent_dir,
         };
         let training_config_path = self.python_training_config_path::<M>(epoch);
@@ -492,15 +606,6 @@ impl Orchestrator {
         }
         log_info("Finished training model.");
         Ok(())
-    }
-
-    fn epoch_dir<M: LlmModelMarker>(&self, epoch: usize) -> String {
-        format!(
-            "results/{}/{}/epoch_{}",
-            M::CLI_NAME,
-            self.config_nickname,
-            epoch
-        )
     }
 
     fn python_training_config_path<M: LlmModelMarker>(&self, epoch: usize) -> String {
