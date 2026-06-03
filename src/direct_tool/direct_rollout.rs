@@ -17,16 +17,17 @@ use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep_until};
 
 use crate::atomic_count_guard::AtomicCountGuard;
+use crate::direct_tool::direct_tree_action_log::DirectTreeActionLog;
 use crate::{
     direct_tool::{
         direct_rollout_config::DirectRolloutConfig,
         direct_tree::{DirectTree, SegmentContent},
         direct_tree_action::DirectTreeAction,
         direct_tree_action_log::{
-            AssetFileDirectTreeActionLogs, DirectTreeActionLogMetadata,
-            DirectTreeActionLogStore, DirectTreeActionLogStoreAdapter,
+            ActionStoreAdapter, AssetFileDirectTreeActionLogs, DirectTreeActionLogMetadata,
+            DirectTreeActionLogStore,
         },
-        hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
+        hybrid_dataset::AssetFileHybridDataset,
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     llm_model::{LlmCallable, LlmCliArgs, LlmModelMarker},
@@ -193,10 +194,8 @@ pub struct RolloutSharedStates {
 pub struct StopRequestedError;
 
 async fn rollout<M: LlmModelMarker>(
-    question: HybridDatasetQuestion,
-    rollout_config: DirectRolloutConfig,
-    posterior_calculation_config: PosteriorCalculationConfig,
-    rollout_store: DirectTreeActionLogStoreAdapter<M>,
+    mut action_log: DirectTreeActionLog<M>,
+    action_store: ActionStoreAdapter<M>,
     llm_callable: M::Callable,
     client: Client,
     shared_states: RolloutSharedStates,
@@ -224,27 +223,27 @@ async fn rollout<M: LlmModelMarker>(
     {
         let _sqlite_waiting_workers_guard =
             AtomicCountGuard::new(sqlite_waiting_workers.clone(), "sqlite_waiting_workers");
-        rollout_store
-            .get_or_init_metadata(
-                question.flat_id,
-                &DirectTreeActionLogMetadata {
-                    question: question.clone(),
-                    rollout_config: rollout_config.clone(),
-                    posterior_calculation_config: posterior_calculation_config.clone(),
-                },
-            )
-            .await
-            .unwrap();
+        // rollout_store
+        //     .get_or_init_metadata(
+        //         question.flat_id,
+        //         &DirectTreeActionLogMetadata {
+        //             question: question.clone(),
+        //             rollout_config: rollout_config.clone(),
+        //             posterior_calculation_config: posterior_calculation_config.clone(),
+        //         },
+        //     )
+        //     .await
+        //     .unwrap();
     }
-    let mut action_log = {
-        let _sqlite_waiting_workers_guard =
-            AtomicCountGuard::new(sqlite_waiting_workers.clone(), "sqlite_waiting_workers");
-        rollout_store
-            .get(question.flat_id)
-            .await
-            .unwrap()
-            .expect("metadata must exist right after initialization")
-    };
+    // let mut action_log = {
+    //     let _sqlite_waiting_workers_guard =
+    //         AtomicCountGuard::new(sqlite_waiting_workers.clone(), "sqlite_waiting_workers");
+    //     rollout_store
+    //         .get(question.flat_id)
+    //         .await
+    //         .unwrap()
+    //         .expect("metadata must exist right after initialization")
+    // };
     let mut llm_calls_so_far = action_log
         .actions
         .iter()
@@ -295,18 +294,14 @@ async fn rollout<M: LlmModelMarker>(
         }
         let newest_action_index = action_log.actions.len();
         action_log.actions.push(action);
-        {
-            let _sqlite_waiting_workers_guard =
-                AtomicCountGuard::new(sqlite_waiting_workers.clone(), "sqlite_waiting_workers");
-            rollout_store
-                .append_action_at(
-                    question.flat_id,
-                    newest_action_index,
-                    action_log.actions.last().unwrap(),
-                )
-                .await
-                .unwrap();
-        }
+        action_store
+            .append_action_at(
+                action_log.question.flat_id,
+                newest_action_index,
+                action_log.actions.last().unwrap(),
+            )
+            .await
+            .unwrap();
     }
     // log_info(format!("Rollout {} finished", question.flat_id));
     let finished = num_finished_trees.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -388,9 +383,12 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     };
     asset_file_action_logs.delete_target_file_if_stale();
     asset_file_action_logs.create_tracking_file();
-    let rollout_store = DirectTreeActionLogStoreAdapter::new(
-        DirectTreeActionLogStore::<M>::initialize_if_missing(asset_file_action_logs.file_path()),
-    );
+    let DirectTreeActionLogStore {
+        metadata_store,
+        action_store,
+        _phantom,
+    } = DirectTreeActionLogStore::<M>::initialize_if_missing(asset_file_action_logs.file_path());
+    let action_store_adapter = ActionStoreAdapter::new(action_store);
     let mut question_keys = dataset.get_keys().unwrap();
     // sort by question id to ensure deterministic order
     question_keys.sort();
@@ -447,11 +445,35 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
                     .get(question_key)
                     .unwrap()
                     .expect("question key from rollout queue must exist");
+                // get or init metadata here
+
+                // let action_log = DirectTreeActionLog::get_or_init_metadata(
+                //     &metadata_store,
+                //     question_key,
+                //     &DirectTreeActionLogMetadata {
+                //         question: question.clone(),
+                //         rollout_config: rollout_config.clone(),
+                //         posterior_calculation_config: posterior_calculation_config.clone(),
+                //     },
+                // )?;
+                let rollout_metadata = metadata_store.get_or_init(
+                    question_key,
+                    ||{DirectTreeActionLogMetadata {
+                        question: question.clone(),
+                        rollout_config: rollout_config.clone(),
+                        posterior_calculation_config: posterior_calculation_config.clone(),
+                    }},
+                    None,
+                ).expect("metadata must exist right after initialization");
+                let actions = action_store_adapter.get_or_init_actions(question_key).await.unwrap();
+
+                let action_log = DirectTreeActionLog::from_metadata_and_actions(
+                    rollout_metadata,
+                    actions,
+                );
                 join_set.spawn(rollout::<M>(
-                    question,
-                    rollout_config.clone(),
-                    posterior_calculation_config.clone(),
-                    rollout_store.clone(),
+                    action_log,
+                    action_store_adapter.clone(),
                     llm_callable.clone(),
                     client.clone(),
                     shared_states.clone(),

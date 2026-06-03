@@ -1,7 +1,6 @@
 use std::backtrace::Backtrace;
 use std::error::Error;
 use std::io::{self, Stdout};
-use std::sync::{Arc, Mutex};
 
 use clap::Parser;
 use credit_assignment::direct_tool::direct_rollout_config::AdvantageCalculationPolicy;
@@ -87,7 +86,7 @@ impl PaneFocus {
 }
 
 struct App<M: LlmModelMarker> {
-    store: Arc<Mutex<SqliteStore<usize, DirectTrainingTrajectory<M>>>>,
+    store: SqliteStore<usize, DirectTrainingTrajectory<M>>,
     keys: Vec<usize>,
     selected_index: usize,
     focus: PaneFocus,
@@ -107,7 +106,7 @@ struct App<M: LlmModelMarker> {
 
 impl<M: LlmModelMarker> App<M> {
     fn new(
-        store: Arc<Mutex<SqliteStore<usize, DirectTrainingTrajectory<M>>>>,
+        store: SqliteStore<usize, DirectTrainingTrajectory<M>>,
         keys: Vec<usize>,
         statistics: Option<DirectTrainingSetStatistics>,
     ) -> Self {
@@ -147,8 +146,6 @@ impl<M: LlmModelMarker> App<M> {
         let key = self.keys[self.selected_index];
         let trajectory = self
             .store
-            .lock()
-            .unwrap()
             .get(key)
             .unwrap()
             .expect("key from sqlite key set must exist");
@@ -732,8 +729,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         _phantom: std::marker::PhantomData::<M>,
     };
     let training_set_store = asset_file_training_set.fetch().await;
-    let training_set_store = Arc::new(Mutex::new(training_set_store));
-    let mut keys = training_set_store.lock().unwrap().get_keys().unwrap();
+    let mut keys = training_set_store.get_keys().unwrap();
     keys.sort();
     let statistics =
         read_json::<DirectTrainingSetStatistics>(asset_file_training_set.statistics_file_path())

@@ -507,7 +507,8 @@ impl<M: LlmModelMarker> App<M> {
         let key = self.entry_keys[index];
         let state = match self.action_log_store.get(key) {
             Ok(Some(action_log)) => {
-                let (num_correct, num_leaves, win_rate) = question_stats_from_action_log::<M>(&action_log);
+                let (num_correct, num_leaves, win_rate) =
+                    question_stats_from_action_log::<M>(&action_log);
                 EntryLoadState::Loaded(QuestionEntry {
                     key,
                     action_log,

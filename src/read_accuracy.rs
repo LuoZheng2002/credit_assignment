@@ -38,14 +38,12 @@ pub async fn read_accuracy<M: LlmModelMarker>(
     const MAX_CONCURRENT_TASKS: usize = 200;
     let action_logs_store = &action_logs_store;
     let mut result_stream = stream::iter(keys.into_iter())
-        .map(|key| {
-            async move {
-                let action_log = action_logs_store
-                    .get(key)
-                    .unwrap()
-                    .expect("key from sqlite key set must exist");
-                question_is_correct::<M>(&action_log)
-            }
+        .map(|key| async move {
+            let action_log = action_logs_store
+                .get(key)
+                .unwrap()
+                .expect("key from sqlite key set must exist");
+            question_is_correct::<M>(&action_log)
         })
         .buffer_unordered(MAX_CONCURRENT_TASKS);
 

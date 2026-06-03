@@ -17,7 +17,6 @@ use crate::{
         direct_tree::{DirectTree, SegmentContent, SegmentId},
         direct_tree_action_log::{
             AssetFileDirectTreeActionLogs, DirectTreeActionLog, DirectTreeActionLogStore,
-            DirectTreeActionLogStoreAdapter,
         },
         hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
@@ -132,17 +131,23 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     statistics_file_path: String,
     advantage_calculation_policy: AdvantageCalculationPolicy,
 ) {
+    // let DirectTreeActionLogStore {
+    //     action_store,
+    //     metadata_store,
+    //     _phantom,
+    // } = action_log_store;
     assert!(
         cumulative_avg_abs_advantage_cutoff > 0.0 && cumulative_avg_abs_advantage_cutoff <= 1.0,
         "cumulative_avg_abs_advantage_cutoff must be in (0.0, 1.0]"
     );
-    let action_log_store = DirectTreeActionLogStoreAdapter::new(action_log_store);
-    let (keys, selection_output) = select_training_trajectories_from_rollout_logs::<M>(
-        &action_log_store,
-        cumulative_avg_abs_advantage_cutoff,
-        advantage_calculation_policy,
-    )
-    .await;
+    // let action_log_store = ActionStoreAdapter::new(action_store);
+    let (keys, selection_output, action_log_store) =
+        select_training_trajectories_from_rollout_logs::<M>(
+            action_log_store,
+            cumulative_avg_abs_advantage_cutoff,
+            advantage_calculation_policy,
+        )
+        .await;
     let TrainingTrajectorySelectionOutput {
         selected_metadata,
         all_average_absolute_advantages,
@@ -150,7 +155,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         average_absolute_advantage_cutoff,
     } = selection_output;
     let adopted_trajectories = materialize_selected_training_trajectories::<M>(
-        &action_log_store,
+        action_log_store,
         training_trajectory_store,
         &keys,
         selected_metadata,
@@ -191,11 +196,16 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
 }
 
 async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker>(
-    action_log_store: &DirectTreeActionLogStoreAdapter<M>,
+    // action_log_store: &ActionStoreAdapter<M>,
+    action_log_store: DirectTreeActionLogStore<M>,
     cumulative_avg_abs_advantage_cutoff: f32,
     advantage_calculation_policy: AdvantageCalculationPolicy,
-) -> (Vec<usize>, TrainingTrajectorySelectionOutput) {
-    let mut keys = action_log_store.get_keys().await.unwrap();
+) -> (
+    Vec<usize>,
+    TrainingTrajectorySelectionOutput,
+    DirectTreeActionLogStore<M>,
+) {
+    let mut keys = action_log_store.metadata_store.get_keys().unwrap();
     let num_keys = keys.len();
     keys.sort();
 
@@ -213,11 +223,10 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker>(
                 let sample_index = next_sample_index;
                 let key = keys[sample_index];
                 next_sample_index += 1;
-                let action_log_store = action_log_store.clone();
+                let action_log = action_log_store.get(key).unwrap().unwrap();
                 let advantage_calculation_policy = advantage_calculation_policy.clone();
                 join_set.spawn(async move {
                     let _permit = permit;
-                    let action_log = action_log_store.get(key).await.unwrap().unwrap();
                     let trajectory_summaries = action_log_to_candidate_summaries::<M>(
                         action_log,
                         advantage_calculation_policy,
@@ -261,11 +270,11 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker>(
         }
     }
 
-    (keys, selection_state.into_output())
+    (keys, selection_state.into_output(), action_log_store)
 }
 
 async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
-    action_log_store: &DirectTreeActionLogStoreAdapter<M>,
+    action_log_store: DirectTreeActionLogStore<M>,
     training_trajectory_store: SqliteStore<usize, DirectTrainingTrajectory<M>>,
     keys: &[usize],
     mut selected_metadata: Vec<TrajectoryMetadata>,
@@ -301,15 +310,13 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
             permit_result = semaphore.clone().acquire_owned(), if next_output_index < selected_metadata.len() => {
                 let permit = permit_result.expect("materialization semaphore should not be closed");
                 let metadata = selected_metadata[output_index].clone();
-                let action_log_store = action_log_store.clone();
-                let keys = keys.clone();
+                let key = keys
+                    .get(metadata.sample_index)
+                    .expect("sample index must reference an existing action log key");
+                let action_log = action_log_store.get(*key).unwrap().unwrap();
                 let advantage_calculation_policy = advantage_calculation_policy.clone();
                 join_set.spawn(async move {
                     let _permit = permit;
-                    let key = keys
-                        .get(metadata.sample_index)
-                        .expect("sample index must reference an existing action log key");
-                    let action_log = action_log_store.get(*key).await.unwrap().unwrap();
                     let selected_trajectory_indices: BTreeSet<usize> =
                         [metadata.trajectory_index].into_iter().collect();
                     let reconstructed_trajectories = action_log_to_selected_trajectories::<M>(

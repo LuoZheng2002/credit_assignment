@@ -1,5 +1,8 @@
 use research_utility::{
-    asset_file::{AssetFile, Base64Hash, hash_file}, progress_tui_server::log_warning, sqlite_store::{SqliteBusyRetryConfig, SqliteStore}, sqlite_table_array_store::SqliteTableArrayStore
+    asset_file::{AssetFile, Base64Hash, hash_file},
+    progress_tui_server::log_warning,
+    sqlite_store::SqliteStore,
+    sqlite_table_array_store::SqliteTableArrayStore,
 };
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
@@ -36,29 +39,33 @@ pub struct DirectTreeActionLogMetadata {
 
 #[derive(Debug)]
 pub struct DirectTreeActionLogStore<M: LlmModelMarker> {
-    metadata_store: SqliteStore<usize, DirectTreeActionLogMetadata>,
-    action_store: SqliteTableArrayStore<usize, DirectTreeAction<M>>,
-    _phantom: PhantomData<M>,
+    pub metadata_store: SqliteStore<usize, DirectTreeActionLogMetadata>,
+    pub action_store: SqliteTableArrayStore<usize, DirectTreeAction<M>>,
+    pub _phantom: PhantomData<M>,
 }
 
 #[derive(Debug)]
-pub struct DirectTreeActionLogStoreAdapter<M: LlmModelMarker> {
+pub struct ActionStoreAdapter<M: LlmModelMarker> {
     request_tx: mpsc::UnboundedSender<StoreRequest<M>>,
     _phantom: PhantomData<M>,
 }
 
 enum StoreRequest<M: LlmModelMarker> {
-    GetKeys {
-        response_tx: oneshot::Sender<Result<Vec<usize>, String>>,
-    },
-    Get {
+    // GetKeys {
+    //     response_tx: oneshot::Sender<Result<Vec<usize>, String>>,
+    // },
+    // Get {
+    //     key: usize,
+    //     response_tx: oneshot::Sender<Result<Option<DirectTreeActionLog<M>>, String>>,
+    // },
+    // GetOrInitMetadata {
+    //     key: usize,
+    //     default_metadata: DirectTreeActionLogMetadata,
+    //     response_tx: oneshot::Sender<Result<DirectTreeActionLogMetadata, String>>,
+    // },
+    GetOrInitActions {
         key: usize,
-        response_tx: oneshot::Sender<Result<Option<DirectTreeActionLog<M>>, String>>,
-    },
-    GetOrInitMetadata {
-        key: usize,
-        default_metadata: DirectTreeActionLogMetadata,
-        response_tx: oneshot::Sender<Result<DirectTreeActionLogMetadata, String>>,
+        response_tx: oneshot::Sender<Result<Vec<DirectTreeAction<M>>, String>>,
     },
     AppendActionAt {
         key: usize,
@@ -68,7 +75,7 @@ enum StoreRequest<M: LlmModelMarker> {
     },
 }
 
-impl<M: LlmModelMarker> Clone for DirectTreeActionLogStoreAdapter<M> {
+impl<M: LlmModelMarker> Clone for ActionStoreAdapter<M> {
     fn clone(&self) -> Self {
         Self {
             request_tx: self.request_tx.clone(),
@@ -84,59 +91,44 @@ impl<M: LlmModelMarker> DirectTreeActionLogStore<M> {
             SqliteStore::<usize, DirectTreeActionLogMetadata>::initialize_if_missing(
                 db_path.clone(),
             );
-        let action_store = SqliteTableArrayStore::<usize, DirectTreeAction<M>>::new(db_path)
-            .expect("failed to initialize sqlite table array store for direct action log actions");
+        // let action_store = SqliteTableArrayStore::<usize, DirectTreeAction<M>>::new(db_path)
+        //     .expect("failed to initialize sqlite table array store for direct action log actions");
+        let action_store =
+            SqliteTableArrayStore::<usize, DirectTreeAction<M>>::initialize_if_missing(db_path);
         Self {
             metadata_store,
             action_store,
             _phantom: PhantomData,
         }
     }
-
+    pub fn get(&self, key: usize) -> Result<Option<DirectTreeActionLog<M>>, String> {
+        let metadata = self.metadata_store.get(key)?;
+        if let Some(metadata) = metadata {
+            let actions = self.action_store.load_table_sorted(key)?;
+            Ok(Some(DirectTreeActionLog::from_metadata_and_actions(
+                metadata, actions,
+            )))
+        } else {
+            Ok(None)
+        }
+    }
     pub fn get_keys(&self) -> Result<Vec<usize>, String> {
         self.metadata_store.get_keys()
     }
 
-    pub fn get(&self, key: usize) -> Result<Option<DirectTreeActionLog<M>>, String> {
-        let metadata = self.metadata_store.get(key)?;
-        let Some(metadata) = metadata else {
-            return Ok(None);
-        };
-        let indexed_actions = self.action_store.load_table_with_indices(key)?;
-        for (expected_index, (stored_index, _)) in indexed_actions.iter().enumerate() {
-            if *stored_index != expected_index {
-                return Err(format!(
-                    "Non-contiguous action indices for key {}: expected {}, got {}",
-                    key, expected_index, stored_index
-                ));
-            }
-        }
-        let actions = indexed_actions
-            .into_iter()
-            .map(|(_, action)| action)
-            .collect();
-        Ok(Some(DirectTreeActionLog {
-            question: metadata.question,
-            rollout_config: metadata.rollout_config,
-            posterior_calculation_config: metadata.posterior_calculation_config,
-            actions,
-        }))
-    }
-
-    pub fn get_or_init_metadata(
-        &self,
-        key: usize,
-        default_metadata: &DirectTreeActionLogMetadata,
-    ) -> Result<DirectTreeActionLogMetadata, String> {
-        let existing = self.metadata_store.get(key)?;
-        if let Some(existing) = existing {
-            return Ok(existing);
-        }
-        self.metadata_store
-            .upsert(key, default_metadata, SqliteBusyRetryConfig::aggressive())
-            ?;
-        Ok(default_metadata.clone())
-    }
+    // pub fn get_or_init_metadata(
+    //     &self,
+    //     key: usize,
+    //     default_metadata: DirectTreeActionLogMetadata,
+    // ) -> Result<DirectTreeActionLogMetadata, String> {
+    //     let existing = self.metadata_store.get(key)?;
+    //     if let Some(existing) = existing {
+    //         return Ok(existing);
+    //     }
+    //     self.metadata_store
+    //         .upsert(key, default_metadata, SqliteBusyRetryConfig::aggressive())?;
+    //     Ok(default_metadata)
+    // }
 
     pub fn append_action_at(
         &self,
@@ -148,8 +140,8 @@ impl<M: LlmModelMarker> DirectTreeActionLogStore<M> {
     }
 }
 
-impl<M: LlmModelMarker> DirectTreeActionLogStoreAdapter<M> {
-    pub fn new(store: DirectTreeActionLogStore<M>) -> Self {
+impl<M: LlmModelMarker> ActionStoreAdapter<M> {
+    pub fn new(store: SqliteTableArrayStore<usize, DirectTreeAction<M>>) -> Self {
         let (request_tx, request_rx) = mpsc::unbounded_channel();
         Self::spawn_worker(store, request_rx);
         Self {
@@ -159,7 +151,7 @@ impl<M: LlmModelMarker> DirectTreeActionLogStoreAdapter<M> {
     }
 
     fn spawn_worker(
-        store: DirectTreeActionLogStore<M>,
+        store: SqliteTableArrayStore<usize, DirectTreeAction<M>>,
         mut request_rx: mpsc::UnboundedReceiver<StoreRequest<M>>,
     ) {
         std::thread::Builder::new()
@@ -172,20 +164,24 @@ impl<M: LlmModelMarker> DirectTreeActionLogStoreAdapter<M> {
                 runtime.block_on(async move {
                     while let Some(request) = request_rx.recv().await {
                         match request {
-                            StoreRequest::GetKeys { response_tx } => {
-                                let result = store.get_keys();
-                                let _ = response_tx.send(result);
-                            }
-                            StoreRequest::Get { key, response_tx } => {
-                                let result = store.get(key);
-                                let _ = response_tx.send(result);
-                            }
-                            StoreRequest::GetOrInitMetadata {
-                                key,
-                                default_metadata,
-                                response_tx,
-                            } => {
-                                let result = store.get_or_init_metadata(key, &default_metadata);
+                            // StoreRequest::GetKeys { response_tx } => {
+                            //     let result = store.get_keys();
+                            //     let _ = response_tx.send(result);
+                            // }
+                            // StoreRequest::Get { key, response_tx } => {
+                            //     let result = store.get(key);
+                            //     let _ = response_tx.send(result);
+                            // }
+                            // StoreRequest::GetOrInitMetadata {
+                            //     key,
+                            //     default_metadata,
+                            //     response_tx,
+                            // } => {
+                            //     let result = store.get_or_init_metadata(key, &default_metadata);
+                            //     let _ = response_tx.send(result);
+                            // }
+                            StoreRequest::GetOrInitActions { key, response_tx } => {
+                                let result = store.load_or_init_table_sorted(key, || Vec::new());
                                 let _ = response_tx.send(result);
                             }
                             StoreRequest::AppendActionAt {
@@ -194,7 +190,7 @@ impl<M: LlmModelMarker> DirectTreeActionLogStoreAdapter<M> {
                                 action,
                                 response_tx,
                             } => {
-                                let result = store.append_action_at(key, action_index, &action);
+                                let result = store.append_at(key, action_index, &action);
                                 let _ = response_tx.send(result);
                             }
                         }
@@ -204,38 +200,51 @@ impl<M: LlmModelMarker> DirectTreeActionLogStoreAdapter<M> {
             .expect("failed to spawn direct action log sqlite worker thread");
     }
 
-    pub async fn get_keys(&self) -> Result<Vec<usize>, String> {
-        let (response_tx, response_rx) = oneshot::channel();
-        self.request_tx
-            .send(StoreRequest::GetKeys { response_tx })
-            .map_err(|_| "direct action log sqlite worker has shut down".to_string())?;
-        response_rx
-            .await
-            .map_err(|_| "direct action log sqlite worker response dropped".to_string())?
-    }
+    // pub async fn get_keys(&self) -> Result<Vec<usize>, String> {
+    //     let (response_tx, response_rx) = oneshot::channel();
+    //     self.request_tx
+    //         .send(StoreRequest::GetKeys { response_tx })
+    //         .map_err(|_| "direct action log sqlite worker has shut down".to_string())?;
+    //     response_rx
+    //         .await
+    //         .map_err(|_| "direct action log sqlite worker response dropped".to_string())?
+    // }
 
-    pub async fn get(&self, key: usize) -> Result<Option<DirectTreeActionLog<M>>, String> {
-        let (response_tx, response_rx) = oneshot::channel();
-        self.request_tx
-            .send(StoreRequest::Get { key, response_tx })
-            .map_err(|_| "direct action log sqlite worker has shut down".to_string())?;
-        response_rx
-            .await
-            .map_err(|_| "direct action log sqlite worker response dropped".to_string())?
-    }
+    // pub async fn get(&self, key: usize) -> Result<Option<DirectTreeActionLog<M>>, String> {
+    //     let (response_tx, response_rx) = oneshot::channel();
+    //     self.request_tx
+    //         .send(StoreRequest::Get { key, response_tx })
+    //         .map_err(|_| "direct action log sqlite worker has shut down".to_string())?;
+    //     response_rx
+    //         .await
+    //         .map_err(|_| "direct action log sqlite worker response dropped".to_string())?
+    // }
 
-    pub async fn get_or_init_metadata(
+    // pub async fn get_or_init_metadata(
+    //     &self,
+    //     key: usize,
+    //     default_metadata: &DirectTreeActionLogMetadata,
+    // ) -> Result<DirectTreeActionLogMetadata, String> {
+    //     let (response_tx, response_rx) = oneshot::channel();
+    //     self.request_tx
+    //         .send(StoreRequest::GetOrInitMetadata {
+    //             key,
+    //             default_metadata: default_metadata.clone(),
+    //             response_tx,
+    //         })
+    //         .map_err(|_| "direct action log sqlite worker has shut down".to_string())?;
+    //     response_rx
+    //         .await
+    //         .map_err(|_| "direct action log sqlite worker response dropped".to_string())?
+    // }
+
+    pub async fn get_or_init_actions(
         &self,
         key: usize,
-        default_metadata: &DirectTreeActionLogMetadata,
-    ) -> Result<DirectTreeActionLogMetadata, String> {
+    ) -> Result<Vec<DirectTreeAction<M>>, String> {
         let (response_tx, response_rx) = oneshot::channel();
         self.request_tx
-            .send(StoreRequest::GetOrInitMetadata {
-                key,
-                default_metadata: default_metadata.clone(),
-                response_tx,
-            })
+            .send(StoreRequest::GetOrInitActions { key, response_tx })
             .map_err(|_| "direct action log sqlite worker has shut down".to_string())?;
         response_rx
             .await
@@ -260,6 +269,20 @@ impl<M: LlmModelMarker> DirectTreeActionLogStoreAdapter<M> {
         response_rx
             .await
             .map_err(|_| "direct action log sqlite worker response dropped".to_string())?
+    }
+}
+
+impl<M> DirectTreeActionLog<M> {
+    pub fn from_metadata_and_actions(
+        metadata: DirectTreeActionLogMetadata,
+        actions: Vec<DirectTreeAction<M>>,
+    ) -> Self {
+        Self {
+            question: metadata.question,
+            rollout_config: metadata.rollout_config,
+            posterior_calculation_config: metadata.posterior_calculation_config,
+            actions,
+        }
     }
 }
 
