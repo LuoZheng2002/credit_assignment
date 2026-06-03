@@ -21,8 +21,27 @@ pub struct HybridDatasetQuestion<S: DatasetSplit> {
 //     }
 // }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct QuestionFlatId<S: DatasetSplit>(pub usize, pub std::marker::PhantomData<S>);
+
+impl<S: DatasetSplit> Serialize for QuestionFlatId<S> {
+    fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
+    where
+        Ser: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de, S: DatasetSplit> Deserialize<'de> for QuestionFlatId<S> {
+    fn deserialize<De>(deserializer: De) -> Result<Self, De::Error>
+    where
+        De: serde::Deserializer<'de>,
+    {
+        let value = usize::deserialize(deserializer)?;
+        Ok(Self(value, std::marker::PhantomData))
+    }
+}
 
 impl<S: DatasetSplit> SqliteStoreKey for QuestionFlatId<S> {
     fn from_key_text(key_text: &str) -> Result<Self, String>
