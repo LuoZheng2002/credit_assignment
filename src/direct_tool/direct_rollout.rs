@@ -186,7 +186,7 @@ pub struct RolloutSharedStates {
     llm_call_stats: Arc<parking_lot::RwLock<LlmCallStats>>,
     num_active_rollouts: Arc<AtomicUsize>,
     total_llm_calls: Arc<AtomicUsize>,
-    total_branches_to_finish: usize,
+    trajectories_per_tree: usize,
     total_trees_to_finish: usize,
 }
 
@@ -214,7 +214,7 @@ async fn rollout<M: LlmModelMarker>(
         llm_call_stats,
         num_active_rollouts,
         total_llm_calls,
-        total_branches_to_finish,
+        trajectories_per_tree,
         total_trees_to_finish,
     } = shared_states;
 
@@ -223,27 +223,7 @@ async fn rollout<M: LlmModelMarker>(
     {
         let _sqlite_waiting_workers_guard =
             AtomicCountGuard::new(sqlite_waiting_workers.clone(), "sqlite_waiting_workers");
-        // rollout_store
-        //     .get_or_init_metadata(
-        //         question.flat_id,
-        //         &DirectTreeActionLogMetadata {
-        //             question: question.clone(),
-        //             rollout_config: rollout_config.clone(),
-        //             posterior_calculation_config: posterior_calculation_config.clone(),
-        //         },
-        //     )
-        //     .await
-        //     .unwrap();
     }
-    // let mut action_log = {
-    //     let _sqlite_waiting_workers_guard =
-    //         AtomicCountGuard::new(sqlite_waiting_workers.clone(), "sqlite_waiting_workers");
-    //     rollout_store
-    //         .get(question.flat_id)
-    //         .await
-    //         .unwrap()
-    //         .expect("metadata must exist right after initialization")
-    // };
     let mut llm_calls_so_far = action_log
         .actions
         .iter()
@@ -275,6 +255,8 @@ async fn rollout<M: LlmModelMarker>(
                 };
                 let finished =
                     num_finished_branches.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let total_branches_to_finish =
+                    total_trees_to_finish.saturating_mul(trajectories_per_tree);
                 log_worker_progress(
                     "branches",
                     finished as f32 / total_branches_to_finish as f32,
@@ -403,7 +385,6 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let num_active_rollouts = Arc::new(AtomicUsize::new(0));
     let llm_call_stats = Arc::new(parking_lot::RwLock::new(LlmCallStats::new()));
     let total_llm_calls = Arc::new(AtomicUsize::new(0));
-    let total_branches_to_finish = question_keys.len() * rollout_config.max_num_total_trajectories;
     let total_trees_to_finish = question_keys.len();
 
     let shared_states = RolloutSharedStates {
@@ -419,7 +400,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         llm_call_stats,
         num_active_rollouts,
         total_llm_calls,
-        total_branches_to_finish,
+        trajectories_per_tree: rollout_config.max_num_total_trajectories,
         total_trees_to_finish,
     };
 
@@ -434,10 +415,34 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let semaphore = Arc::new(Semaphore::new(max_rollout_concurrency));
     let mut join_set = JoinSet::new();
     let mut next_question_index = 0;
+    let mut truncated_trees_to_finish = total_trees_to_finish;
+    let halfway_time = start_time + rollout_time_limit / 2;
+    let mut did_truncate_at_halfway = false;
 
-    while next_question_index < question_keys.len() || !join_set.is_empty() {
+    while next_question_index < truncated_trees_to_finish || !join_set.is_empty() {
+        if !did_truncate_at_halfway && Instant::now() >= halfway_time {
+            did_truncate_at_halfway = true;
+            let num_finished_branches_so_far =
+                shared_states.num_finished_branches.load(Ordering::Relaxed);
+            if num_finished_branches_so_far > 0 {
+                let target_total_branches = num_finished_branches_so_far.saturating_mul(2);
+                truncated_trees_to_finish = target_total_branches
+                    .div_ceil(shared_states.trajectories_per_tree)
+                    .max(next_question_index);
+                question_keys.truncate(truncated_trees_to_finish);
+                log_key_value_pair(
+                    "halfway_target_total_branches_to_finish",
+                    target_total_branches.to_string(),
+                );
+                log_key_value_pair(
+                    "halfway_question_queue_size",
+                    truncated_trees_to_finish.to_string(),
+                );
+            }
+        }
+
         tokio::select! {
-            permit_result = semaphore.clone().acquire_owned(), if next_question_index < question_keys.len() && !shared_states.stop_signal.load(Ordering::Relaxed) => {
+            permit_result = semaphore.clone().acquire_owned(), if next_question_index < truncated_trees_to_finish && !shared_states.stop_signal.load(Ordering::Relaxed) => {
                 let permit = permit_result.expect("rollout semaphore should not be closed");
                 let question_key = question_keys[next_question_index];
                 next_question_index += 1;
@@ -445,17 +450,6 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
                     .get(question_key)
                     .unwrap()
                     .expect("question key from rollout queue must exist");
-                // get or init metadata here
-
-                // let action_log = DirectTreeActionLog::get_or_init_metadata(
-                //     &metadata_store,
-                //     question_key,
-                //     &DirectTreeActionLogMetadata {
-                //         question: question.clone(),
-                //         rollout_config: rollout_config.clone(),
-                //         posterior_calculation_config: posterior_calculation_config.clone(),
-                //     },
-                // )?;
                 let rollout_metadata = metadata_store.get_or_init(
                     question_key,
                     ||{DirectTreeActionLogMetadata {
