@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from contextlib import nullcontext
 import atexit
+import gc
 import json
 import os
 import random
@@ -238,6 +239,12 @@ def _resolve_max_batch_size_cap_from_env() -> int | None:
     parsed = int(normalized)
     assert parsed > 0, "TRAIN_MAX_BATCH_SIZE must be a positive integer when set"
     return parsed
+
+
+def _release_step_memory(device: torch.device) -> None:
+    gc.collect()
+    if torch.cuda.is_available() and device.type == "cuda":
+        torch.cuda.empty_cache()
 
 
 def _gpu_memory_utilization(device: torch.device) -> float:
@@ -1156,6 +1163,14 @@ def train(config: TrainConfig) -> None:
                 sync_context = model.no_sync()
 
             step_start = time.perf_counter()
+            collated = None
+            input_ids = None
+            labels = None
+            attention_mask = None
+            advantages = None
+            logits = None
+            loss_output = None
+            loss = None
             try:
                 collated = collate_training_samples(
                     samples=resolved_batch.samples,
@@ -1182,14 +1197,21 @@ def train(config: TrainConfig) -> None:
                 if not _is_cuda_oom_exception(exc):
                     raise
                 optimizer.zero_grad(set_to_none=True)
+                collated = None
+                input_ids = None
+                labels = None
+                attention_mask = None
+                advantages = None
+                logits = None
+                loss_output = None
+                loss = None
                 _print_cuda_oom_diagnostics_stderr(
                     rank=rank,
                     iteration_index=iteration_index,
                     batch_index=resolved_batch.batch_index,
                     device=device,
                 )
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                _release_step_memory(device)
                 _print_cuda_oom_stderr(
                     rank=rank,
                     iteration_index=iteration_index,
@@ -1483,6 +1505,14 @@ def train(config: TrainConfig) -> None:
             sync_context = nullcontext()
 
             step_start = time.perf_counter()
+            collated = None
+            input_ids = None
+            labels = None
+            attention_mask = None
+            advantages = None
+            logits = None
+            loss_output = None
+            loss = None
             try:
                 collated = collate_training_samples(
                     samples=resolved_batch.samples,
@@ -1509,14 +1539,21 @@ def train(config: TrainConfig) -> None:
                 if not _is_cuda_oom_exception(exc):
                     raise
                 optimizer.zero_grad(set_to_none=True)
+                collated = None
+                input_ids = None
+                labels = None
+                attention_mask = None
+                advantages = None
+                logits = None
+                loss_output = None
+                loss = None
                 _print_cuda_oom_diagnostics_stderr(
                     rank=rank,
                     iteration_index=iteration_index,
                     batch_index=batch_index,
                     device=device,
                 )
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                _release_step_memory(device)
                 reduced_batch_size = max(1, adaptive_state.next_batch_size // 2)
                 will_retry = adaptive_state.next_batch_size > 1
                 _print_cuda_oom_stderr(
@@ -1550,6 +1587,7 @@ def train(config: TrainConfig) -> None:
                             "next_batch_size_float": adaptive_state.next_batch_size_float,
                         },
                     )
+                exc = None
                 continue
 
             step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
