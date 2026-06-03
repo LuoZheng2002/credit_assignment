@@ -16,7 +16,7 @@ use credit_assignment::{
     python_training_config::PythonTrainingConfigCommon,
 };
 use research_utility::progress_tui_server::{
-    ProgressTuiServer, log_exit_hint, log_info, log_warning,
+    ProgressTuiServer, log_exit_hint, log_info, log_warning, log_window_name,
 };
 
 #[derive(Parser, Debug)]
@@ -109,6 +109,10 @@ async fn main() {
         ProgressTuiServer::initialize(message_log_path, |_command| {})
             .await
             .unwrap();
+        log_window_name(format!(
+            "Orchestrator Program. model: {}, config_nickname: {}",
+            model_cli_name, config_nickname
+        ));
     }
     let validation_rollout_config: DirectRolloutConfig<Validation> =
         read_json(validation_rollout_config_path).unwrap();

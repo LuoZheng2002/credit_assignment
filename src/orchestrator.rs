@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::Path, sync::LazyLock};
 use minijinja::context;
 use research_utility::{
     asset_file::AssetFile,
-    progress_tui_server::{log_info, log_key_value_pair},
+    progress_tui_server::{log_info, log_key_value_pair, log_state},
 };
 use serde::{Deserialize, Serialize};
 use tokio::process::Child;
@@ -163,7 +163,7 @@ pub struct InferenceServerHandle {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum OrchestrationStatus {
     WorkingOnValidation,
-    WorkingOnRolloutCollection,
+    WorkingOnTrainingRolloutCollection,
     WorkingOnTrainingSetGeneration,
     WorkingOnTraining,
 }
@@ -188,6 +188,7 @@ impl Orchestrator {
             let epoch = progress.epoch;
             match progress.status {
                 OrchestrationStatus::WorkingOnValidation => {
+                    log_state(format!("Epoch {}: Working on validation", epoch));
                     assert!(epoch <= self.num_total_epochs);
                     self.ensure_inference_server_launched::<M>(epoch).await?;
                     self.validate_model::<M>(epoch).await?;
@@ -201,11 +202,15 @@ impl Orchestrator {
                         break;
                     }
                     self.update_and_save_progress::<M>(
-                        OrchestrationStatus::WorkingOnRolloutCollection,
+                        OrchestrationStatus::WorkingOnTrainingRolloutCollection,
                         epoch,
                     );
                 }
-                OrchestrationStatus::WorkingOnRolloutCollection => {
+                OrchestrationStatus::WorkingOnTrainingRolloutCollection => {
+                    log_state(format!(
+                        "Epoch {}: Working on training rollout collection",
+                        epoch
+                    ));
                     self.ensure_inference_server_launched::<M>(epoch).await?;
                     self.collect_training_rollout::<M>(epoch).await?;
                     // after rollout collection, we can shut down the inference server
@@ -216,6 +221,10 @@ impl Orchestrator {
                     );
                 }
                 OrchestrationStatus::WorkingOnTrainingSetGeneration => {
+                    log_state(format!(
+                        "Epoch {}: Working on training set generation",
+                        epoch
+                    ));
                     // we do not need inference server for training set generation, and it won't be launched again until we do the training step
                     self.ensure_inference_server_shut_down::<M>().await;
                     self.generate_training_set::<M>(epoch).await;
@@ -226,6 +235,7 @@ impl Orchestrator {
                 }
                 OrchestrationStatus::WorkingOnTraining => {
                     // we do not want inference server to be up during training
+                    log_state(format!("Epoch {}: Working on training", epoch));
                     log_info(format!(
                         "Entering training stage for epoch {}. About to enforce inference-server shutdown.",
                         epoch
@@ -245,6 +255,7 @@ impl Orchestrator {
                 }
             }
         }
+        log_state("All training finished");
         // for safety
         self.ensure_inference_server_shut_down::<M>().await;
         Ok(())
