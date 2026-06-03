@@ -4,7 +4,6 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use futures::StreamExt;
 use kll_rs::KllFloatSketch;
 use reqwest::Client;
 use research_utility::{
@@ -13,9 +12,9 @@ use research_utility::{
         delete_worker_progress_bar, log_key_value_pair, log_master_progress, log_worker_progress,
     },
 };
-use tokio::sync::mpsc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep_until};
-use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::atomic_count_guard::AtomicCountGuard;
 use crate::{
@@ -26,17 +25,12 @@ use crate::{
         direct_tree_action_log::{
             AssetFileDirectTreeActionLogs, DirectTreeActionLogMetadata, DirectTreeActionLogStore,
         },
-        hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
+        hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion, HybridDatasetStore},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     llm_model::{LlmCallable, LlmCliArgs, LlmModelMarker},
     tool_call_python::PythonToolServerPool,
 };
-
-enum RolloutOutcome {
-    Completed,
-    Requeue { flat_id: usize },
-}
 
 struct LlmCallStats {
     sketch: KllFloatSketch,
@@ -72,13 +66,6 @@ impl LlmCallStats {
             q3: quantile_to_usize(self.sketch.get_quantile(0.75)),
             max: self.max,
         }
-    }
-
-    fn q3(&self) -> Option<usize> {
-        if self.num_samples == 0 {
-            return None;
-        }
-        Some(quantile_to_usize(self.sketch.get_quantile(0.75)))
     }
 }
 
@@ -189,21 +176,13 @@ pub struct RolloutSharedStates {
     stop_signal: Arc<AtomicBool>,
     num_finished_branches: Arc<AtomicUsize>,
     num_finished_trees: Arc<AtomicUsize>,
-    newly_finished_trees: Arc<AtomicUsize>,
     num_correct_branches: Arc<AtomicUsize>,
     llm_call_stats: Arc<parking_lot::RwLock<LlmCallStats>>,
-    num_requeued: Arc<AtomicUsize>,
     num_active_rollouts: Arc<AtomicUsize>,
-    num_active_long_running_rollouts: Arc<AtomicUsize>,
     total_llm_calls: Arc<AtomicUsize>,
-    #[allow(dead_code)]
-    max_rollout_concurrency: usize,
-    max_num_long_running_rollouts: usize,
     total_branches_to_finish: usize,
     total_trees_to_finish: usize,
 }
-
-const NUM_WARMUP_TREES: usize = 100;
 
 #[derive(Debug, Clone, Copy)]
 pub struct StopRequestedError;
@@ -216,7 +195,7 @@ async fn rollout<M: LlmModelMarker>(
     llm_callable: M::Callable,
     client: Client,
     shared_states: RolloutSharedStates,
-) -> Result<RolloutOutcome, StopRequestedError> {
+) -> Result<(), StopRequestedError> {
     let RolloutSharedStates {
         python_tool_pool,
         sglang_waiting_workers,
@@ -226,15 +205,10 @@ async fn rollout<M: LlmModelMarker>(
         stop_signal,
         num_finished_branches,
         num_finished_trees,
-        newly_finished_trees,
         num_correct_branches,
         llm_call_stats,
-        num_requeued,
         num_active_rollouts,
-        num_active_long_running_rollouts,
         total_llm_calls,
-        max_rollout_concurrency: _,
-        max_num_long_running_rollouts,
         total_branches_to_finish,
         total_trees_to_finish,
     } = shared_states;
@@ -270,7 +244,6 @@ async fn rollout<M: LlmModelMarker>(
         .iter()
         .filter(|action| action_is_llm_call(action))
         .count();
-    let mut long_running_guard: Option<AtomicCountGuard> = None;
     loop {
         let tree = DirectTree::<M>::from_action_log(&action_log);
         if tree.completed() {
@@ -328,45 +301,9 @@ async fn rollout<M: LlmModelMarker>(
                 .await
                 .unwrap();
         }
-
-        if long_running_guard.is_none() {
-            let q3 = llm_call_stats.read().q3();
-            if let Some(q3) = q3 {
-                if llm_calls_so_far > q3 {
-                    match AtomicCountGuard::try_new_with_max(
-                        num_active_long_running_rollouts.clone(),
-                        "num_active_long_running_rollouts",
-                        max_num_long_running_rollouts,
-                    ) {
-                        Some(guard) => {
-                            long_running_guard = Some(guard);
-                        }
-                        None => {
-                            // let current_concurrency = num_active_rollouts.load(Ordering::SeqCst);
-                            // if (current_concurrency as u128) * 100
-                            //     <= (max_rollout_concurrency as u128) * 95
-                            // {
-                            //     continue;
-                            // }
-                            let newly_finished_trees = newly_finished_trees.load(Ordering::SeqCst);
-                            if newly_finished_trees < NUM_WARMUP_TREES {
-                                continue;
-                            }
-                            let new_num_requeued = num_requeued.fetch_add(1, Ordering::SeqCst) + 1;
-                            log_key_value_pair("num_requeued", new_num_requeued.to_string());
-                            return Ok(RolloutOutcome::Requeue {
-                                flat_id: question.flat_id,
-                            });
-                        }
-                    }
-                }
-            }
-        }
     }
     // log_info(format!("Rollout {} finished", question.flat_id));
-    drop(long_running_guard.take());
     let finished = num_finished_trees.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    newly_finished_trees.fetch_add(1, Ordering::SeqCst);
     log_worker_progress(
         "trees",
         finished as f32 / total_trees_to_finish as f32,
@@ -382,7 +319,35 @@ async fn rollout<M: LlmModelMarker>(
     log_key_value_pair("median_llm_calls_per_tree", summary.median.to_string());
     log_key_value_pair("third_quartile_llm_calls_per_tree", summary.q3.to_string());
     log_key_value_pair("max_llm_calls_per_tree", summary.max.to_string());
-    Ok(RolloutOutcome::Completed)
+    Ok(())
+}
+
+async fn rollout_task<M: LlmModelMarker>(
+    question_key: usize,
+    dataset: Arc<HybridDatasetStore>,
+    rollout_config: DirectRolloutConfig,
+    posterior_calculation_config: PosteriorCalculationConfig,
+    rollout_store: DirectTreeActionLogStore<M>,
+    llm_callable: M::Callable,
+    client: Client,
+    shared_states: RolloutSharedStates,
+    _permit: OwnedSemaphorePermit,
+) -> Result<(), StopRequestedError> {
+    let question = dataset
+        .get(question_key)
+        .await
+        .unwrap()
+        .expect("question key from rollout queue must exist");
+    rollout::<M>(
+        question,
+        rollout_config,
+        posterior_calculation_config,
+        rollout_store,
+        llm_callable,
+        client,
+        shared_states,
+    )
+    .await
 }
 
 pub struct RolloutProgramConfig {
@@ -458,13 +423,9 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let sqlite_waiting_workers = Arc::new(AtomicUsize::new(0));
     let num_finished_branches = Arc::new(AtomicUsize::new(0));
     let num_finished_trees = Arc::new(AtomicUsize::new(0));
-    let newly_finished_trees = Arc::new(AtomicUsize::new(0));
     let num_correct_branches = Arc::new(AtomicUsize::new(0));
     let num_active_rollouts = Arc::new(AtomicUsize::new(0));
     let llm_call_stats = Arc::new(parking_lot::RwLock::new(LlmCallStats::new()));
-    let num_requeued = Arc::new(AtomicUsize::new(0));
-    let max_num_long_running_rollouts = std::cmp::max(1, max_rollout_concurrency / 4);
-    let num_active_long_running_rollouts = Arc::new(AtomicUsize::new(0));
     let total_llm_calls = Arc::new(AtomicUsize::new(0));
     let total_branches_to_finish = question_keys.len() * rollout_config.max_num_total_trajectories;
     let total_trees_to_finish = question_keys.len();
@@ -478,15 +439,10 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         stop_signal,
         num_finished_branches,
         num_finished_trees,
-        newly_finished_trees,
         num_correct_branches,
         llm_call_stats,
-        num_requeued,
         num_active_rollouts,
-        num_active_long_running_rollouts,
         total_llm_calls,
-        max_rollout_concurrency,
-        max_num_long_running_rollouts,
         total_branches_to_finish,
         total_trees_to_finish,
     };
@@ -499,70 +455,40 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         shared_states.total_llm_calls.clone(),
     ));
 
-    let (queue_tx, queue_rx) = mpsc::unbounded_channel::<usize>();
-    for question_key in question_keys {
-        queue_tx
-            .send(question_key)
-            .expect("initial rollout queue send should not fail");
-    }
+    let semaphore = Arc::new(Semaphore::new(max_rollout_concurrency));
+    let mut join_set = JoinSet::new();
+    let mut next_question_index = 0;
 
-    let stop_signal_for_take_while = shared_states.stop_signal.clone();
-    let result_stream = UnboundedReceiverStream::new(queue_rx)
-        .take_while(move |_| {
-            let stop_signal = stop_signal_for_take_while.clone();
-            async move { !stop_signal.load(Ordering::Relaxed) }
-        })
-        .map(|question_key| {
-            let dataset = dataset.clone();
-            let rollout_config_clone = rollout_config.clone();
-            let posterior_calculation_config_clone = posterior_calculation_config.clone();
-            let rollout_store = rollout_store.clone();
-            let llm_callable_clone = llm_callable.clone();
-            let client_clone = client.clone();
-            let shared_states_clone = shared_states.clone();
-            async move {
-                let question = dataset
-                    .get(question_key)
-                    .await
-                    .unwrap()
-                    .expect("question key from rollout queue must exist");
-                rollout::<M>(
-                    question,
-                    rollout_config_clone,
-                    posterior_calculation_config_clone,
-                    rollout_store,
-                    llm_callable_clone,
-                    client_clone,
-                    shared_states_clone,
-                )
-                .await
+    while next_question_index < question_keys.len() || !join_set.is_empty() {
+        tokio::select! {
+            permit_result = semaphore.clone().acquire_owned(), if next_question_index < question_keys.len() && !shared_states.stop_signal.load(Ordering::Relaxed) => {
+                let permit = permit_result.expect("rollout semaphore should not be closed");
+                let question_key = question_keys[next_question_index];
+                next_question_index += 1;
+                join_set.spawn(rollout_task::<M>(
+                    question_key,
+                    dataset.clone(),
+                    rollout_config.clone(),
+                    posterior_calculation_config.clone(),
+                    rollout_store.clone(),
+                    llm_callable.clone(),
+                    client.clone(),
+                    shared_states.clone(),
+                    permit,
+                ));
             }
-        })
-        .buffer_unordered(max_rollout_concurrency);
-    futures::pin_mut!(result_stream);
-
-    let mut num_pending_questions = total_trees_to_finish;
-    while let Some(task_result) = result_stream.next().await {
-        match task_result {
-            Ok(RolloutOutcome::Completed) | Err(StopRequestedError) => {
-                num_pending_questions = num_pending_questions.saturating_sub(1);
-            }
-            Ok(RolloutOutcome::Requeue { flat_id }) => {
-                if shared_states.stop_signal.load(Ordering::Relaxed) {
-                    num_pending_questions = num_pending_questions.saturating_sub(1);
-                } else {
-                    queue_tx
-                        .send(flat_id)
-                        .expect("requeue send should not fail while stream is active");
+            joined = join_set.join_next(), if !join_set.is_empty() => {
+                match joined.expect("join_set must have at least one task") {
+                    Ok(Ok(())) | Ok(Err(StopRequestedError)) => {}
+                    Err(join_err) => panic!("rollout task panicked: {join_err}"),
                 }
             }
         }
-        if num_pending_questions == 0 {
+
+        if shared_states.stop_signal.load(Ordering::Relaxed) && join_set.is_empty() {
             break;
         }
     }
-
-    drop(queue_tx);
 
     shared_states.stop_signal.store(true, Ordering::Relaxed);
     progress_timer_handle

@@ -326,9 +326,9 @@ impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
         tool_waiting_workers: Arc<AtomicUsize>,
         stop_signal: Arc<AtomicBool>,
     ) -> Result<DirectTreeAction<M>, StopRequestedError> {
-        let target_segment_id = self
-            .root_segment_id
-            .expect("Root segment id must exist when creating trunk trajectory or spontaneous branch");
+        let target_segment_id = self.root_segment_id.expect(
+            "Root segment id must exist when creating trunk trajectory or spontaneous branch",
+        );
         let trajectory = self.get_trajectory(target_segment_id, cumulative_content_array);
         match trajectory.try_get_answer() {
             Some(final_answer) => Ok(SubmitAnswer(final_answer)),
@@ -745,7 +745,9 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     }
     if let Some(start_token) = new_branch_start_token {
         response.tokens.insert(0, start_token);
-        response.logprobs.insert(0, fallback_top8_for_token(start_token));
+        response
+            .logprobs
+            .insert(0, fallback_top8_for_token(start_token));
     }
     let result = SegmentContent::ReasoningOrToolCall {
         tokens: response,

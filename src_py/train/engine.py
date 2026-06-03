@@ -165,6 +165,54 @@ def _print_cuda_oom_stderr(
     )
 
 
+def _print_cuda_oom_diagnostics_stderr(
+    *,
+    rank: int,
+    iteration_index: int,
+    batch_index: int,
+    device: torch.device,
+) -> None:
+    if not torch.cuda.is_available() or device.type != "cuda":
+        print(
+            "[error] "
+            f"cuda_oom_diagnostics=1 rank={rank} iteration={iteration_index} "
+            f"batch_index={batch_index} cuda_available=0",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+
+    free_bytes, total_bytes = torch.cuda.mem_get_info(device=device)
+    allocated_bytes = torch.cuda.memory_allocated(device=device)
+    reserved_bytes = torch.cuda.memory_reserved(device=device)
+    max_allocated_bytes = torch.cuda.max_memory_allocated(device=device)
+    max_reserved_bytes = torch.cuda.max_memory_reserved(device=device)
+
+    mib = float(1024 * 1024)
+    print(
+        "[error] "
+        f"cuda_oom_diagnostics=1 rank={rank} iteration={iteration_index} "
+        f"batch_index={batch_index} "
+        f"free_mib={free_bytes / mib:.1f} total_mib={total_bytes / mib:.1f} "
+        f"allocated_mib={allocated_bytes / mib:.1f} reserved_mib={reserved_bytes / mib:.1f} "
+        f"max_allocated_mib={max_allocated_bytes / mib:.1f} max_reserved_mib={max_reserved_bytes / mib:.1f}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _resolve_max_batch_size_cap_from_env() -> int | None:
+    raw_value = os.environ.get("TRAIN_MAX_BATCH_SIZE")
+    if raw_value is None:
+        return None
+    normalized = raw_value.strip()
+    if len(normalized) == 0:
+        return None
+    parsed = int(normalized)
+    assert parsed > 0, "TRAIN_MAX_BATCH_SIZE must be a positive integer when set"
+    return parsed
+
+
 def _gpu_memory_utilization(device: torch.device) -> float:
     if not torch.cuda.is_available() or device.type != "cuda":
         return 0.0
@@ -882,6 +930,7 @@ def train(config: TrainConfig) -> None:
     initial_batch_size = 1
     initial_adaptive_velocity = 0.12
     target_gpu_memory_utilization = 0.90
+    max_batch_size_cap = _resolve_max_batch_size_cap_from_env()
 
     if _is_primary_rank():
         print(f"[status] loading_model=1 model_parent_dir={config.model_parent_dir}")
@@ -892,6 +941,11 @@ def train(config: TrainConfig) -> None:
             f"start_training=1 training_plan={config.training_plan} "
             f"world_size={world_size} training_time={config.training_time:.1f}s "
             f"model_path={resolved_model_path}"
+        )
+        print(
+            "[status] "
+            "adaptive_batch_cap=1 "
+            f"train_max_batch_size_env={max_batch_size_cap if max_batch_size_cap is not None else 'unset'}"
         )
     tokenizer = AutoTokenizer.from_pretrained(resolved_model_path)
     pad_token_id = _resolve_pad_token_id(tokenizer.pad_token_id)
@@ -1097,6 +1151,12 @@ def train(config: TrainConfig) -> None:
                 if not _is_cuda_oom_exception(exc):
                     raise
                 optimizer.zero_grad(set_to_none=True)
+                _print_cuda_oom_diagnostics_stderr(
+                    rank=rank,
+                    iteration_index=iteration_index,
+                    batch_index=resolved_batch.batch_index,
+                    device=device,
+                )
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 _print_cuda_oom_stderr(
@@ -1267,6 +1327,27 @@ def train(config: TrainConfig) -> None:
             memory_utilization_ema=resume_state.adaptive_memory_utilization_ema,
             previous_tokens_per_sample=resume_state.adaptive_previous_tokens_per_sample,
         )
+        if max_batch_size_cap is None:
+            max_allowed_batch_size = lazy_loader.sample_count
+        else:
+            max_allowed_batch_size = max(1, min(lazy_loader.sample_count, max_batch_size_cap))
+        if adaptive_state.next_batch_size > max_allowed_batch_size:
+            adaptive_state = AdaptiveBatchState(
+                next_batch_size=max_allowed_batch_size,
+                next_batch_size_float=float(max_allowed_batch_size),
+                velocity=adaptive_state.velocity,
+                throughput_ema=adaptive_state.throughput_ema,
+                best_throughput_ema=adaptive_state.best_throughput_ema,
+                memory_utilization_ema=adaptive_state.memory_utilization_ema,
+                previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
+            )
+
+        if _is_primary_rank() and max_batch_size_cap is not None:
+            print(
+                "[status] "
+                f"adaptive_batch_cap_active=1 max_batch_size={max_allowed_batch_size} "
+                f"sample_count={lazy_loader.sample_count}"
+            )
 
         max_input_token_id = -1
         max_label_token_id = -1
@@ -1397,6 +1478,12 @@ def train(config: TrainConfig) -> None:
                 if not _is_cuda_oom_exception(exc):
                     raise
                 optimizer.zero_grad(set_to_none=True)
+                _print_cuda_oom_diagnostics_stderr(
+                    rank=rank,
+                    iteration_index=iteration_index,
+                    batch_index=batch_index,
+                    device=device,
+                )
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 reduced_batch_size = max(1, adaptive_state.next_batch_size // 2)
@@ -1482,7 +1569,7 @@ def train(config: TrainConfig) -> None:
                     measured_tokens_per_sample=measured_tokens_per_sample,
                     target_memory_utilization=target_gpu_memory_utilization,
                     min_batch_size=1,
-                    max_batch_size=lazy_loader.sample_count,
+                    max_batch_size=max_allowed_batch_size,
                 )
 
                 now = time.monotonic()
