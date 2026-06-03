@@ -305,7 +305,8 @@ impl Orchestrator {
             "Launching inference server for model {}",
             M::CLI_NAME,
         ));
-        let model_path = model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+        let mut model_path = model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+        model_path += "/model";
         log_info(format!("Using model folder path: {}", model_path));
         let (sglang_port, process) =
             launch_sglang_server_process::<M>(&model_path, self.sglang_server_log_path.as_deref())
