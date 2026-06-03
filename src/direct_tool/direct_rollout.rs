@@ -23,7 +23,8 @@ use crate::{
         direct_tree::{DirectTree, SegmentContent},
         direct_tree_action::DirectTreeAction,
         direct_tree_action_log::{
-            AssetFileDirectTreeActionLogs, DirectTreeActionLogMetadata, DirectTreeActionLogStore,
+            AssetFileDirectTreeActionLogs, DirectTreeActionLogMetadata,
+            DirectTreeActionLogStore, DirectTreeActionLogStoreAdapter,
         },
         hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion, HybridDatasetStore},
         posterior_calculation_config::PosteriorCalculationConfig,
@@ -195,7 +196,7 @@ async fn rollout<M: LlmModelMarker>(
     question: HybridDatasetQuestion,
     rollout_config: DirectRolloutConfig,
     posterior_calculation_config: PosteriorCalculationConfig,
-    rollout_store: DirectTreeActionLogStore<M>,
+    rollout_store: DirectTreeActionLogStoreAdapter<M>,
     llm_callable: M::Callable,
     client: Client,
     shared_states: RolloutSharedStates,
@@ -331,7 +332,7 @@ async fn rollout_task<M: LlmModelMarker>(
     dataset: Arc<HybridDatasetStore>,
     rollout_config: DirectRolloutConfig,
     posterior_calculation_config: PosteriorCalculationConfig,
-    rollout_store: DirectTreeActionLogStore<M>,
+    rollout_store: DirectTreeActionLogStoreAdapter<M>,
     llm_callable: M::Callable,
     client: Client,
     shared_states: RolloutSharedStates,
@@ -414,9 +415,10 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     };
     asset_file_action_logs.delete_target_file_if_stale();
     asset_file_action_logs.create_tracking_file();
-    let rollout_store =
+    let rollout_store = DirectTreeActionLogStoreAdapter::new(
         DirectTreeActionLogStore::<M>::initialize_if_missing(asset_file_action_logs.file_path())
-            .await;
+            .await,
+    );
     let mut question_keys = dataset.get_keys().await.unwrap();
     // sort by question id to ensure deterministic order
     question_keys.sort();
