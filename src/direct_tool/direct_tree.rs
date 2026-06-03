@@ -17,7 +17,7 @@ use crate::{
 use crate::llm_model::MyTokenizer;
 
 // this tree is similar to the completed tree in src/agent folder, but now it runs on a lightweight tool-calling context instead of a heavy agent framework
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DirectTree<'a, M: LlmModelMarker> {
     pub action_log: &'a DirectTreeActionLog<M>,
     // states

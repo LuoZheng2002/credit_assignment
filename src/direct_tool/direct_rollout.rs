@@ -6,6 +6,7 @@ use std::sync::{
 
 use kll_rs::KllFloatSketch;
 use reqwest::Client;
+use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
 use research_utility::{
     asset_file::AssetFile,
     progress_tui_server::{
@@ -23,10 +24,7 @@ use crate::{
         direct_rollout_config::DirectRolloutConfig,
         direct_tree::{DirectTree, SegmentContent},
         direct_tree_action::DirectTreeAction,
-        direct_tree_action_log::{
-            ActionStoreAdapter, AssetFileDirectTreeActionLogs, DirectTreeActionLogMetadata,
-            DirectTreeActionLogStore,
-        },
+        direct_tree_action_log::{ActionStoreAdapter, AssetFileDirectTreeActionLogs},
         hybrid_dataset::{AssetFileHybridDataset, DatasetSplit},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
@@ -368,11 +366,16 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     };
     asset_file_action_logs.delete_target_file_if_stale();
     asset_file_action_logs.create_tracking_file();
-    let DirectTreeActionLogStore {
-        metadata_store,
-        action_store,
-        _phantom,
-    } = DirectTreeActionLogStore::<M>::initialize_if_missing(asset_file_action_logs.file_path());
+    // let DirectTreeActionLogStore {
+    //     metadata_store,
+    //     action_store,
+    //     _phantom,
+    // } = DirectTreeActionLogStore::<M>::initialize_if_missing(
+    //     asset_file_action_logs.actions_file_path(),
+    // );
+    let action_store = SqliteTableArrayStore::<usize, DirectTreeAction<M>>::initialize_if_missing(
+        asset_file_action_logs.actions_file_path(),
+    );
     let action_store_adapter = ActionStoreAdapter::new(action_store);
     let mut question_keys = dataset.get_keys().unwrap();
     // sort by question id to ensure deterministic order
@@ -388,7 +391,10 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
             "training_segment_start_index",
             training_segment_start.to_string(),
         );
-        log_key_value_pair("training_segment_total_keys", question_keys.len().to_string());
+        log_key_value_pair(
+            "training_segment_total_keys",
+            question_keys.len().to_string(),
+        );
     }
     let stop_signal = Arc::new(AtomicBool::new(false));
     let sglang_waiting_workers = Arc::new(AtomicUsize::new(0));
@@ -466,21 +472,14 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
                     .get(question_key)
                     .unwrap()
                     .expect("question key from rollout queue must exist");
-                let rollout_metadata = metadata_store.get_or_init(
-                    question_key,
-                    ||{DirectTreeActionLogMetadata {
-                        question: question.clone(),
-                        rollout_config: rollout_config.clone(),
-                        posterior_calculation_config: posterior_calculation_config.clone(),
-                    }},
-                    None,
-                ).expect("metadata must exist right after initialization");
                 let actions = action_store_adapter.get_or_init_actions(question_key).await.unwrap();
 
-                let action_log = DirectTreeActionLog::from_metadata_and_actions(
-                    rollout_metadata,
+                let action_log = DirectTreeActionLog {
+                    question: question.clone(),
+                    rollout_config: rollout_config.clone(),
+                    posterior_calculation_config: posterior_calculation_config.clone(),
                     actions,
-                );
+                };
                 join_set.spawn(rollout::<M>(
                     action_log,
                     action_store_adapter.clone(),

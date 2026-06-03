@@ -7,14 +7,16 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use clap::Parser;
+use credit_assignment::direct_tool::direct_tree_action::DirectTreeAction;
+use credit_assignment::direct_tool::hybrid_dataset::{
+    AssetFileHybridDataset, HybridDatasetQuestion,
+};
 use credit_assignment::judge_correctness::CorrectnessJudgment;
 use credit_assignment::{
     direct_tool::{
         direct_rollout_config::DirectRolloutConfig,
         direct_tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
-        direct_tree_action_log::{
-            AssetFileDirectTreeActionLogs, DirectTreeActionLog, DirectTreeActionLogStore,
-        },
+        direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
         direct_tree_to_actions::TokenBranchingScore,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
@@ -41,6 +43,8 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui_core::buffer::Buffer;
 use research_utility::asset_file::AssetFile;
+use research_utility::sqlite_store::SqliteStore;
+use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
 use std::collections::hash_map::DefaultHasher;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -421,7 +425,10 @@ fn tree_page_state_from_action_log<M: LlmModelMarker>(
 struct App<M: LlmModelMarker> {
     _model_marker: PhantomData<M>,
     override_hyperparameters: Option<PosteriorHyperparameters>,
-    action_log_store: DirectTreeActionLogStore<M>,
+    // action_log_store: DirectTreeActionLogStore<M>,
+    asset_file_action_logs: AssetFileDirectTreeActionLogs<M>,
+    question_store: SqliteStore<usize, HybridDatasetQuestion>,
+    action_store: SqliteTableArrayStore<usize, DirectTreeAction<M>>,
     entry_keys: Vec<usize>,
     entry_cache: Vec<EntryLoadState<M>>,
     entry_load_tx: UnboundedSender<EntryLoadResult<M>>,
@@ -445,19 +452,26 @@ struct App<M: LlmModelMarker> {
 }
 
 impl<M: LlmModelMarker> App<M> {
-    fn new(
-        action_log_store: DirectTreeActionLogStore<M>,
-        entry_keys: Vec<usize>,
+    async fn new(
+        asset_file_action_logs: AssetFileDirectTreeActionLogs<M>,
+        // action_log_store: DirectTreeActionLogStore<M>,
+        // entry_keys: Vec<usize>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> Self {
+        let (entry_load_tx, entry_load_rx) = unbounded_channel();
+        let asset_file_dataset = AssetFileHybridDataset {
+            split: asset_file_action_logs.rollout_config.split.clone(),
+        };
+        let question_store = asset_file_dataset.fetch().await;
+        let action_store = asset_file_action_logs.fetch().await;
+        let entry_keys = action_store.get_keys().unwrap();
         let entry_cache = std::iter::repeat_with(|| EntryLoadState::Unloaded)
             .take(entry_keys.len())
             .collect();
-        let (entry_load_tx, entry_load_rx) = unbounded_channel();
         Self {
             _model_marker: PhantomData,
             override_hyperparameters,
-            action_log_store,
+            asset_file_action_logs,
             entry_keys,
             entry_cache,
             entry_load_tx,
@@ -478,6 +492,8 @@ impl<M: LlmModelMarker> App<M> {
             conversation_scroll: 0,
             conversation_max_scroll: 0,
             conversation_metrics: None,
+            question_store,
+            action_store,
         }
     }
 
@@ -505,8 +521,18 @@ impl<M: LlmModelMarker> App<M> {
         }
         self.entry_cache[index] = EntryLoadState::Loading;
         let key = self.entry_keys[index];
-        let state = match self.action_log_store.get(key) {
-            Ok(Some(action_log)) => {
+        let state = match self.action_store.load_table_sorted(key) {
+            Ok(actions) => {
+                let question = self.question_store.get(key).unwrap().unwrap();
+                let action_log = DirectTreeActionLog {
+                    question,
+                    rollout_config: self.asset_file_action_logs.rollout_config.clone(),
+                    posterior_calculation_config: self
+                        .asset_file_action_logs
+                        .posterior_calculation_config
+                        .clone(),
+                    actions,
+                };
                 let (num_correct, num_leaves, win_rate) =
                     question_stats_from_action_log::<M>(&action_log);
                 EntryLoadState::Loaded(QuestionEntry {
@@ -516,9 +542,6 @@ impl<M: LlmModelMarker> App<M> {
                     num_correct,
                     num_leaves,
                 })
-            }
-            Ok(None) => {
-                EntryLoadState::Failed(format!("Question key {} not found in sqlite store", key))
             }
             Err(error) => EntryLoadState::Failed(format!(
                 "Failed to load question key {} from sqlite store: {}",
@@ -2315,10 +2338,10 @@ async fn run_model_app<'a, M: LlmModelMarker>(
         epoch,
         _phantom: std::marker::PhantomData,
     };
-    let action_log_store = asset_file_action_logs.fetch().await;
-    let mut keys = action_log_store.get_keys().unwrap();
-    keys.sort();
-    let app = App::<M>::new(action_log_store, keys, override_hyperparameters);
+    // let action_store = asset_file_action_logs.fetch().await;
+    // let mut keys = action_store.get_keys().unwrap();
+    // keys.sort();
+    let app = App::<M>::new(asset_file_action_logs, override_hyperparameters).await;
     run_app::<M>(terminal, app)
 }
 

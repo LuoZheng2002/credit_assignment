@@ -1,7 +1,6 @@
 use research_utility::{
     asset_file::{AssetFile, Base64Hash, hash_file},
     progress_tui_server::log_warning,
-    sqlite_store::SqliteStore,
     sqlite_table_array_store::SqliteTableArrayStore,
 };
 use serde::{Deserialize, Serialize};
@@ -21,8 +20,6 @@ use crate::{
 
 const ACTION_LOG_SCHEMA_VERSION: usize = 3;
 
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(bound(serialize = "", deserialize = ""))]
 pub struct DirectTreeActionLog<M> {
     pub question: HybridDatasetQuestion,
     pub rollout_config: DirectRolloutConfig,
@@ -30,16 +27,16 @@ pub struct DirectTreeActionLog<M> {
     pub actions: Vec<DirectTreeAction<M>>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct DirectTreeActionLogMetadata {
-    pub question: HybridDatasetQuestion,
-    pub rollout_config: DirectRolloutConfig,
-    pub posterior_calculation_config: PosteriorCalculationConfig,
-}
+// #[derive(Serialize, Deserialize, Debug, Clone)]
+// pub struct DirectTreeActionLogMetadata {
+//     pub question: HybridDatasetQuestion,
+//     pub rollout_config: DirectRolloutConfig,
+//     pub posterior_calculation_config: PosteriorCalculationConfig,
+// }
 
 #[derive(Debug)]
 pub struct DirectTreeActionLogStore<M: LlmModelMarker> {
-    pub metadata_store: SqliteStore<usize, DirectTreeActionLogMetadata>,
+    // pub metadata_store: SqliteStore<usize, DirectTreeActionLogMetadata>,
     pub action_store: SqliteTableArrayStore<usize, DirectTreeAction<M>>,
     pub _phantom: PhantomData<M>,
 }
@@ -84,61 +81,65 @@ impl<M: LlmModelMarker> Clone for ActionStoreAdapter<M> {
     }
 }
 
-impl<M: LlmModelMarker> DirectTreeActionLogStore<M> {
-    pub fn initialize_if_missing(db_path: impl Into<String>) -> Self {
-        let db_path = db_path.into();
-        let metadata_store =
-            SqliteStore::<usize, DirectTreeActionLogMetadata>::initialize_if_missing(
-                db_path.clone(),
-            );
-        // let action_store = SqliteTableArrayStore::<usize, DirectTreeAction<M>>::new(db_path)
-        //     .expect("failed to initialize sqlite table array store for direct action log actions");
-        let action_store =
-            SqliteTableArrayStore::<usize, DirectTreeAction<M>>::initialize_if_missing(db_path);
-        Self {
-            metadata_store,
-            action_store,
-            _phantom: PhantomData,
-        }
-    }
-    pub fn get(&self, key: usize) -> Result<Option<DirectTreeActionLog<M>>, String> {
-        let metadata = self.metadata_store.get(key)?;
-        if let Some(metadata) = metadata {
-            let actions = self.action_store.load_table_sorted(key)?;
-            Ok(Some(DirectTreeActionLog::from_metadata_and_actions(
-                metadata, actions,
-            )))
-        } else {
-            Ok(None)
-        }
-    }
-    pub fn get_keys(&self) -> Result<Vec<usize>, String> {
-        self.metadata_store.get_keys()
-    }
+// impl<M: LlmModelMarker> DirectTreeActionLogStore<M> {
+//     pub fn initialize_if_missing(db_path: impl Into<String>) -> Self {
+//         let db_path = db_path.into();
+//         // let metadata_store =
+//         //     SqliteStore::<usize, DirectTreeActionLogMetadata>::initialize_if_missing(
+//         //         db_path.clone(),
+//         //     );
+//         // let action_store = SqliteTableArrayStore::<usize, DirectTreeAction<M>>::new(db_path)
+//         //     .expect("failed to initialize sqlite table array store for direct action log actions");
+//         let action_store =
+//             SqliteTableArrayStore::<usize, DirectTreeAction<M>>::initialize_if_missing(db_path);
+//         Self {
+//             // metadata_store,
+//             action_store,
+//             _phantom: PhantomData,
+//         }
+//     }
+//     pub fn get(&self, key: usize) -> Result<Option<DirectTreeActionLog<M>>, String> {
+//         // let metadata = self.metadata_store.get(key)?;
+//         // if let Some(metadata) = metadata {
+//         //     let actions = self.action_store.load_table_sorted(key)?;
+//         //     Ok(Some(DirectTreeActionLog::from_metadata_and_actions(
+//         //         metadata, actions,
+//         //     )))
+//         // } else {
+//         //     Ok(None)
+//         // }
+//         let actions = self.action_store.load_table_sorted(key)?;
+//         DirectTreeActionLog{
 
-    // pub fn get_or_init_metadata(
-    //     &self,
-    //     key: usize,
-    //     default_metadata: DirectTreeActionLogMetadata,
-    // ) -> Result<DirectTreeActionLogMetadata, String> {
-    //     let existing = self.metadata_store.get(key)?;
-    //     if let Some(existing) = existing {
-    //         return Ok(existing);
-    //     }
-    //     self.metadata_store
-    //         .upsert(key, default_metadata, SqliteBusyRetryConfig::aggressive())?;
-    //     Ok(default_metadata)
-    // }
+//         }
+//     }
+//     pub fn get_keys(&self) -> Result<Vec<usize>, String> {
+//         self.metadata_store.get_keys()
+//     }
 
-    pub fn append_action_at(
-        &self,
-        key: usize,
-        action_index: usize,
-        action: &DirectTreeAction<M>,
-    ) -> Result<(), String> {
-        self.action_store.append_at(key, action_index, action)
-    }
-}
+//     // pub fn get_or_init_metadata(
+//     //     &self,
+//     //     key: usize,
+//     //     default_metadata: DirectTreeActionLogMetadata,
+//     // ) -> Result<DirectTreeActionLogMetadata, String> {
+//     //     let existing = self.metadata_store.get(key)?;
+//     //     if let Some(existing) = existing {
+//     //         return Ok(existing);
+//     //     }
+//     //     self.metadata_store
+//     //         .upsert(key, default_metadata, SqliteBusyRetryConfig::aggressive())?;
+//     //     Ok(default_metadata)
+//     // }
+
+//     pub fn append_action_at(
+//         &self,
+//         key: usize,
+//         action_index: usize,
+//         action: &DirectTreeAction<M>,
+//     ) -> Result<(), String> {
+//         self.action_store.append_at(key, action_index, action)
+//     }
+// }
 
 impl<M: LlmModelMarker> ActionStoreAdapter<M> {
     pub fn new(store: SqliteTableArrayStore<usize, DirectTreeAction<M>>) -> Self {
@@ -272,19 +273,19 @@ impl<M: LlmModelMarker> ActionStoreAdapter<M> {
     }
 }
 
-impl<M> DirectTreeActionLog<M> {
-    pub fn from_metadata_and_actions(
-        metadata: DirectTreeActionLogMetadata,
-        actions: Vec<DirectTreeAction<M>>,
-    ) -> Self {
-        Self {
-            question: metadata.question,
-            rollout_config: metadata.rollout_config,
-            posterior_calculation_config: metadata.posterior_calculation_config,
-            actions,
-        }
-    }
-}
+// impl<M> DirectTreeActionLog<M> {
+//     pub fn from_metadata_and_actions(
+//         metadata: DirectTreeActionLogMetadata,
+//         actions: Vec<DirectTreeAction<M>>,
+//     ) -> Self {
+//         Self {
+//             question: metadata.question,
+//             rollout_config: metadata.rollout_config,
+//             posterior_calculation_config: metadata.posterior_calculation_config,
+//             actions,
+//         }
+//     }
+// }
 
 impl<M> Clone for DirectTreeActionLog<M> {
     fn clone(&self) -> Self {
@@ -319,7 +320,6 @@ pub struct AssetFileDirectTreeActionLogs<M: LlmModelMarker> {
     pub nickname: String,
     pub rollout_config: DirectRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
-
     pub epoch: usize, // the epoch index
     #[serde(skip)]
     pub _phantom: PhantomData<M>,
@@ -336,7 +336,7 @@ impl<M: LlmModelMarker> AssetFileDirectTreeActionLogs<M> {
         assert_eq!(short_hash.len(), 8); // 4 bytes should give us 8 hex characters
         short_hash
     }
-    pub fn file_path(&self) -> String {
+    pub fn actions_file_path(&self) -> String {
         format!(
             "results/{}/{}/epoch_{}/action_logs_{}.sqlite",
             M::CLI_NAME,
@@ -403,12 +403,13 @@ impl<M: LlmModelMarker> AssetFileDirectTreeActionLogs<M> {
         if let Some(reason) = stale_reason {
             log_warning(&format!(
                 "Target file {} is stale. Deleting if exists... Reason: {}",
-                self.file_path(),
+                self.actions_file_path(),
                 reason
             ));
             // the target file is stale, delete it if exists
-            if std::path::Path::new(&self.file_path()).exists() {
-                std::fs::remove_file(self.file_path()).expect("Failed to delete stale target file");
+            if std::path::Path::new(&self.actions_file_path()).exists() {
+                std::fs::remove_file(self.actions_file_path())
+                    .expect("Failed to delete stale target file");
                 log_warning("Deleted stale target file for direct action log");
             }
         }
@@ -433,7 +434,7 @@ impl<M: LlmModelMarker> AssetFileDirectTreeActionLogs<M> {
 
 #[async_trait::async_trait]
 impl<M: LlmModelMarker> AssetFile for AssetFileDirectTreeActionLogs<M> {
-    type FileModel = DirectTreeActionLogStore<M>;
+    type FileModel = SqliteTableArrayStore<usize, DirectTreeAction<M>>;
     async fn synchronize(&self) -> Base64Hash {
         // synchromize all dependency assets
         let dataset_asset_file = AssetFileHybridDataset {
@@ -456,10 +457,13 @@ impl<M: LlmModelMarker> AssetFile for AssetFileDirectTreeActionLogs<M> {
         );
         assert_eq!(tracking_content.config_nickname, self.nickname);
         // check if target file exists and returns hash
-        hash_file(self.file_path()).expect("Target file missing for direct action log")
+        hash_file(self.actions_file_path()).expect("Target file missing for direct action log")
     }
     async fn fetch(&self) -> Self::FileModel {
         self.synchronize().await;
-        DirectTreeActionLogStore::<M>::initialize_if_missing(self.file_path())
+        // DirectTreeActionLogStore::<M>::initialize_if_missing(self.file_path())
+        SqliteTableArrayStore::<usize, DirectTreeAction<M>>::initialize_if_missing(
+            self.actions_file_path(),
+        )
     }
 }
