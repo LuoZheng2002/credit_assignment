@@ -79,6 +79,33 @@ def _set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _load_dotenv_if_present(dotenv_path: str = ".env") -> int:
+    path = Path(dotenv_path)
+    if not path.exists() or not path.is_file():
+        return 0
+
+    from dotenv import dotenv_values, load_dotenv
+
+    existing_keys = set(os.environ.keys())
+    loaded = load_dotenv(dotenv_path=path, override=False)
+    if not loaded:
+        return 0
+
+    parsed_values = dotenv_values(dotenv_path=path)
+    loaded_count = 0
+    for key in parsed_values.keys():
+        if key is None:
+            continue
+        normalized_key = key.strip()
+        if len(normalized_key) == 0:
+            continue
+        if normalized_key in existing_keys:
+            continue
+        if normalized_key in os.environ:
+            loaded_count += 1
+    return loaded_count
+
+
 def _is_primary_rank() -> bool:
     return (not torch.distributed.is_available()) or (
         not torch.distributed.is_initialized()
@@ -923,6 +950,10 @@ def train(config: TrainConfig) -> None:
     assert len(config.final_model_output_parent_dir.strip()) > 0, "final_model_output_parent_dir cannot be empty"
 
     from transformers import AutoTokenizer
+
+    loaded_env_count = _load_dotenv_if_present()
+    if loaded_env_count > 0 and _is_primary_rank():
+        print(f"[status] dotenv_loaded=1 dotenv_path=.env keys_loaded={loaded_env_count}")
 
     _set_seed(config.seed)
     device = _init_distributed_device()

@@ -8,6 +8,7 @@ import signal
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -26,6 +27,15 @@ class _NullWriter:
 
 class _ExecutionTimeoutError(Exception):
     pass
+
+
+def _load_dotenv_if_present(dotenv_path: str = ".env") -> None:
+    path = Path(dotenv_path)
+    if not path.exists() or not path.is_file():
+        return
+    from dotenv import load_dotenv
+
+    load_dotenv(dotenv_path=path, override=False)
 
 
 def create_request_namespace() -> dict[str, Any]:
@@ -97,6 +107,8 @@ def execute_with_trailing_expression(
 
 
 def main() -> int:
+    _load_dotenv_if_present()
+
     parser = argparse.ArgumentParser(description="Python tool call server")
     parser.add_argument("--parent-pid", type=int, required=True)
     parser.add_argument("--worker-id", type=int, required=False, default=0)
