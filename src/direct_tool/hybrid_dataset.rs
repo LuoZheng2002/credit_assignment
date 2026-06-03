@@ -110,7 +110,7 @@ pub struct AssetFileHybridDataset<S: DatasetSplit>(pub std::marker::PhantomData<
 
 impl<S: DatasetSplit> AssetFileHybridDataset<S> {
     pub fn file_path(&self) -> String {
-        format!("datasets/hybrid_dataset_{}.sqlite", S::dataset_file_postfix())
+        format!("datasets/hybrid_{}.sqlite", S::dataset_file_postfix())
     }
 }
 
