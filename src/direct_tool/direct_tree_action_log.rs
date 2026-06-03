@@ -1,7 +1,5 @@
 use research_utility::{
-    asset_file::{AssetFile, Base64Hash, hash_file},
-    sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
-    sqlite_table_array_store::SqliteTableArrayStore,
+    asset_file::{AssetFile, Base64Hash, hash_file}, progress_tui_server::log_warning, sqlite_store::{SqliteBusyRetryConfig, SqliteStore}, sqlite_table_array_store::SqliteTableArrayStore
 };
 use serde::{Deserialize, Serialize};
 use std::{marker::PhantomData, sync::Arc};
@@ -240,15 +238,15 @@ impl<M: LlmModelMarker> AssetFileDirectTreeActionLogs<M> {
             }
         };
         if let Some(reason) = stale_reason {
-            println!(
+            log_warning(&format!(
                 "Target file {} is stale. Deleting if exists... Reason: {}",
                 self.file_path(),
                 reason
-            );
+            ));
             // the target file is stale, delete it if exists
             if std::path::Path::new(&self.file_path()).exists() {
                 std::fs::remove_file(self.file_path()).expect("Failed to delete stale target file");
-                println!("Deleted stale target file for direct action log");
+                log_warning("Deleted stale target file for direct action log");
             }
         }
     }
