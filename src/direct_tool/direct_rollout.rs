@@ -104,6 +104,7 @@ async fn run_progress_timer(
         log_master_progress(progress, &label);
     };
 
+    let progress_log_interval = Duration::from_secs(1);
     let mut next_progress_log_time = start_time;
     let mut next_throughput_log_time = start_time;
     let throughput_window = Duration::from_secs(5);
@@ -120,7 +121,9 @@ async fn run_progress_timer(
         }
         if now >= next_progress_log_time {
             log_time_progress(now);
-            next_progress_log_time += Duration::from_secs(1);
+            // If the runtime was blocked for a while, avoid "catch-up" bursts by
+            // scheduling from the current time rather than replaying missed ticks.
+            next_progress_log_time = now + progress_log_interval;
         }
 
         if now >= next_throughput_log_time {
@@ -150,7 +153,8 @@ async fn run_progress_timer(
                 "llm_call_throughput_per_sec_5s_window",
                 format!("{llm_call_throughput:.2}"),
             );
-            next_throughput_log_time += throughput_log_interval;
+            // Same strategy as progress logging: skip missed intervals.
+            next_throughput_log_time = now + throughput_log_interval;
         }
 
         let wake_time = std::cmp::min(
