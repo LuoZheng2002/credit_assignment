@@ -1,10 +1,11 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::LazyLock};
 
 use research_utility::{
     asset_file::AssetFile,
     progress_tui_server::{log_info, log_key_value_pair},
 };
 use serde::{Deserialize, Serialize};
+use minijinja::context;
 use tokio::process::Child;
 
 use crate::{
@@ -26,6 +27,43 @@ use crate::{
     python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
     read_accuracy::read_accuracy,
 };
+
+pub const MODEL_PARENT_DIR_TEMPLATE_PATH: &str = "config/training/model_parent_dir.jinja";
+
+pub static MODEL_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<Result<minijinja::Environment<'static>, String>> =
+    LazyLock::new(|| {
+        let template_source = std::fs::read_to_string(MODEL_PARENT_DIR_TEMPLATE_PATH)
+            .map_err(|err| format!("Failed to read {}: {}", MODEL_PARENT_DIR_TEMPLATE_PATH, err))?;
+        let mut env = minijinja::Environment::new();
+        env.add_template_owned("model_parent_dir", template_source)
+            .map_err(|err| format!("Failed to parse model_parent_dir template: {}", err))?;
+        Ok(env)
+    });
+
+pub fn model_parent_dir_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+) -> Result<String, String> {
+    let env = MODEL_PARENT_DIR_TEMPLATE_ENVIRONMENT
+        .as_ref()
+        .map_err(|err| err.clone())?;
+    let template = env
+        .get_template("model_parent_dir")
+        .map_err(|err| format!("Failed to load model_parent_dir template: {}", err))?;
+    let rendered = template
+        .render(context! {
+            model_cli_name => model_cli_name,
+            config_nickname => config_nickname,
+            epoch => epoch,
+        })
+        .map_err(|err| format!("Failed to render model_parent_dir template: {}", err))?;
+    let rendered = rendered.trim().to_string();
+    if rendered.is_empty() {
+        return Err("Rendered model_parent_dir template is empty".to_string());
+    }
+    Ok(rendered)
+}
 
 pub struct Orchestrator {
     // for rollout
@@ -257,8 +295,12 @@ impl Orchestrator {
         }
 
         if epoch == 0 {
-            crate::load_initial_model::load_initial_model(&self.epoch_dir::<M>(epoch), M::API_NAME)
-                .await?;
+            let model_parent_dir = model_parent_dir_from_template(
+                M::CLI_NAME,
+                &self.config_nickname,
+                epoch,
+            )?;
+            crate::load_initial_model::load_initial_model(&model_parent_dir, M::API_NAME).await?;
         }
 
         log_info(format!(
@@ -415,15 +457,19 @@ impl Orchestrator {
             _phantom: std::marker::PhantomData::<M>,
         };
         let training_trajectory_sqlite_path = asset_file_training_trajectories.file_path();
+        let model_parent_dir =
+            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+        let final_model_output_parent_dir =
+            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch + 1)?;
         // first we need to write the training config to the expected location
         let training_config = PythonTrainingConfig {
             common: self.training_config_common.clone(),
             training_time: self.training_time,
             num_iterations_limit: self.num_iterations_limit,
-            model_parent_dir: self.epoch_dir::<M>(epoch),
+            model_parent_dir,
             training_trajectory_sqlite_path,
             checkpoints_parent_dir: self.epoch_dir::<M>(epoch),
-            final_model_output_parent_dir: self.epoch_dir::<M>(epoch + 1),
+            final_model_output_parent_dir,
         };
         let training_config_path = self.python_training_config_path::<M>(epoch);
         write_toml(&training_config_path, &training_config).unwrap();
