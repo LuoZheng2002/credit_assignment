@@ -14,7 +14,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::direct_tool::direct_tree_action::DirectTreeAction;
-use crate::direct_tool::hybrid_dataset::AssetFileHybridDataset;
+use crate::direct_tool::hybrid_dataset::{AssetFileHybridDataset, QuestionFlatId, Training};
 use crate::{
     direct_tool::{
         direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
@@ -28,33 +28,33 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-struct TrajectoryMetadata {
+struct TrajectoryMetadata<S: DatasetSplit> {
     sample_index: usize,
     trajectory_index: usize,
-    question_flat_id: usize,
+    question_flat_id: QuestionFlatId<S>,
     leaf_segment_id: SegmentId,
     average_absolute_advantage: NotNan<f32>,
     trajectory_token_length: usize,
 }
 
 #[derive(Debug, Clone)]
-struct TrajectorySummary {
-    question_flat_id: usize,
+struct TrajectorySummary<S: DatasetSplit> {
+    question_flat_id: QuestionFlatId<S>,
     leaf_segment_id: SegmentId,
     average_absolute_advantage: f32,
     trajectory_token_length: usize,
 }
 
-struct TrajectorySelectionState {
+struct TrajectorySelectionState<S: DatasetSplit> {
     total_samples: usize,
     finished_samples: usize,
     total_trajectories: usize,
     all_average_absolute_advantages: Vec<f32>,
-    candidate_metadata: Vec<TrajectoryMetadata>,
+    candidate_metadata: Vec<TrajectoryMetadata<S>>,
     cumulative_avg_abs_advantage_cutoff: f32,
 }
 
-impl TrajectorySelectionState {
+impl<S: DatasetSplit> TrajectorySelectionState<S> {
     fn new(total_samples: usize, cumulative_avg_abs_advantage_cutoff: f32) -> Self {
         assert!(
             cumulative_avg_abs_advantage_cutoff > 0.0 && cumulative_avg_abs_advantage_cutoff <= 1.0,
@@ -70,7 +70,7 @@ impl TrajectorySelectionState {
         }
     }
 
-    fn into_output(mut self) -> TrainingTrajectorySelectionOutput {
+    fn into_output(mut self) -> TrainingTrajectorySelectionOutput<S> {
         self.all_average_absolute_advantages
             .sort_by(|a, b| b.partial_cmp(a).unwrap());
         self.candidate_metadata.sort_by(|a, b| {
@@ -86,7 +86,7 @@ impl TrajectorySelectionState {
             self.cumulative_avg_abs_advantage_cutoff * total_average_absolute_advantage_sum;
         let tolerance = f32::EPSILON * total_average_absolute_advantage_sum.max(1.0);
         let mut selected_average_absolute_advantage_sum = 0.0_f32;
-        let mut selected_metadata: Vec<TrajectoryMetadata> = Vec::new();
+        let mut selected_metadata: Vec<TrajectoryMetadata<S>> = Vec::new();
         for item in self.candidate_metadata {
             let next_sum =
                 selected_average_absolute_advantage_sum + *item.average_absolute_advantage;
@@ -119,18 +119,18 @@ impl TrajectorySelectionState {
     }
 }
 
-struct TrainingTrajectorySelectionOutput {
-    selected_metadata: Vec<TrajectoryMetadata>,
+struct TrainingTrajectorySelectionOutput<S: DatasetSplit> {
+    selected_metadata: Vec<TrajectoryMetadata<S>>,
     all_average_absolute_advantages: Vec<f32>,
     total_trajectories: usize,
     average_absolute_advantage_cutoff: f32,
 }
 
-pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker, S: DatasetSplit>(
-    question_store: SqliteStore<usize, HybridDatasetQuestion>,
+pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
+    question_store: SqliteStore<QuestionFlatId<Training>, HybridDatasetQuestion<Training>>,
     // action_log_store: DirectTreeActionLogStore<M>,
-    action_store: SqliteTableArrayStore<usize, DirectTreeAction<M>>,
-    rollout_config: DirectRolloutConfig<S>,
+    action_store: SqliteTableArrayStore<QuestionFlatId<Training>, DirectTreeAction<M>>,
+    rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
     training_trajectory_store: SqliteStore<usize, DirectTrainingTrajectory<M>>,
     cumulative_avg_abs_advantage_cutoff: f32,
@@ -143,7 +143,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker, S: Dataset
     );
     // let action_log_store = ActionStoreAdapter::new(action_store);
     let (keys, selection_output, question_store, action_store) =
-        select_training_trajectories_from_rollout_logs::<M, S>(
+        select_training_trajectories_from_rollout_logs::<M, Training>(
             question_store,
             action_store,
             rollout_config.clone(),
@@ -158,7 +158,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker, S: Dataset
         total_trajectories,
         average_absolute_advantage_cutoff,
     } = selection_output;
-    let adopted_trajectories = materialize_selected_training_trajectories::<M, S>(
+    let adopted_trajectories = materialize_selected_training_trajectories::<M>(
         question_store,
         action_store,
         training_trajectory_store,
@@ -205,17 +205,17 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker, S: Dataset
 async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: DatasetSplit>(
     // action_log_store: &ActionStoreAdapter<M>,
     // action_log_store: DirectTreeActionLogStore<M>,
-    question_store: SqliteStore<usize, HybridDatasetQuestion>,
-    action_store: SqliteTableArrayStore<usize, DirectTreeAction<M>>,
+    question_store: SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>>,
+    action_store: SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>,
     rollout_config: DirectRolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
     cumulative_avg_abs_advantage_cutoff: f32,
     advantage_calculation_policy: AdvantageCalculationPolicy,
 ) -> (
-    Vec<usize>,
-    TrainingTrajectorySelectionOutput,
-    SqliteStore<usize, HybridDatasetQuestion>,
-    SqliteTableArrayStore<usize, DirectTreeAction<M>>,
+    Vec<QuestionFlatId<S>>,
+    TrainingTrajectorySelectionOutput<S>,
+    SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>>,
+    SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>,
 ) {
     // let mut keys = action_log_store.metadata_store.get_keys().unwrap();
     let mut keys = action_store.get_keys().unwrap();
@@ -299,14 +299,14 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
     )
 }
 
-async fn materialize_selected_training_trajectories<M: LlmModelMarker, S: DatasetSplit>(
-    question_store: SqliteStore<usize, HybridDatasetQuestion>,
-    action_store: SqliteTableArrayStore<usize, DirectTreeAction<M>>,
+async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
+    question_store: SqliteStore<QuestionFlatId<Training>, HybridDatasetQuestion<Training>>,
+    action_store: SqliteTableArrayStore<QuestionFlatId<Training>, DirectTreeAction<M>>,
     training_trajectory_store: SqliteStore<usize, DirectTrainingTrajectory<M>>,
-    rollout_config: DirectRolloutConfig<S>,
+    rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
-    keys: &[usize],
-    mut selected_metadata: Vec<TrajectoryMetadata>,
+    keys: &[QuestionFlatId<Training>],
+    mut selected_metadata: Vec<TrajectoryMetadata<Training>>,
     advantage_calculation_policy: AdvantageCalculationPolicy,
 ) -> usize {
     selected_metadata.sort_by(|a, b| {
@@ -356,7 +356,7 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker, S: Datase
                     let _permit = permit;
                     let selected_trajectory_indices: BTreeSet<usize> =
                         [metadata.trajectory_index].into_iter().collect();
-                    let reconstructed_trajectories = action_log_to_selected_trajectories::<M, S>(
+                    let reconstructed_trajectories = action_log_to_selected_trajectories::<M>(
                         action_log,
                         advantage_calculation_policy,
                         &selected_trajectory_indices,
@@ -405,13 +405,13 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker, S: Datase
                         assert_eq!(
                             trajectory.input_ids.len(),
                             trajectory.labels.len(),
-                            "kept trajectory must satisfy input_ids.len() == labels.len(); question_flat_id={}",
+                            "kept trajectory must satisfy input_ids.len() == labels.len(); question_flat_id={:?}",
                             trajectory.question.flat_id
                         );
                         assert_eq!(
                             trajectory.input_ids.len(),
                             trajectory.advantages.len(),
-                            "kept trajectory must satisfy input_ids.len() == advantages.len(); question_flat_id={}",
+                            "kept trajectory must satisfy input_ids.len() == advantages.len(); question_flat_id={:?}",
                             trajectory.question.flat_id
                         );
                         // todo: revisit the logic
@@ -456,7 +456,7 @@ pub struct DirectTrainingSetStatistics {
 fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
     action_log: DirectTreeActionLog<M, S>,
     advantage_calculation_policy: AdvantageCalculationPolicy,
-) -> Vec<TrajectorySummary> {
+) -> Vec<TrajectorySummary<S>> {
     let tree = DirectTree::from_action_log(&action_log);
     if !tree.completed() {
         return Vec::new();
@@ -476,7 +476,7 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
     for segment_id in tree.segments.keys().copied() {
         segment_advantages.entry(segment_id).or_insert(0.0);
     }
-    let mut trajectory_summaries: Vec<TrajectorySummary> = Vec::new();
+    let mut trajectory_summaries: Vec<TrajectorySummary<S>> = Vec::new();
     let mut leaf_segment_ids: BTreeSet<SegmentId> =
         tree.leaf_segment_judgments.keys().cloned().collect();
     while !leaf_segment_ids.is_empty() {
@@ -537,15 +537,15 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
     trajectory_summaries
 }
 
-fn action_log_to_selected_trajectories<M: LlmModelMarker, S: DatasetSplit>(
-    action_log: DirectTreeActionLog<M, S>,
+fn action_log_to_selected_trajectories<M: LlmModelMarker>(
+    action_log: DirectTreeActionLog<M, Training>,
     advantage_calculation_policy: AdvantageCalculationPolicy,
     selected_trajectory_indices: &BTreeSet<usize>,
 ) -> Vec<(usize, DirectTrainingTrajectory<M>)> {
     if selected_trajectory_indices.is_empty() {
         return Vec::new();
     }
-    let tree = DirectTree::<M, S>::from_action_log(&action_log);
+    let tree = DirectTree::<M, Training>::from_action_log(&action_log);
     if !tree.completed() {
         return Vec::new();
     }
@@ -655,7 +655,7 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker, S: DatasetSplit>(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectTrainingTrajectory<M: LlmModelMarker> {
-    pub question: HybridDatasetQuestion,
+    pub question: HybridDatasetQuestion<Training>,
     pub leaf_segment_id: SegmentId,
     pub input_ids: Vec<i32>,
     pub labels: Vec<i32>, // we may not need to let model learn to stop at tool-call boundaries or end since our framework already handled this
@@ -665,10 +665,10 @@ pub struct DirectTrainingTrajectory<M: LlmModelMarker> {
     pub _phantom: std::marker::PhantomData<M>,
 }
 
-pub struct AssetFileTrainingTrajectories<M: LlmModelMarker, S: DatasetSplit> {
+pub struct AssetFileTrainingTrajectories<M: LlmModelMarker> {
     // pub model: LlmModelName,
     pub config_nickname: String,
-    pub rollout_config: DirectRolloutConfig<S>,
+    pub rollout_config: DirectRolloutConfig<Training>,
     pub posterior_calculation_config: PosteriorCalculationConfig,
     pub advantage_calculation_policy: AdvantageCalculationPolicy,
     pub epoch: usize, // the epoch index
@@ -688,7 +688,7 @@ pub struct AssetFileTrainingTrajectoriesTracking<S: DatasetSplit> {
     pub cumulative_avg_abs_advantage_cutoff: f32,
 }
 
-impl<M: LlmModelMarker, S: DatasetSplit> AssetFileTrainingTrajectories<M, S> {
+impl<M: LlmModelMarker> AssetFileTrainingTrajectories<M> {
     fn to_short_hash(&self) -> String {
         let serialized = serde_json::to_vec(&(
             &&self.config_nickname,
@@ -731,14 +731,14 @@ impl<M: LlmModelMarker, S: DatasetSplit> AssetFileTrainingTrajectories<M, S> {
 }
 
 #[async_trait::async_trait]
-impl<M: LlmModelMarker, S: DatasetSplit> AssetFile for AssetFileTrainingTrajectories<M, S> {
+impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
     type FileModel = SqliteStore<usize, DirectTrainingTrajectory<M>>;
     async fn fetch(&self) -> Self::FileModel {
         self.synchronize().await;
         SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(self.file_path())
     }
     async fn synchronize(&self) -> Base64Hash {
-        let asset_file_rollout_logs = AssetFileDirectTreeActionLogs::<M, S> {
+        let asset_file_rollout_logs = AssetFileDirectTreeActionLogs::<M, Training> {
             nickname: self.config_nickname.clone(),
             rollout_config: self.rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
@@ -746,7 +746,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> AssetFile for AssetFileTrainingTrajecto
             _phantom: std::marker::PhantomData,
         };
         let rollout_log_hash = asset_file_rollout_logs.synchronize().await;
-        let new_tracking_content = AssetFileTrainingTrajectoriesTracking::<S> {
+        let new_tracking_content = AssetFileTrainingTrajectoriesTracking::<Training> {
             rollout_log_hash,
             config_nickname: self.config_nickname.clone(),
             rollout_config: self.rollout_config.clone(),
@@ -755,8 +755,9 @@ impl<M: LlmModelMarker, S: DatasetSplit> AssetFile for AssetFileTrainingTrajecto
             epoch: self.epoch,
             cumulative_avg_abs_advantage_cutoff: self.cumulative_avg_abs_advantage_cutoff,
         };
-        let stale = if let Ok(tracking_content) =
-            read_json::<AssetFileTrainingTrajectoriesTracking<S>>(self.version_tracking_path())
+        let stale = if let Ok(tracking_content) = read_json::<
+            AssetFileTrainingTrajectoriesTracking<Training>,
+        >(self.version_tracking_path())
         {
             let mut is_stale = false;
             if tracking_content != new_tracking_content {
@@ -779,10 +780,10 @@ impl<M: LlmModelMarker, S: DatasetSplit> AssetFile for AssetFileTrainingTrajecto
             // initialize database
             let training_trajectory_store =
                 SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(self.file_path());
-            let asset_file_dataset = AssetFileHybridDataset::<S>(PhantomData);
+            let asset_file_dataset = AssetFileHybridDataset::<Training>(PhantomData);
             let dataset_store = asset_file_dataset.fetch().await;
             let action_store = asset_file_rollout_logs.fetch().await;
-            rollout_logs_to_training_trajectories::<M, S>(
+            rollout_logs_to_training_trajectories::<M>(
                 dataset_store,
                 action_store,
                 self.rollout_config.clone(),

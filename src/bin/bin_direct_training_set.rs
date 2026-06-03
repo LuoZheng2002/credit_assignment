@@ -96,7 +96,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
     } = run_program_args;
-    let asset_file_training_set = AssetFileTrainingTrajectories::<M, Training> {
+    let asset_file_training_set = AssetFileTrainingTrajectories::<M> {
         config_nickname: config_nickname.clone(),
         rollout_config,
         posterior_calculation_config,

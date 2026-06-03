@@ -14,7 +14,7 @@ use crate::direct_tool::direct_tree_action::DirectTreeAction::SubmitAnswer;
 use crate::direct_tool::direct_tree_status::{
     GuidedBranchingSubStatus, SpontaneousBranchingSubStatus, TrunkSubStatus,
 };
-use crate::direct_tool::hybrid_dataset::DatasetSplit;
+use crate::direct_tool::hybrid_dataset::{DatasetSplit, QuestionFlatId};
 use crate::judge_correctness::{JudgeAnswerModel, judge_final_answer};
 use crate::llm_model::MyTokenizer;
 use crate::tool_call_python::{PythonToolResponse, PythonToolServerPool, execute_python_tool_call};
@@ -698,8 +698,8 @@ fn concise_failure_reason(error: &str) -> String {
     format!("{}...", truncated)
 }
 
-async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
-    _question_flat_id: usize,
+async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSplit>(
+    _question_flat_id: QuestionFlatId<S>,
     trajectory: &DirectTrajectory<M>,
     new_branch_start_token: Option<i32>,
     llm_callable: &M::Callable,
@@ -757,8 +757,8 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker>(
     Ok(result)
 }
 
-async fn generate_next_segment_content<M: LlmModelMarker>(
-    question_flat_id: usize,
+async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
+    question_flat_id: QuestionFlatId<S>,
     trajectory: &DirectTrajectory<M>,
     new_branch_start_token: Option<i32>,
     // current_content: &[SegmentContent],
@@ -783,7 +783,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
         TrajectoryContent::Prompt(_)
         | TrajectoryContent::ToolResponse(_)
         | TrajectoryContent::ReasoningOrToolCallIncomplete(_) => {
-            let new_content = generate_reasoning_or_tool_call_content::<M>(
+            let new_content = generate_reasoning_or_tool_call_content::<M, S>(
                 question_flat_id,
                 trajectory,
                 new_branch_start_token,
@@ -804,7 +804,7 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                     PythonToolResponse::PythonSuccess(_) => {}
                     PythonToolResponse::PythonError(error) => {
                         log_warning(format!(
-                            "Tool call failed. flat_id={} reason={}",
+                            "Tool call failed. flat_id={:?} reason={}",
                             question_flat_id,
                             concise_failure_reason(error)
                         ));
@@ -814,10 +814,10 @@ async fn generate_next_segment_content<M: LlmModelMarker>(
                 Ok(SegmentContent::ToolResponse(response_tokenized))
             } else {
                 log_warning(format!(
-                    "The model ended a sequence without a boxed answer or python tool call. Continuing generation. Flat id: {}",
+                    "The model ended a sequence without a boxed answer or python tool call. Continuing generation. Flat id: {:?}",
                     question_flat_id
                 ));
-                generate_reasoning_or_tool_call_content::<M>(
+                generate_reasoning_or_tool_call_content::<M, S>(
                     question_flat_id,
                     trajectory,
                     new_branch_start_token,

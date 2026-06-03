@@ -20,6 +20,7 @@ use tokio::time::{Duration, Instant, sleep_until};
 
 use crate::atomic_count_guard::AtomicCountGuard;
 use crate::direct_tool::direct_tree_action_log::DirectTreeActionLog;
+use crate::direct_tool::hybrid_dataset::QuestionFlatId;
 use crate::{
     direct_tool::{
         direct_rollout_config::DirectRolloutConfig,
@@ -194,7 +195,7 @@ pub struct StopRequestedError;
 
 async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
     mut action_log: DirectTreeActionLog<M, S>,
-    action_store: ActionStoreAdapter<M>,
+    action_store: ActionStoreAdapter<M, S>,
     llm_callable: M::Callable,
     client: Client,
     shared_states: RolloutSharedStates,
@@ -374,9 +375,10 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     // } = DirectTreeActionLogStore::<M>::initialize_if_missing(
     //     asset_file_action_logs.actions_file_path(),
     // );
-    let action_store = SqliteTableArrayStore::<usize, DirectTreeAction<M>>::initialize_if_missing(
-        asset_file_action_logs.actions_file_path(),
-    );
+    let action_store =
+        SqliteTableArrayStore::<QuestionFlatId<S>, DirectTreeAction<M>>::initialize_if_missing(
+            asset_file_action_logs.actions_file_path(),
+        );
     let action_store_adapter = ActionStoreAdapter::new(action_store);
     let mut question_keys = dataset.get_keys().unwrap();
     // sort by question id to ensure deterministic order

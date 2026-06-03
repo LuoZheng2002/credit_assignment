@@ -11,7 +11,9 @@ use crate::{
     direct_tool::{
         direct_rollout_config::DirectRolloutConfig,
         direct_tree_action::DirectTreeAction,
-        hybrid_dataset::{AssetFileHybridDataset, DatasetSplit, HybridDatasetQuestion},
+        hybrid_dataset::{
+            AssetFileHybridDataset, DatasetSplit, HybridDatasetQuestion, QuestionFlatId,
+        },
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     json_line_util::{read_json, write_json},
@@ -22,7 +24,7 @@ const ACTION_LOG_SCHEMA_VERSION: usize = 3;
 
 #[derive(Clone)]
 pub struct DirectTreeActionLog<M: LlmModelMarker, S: DatasetSplit> {
-    pub question: HybridDatasetQuestion,
+    pub question: HybridDatasetQuestion<S>,
     pub rollout_config: DirectRolloutConfig<S>,
     pub posterior_calculation_config: PosteriorCalculationConfig,
     pub actions: Vec<DirectTreeAction<M>>,
@@ -36,19 +38,19 @@ pub struct DirectTreeActionLog<M: LlmModelMarker, S: DatasetSplit> {
 // }
 
 #[derive(Debug)]
-pub struct DirectTreeActionLogStore<M: LlmModelMarker> {
+pub struct DirectTreeActionLogStore<M: LlmModelMarker, S: DatasetSplit> {
     // pub metadata_store: SqliteStore<usize, DirectTreeActionLogMetadata>,
-    pub action_store: SqliteTableArrayStore<usize, DirectTreeAction<M>>,
+    pub action_store: SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>,
     pub _phantom: PhantomData<M>,
 }
 
 #[derive(Debug, Clone)]
-pub struct ActionStoreAdapter<M: LlmModelMarker> {
-    request_tx: mpsc::UnboundedSender<StoreRequest<M>>,
-    _phantom: PhantomData<M>,
+pub struct ActionStoreAdapter<M: LlmModelMarker, S: DatasetSplit> {
+    request_tx: mpsc::UnboundedSender<StoreRequest<M, S>>,
+    _phantom: PhantomData<(M, S)>,
 }
 
-enum StoreRequest<M: LlmModelMarker> {
+enum StoreRequest<M: LlmModelMarker, S: DatasetSplit> {
     // GetKeys {
     //     response_tx: oneshot::Sender<Result<Vec<usize>, String>>,
     // },
@@ -62,11 +64,11 @@ enum StoreRequest<M: LlmModelMarker> {
     //     response_tx: oneshot::Sender<Result<DirectTreeActionLogMetadata, String>>,
     // },
     GetOrInitActions {
-        key: usize,
+        key: QuestionFlatId<S>,
         response_tx: oneshot::Sender<Result<Vec<DirectTreeAction<M>>, String>>,
     },
     AppendActionAt {
-        key: usize,
+        key: QuestionFlatId<S>,
         action_index: usize,
         action: DirectTreeAction<M>,
         response_tx: oneshot::Sender<Result<(), String>>,
@@ -142,8 +144,8 @@ enum StoreRequest<M: LlmModelMarker> {
 //     }
 // }
 
-impl<M: LlmModelMarker> ActionStoreAdapter<M> {
-    pub fn new(store: SqliteTableArrayStore<usize, DirectTreeAction<M>>) -> Self {
+impl<M: LlmModelMarker, S: DatasetSplit> ActionStoreAdapter<M, S> {
+    pub fn new(store: SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>) -> Self {
         let (request_tx, request_rx) = mpsc::unbounded_channel();
         Self::spawn_worker(store, request_rx);
         Self {
@@ -153,8 +155,8 @@ impl<M: LlmModelMarker> ActionStoreAdapter<M> {
     }
 
     fn spawn_worker(
-        store: SqliteTableArrayStore<usize, DirectTreeAction<M>>,
-        mut request_rx: mpsc::UnboundedReceiver<StoreRequest<M>>,
+        store: SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>,
+        mut request_rx: mpsc::UnboundedReceiver<StoreRequest<M, S>>,
     ) {
         std::thread::Builder::new()
             .name("direct_action_log_sqlite_worker".to_string())
@@ -242,7 +244,7 @@ impl<M: LlmModelMarker> ActionStoreAdapter<M> {
 
     pub async fn get_or_init_actions(
         &self,
-        key: usize,
+        key: QuestionFlatId<S>,
     ) -> Result<Vec<DirectTreeAction<M>>, String> {
         let (response_tx, response_rx) = oneshot::channel();
         self.request_tx
@@ -255,7 +257,7 @@ impl<M: LlmModelMarker> ActionStoreAdapter<M> {
 
     pub async fn append_action_at(
         &self,
-        key: usize,
+        key: QuestionFlatId<S>,
         action_index: usize,
         action: &DirectTreeAction<M>,
     ) -> Result<(), String> {
@@ -433,7 +435,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> AssetFileDirectTreeActionLogs<M, S> {
 
 #[async_trait::async_trait]
 impl<M: LlmModelMarker, S: DatasetSplit> AssetFile for AssetFileDirectTreeActionLogs<M, S> {
-    type FileModel = SqliteTableArrayStore<usize, DirectTreeAction<M>>;
+    type FileModel = SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>;
     async fn synchronize(&self) -> Base64Hash {
         // synchromize all dependency assets
         let dataset_asset_file = AssetFileHybridDataset::<S>(PhantomData);
@@ -459,7 +461,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> AssetFile for AssetFileDirectTreeAction
     async fn fetch(&self) -> Self::FileModel {
         self.synchronize().await;
         // DirectTreeActionLogStore::<M>::initialize_if_missing(self.file_path())
-        SqliteTableArrayStore::<usize, DirectTreeAction<M>>::initialize_if_missing(
+        SqliteTableArrayStore::<QuestionFlatId<S>, DirectTreeAction<M>>::initialize_if_missing(
             self.actions_file_path(),
         )
     }

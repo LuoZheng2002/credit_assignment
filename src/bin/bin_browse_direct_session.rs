@@ -9,7 +9,8 @@ use std::time::Duration;
 use clap::Parser;
 use credit_assignment::direct_tool::direct_tree_action::DirectTreeAction;
 use credit_assignment::direct_tool::hybrid_dataset::{
-    AssetFileHybridDataset, HybridDatasetQuestion, Validation,
+    AssetFileHybridDataset, DatasetSplit, DatasetSplitEnum, HybridDatasetQuestion, QuestionFlatId,
+    Testing, Training, Validation,
 };
 use credit_assignment::judge_correctness::CorrectnessJudgment;
 use credit_assignment::{
@@ -70,6 +71,8 @@ struct Args {
     config_nickname: String,
     #[arg(long)]
     rollout_config_path: String,
+    #[arg(long, value_enum)]
+    dataset_split: DatasetSplitEnum,
     #[arg(long)]
     posterior_hyperparameters_path: String,
     #[arg(long)]
@@ -80,29 +83,28 @@ struct Args {
 
 const QUESTIONS_PER_PAGE: usize = 10;
 const CONVERSATION_SCROLL_SENSITIVITY: usize = 4;
-type SessionSplit = Validation;
 
-struct QuestionEntry<M: LlmModelMarker> {
-    key: usize,
-    action_log: DirectTreeActionLog<M, SessionSplit>,
+struct QuestionEntry<M: LlmModelMarker, S: DatasetSplit> {
+    key: QuestionFlatId<S>,
+    action_log: DirectTreeActionLog<M, S>,
     win_rate: f64,
     num_correct: usize,
     num_leaves: usize,
 }
 
-enum EntryLoadState<M: LlmModelMarker> {
+enum EntryLoadState<M: LlmModelMarker, S: DatasetSplit> {
     Unloaded,
     Loading,
-    Loaded(QuestionEntry<M>),
+    Loaded(QuestionEntry<M, S>),
     Failed(String),
 }
 
-struct EntryLoadResult<M: LlmModelMarker> {
+struct EntryLoadResult<M: LlmModelMarker, S: DatasetSplit> {
     index: usize,
-    state: EntryLoadState<M>,
+    state: EntryLoadState<M, S>,
 }
 
-impl<M: LlmModelMarker> Clone for QuestionEntry<M> {
+impl<M: LlmModelMarker, S: DatasetSplit> Clone for QuestionEntry<M, S> {
     fn clone(&self) -> Self {
         Self {
             key: self.key,
@@ -134,12 +136,12 @@ enum TreePaneFocus {
     Tree,
 }
 
-struct TreePage<M: LlmModelMarker> {
+struct TreePage<M: LlmModelMarker, S: DatasetSplit> {
     entry_index: usize,
     total_actions: usize,
     action_limit: usize,
     width_division_ratio: usize,
-    tree_snapshot: TreeDisplaySnapshot<M>,
+    tree_snapshot: TreeDisplaySnapshot<M, S>,
     root_segment_id: SegmentId,
     segment_advantages_from_posteriors: BTreeMap<SegmentId, f32>,
     segment_advantages_from_win_rate: BTreeMap<SegmentId, f32>,
@@ -209,8 +211,8 @@ struct ConversationRender {
     styled: Text<'static>,
 }
 
-struct TreePageState<M: LlmModelMarker> {
-    tree_snapshot: TreeDisplaySnapshot<M>,
+struct TreePageState<M: LlmModelMarker, S: DatasetSplit> {
+    tree_snapshot: TreeDisplaySnapshot<M, S>,
     root_segment_id: SegmentId,
     segment_advantages_from_posteriors: BTreeMap<SegmentId, f32>,
     segment_advantages_from_win_rate: BTreeMap<SegmentId, f32>,
@@ -224,18 +226,20 @@ struct TreePageState<M: LlmModelMarker> {
     rendered_segments: Vec<TreeRenderedSegment>,
 }
 
-struct TreeDisplaySnapshot<M: LlmModelMarker> {
+struct TreeDisplaySnapshot<M: LlmModelMarker, S: DatasetSplit> {
     segments: BTreeMap<SegmentId, Segment<M>>,
     leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
+    _phantom: std::marker::PhantomData<S>,
 }
 
-impl<M: LlmModelMarker> TreeDisplaySnapshot<M> {
-    fn from_tree(tree: DirectTree<'_, M, SessionSplit>) -> Self {
+impl<M: LlmModelMarker, S: DatasetSplit> TreeDisplaySnapshot<M, S> {
+    fn from_tree(tree: DirectTree<'_, M, S>) -> Self {
         tree.root_segment_id
             .expect("Direct tree browser requires root segment");
         Self {
             segments: tree.segments,
             leaf_segment_judgments: tree.leaf_segment_judgments,
+            _phantom: std::marker::PhantomData,
         }
     }
 
@@ -271,16 +275,16 @@ impl<M: LlmModelMarker> TreeDisplaySnapshot<M> {
     }
 }
 
-impl<M: LlmModelMarker> TreePage<M> {
+impl<M: LlmModelMarker, S: DatasetSplit> TreePage<M, S> {
     fn new(
         entry_index: usize,
-        entry: &QuestionEntry<M>,
+        entry: &QuestionEntry<M, S>,
         override_hyperparameters: Option<&PosteriorHyperparameters>,
     ) -> Self {
         let total_actions = entry.action_log.actions.len();
         let action_limit = total_actions;
-        let width_division_ratio = width_division_ratio_for_action_log::<M>(&entry.action_log);
-        let state = tree_page_state_from_action_log::<M>(
+        let width_division_ratio = width_division_ratio_for_action_log(&entry.action_log);
+        let state = tree_page_state_from_action_log(
             &entry.action_log,
             action_limit,
             width_division_ratio,
@@ -312,10 +316,10 @@ impl<M: LlmModelMarker> TreePage<M> {
 
     fn rebuild_snapshot(
         &mut self,
-        entry: &QuestionEntry<M>,
+        entry: &QuestionEntry<M, S>,
         override_hyperparameters: Option<&PosteriorHyperparameters>,
     ) {
-        let state = tree_page_state_from_action_log::<M>(
+        let state = tree_page_state_from_action_log::<M, S>(
             &entry.action_log,
             self.action_limit,
             self.width_division_ratio,
@@ -349,7 +353,7 @@ impl<M: LlmModelMarker> TreePage<M> {
 
     fn set_action_limit(
         &mut self,
-        entry: &QuestionEntry<M>,
+        entry: &QuestionEntry<M, S>,
         new_limit: usize,
         override_hyperparameters: Option<&PosteriorHyperparameters>,
     ) {
@@ -362,7 +366,7 @@ impl<M: LlmModelMarker> TreePage<M> {
 
     fn set_width_division_ratio(
         &mut self,
-        entry: &QuestionEntry<M>,
+        entry: &QuestionEntry<M, S>,
         new_ratio: usize,
         override_hyperparameters: Option<&PosteriorHyperparameters>,
     ) {
@@ -374,14 +378,14 @@ impl<M: LlmModelMarker> TreePage<M> {
     }
 }
 
-fn tree_page_state_from_action_log<M: LlmModelMarker>(
-    action_log: &DirectTreeActionLog<M, SessionSplit>,
+fn tree_page_state_from_action_log<M: LlmModelMarker, S: DatasetSplit>(
+    action_log: &DirectTreeActionLog<M, S>,
     action_limit: usize,
     width_division_ratio: usize,
     override_hyperparameters: Option<&PosteriorHyperparameters>,
-) -> TreePageState<M> {
+) -> TreePageState<M, S> {
     let partial_log = partial_action_log(action_log, action_limit);
-    let tree = DirectTree::<M, SessionSplit>::from_action_log(&partial_log);
+    let tree = DirectTree::<M, S>::from_action_log(&partial_log);
     let root_segment_id = tree_root_segment_id(&tree);
     let segment_display_widths = segment_display_widths(&tree, Some(width_division_ratio));
     let segment_advantages_from_posteriors =
@@ -423,23 +427,23 @@ fn tree_page_state_from_action_log<M: LlmModelMarker>(
     }
 }
 
-struct App<M: LlmModelMarker> {
+struct App<M: LlmModelMarker, S: DatasetSplit> {
     _model_marker: PhantomData<M>,
     override_hyperparameters: Option<PosteriorHyperparameters>,
     // action_log_store: DirectTreeActionLogStore<M>,
-    asset_file_action_logs: AssetFileDirectTreeActionLogs<M, SessionSplit>,
-    question_store: SqliteStore<usize, HybridDatasetQuestion>,
-    action_store: SqliteTableArrayStore<usize, DirectTreeAction<M>>,
-    entry_keys: Vec<usize>,
-    entry_cache: Vec<EntryLoadState<M>>,
-    entry_load_tx: UnboundedSender<EntryLoadResult<M>>,
-    entry_load_rx: UnboundedReceiver<EntryLoadResult<M>>,
+    asset_file_action_logs: AssetFileDirectTreeActionLogs<M, S>,
+    question_store: SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>>,
+    action_store: SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>,
+    entry_keys: Vec<QuestionFlatId<S>>,
+    entry_cache: Vec<EntryLoadState<M, S>>,
+    entry_load_tx: UnboundedSender<EntryLoadResult<M, S>>,
+    entry_load_rx: UnboundedReceiver<EntryLoadResult<M, S>>,
     mode: Mode,
     home_selected_index: usize,
     home_list_area: Option<Rect>,
     summary_area: Option<Rect>,
     conversation_area: Option<Rect>,
-    tree_page: Option<TreePage<M>>,
+    tree_page: Option<TreePage<M, S>>,
     tree_focus: TreePaneFocus,
     tree_scroll_mode: TreeScrollMode,
     tree_color_mode: TreeColorMode,
@@ -452,15 +456,15 @@ struct App<M: LlmModelMarker> {
     conversation_metrics: Option<PaneMetrics>,
 }
 
-impl<M: LlmModelMarker> App<M> {
+impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
     async fn new(
-        asset_file_action_logs: AssetFileDirectTreeActionLogs<M, SessionSplit>,
+        asset_file_action_logs: AssetFileDirectTreeActionLogs<M, S>,
         // action_log_store: DirectTreeActionLogStore<M>,
         // entry_keys: Vec<usize>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> Self {
         let (entry_load_tx, entry_load_rx) = unbounded_channel();
-        let asset_file_dataset = AssetFileHybridDataset::<SessionSplit>(PhantomData);
+        let asset_file_dataset = AssetFileHybridDataset::<S>(PhantomData);
         let question_store = asset_file_dataset.fetch().await;
         let action_store = asset_file_action_logs.fetch().await;
         let entry_keys = action_store.get_keys().unwrap();
@@ -533,7 +537,7 @@ impl<M: LlmModelMarker> App<M> {
                     actions,
                 };
                 let (num_correct, num_leaves, win_rate) =
-                    question_stats_from_action_log::<M>(&action_log);
+                    question_stats_from_action_log::<M, S>(&action_log);
                 EntryLoadState::Loaded(QuestionEntry {
                     key,
                     action_log,
@@ -544,7 +548,7 @@ impl<M: LlmModelMarker> App<M> {
             }
             Err(error) => EntryLoadState::Failed(format!(
                 "Failed to load question key {} from sqlite store: {}",
-                key, error
+                key.0, error
             )),
         };
         let _ = self.entry_load_tx.send(EntryLoadResult { index, state });
@@ -561,7 +565,7 @@ impl<M: LlmModelMarker> App<M> {
         }
     }
 
-    fn loaded_entry(&self, index: usize) -> Option<&QuestionEntry<M>> {
+    fn loaded_entry(&self, index: usize) -> Option<&QuestionEntry<M, S>> {
         let Some(state) = self.entry_cache.get(index) else {
             return None;
         };
@@ -641,7 +645,7 @@ impl<M: LlmModelMarker> App<M> {
                                 single_line_preview(&entry.action_log.question.question, 72);
                             format!(
                                 "#{}  win {:>5.1}% ({}/{})  {}",
-                                entry.key,
+                                entry.key.0,
                                 entry.win_rate * 100.0,
                                 entry.num_correct,
                                 entry.num_leaves,
@@ -649,13 +653,13 @@ impl<M: LlmModelMarker> App<M> {
                             )
                         }
                         Some(EntryLoadState::Loading) | Some(EntryLoadState::Unloaded) => {
-                            format!("#{}  loading...", key)
+                            format!("#{}  loading...", key.0)
                         }
                         Some(EntryLoadState::Failed(error)) => {
                             let preview = single_line_preview(error, 60);
-                            format!("#{}  failed: {}", key, preview)
+                            format!("#{}  failed: {}", key.0, preview)
                         }
-                        None => format!("#{}  unavailable", key),
+                        None => format!("#{}  unavailable", key.0),
                     };
                     ListItem::new(text)
                 })
@@ -754,7 +758,7 @@ impl<M: LlmModelMarker> App<M> {
 
         let mut summary = format!(
             "Question #{}\nQuestion: {}\nCorrect answer: {}\nActions applied: {}/{}\nSelected segment: S{} (children: {})\nTrajectory length (tokens): {}\nposterior_mean: {}\nposterior_std: {}\nsignal_to_noise: {}\nadvantage_from_posterior: {:.6}\nadvantage_from_win_rate: {:.6}",
-            entry.key,
+            entry.key.0,
             entry.action_log.question.question,
             entry.action_log.question.correct_answer,
             tree_page.action_limit,
@@ -1338,8 +1342,11 @@ fn scale_horizontal_scroll(scroll: usize, old_ratio: usize, new_ratio: usize) ->
     ((scroll as f64) * safe_old / safe_new).round() as usize
 }
 
-fn fixed_width_scale_ratio_for_tree<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<'_, M, SessionSplit>,
+fn fixed_width_scale_ratio_for_tree<
+    M: credit_assignment::llm_model::LlmModelMarker,
+    S: DatasetSplit,
+>(
+    tree: &DirectTree<'_, M, S>,
 ) -> f64 {
     let trunk_trajectory_lengths: Vec<usize> = tree
         .trunk_leaf_segments
@@ -1360,8 +1367,8 @@ fn fixed_width_scale_ratio_for_tree<M: credit_assignment::llm_model::LlmModelMar
     100.0_f64 / avg_trunk_trajectory_len
 }
 
-fn segment_display_widths<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<'_, M, SessionSplit>,
+fn segment_display_widths<M: credit_assignment::llm_model::LlmModelMarker, S: DatasetSplit>(
+    tree: &DirectTree<'_, M, S>,
     width_division_ratio: Option<usize>,
 ) -> BTreeMap<SegmentId, usize> {
     let mut widths = BTreeMap::new();
@@ -1380,8 +1387,11 @@ fn segment_display_widths<M: credit_assignment::llm_model::LlmModelMarker>(
     widths
 }
 
-fn segment_branching_score_display<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<'_, M, SessionSplit>,
+fn segment_branching_score_display<
+    M: credit_assignment::llm_model::LlmModelMarker,
+    S: DatasetSplit,
+>(
+    tree: &DirectTree<'_, M, S>,
     width_division_ratio: usize,
     segment_display_widths: &BTreeMap<SegmentId, usize>,
     override_hyperparameters: Option<&PosteriorHyperparameters>,
@@ -1455,8 +1465,8 @@ fn segment_branching_score_display<M: credit_assignment::llm_model::LlmModelMark
     displays
 }
 
-fn segment_posterior_stats<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<'_, M, SessionSplit>,
+fn segment_posterior_stats<M: credit_assignment::llm_model::LlmModelMarker, S: DatasetSplit>(
+    tree: &DirectTree<'_, M, S>,
     override_hyperparameters: Option<&PosteriorHyperparameters>,
 ) -> BTreeMap<SegmentId, SegmentPosteriorStats> {
     let mut stats_by_segment = BTreeMap::new();
@@ -1481,29 +1491,41 @@ fn segment_posterior_stats<M: credit_assignment::llm_model::LlmModelMarker>(
     stats_by_segment
 }
 
-fn scaled_segment_posterior_signal<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<'_, M, SessionSplit>,
+fn scaled_segment_posterior_signal<
+    M: credit_assignment::llm_model::LlmModelMarker,
+    S: DatasetSplit,
+>(
+    tree: &DirectTree<'_, M, S>,
     stats_by_segment: &BTreeMap<SegmentId, SegmentPosteriorStats>,
 ) -> BTreeMap<SegmentId, f32> {
     scaled_segment_posterior_value(tree, stats_by_segment, |stats| stats.signal_to_noise)
 }
 
-fn scaled_segment_posterior_mean<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<'_, M, SessionSplit>,
+fn scaled_segment_posterior_mean<
+    M: credit_assignment::llm_model::LlmModelMarker,
+    S: DatasetSplit,
+>(
+    tree: &DirectTree<'_, M, S>,
     stats_by_segment: &BTreeMap<SegmentId, SegmentPosteriorStats>,
 ) -> BTreeMap<SegmentId, f32> {
     scaled_segment_posterior_value(tree, stats_by_segment, |stats| stats.posterior_mean)
 }
 
-fn scaled_segment_posterior_std<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<'_, M, SessionSplit>,
+fn scaled_segment_posterior_std<
+    M: credit_assignment::llm_model::LlmModelMarker,
+    S: DatasetSplit,
+>(
+    tree: &DirectTree<'_, M, S>,
     stats_by_segment: &BTreeMap<SegmentId, SegmentPosteriorStats>,
 ) -> BTreeMap<SegmentId, f32> {
     scaled_segment_posterior_value(tree, stats_by_segment, |stats| stats.posterior_std)
 }
 
-fn scaled_segment_posterior_value<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<'_, M, SessionSplit>,
+fn scaled_segment_posterior_value<
+    M: credit_assignment::llm_model::LlmModelMarker,
+    S: DatasetSplit,
+>(
+    tree: &DirectTree<'_, M, S>,
     stats_by_segment: &BTreeMap<SegmentId, SegmentPosteriorStats>,
     value_selector: impl Fn(SegmentPosteriorStats) -> f32,
 ) -> BTreeMap<SegmentId, f32> {
@@ -1675,8 +1697,8 @@ fn write_pattern(canvas: &mut [Vec<char>], row: usize, col: usize, pattern: &str
     }
 }
 
-fn collect_leaf_order<M: LlmModelMarker>(
-    tree: &DirectTree<'_, M, SessionSplit>,
+fn collect_leaf_order<M: LlmModelMarker, S: DatasetSplit>(
+    tree: &DirectTree<'_, M, S>,
     root_segment_id: SegmentId,
 ) -> Vec<SegmentId> {
     let mut leaves = Vec::new();
@@ -1697,8 +1719,8 @@ fn collect_leaf_order<M: LlmModelMarker>(
     leaves
 }
 
-fn path_root_to_segment<M: LlmModelMarker>(
-    tree: &DirectTree<'_, M, SessionSplit>,
+fn path_root_to_segment<M: LlmModelMarker, S: DatasetSplit>(
+    tree: &DirectTree<'_, M, S>,
     segment_id: SegmentId,
 ) -> Vec<SegmentId> {
     let mut path = Vec::new();
@@ -1715,8 +1737,8 @@ fn path_root_to_segment<M: LlmModelMarker>(
     path
 }
 
-fn build_segment_graph_lines<M: LlmModelMarker>(
-    tree: &DirectTree<'_, M, SessionSplit>,
+fn build_segment_graph_lines<M: LlmModelMarker, S: DatasetSplit>(
+    tree: &DirectTree<'_, M, S>,
     root_segment_id: SegmentId,
     leaf_segment_judgments: &BTreeMap<SegmentId, CorrectnessJudgment>,
     segment_display_widths: &BTreeMap<SegmentId, usize>,
@@ -1921,8 +1943,8 @@ fn build_segment_graph_lines<M: LlmModelMarker>(
     (lines, rendered_segments)
 }
 
-fn render_tree_line<M: LlmModelMarker>(
-    tree_page: &TreePage<M>,
+fn render_tree_line<M: LlmModelMarker, S: DatasetSplit>(
+    tree_page: &TreePage<M, S>,
     row: usize,
     horizontal_scroll: usize,
     color_mode: TreeColorMode,
@@ -2107,8 +2129,8 @@ fn render_tree_line<M: LlmModelMarker>(
     Line::from(spans)
 }
 
-fn tree_segment_at_mouse<M: LlmModelMarker>(
-    tree_page: &TreePage<M>,
+fn tree_segment_at_mouse<M: LlmModelMarker, S: DatasetSplit>(
+    tree_page: &TreePage<M, S>,
     column: u16,
     row: u16,
     horizontal_scroll: usize,
@@ -2169,8 +2191,8 @@ fn push_text_as_spans(
     }
 }
 
-fn build_conversation_render<M: LlmModelMarker>(
-    tree_snapshot: &TreeDisplaySnapshot<M>,
+fn build_conversation_render<M: LlmModelMarker, S: DatasetSplit>(
+    tree_snapshot: &TreeDisplaySnapshot<M, S>,
     segment_posterior_signal_scaled: &BTreeMap<SegmentId, f32>,
     segment_id: SegmentId,
 ) -> ConversationRender {
@@ -2225,10 +2247,10 @@ fn build_conversation_render<M: LlmModelMarker>(
     }
 }
 
-fn partial_action_log<M: LlmModelMarker>(
-    action_log: &DirectTreeActionLog<M, SessionSplit>,
+fn partial_action_log<M: LlmModelMarker, S: DatasetSplit>(
+    action_log: &DirectTreeActionLog<M, S>,
     action_limit: usize,
-) -> DirectTreeActionLog<M, SessionSplit> {
+) -> DirectTreeActionLog<M, S> {
     let mut partial_log = action_log.clone();
     partial_log.actions = action_log
         .actions
@@ -2239,13 +2261,15 @@ fn partial_action_log<M: LlmModelMarker>(
     partial_log
 }
 
-fn tree_root_segment_id<M: LlmModelMarker>(tree: &DirectTree<'_, M, SessionSplit>) -> SegmentId {
+fn tree_root_segment_id<M: LlmModelMarker, S: DatasetSplit>(
+    tree: &DirectTree<'_, M, S>,
+) -> SegmentId {
     tree.root_segment_id
         .expect("Direct tree browser requires root segment")
 }
 
-fn segment_advantages_from_posteriors<M: LlmModelMarker>(
-    tree: &DirectTree<'_, M, SessionSplit>,
+fn segment_advantages_from_posteriors<M: LlmModelMarker, S: DatasetSplit>(
+    tree: &DirectTree<'_, M, S>,
     override_hyperparameters: Option<&PosteriorHyperparameters>,
 ) -> BTreeMap<SegmentId, f32> {
     let mut advantages =
@@ -2256,8 +2280,8 @@ fn segment_advantages_from_posteriors<M: LlmModelMarker>(
     advantages
 }
 
-fn segment_advantages_from_win_rate<M: LlmModelMarker>(
-    tree: &DirectTree<'_, M, SessionSplit>,
+fn segment_advantages_from_win_rate<M: LlmModelMarker, S: DatasetSplit>(
+    tree: &DirectTree<'_, M, S>,
 ) -> BTreeMap<SegmentId, f32> {
     let mut advantages = tree.calculate_segment_advantages_from_win_rate();
     for segment_id in tree.segments.keys().copied() {
@@ -2266,14 +2290,14 @@ fn segment_advantages_from_win_rate<M: LlmModelMarker>(
     advantages
 }
 
-fn width_division_ratio_for_action_log<M: LlmModelMarker>(
-    action_log: &DirectTreeActionLog<M, SessionSplit>,
+fn width_division_ratio_for_action_log<M: LlmModelMarker, S: DatasetSplit>(
+    action_log: &DirectTreeActionLog<M, S>,
 ) -> usize {
-    width_division_ratio_for_tree(&DirectTree::<M, SessionSplit>::from_action_log(action_log))
+    width_division_ratio_for_tree(&DirectTree::<M, S>::from_action_log(action_log))
 }
 
-fn width_division_ratio_for_tree<M: LlmModelMarker>(
-    tree: &DirectTree<'_, M, SessionSplit>,
+fn width_division_ratio_for_tree<M: LlmModelMarker, S: DatasetSplit>(
+    tree: &DirectTree<'_, M, S>,
 ) -> usize {
     let fixed_scale_ratio = fixed_width_scale_ratio_for_tree(tree);
     if fixed_scale_ratio <= 0.0 {
@@ -2282,10 +2306,10 @@ fn width_division_ratio_for_tree<M: LlmModelMarker>(
     ((1.0 / fixed_scale_ratio).round() as usize).max(1)
 }
 
-fn question_stats_from_action_log<M: LlmModelMarker>(
-    action_log: &DirectTreeActionLog<M, SessionSplit>,
+fn question_stats_from_action_log<M: LlmModelMarker, S: DatasetSplit>(
+    action_log: &DirectTreeActionLog<M, S>,
 ) -> (usize, usize, f64) {
-    let final_tree = DirectTree::<M, SessionSplit>::from_action_log(action_log);
+    let final_tree = DirectTree::<M, S>::from_action_log(action_log);
     let num_leaves = final_tree.leaf_segment_judgments.len();
     let num_correct = final_tree
         .leaf_segment_judgments
@@ -2300,9 +2324,9 @@ fn question_stats_from_action_log<M: LlmModelMarker>(
     (num_correct, num_leaves, win_rate)
 }
 
-fn run_app<M: LlmModelMarker>(
+fn run_app<M: LlmModelMarker, S: DatasetSplit>(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    mut app: App<M>,
+    mut app: App<M, S>,
 ) -> Result<(), Box<dyn Error>> {
     loop {
         terminal.draw(|frame| app.draw(frame))?;
@@ -2321,8 +2345,8 @@ fn run_app<M: LlmModelMarker>(
     Ok(())
 }
 
-async fn run_model_app<'a, M: LlmModelMarker>(
-    run_model_app_args: RunModelAppArgs<'a>,
+async fn run_model_app<'a, M: LlmModelMarker, S: DatasetSplit>(
+    run_model_app_args: RunModelAppArgs<'a, S>,
 ) -> Result<(), Box<dyn Error>> {
     let RunModelAppArgs {
         terminal,
@@ -2332,7 +2356,7 @@ async fn run_model_app<'a, M: LlmModelMarker>(
         epoch,
         override_hyperparameters,
     } = run_model_app_args;
-    let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M, SessionSplit> {
+    let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M, S> {
         nickname: config_nickname,
         rollout_config,
         posterior_calculation_config,
@@ -2342,17 +2366,71 @@ async fn run_model_app<'a, M: LlmModelMarker>(
     // let action_store = asset_file_action_logs.fetch().await;
     // let mut keys = action_store.get_keys().unwrap();
     // keys.sort();
-    let app = App::<M>::new(asset_file_action_logs, override_hyperparameters).await;
-    run_app::<M>(terminal, app)
+    let app = App::<M, S>::new(asset_file_action_logs, override_hyperparameters).await;
+    run_app::<M, S>(terminal, app)
 }
 
-struct RunModelAppArgs<'a> {
+struct RunModelAppArgs<'a, S: DatasetSplit> {
     terminal: &'a mut Terminal<CrosstermBackend<Stdout>>,
     config_nickname: String,
-    rollout_config: DirectRolloutConfig<SessionSplit>,
+    rollout_config: DirectRolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize, // the epoch index
     override_hyperparameters: Option<PosteriorHyperparameters>,
+}
+
+macro_rules! run_model_app_for_model_and_split {
+    (
+        $model_name:expr,
+        $dataset_split:expr,
+        $terminal:expr,
+        $config_nickname:expr,
+        $rollout_config_path:expr,
+        $posterior_calculation_config:expr,
+        $epoch:expr,
+        $override_hyperparameters:expr;
+        $( $model_enum:path, $model_ty:ty ),+ $(,)?;
+        $( $split_enum:path, $split_ty:ty ),+ $(,)?
+    ) => {{
+        let model_name = $model_name;
+        let dataset_split = $dataset_split;
+        let terminal = $terminal;
+        let config_nickname = $config_nickname;
+        let rollout_config_path = $rollout_config_path;
+        let posterior_calculation_config = $posterior_calculation_config;
+        let epoch = $epoch;
+        let override_hyperparameters = $override_hyperparameters;
+
+        macro_rules! run_model_for_split {
+            ($rollout_config:expr, $inner_split_ty:ty) => {{
+                let run_model_app_args = RunModelAppArgs {
+                    terminal,
+                    config_nickname: config_nickname.to_string(),
+                    rollout_config: $rollout_config,
+                    posterior_calculation_config: (*posterior_calculation_config).clone(),
+                    epoch,
+                    override_hyperparameters: (*override_hyperparameters).clone(),
+                };
+                match model_name {
+                    $(
+                        $model_enum => {
+                            run_model_app::<$model_ty, $inner_split_ty>(run_model_app_args).await
+                        }
+                    )+
+                }
+            }};
+        }
+
+        match dataset_split {
+            $(
+                $split_enum => {
+                    let rollout_config: DirectRolloutConfig<$split_ty> =
+                        read_json(rollout_config_path).unwrap();
+                    run_model_for_split!(rollout_config, $split_ty)
+                }
+            )+
+        }
+    }};
 }
 
 fn restore_terminal_after_panic() {
@@ -2377,11 +2455,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         model,
         config_nickname,
         rollout_config_path,
+        dataset_split,
         posterior_hyperparameters_path,
         epoch,
         override_hyperparameters_path,
     } = Args::parse();
-    let rollout_config: DirectRolloutConfig<SessionSplit> = read_json(rollout_config_path).unwrap();
     let posterior_hyperparameters =
         read_json::<PosteriorHyperparameters>(posterior_hyperparameters_path).unwrap();
     let override_hyperparameters = override_hyperparameters_path
@@ -2394,22 +2472,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let run_model_app_args = RunModelAppArgs {
-        terminal: &mut terminal,
-        config_nickname,
-        rollout_config,
-        posterior_calculation_config,
+    let result = run_model_app_for_model_and_split!(
+        model,
+        dataset_split,
+        &mut terminal,
+        &config_nickname,
+        &rollout_config_path,
+        &posterior_calculation_config,
         epoch,
-        override_hyperparameters,
-    };
-    let result = match model {
-        LlmModelName::Qwen25_7b => run_model_app::<Qwen25_7B>(run_model_app_args).await,
-        LlmModelName::Qwen3_06b => run_model_app::<Qwen3_06B>(run_model_app_args).await,
-        LlmModelName::Qwen3_4b => run_model_app::<Qwen3_4B>(run_model_app_args).await,
-        LlmModelName::Qwen35_4b => run_model_app::<Qwen35_4B>(run_model_app_args).await,
-        LlmModelName::Qwen35_08b => run_model_app::<Qwen35_08B>(run_model_app_args).await,
-        LlmModelName::Gpt4o => run_model_app::<Gpt4o>(run_model_app_args).await,
-    };
+        &override_hyperparameters;
+        LlmModelName::Qwen25_7b, Qwen25_7B,
+        LlmModelName::Qwen3_06b, Qwen3_06B,
+        LlmModelName::Qwen3_4b, Qwen3_4B,
+        LlmModelName::Qwen35_4b, Qwen35_4B,
+        LlmModelName::Qwen35_08b, Qwen35_08B,
+        LlmModelName::Gpt4o, Gpt4o;
+        DatasetSplitEnum::Training, Training,
+        DatasetSplitEnum::Validation, Validation,
+        DatasetSplitEnum::Testing, Testing
+    );
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
