@@ -29,9 +29,8 @@ use crate::{
 
 #[derive(Debug, Clone)]
 struct TrajectoryMetadata<S: DatasetSplit> {
-    sample_index: usize,
-    trajectory_index: usize,
     question_flat_id: QuestionFlatId<S>,
+    trajectory_index: usize,
     leaf_segment_id: SegmentId,
     average_absolute_advantage: NotNan<f32>,
     trajectory_token_length: usize,
@@ -142,7 +141,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         "cumulative_avg_abs_advantage_cutoff must be in (0.0, 1.0]"
     );
     // let action_log_store = ActionStoreAdapter::new(action_store);
-    let (keys, selection_output, question_store, action_store) =
+    let (selection_output, question_store, action_store) =
         select_training_trajectories_from_rollout_logs::<M, Training>(
             question_store,
             action_store,
@@ -164,7 +163,6 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         training_trajectory_store,
         rollout_config,
         posterior_calculation_config,
-        &keys,
         selected_metadata,
         advantage_calculation_policy,
     )
@@ -212,7 +210,6 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
     cumulative_avg_abs_advantage_cutoff: f32,
     advantage_calculation_policy: AdvantageCalculationPolicy,
 ) -> (
-    Vec<QuestionFlatId<S>>,
     TrainingTrajectorySelectionOutput<S>,
     SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>>,
     SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>,
@@ -252,12 +249,12 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
                         action_log,
                         advantage_calculation_policy,
                     );
-                    (sample_index, trajectory_summaries)
+                    trajectory_summaries
                 });
             }
             joined = join_set.join_next(), if !join_set.is_empty() => {
                 match joined.expect("join_set must have at least one task") {
-                    Ok((sample_index, trajectory_summaries)) => {
+                    Ok(trajectory_summaries) => {
                         selection_state.finished_samples += 1;
                         let progress = if selection_state.total_samples == 0 {
                             0.0
@@ -276,9 +273,8 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
                                 .push(*average_absolute_advantage);
 
                             selection_state.candidate_metadata.push(TrajectoryMetadata {
-                                sample_index,
-                                trajectory_index,
                                 question_flat_id: trajectory_summary.question_flat_id,
+                                trajectory_index,
                                 leaf_segment_id: trajectory_summary.leaf_segment_id,
                                 average_absolute_advantage,
                                 trajectory_token_length: trajectory_summary.trajectory_token_length,
@@ -291,12 +287,7 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
         }
     }
 
-    (
-        keys,
-        selection_state.into_output(),
-        question_store,
-        action_store,
-    )
+    (selection_state.into_output(), question_store, action_store)
 }
 
 async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
@@ -305,7 +296,6 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
     training_trajectory_store: SqliteStore<usize, DirectTrainingTrajectory<M>>,
     rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
-    keys: &[QuestionFlatId<Training>],
     mut selected_metadata: Vec<TrajectoryMetadata<Training>>,
     advantage_calculation_policy: AdvantageCalculationPolicy,
 ) -> usize {
@@ -316,7 +306,7 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                 b.average_absolute_advantage
                     .cmp(&a.average_absolute_advantage)
             })
-            .then_with(|| a.sample_index.cmp(&b.sample_index))
+            .then_with(|| a.question_flat_id.cmp(&b.question_flat_id))
             .then_with(|| a.trajectory_index.cmp(&b.trajectory_index))
     });
 
@@ -326,25 +316,32 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
         "cumulative_avg_abs_advantage_cutoff kept zero trajectories; increase cutoff"
     );
 
-    let keys = Arc::new(keys.to_vec());
+    let mut grouped_metadata: BTreeMap<
+        QuestionFlatId<Training>,
+        Vec<(usize, TrajectoryMetadata<Training>)>,
+    > = BTreeMap::new();
+    for (output_index, metadata) in selected_metadata.into_iter().enumerate() {
+        grouped_metadata
+            .entry(metadata.question_flat_id)
+            .or_default()
+            .push((output_index, metadata));
+    }
+
     let semaphore = Arc::new(Semaphore::new(200));
     let mut join_set = JoinSet::new();
-    let mut next_output_index = 0usize;
     let mut finished_trajectories = 0usize;
     let tolerance = 10.0 * f32::EPSILON;
-    while next_output_index < selected_metadata.len() || !join_set.is_empty() {
-        let output_index = next_output_index;
-        next_output_index += 1;
+    while !grouped_metadata.is_empty() || !join_set.is_empty() {
         tokio::select! {
-            permit_result = semaphore.clone().acquire_owned(), if next_output_index < selected_metadata.len() => {
+            permit_result = semaphore.clone().acquire_owned(), if !grouped_metadata.is_empty() => {
                 let permit = permit_result.expect("materialization semaphore should not be closed");
-                let metadata = selected_metadata[output_index].clone();
-                let key = keys
-                    .get(metadata.sample_index)
-                    .expect("sample index must reference an existing action log key");
+                let (question_flat_id, selected_for_question) = grouped_metadata
+                    .pop_first()
+                    .expect("grouped metadata should be non-empty");
+                let key = question_flat_id;
                 // let action_log = action_log_store.get(*key).unwrap().unwrap();
-                let question = question_store.get(*key).unwrap().unwrap();
-                let actions = action_store.load_table_sorted(*key).unwrap();
+                let question = question_store.get(key).unwrap().unwrap();
+                let actions = action_store.load_table_sorted(key).unwrap();
                 let action_log = DirectTreeActionLog{
                     question,
                     rollout_config: rollout_config.clone(),
@@ -354,8 +351,16 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                 let advantage_calculation_policy = advantage_calculation_policy.clone();
                 join_set.spawn(async move {
                     let _permit = permit;
-                    let selected_trajectory_indices: BTreeSet<usize> =
-                        [metadata.trajectory_index].into_iter().collect();
+                    let selected_trajectory_indices: BTreeSet<usize> = selected_for_question
+                        .iter()
+                        .map(|(_, metadata)| metadata.trajectory_index)
+                        .collect();
+                    assert_eq!(
+                        selected_trajectory_indices.len(),
+                        selected_for_question.len(),
+                        "duplicate trajectory_index selected for question_flat_id {:?}",
+                        question_flat_id,
+                    );
                     let reconstructed_trajectories = action_log_to_selected_trajectories::<M>(
                         action_log,
                         advantage_calculation_policy,
@@ -363,24 +368,31 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                     );
                     assert_eq!(
                         reconstructed_trajectories.len(),
-                        1,
-                        "failed to reconstruct selected trajectory for sample index {}, trajectory index {}",
-                        metadata.sample_index,
-                        metadata.trajectory_index,
+                        selected_for_question.len(),
+                        "failed to reconstruct selected trajectories for question_flat_id {:?}; selected={}, reconstructed={}",
+                        question_flat_id,
+                        selected_for_question.len(),
+                        reconstructed_trajectories.len(),
                     );
 
-                    // let mut trajectories: Vec<(usize, DirectTrainingTrajectory<M>)> = Vec::new();
+                    let mut reconstructed_by_trajectory_index: BTreeMap<usize, DirectTrainingTrajectory<M>> =
+                        reconstructed_trajectories.into_iter().collect();
+                    let mut outputs: Vec<(usize, DirectTrainingTrajectory<M>)> =
+                        Vec::with_capacity(selected_for_question.len());
 
-                    for (trajectory_index, trajectory) in reconstructed_trajectories.into_iter() {
+                    for (output_index, metadata) in selected_for_question.into_iter() {
+                        let trajectory = reconstructed_by_trajectory_index
+                            .remove(&metadata.trajectory_index)
+                            .expect("selected trajectory index should have been reconstructed");
                         assert_eq!(
                             trajectory.question.flat_id, metadata.question_flat_id,
-                            "reconstructed question flat_id mismatch at sample index {}, trajectory index {}",
-                            metadata.sample_index, trajectory_index
+                            "reconstructed question flat_id mismatch at question_flat_id {:?}, trajectory index {}",
+                            metadata.question_flat_id, metadata.trajectory_index
                         );
                         assert_eq!(
                             trajectory.leaf_segment_id, metadata.leaf_segment_id,
-                            "reconstructed leaf segment id mismatch at sample index {}, trajectory index {}",
-                            metadata.sample_index, trajectory_index
+                            "reconstructed leaf segment id mismatch at question_flat_id {:?}, trajectory index {}",
+                            metadata.question_flat_id, metadata.trajectory_index
                         );
                         let expected_average_absolute_advantage = *metadata.average_absolute_advantage;
                         let diff = (trajectory.average_absolute_segment_advantage
@@ -388,9 +400,9 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                             .abs();
                         assert!(
                             diff <= tolerance,
-                            "reconstructed average absolute advantage mismatch at sample index {}, trajectory index {}: expected {}, got {}, diff {}",
-                            metadata.sample_index,
-                            trajectory_index,
+                            "reconstructed average absolute advantage mismatch at question_flat_id {:?}, trajectory index {}: expected {}, got {}, diff {}",
+                            metadata.question_flat_id,
+                            metadata.trajectory_index,
                             expected_average_absolute_advantage,
                             trajectory.average_absolute_segment_advantage,
                             diff
@@ -398,9 +410,9 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                         assert_eq!(
                             trajectory.input_ids.len(),
                             metadata.trajectory_token_length,
-                            "reconstructed token length mismatch at sample index {}, trajectory index {}",
-                            metadata.sample_index,
-                            trajectory_index
+                            "reconstructed token length mismatch at question_flat_id {:?}, trajectory index {}",
+                            metadata.question_flat_id,
+                            metadata.trajectory_index
                         );
                         assert_eq!(
                             trajectory.input_ids.len(),
@@ -414,24 +426,28 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                             "kept trajectory must satisfy input_ids.len() == advantages.len(); question_flat_id={:?}",
                             trajectory.question.flat_id
                         );
-                        // todo: revisit the logic
-                        if trajectory_index == metadata.trajectory_index {
-                            return trajectory;
-                        }
+                        outputs.push((output_index, trajectory));
                     }
-                    unreachable!()
+                    assert!(
+                        reconstructed_by_trajectory_index.is_empty(),
+                        "unexpected reconstructed trajectories left over for question_flat_id {:?}",
+                        question_flat_id,
+                    );
+                    outputs
                 });
             }
             joined = join_set.join_next(), if !join_set.is_empty() => {
                 match joined.expect("join_set must have at least one task") {
-                    Ok(trajectory) => {
-                        training_trajectory_store
-                            .upsert(output_index, &trajectory, SqliteBusyRetryConfig::none())
-                            .unwrap();
-                        finished_trajectories += 1;
-                        let progress = 0.5
-                            + 0.5 * (finished_trajectories as f32 / adopted_trajectories as f32);
-                        log_master_progress(progress, "Phase 2/2: Selected Trajectories Materialized");
+                    Ok(trajectories) => {
+                        for (output_index, trajectory) in trajectories {
+                            training_trajectory_store
+                                .upsert(output_index, &trajectory, SqliteBusyRetryConfig::none())
+                                .unwrap();
+                            finished_trajectories += 1;
+                            let progress = 0.5
+                                + 0.5 * (finished_trajectories as f32 / adopted_trajectories as f32);
+                            log_master_progress(progress, "Phase 2/2: Selected Trajectories Materialized");
+                        }
                     }
                     Err(join_err) => panic!("materialization task panicked: {join_err}"),
                 }
