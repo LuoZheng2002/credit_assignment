@@ -455,6 +455,7 @@ impl Orchestrator {
             },
             rollout_time_limit_secs: self.validation_rollout_time_limit_secs,
             num_python_tool_servers: self.num_python_tool_servers,
+            total_epochs: self.num_total_epochs,
         };
         rollout_all::<M>(validation_rollout_program_config).await;
         log_info("Finished validating model.");
@@ -484,6 +485,7 @@ impl Orchestrator {
             llm_cli_args,
             rollout_time_limit_secs: self.training_rollout_time_limit_secs,
             num_python_tool_servers: self.num_python_tool_servers,
+            total_epochs: self.num_total_epochs,
         };
         rollout_all::<M>(training_set_rollout_program_config).await;
         log_info("Finished collecting training rollout");

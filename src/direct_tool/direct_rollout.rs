@@ -27,7 +27,7 @@ use crate::{
             ActionStoreAdapter, AssetFileDirectTreeActionLogs, DirectTreeActionLogMetadata,
             DirectTreeActionLogStore,
         },
-        hybrid_dataset::AssetFileHybridDataset,
+        hybrid_dataset::{AssetFileHybridDataset, DatasetSplit},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     llm_model::{LlmCallable, LlmCliArgs, LlmModelMarker},
@@ -315,6 +315,7 @@ pub struct RolloutProgramConfig {
     pub llm_cli_args: LlmCliArgs,
     pub rollout_time_limit_secs: usize,
     pub num_python_tool_servers: usize,
+    pub total_epochs: usize,
 }
 
 pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig) {
@@ -328,6 +329,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         llm_cli_args,
         rollout_time_limit_secs,
         num_python_tool_servers,
+        total_epochs,
     } = program_config;
     assert!(
         num_python_tool_servers > 0,
@@ -341,6 +343,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
         max_rollout_concurrency > 0,
         "max_rollout_concurrency must be positive"
     );
+    assert!(total_epochs > 0, "total_epochs must be positive");
     let rollout_time_limit = Duration::from_secs(rollout_time_limit_secs as u64);
     let start_time = Instant::now();
     let deadline = start_time + rollout_time_limit;
@@ -374,6 +377,19 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let mut question_keys = dataset.get_keys().unwrap();
     // sort by question id to ensure deterministic order
     question_keys.sort();
+    if rollout_config.split == DatasetSplit::Training {
+        assert!(
+            epoch < total_epochs,
+            "epoch ({epoch}) must be less than total_epochs ({total_epochs}) for training split"
+        );
+        let training_segment_start = epoch * question_keys.len() / total_epochs;
+        question_keys.rotate_left(training_segment_start);
+        log_key_value_pair(
+            "training_segment_start_index",
+            training_segment_start.to_string(),
+        );
+        log_key_value_pair("training_segment_total_keys", question_keys.len().to_string());
+    }
     let stop_signal = Arc::new(AtomicBool::new(false));
     let sglang_waiting_workers = Arc::new(AtomicUsize::new(0));
     let judge_waiting_workers = Arc::new(AtomicUsize::new(0));

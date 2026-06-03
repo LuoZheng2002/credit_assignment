@@ -37,6 +37,8 @@ struct Args {
     posterior_hyperparameters_path: String,
     #[arg(long)]
     epoch: usize, // the epoch index
+    #[arg(long)]
+    total_epochs: usize,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
     #[arg(long)]
@@ -67,6 +69,7 @@ async fn main() {
         rollout_config_path,
         posterior_hyperparameters_path,
         epoch,
+        total_epochs,
         ui,
         rollout_time_limit_secs,
         num_python_tool_servers,
@@ -77,6 +80,7 @@ async fn main() {
         num_python_tool_servers > 0,
         "num_python_tool_servers must be positive"
     );
+    assert!(total_epochs > 0, "total_epochs must be positive");
 
     println!("Starting direct rollout evaluation pipeline...");
     let client = Client::new();
@@ -103,6 +107,7 @@ async fn main() {
         llm_cli_args,
         rollout_time_limit_secs,
         num_python_tool_servers,
+        total_epochs,
     };
     match model_name {
         LlmModelName::Qwen25_7b => rollout_all::<Qwen25_7B>(program_config).await,
