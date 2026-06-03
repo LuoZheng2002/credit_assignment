@@ -23,21 +23,12 @@ impl HasId for HybridDatasetQuestion {
 
 pub type HybridDatasetStore = SqliteStore<usize, HybridDatasetQuestion>;
 
-// for testing, we have many things to report
-// we need accuracy with confidence intervals (4 times)
-
-// we also need a histogram of distribution shifting (needs to test 8 times for each question)
-// this only applies to one model
-
-// apart from the dataset used in the rollout, we also have different temperature configs, etc.
-
-// For testing, we may be able to do it in one rollout, and extract the accuracy from each dataset respectively.
-// #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, clap::ValueEnum)]
-// pub enum DatasetSplit {
-//     Training,
-//     Validation,
-//     Testing,
-// }
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, clap::ValueEnum)]
+pub enum DatasetSplitEnum {
+    Training,
+    Validation,
+    Testing,
+}
 
 pub trait DatasetSplit:
     Send

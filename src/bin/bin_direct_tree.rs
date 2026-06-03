@@ -6,7 +6,7 @@ use credit_assignment::{
     direct_tool::{
         direct_rollout::{RolloutProgramConfig, rollout_all},
         direct_rollout_config::DirectRolloutConfig,
-        hybrid_dataset::{DatasetSplit, Testing, Training, Validation},
+        hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
@@ -36,7 +36,7 @@ struct Args {
     #[arg(long)]
     rollout_config_path: String,
     #[arg(long, value_enum)]
-    dataset_split: DatasetSplitArg,
+    dataset_split: DatasetSplitEnum,
     #[arg(long)]
     posterior_hyperparameters_path: String,
     #[arg(long)]
@@ -51,13 +51,6 @@ struct Args {
     num_python_tool_servers: usize,
     #[arg(long)]
     sglang_server_log_path: Option<String>,
-}
-
-#[derive(Copy, Clone, Debug, ValueEnum)]
-enum DatasetSplitArg {
-    Training,
-    Validation,
-    Testing,
 }
 
 async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
@@ -81,6 +74,84 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     rollout_all::<M, S>(program_config).await;
 }
 
+macro_rules! run_model_for_split {
+    ($model_name:expr, $rollout_config:expr, $args:expr, $client:expr, $posterior:expr, $split:ty) => {
+        match $model_name {
+            LlmModelName::Qwen25_7b => {
+                run_rollout_for_split::<Qwen25_7B, $split>(
+                    $rollout_config,
+                    $args,
+                    $client,
+                    $posterior,
+                )
+                .await
+            }
+            LlmModelName::Qwen3_06b => {
+                run_rollout_for_split::<Qwen3_06B, $split>(
+                    $rollout_config,
+                    $args,
+                    $client,
+                    $posterior,
+                )
+                .await
+            }
+            LlmModelName::Qwen3_4b => {
+                run_rollout_for_split::<Qwen3_4B, $split>(
+                    $rollout_config,
+                    $args,
+                    $client,
+                    $posterior,
+                )
+                .await
+            }
+            LlmModelName::Qwen35_4b => {
+                run_rollout_for_split::<Qwen35_4B, $split>(
+                    $rollout_config,
+                    $args,
+                    $client,
+                    $posterior,
+                )
+                .await
+            }
+            LlmModelName::Qwen35_08b => {
+                run_rollout_for_split::<Qwen35_08B, $split>(
+                    $rollout_config,
+                    $args,
+                    $client,
+                    $posterior,
+                )
+                .await
+            }
+            LlmModelName::Gpt4o => {
+                run_rollout_for_split::<Gpt4o, $split>(
+                    $rollout_config,
+                    $args,
+                    $client,
+                    $posterior,
+                )
+                .await
+            }
+        }
+    };
+}
+
+async fn run_for_dataset_split<S: DatasetSplit>(
+    model_name: LlmModelName,
+    args: &Args,
+    client: Client,
+    posterior_calculation_config: PosteriorCalculationConfig,
+) {
+    let rollout_config: DirectRolloutConfig<S> = read_json(&args.rollout_config_path).unwrap();
+    run_model_for_split!(
+        model_name,
+        rollout_config,
+        args,
+        client,
+        posterior_calculation_config,
+        S
+    );
+}
+
 #[tokio::main]
 async fn main() {
     std::panic::set_hook(Box::new(|info| {
@@ -94,15 +165,6 @@ async fn main() {
     }));
     dotenvy::dotenv().ok();
     let args = Args::parse();
-    let Args {
-        model_cli_name,
-        rollout_config_path,
-        dataset_split,
-        posterior_hyperparameters_path,
-        ui,
-        sglang_server_log_path,
-        ..
-    } = &args;
     check_sympy_availability().unwrap();
     assert!(
         args.num_python_tool_servers > 0,
@@ -113,200 +175,37 @@ async fn main() {
     println!("Starting direct rollout evaluation pipeline...");
     let client = Client::new();
     let posterior_hyperparameters =
-        read_json::<PosteriorHyperparameters>(posterior_hyperparameters_path).unwrap();
+        read_json::<PosteriorHyperparameters>(&args.posterior_hyperparameters_path).unwrap();
     let posterior_calculation_config = PosteriorCalculationConfig {
         hyperparameters: posterior_hyperparameters,
     };
 
-    let model_name = LlmModelName::from_str(model_cli_name, true).unwrap();
-    if *ui {
-        ProgressTuiServer::initialize(sglang_server_log_path.clone(), |_command| {})
+    let model_name = LlmModelName::from_str(&args.model_cli_name, true).unwrap();
+    if args.ui {
+        ProgressTuiServer::initialize(args.sglang_server_log_path.clone(), |_command| {})
             .await
             .unwrap();
     }
-    match dataset_split {
-        DatasetSplitArg::Training => {
-            let rollout_config: DirectRolloutConfig<Training> =
-                read_json(rollout_config_path).unwrap();
-            match model_name {
-                LlmModelName::Qwen25_7b => {
-                    run_rollout_for_split::<Qwen25_7B, Training>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-                LlmModelName::Qwen3_06b => {
-                    run_rollout_for_split::<Qwen3_06B, Training>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-                LlmModelName::Qwen3_4b => {
-                    run_rollout_for_split::<Qwen3_4B, Training>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-                LlmModelName::Qwen35_4b => {
-                    run_rollout_for_split::<Qwen35_4B, Training>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-                LlmModelName::Qwen35_08b => {
-                    run_rollout_for_split::<Qwen35_08B, Training>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-                LlmModelName::Gpt4o => {
-                    run_rollout_for_split::<Gpt4o, Training>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-            }
+    match args.dataset_split {
+        DatasetSplitEnum::Training => {
+            run_for_dataset_split::<Training>(model_name, &args, client, posterior_calculation_config)
+                .await
         }
-        DatasetSplitArg::Validation => {
-            let rollout_config: DirectRolloutConfig<Validation> =
-                read_json(rollout_config_path).unwrap();
-            match model_name {
-                LlmModelName::Qwen25_7b => {
-                    run_rollout_for_split::<Qwen25_7B, Validation>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-                LlmModelName::Qwen3_06b => {
-                    run_rollout_for_split::<Qwen3_06B, Validation>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-                LlmModelName::Qwen3_4b => {
-                    run_rollout_for_split::<Qwen3_4B, Validation>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-                LlmModelName::Qwen35_4b => {
-                    run_rollout_for_split::<Qwen35_4B, Validation>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-                LlmModelName::Qwen35_08b => {
-                    run_rollout_for_split::<Qwen35_08B, Validation>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-                LlmModelName::Gpt4o => {
-                    run_rollout_for_split::<Gpt4o, Validation>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-            }
+        DatasetSplitEnum::Validation => {
+            run_for_dataset_split::<Validation>(
+                model_name,
+                &args,
+                client,
+                posterior_calculation_config,
+            )
+            .await
         }
-        DatasetSplitArg::Testing => {
-            let rollout_config: DirectRolloutConfig<Testing> =
-                read_json(rollout_config_path).unwrap();
-            match model_name {
-                LlmModelName::Qwen25_7b => {
-                    run_rollout_for_split::<Qwen25_7B, Testing>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-                LlmModelName::Qwen3_06b => {
-                    run_rollout_for_split::<Qwen3_06B, Testing>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-                LlmModelName::Qwen3_4b => {
-                    run_rollout_for_split::<Qwen3_4B, Testing>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-                LlmModelName::Qwen35_4b => {
-                    run_rollout_for_split::<Qwen35_4B, Testing>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-                LlmModelName::Qwen35_08b => {
-                    run_rollout_for_split::<Qwen35_08B, Testing>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-                LlmModelName::Gpt4o => {
-                    run_rollout_for_split::<Gpt4o, Testing>(
-                        rollout_config,
-                        &args,
-                        client,
-                        posterior_calculation_config,
-                    )
-                    .await
-                }
-            }
+        DatasetSplitEnum::Testing => {
+            run_for_dataset_split::<Testing>(model_name, &args, client, posterior_calculation_config)
+                .await
         }
     }
-    if *ui {
+    if args.ui {
         ProgressTuiServer::shutdown().await.unwrap();
     }
 }
