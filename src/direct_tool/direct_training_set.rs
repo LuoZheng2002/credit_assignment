@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 
-use futures::stream::{self, StreamExt};
 use ordered_float::NotNan;
 use research_utility::{
     asset_file::{AssetFile, Base64Hash, hash_file},
@@ -157,9 +157,9 @@ struct TrainingTrajectorySelectionOutput {
     average_absolute_advantage_cutoff: f32,
 }
 
-pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
+pub fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     action_log_store: DirectTreeActionLogStore<M>,
-    training_trajectory_store: &SqliteStore<usize, DirectTrainingTrajectory<M>>,
+    training_trajectory_store: &Arc<Mutex<SqliteStore<usize, DirectTrainingTrajectory<M>>>>,
     cumulative_avg_abs_advantage_cutoff: f32,
     statistics_file_path: String,
     advantage_calculation_policy: AdvantageCalculationPolicy,
@@ -170,36 +170,19 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     );
 
     // iterate through all action logs
-    let mut keys = action_log_store.get_keys().await.unwrap();
+    let mut keys = action_log_store.get_keys().unwrap();
     let num_keys = keys.len();
     // we want to make a histogram
 
     keys.sort(); // ensure deterministic order
     let mut selection_state =
         TrajectorySelectionState::new(num_keys, cumulative_avg_abs_advantage_cutoff);
-    log_info(
-        "Converting action logs to trajectories with tokio tasks (max concurrency: 200)"
-            .to_string(),
-    );
+    log_info("Converting action logs to trajectories".to_string());
 
-    const MAX_CONCURRENT_TASKS: usize = 200;
-    let mut processed_stream = stream::iter(keys.iter().copied().enumerate())
-        .map(|(index, key)| {
-            let action_log_store = action_log_store.clone();
-            async move {
-                let action_log = action_log_store.get(key).await.unwrap().unwrap();
-                (
-                    index,
-                    action_log_to_candidate_summaries::<M>(
-                        action_log,
-                        advantage_calculation_policy,
-                    ),
-                )
-            }
-        })
-        .buffer_unordered(MAX_CONCURRENT_TASKS);
-
-    while let Some((index, trajectory_summaries)) = processed_stream.next().await {
+    for (index, key) in keys.iter().copied().enumerate() {
+        let action_log = action_log_store.get(key).unwrap().unwrap();
+        let trajectory_summaries =
+            action_log_to_candidate_summaries::<M>(action_log, advantage_calculation_policy);
         selection_state.fold_item(index, trajectory_summaries);
     }
 
@@ -234,7 +217,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         let key = keys
             .get(metadata.sample_index)
             .expect("sample index must reference an existing action log key");
-        let action_log = action_log_store.get(*key).await.unwrap().unwrap();
+        let action_log = action_log_store.get(*key).unwrap().unwrap();
         let selected_trajectory_indices: BTreeSet<usize> =
             [metadata.trajectory_index].into_iter().collect();
         let reconstructed_trajectories = action_log_to_selected_trajectories::<M>(
@@ -294,8 +277,9 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
                 trajectory.question.flat_id
             );
             training_trajectory_store
+                .lock()
+                .unwrap()
                 .upsert(output_index, &trajectory, SqliteBusyRetryConfig::none())
-                .await
                 .unwrap();
         }
     }
@@ -624,7 +608,6 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
     async fn fetch(&self) -> Self::FileModel {
         self.synchronize().await;
         SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(self.file_path())
-            .await
     }
     async fn synchronize(&self) -> Base64Hash {
         assert!(
@@ -670,9 +653,9 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
                 std::fs::remove_file(&self.file_path()).unwrap();
             }
             // initialize database
-            let db =
-                SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(self.file_path())
-                    .await;
+            let db = Arc::new(Mutex::new(
+                SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(self.file_path()),
+            ));
             let rollout_logs = asset_file_rollout_logs.fetch().await;
             rollout_logs_to_training_trajectories::<M>(
                 rollout_logs,
@@ -680,8 +663,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
                 self.cumulative_avg_abs_advantage_cutoff,
                 self.statistics_file_path(),
                 self.advantage_calculation_policy,
-            )
-            .await;
+            );
             log_info("Finished generating training trajectories file.");
         }
         write_json(self.version_tracking_path(), &new_tracking_content).unwrap();

@@ -26,7 +26,7 @@ pub async fn read_accuracy<M: LlmModelMarker>(
     asset_file_action_logs: AssetFileDirectTreeActionLogs<M>,
 ) -> WinRate {
     let action_logs_store = asset_file_action_logs.fetch().await;
-    let mut keys = action_logs_store.get_keys().await.unwrap();
+    let mut keys = action_logs_store.get_keys().unwrap();
     keys.sort();
 
     log_master_progress(0.0, "Accuracy: Calculating");
@@ -36,13 +36,12 @@ pub async fn read_accuracy<M: LlmModelMarker>(
     let mut total_plays = 0usize;
 
     const MAX_CONCURRENT_TASKS: usize = 200;
+    let action_logs_store = &action_logs_store;
     let mut result_stream = stream::iter(keys.into_iter())
         .map(|key| {
-            let action_logs_store = action_logs_store.clone();
             async move {
                 let action_log = action_logs_store
                     .get(key)
-                    .await
                     .unwrap()
                     .expect("key from sqlite key set must exist");
                 question_is_correct::<M>(&action_log)

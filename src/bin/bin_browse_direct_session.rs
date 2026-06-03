@@ -505,32 +505,26 @@ impl<M: LlmModelMarker> App<M> {
         }
         self.entry_cache[index] = EntryLoadState::Loading;
         let key = self.entry_keys[index];
-        let action_log_store = self.action_log_store.clone();
-        let tx = self.entry_load_tx.clone();
-        tokio::spawn(async move {
-            let state = match action_log_store.get(key).await {
-                Ok(Some(action_log)) => {
-                    let (num_correct, num_leaves, win_rate) =
-                        question_stats_from_action_log::<M>(&action_log);
-                    EntryLoadState::Loaded(QuestionEntry {
-                        key,
-                        action_log,
-                        win_rate,
-                        num_correct,
-                        num_leaves,
-                    })
-                }
-                Ok(None) => EntryLoadState::Failed(format!(
-                    "Question key {} not found in sqlite store",
-                    key
-                )),
-                Err(error) => EntryLoadState::Failed(format!(
-                    "Failed to load question key {} from sqlite store: {}",
-                    key, error
-                )),
-            };
-            let _ = tx.send(EntryLoadResult { index, state });
-        });
+        let state = match self.action_log_store.get(key) {
+            Ok(Some(action_log)) => {
+                let (num_correct, num_leaves, win_rate) = question_stats_from_action_log::<M>(&action_log);
+                EntryLoadState::Loaded(QuestionEntry {
+                    key,
+                    action_log,
+                    win_rate,
+                    num_correct,
+                    num_leaves,
+                })
+            }
+            Ok(None) => {
+                EntryLoadState::Failed(format!("Question key {} not found in sqlite store", key))
+            }
+            Err(error) => EntryLoadState::Failed(format!(
+                "Failed to load question key {} from sqlite store: {}",
+                key, error
+            )),
+        };
+        let _ = self.entry_load_tx.send(EntryLoadResult { index, state });
     }
 
     fn ensure_visible_home_page_loaded(&mut self) {
@@ -2321,7 +2315,7 @@ async fn run_model_app<'a, M: LlmModelMarker>(
         _phantom: std::marker::PhantomData,
     };
     let action_log_store = asset_file_action_logs.fetch().await;
-    let mut keys = action_log_store.get_keys().await.unwrap();
+    let mut keys = action_log_store.get_keys().unwrap();
     keys.sort();
     let app = App::<M>::new(action_log_store, keys, override_hyperparameters);
     run_app::<M>(terminal, app)

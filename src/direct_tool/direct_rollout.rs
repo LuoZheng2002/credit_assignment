@@ -26,7 +26,7 @@ use crate::{
             AssetFileDirectTreeActionLogs, DirectTreeActionLogMetadata,
             DirectTreeActionLogStore, DirectTreeActionLogStoreAdapter,
         },
-        hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion, HybridDatasetStore},
+        hybrid_dataset::{AssetFileHybridDataset, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     llm_model::{LlmCallable, LlmCliArgs, LlmModelMarker},
@@ -200,6 +200,7 @@ async fn rollout<M: LlmModelMarker>(
     llm_callable: M::Callable,
     client: Client,
     shared_states: RolloutSharedStates,
+    _permit: OwnedSemaphorePermit,
 ) -> Result<(), StopRequestedError> {
     let RolloutSharedStates {
         python_tool_pool,
@@ -327,34 +328,6 @@ async fn rollout<M: LlmModelMarker>(
     Ok(())
 }
 
-async fn rollout_task<M: LlmModelMarker>(
-    question_key: usize,
-    dataset: Arc<HybridDatasetStore>,
-    rollout_config: DirectRolloutConfig,
-    posterior_calculation_config: PosteriorCalculationConfig,
-    rollout_store: DirectTreeActionLogStoreAdapter<M>,
-    llm_callable: M::Callable,
-    client: Client,
-    shared_states: RolloutSharedStates,
-    _permit: OwnedSemaphorePermit,
-) -> Result<(), StopRequestedError> {
-    let question = dataset
-        .get(question_key)
-        .await
-        .unwrap()
-        .expect("question key from rollout queue must exist");
-    rollout::<M>(
-        question,
-        rollout_config,
-        posterior_calculation_config,
-        rollout_store,
-        llm_callable,
-        client,
-        shared_states,
-    )
-    .await
-}
-
 pub struct RolloutProgramConfig {
     pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig,
@@ -405,7 +378,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let asset_file_dataset = AssetFileHybridDataset {
         split: rollout_config.split.clone(),
     };
-    let dataset = Arc::new(asset_file_dataset.fetch().await);
+    let dataset = asset_file_dataset.fetch().await;
     let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
         nickname: config_nickname,
         rollout_config: rollout_config.clone(),
@@ -416,10 +389,9 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     asset_file_action_logs.delete_target_file_if_stale();
     asset_file_action_logs.create_tracking_file();
     let rollout_store = DirectTreeActionLogStoreAdapter::new(
-        DirectTreeActionLogStore::<M>::initialize_if_missing(asset_file_action_logs.file_path())
-            .await,
+        DirectTreeActionLogStore::<M>::initialize_if_missing(asset_file_action_logs.file_path()),
     );
-    let mut question_keys = dataset.get_keys().await.unwrap();
+    let mut question_keys = dataset.get_keys().unwrap();
     // sort by question id to ensure deterministic order
     question_keys.sort();
     let stop_signal = Arc::new(AtomicBool::new(false));
@@ -471,9 +443,12 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
                 let permit = permit_result.expect("rollout semaphore should not be closed");
                 let question_key = question_keys[next_question_index];
                 next_question_index += 1;
-                join_set.spawn(rollout_task::<M>(
-                    question_key,
-                    dataset.clone(),
+                let question = dataset
+                    .get(question_key)
+                    .unwrap()
+                    .expect("question key from rollout queue must exist");
+                join_set.spawn(rollout::<M>(
+                    question,
                     rollout_config.clone(),
                     posterior_calculation_config.clone(),
                     rollout_store.clone(),

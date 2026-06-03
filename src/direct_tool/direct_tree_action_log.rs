@@ -68,16 +68,6 @@ enum StoreRequest<M: LlmModelMarker> {
     },
 }
 
-impl<M: LlmModelMarker> Clone for DirectTreeActionLogStore<M> {
-    fn clone(&self) -> Self {
-        Self {
-            metadata_store: self.metadata_store.clone(),
-            action_store: self.action_store.clone(),
-            _phantom: PhantomData,
-        }
-    }
-}
-
 impl<M: LlmModelMarker> Clone for DirectTreeActionLogStoreAdapter<M> {
     fn clone(&self) -> Self {
         Self {
@@ -88,15 +78,13 @@ impl<M: LlmModelMarker> Clone for DirectTreeActionLogStoreAdapter<M> {
 }
 
 impl<M: LlmModelMarker> DirectTreeActionLogStore<M> {
-    pub async fn initialize_if_missing(db_path: impl Into<String>) -> Self {
+    pub fn initialize_if_missing(db_path: impl Into<String>) -> Self {
         let db_path = db_path.into();
         let metadata_store =
             SqliteStore::<usize, DirectTreeActionLogMetadata>::initialize_if_missing(
                 db_path.clone(),
-            )
-            .await;
+            );
         let action_store = SqliteTableArrayStore::<usize, DirectTreeAction<M>>::new(db_path)
-            .await
             .expect("failed to initialize sqlite table array store for direct action log actions");
         Self {
             metadata_store,
@@ -105,16 +93,16 @@ impl<M: LlmModelMarker> DirectTreeActionLogStore<M> {
         }
     }
 
-    pub async fn get_keys(&self) -> Result<Vec<usize>, String> {
-        self.metadata_store.get_keys().await
+    pub fn get_keys(&self) -> Result<Vec<usize>, String> {
+        self.metadata_store.get_keys()
     }
 
-    pub async fn get(&self, key: usize) -> Result<Option<DirectTreeActionLog<M>>, String> {
-        let metadata = self.metadata_store.get(key).await?;
+    pub fn get(&self, key: usize) -> Result<Option<DirectTreeActionLog<M>>, String> {
+        let metadata = self.metadata_store.get(key)?;
         let Some(metadata) = metadata else {
             return Ok(None);
         };
-        let indexed_actions = self.action_store.load_table_with_indices(key).await?;
+        let indexed_actions = self.action_store.load_table_with_indices(key)?;
         for (expected_index, (stored_index, _)) in indexed_actions.iter().enumerate() {
             if *stored_index != expected_index {
                 return Err(format!(
@@ -135,28 +123,28 @@ impl<M: LlmModelMarker> DirectTreeActionLogStore<M> {
         }))
     }
 
-    pub async fn get_or_init_metadata(
+    pub fn get_or_init_metadata(
         &self,
         key: usize,
         default_metadata: &DirectTreeActionLogMetadata,
     ) -> Result<DirectTreeActionLogMetadata, String> {
-        let existing = self.metadata_store.get(key).await?;
+        let existing = self.metadata_store.get(key)?;
         if let Some(existing) = existing {
             return Ok(existing);
         }
         self.metadata_store
             .upsert(key, default_metadata, SqliteBusyRetryConfig::aggressive())
-            .await?;
+            ?;
         Ok(default_metadata.clone())
     }
 
-    pub async fn append_action_at(
+    pub fn append_action_at(
         &self,
         key: usize,
         action_index: usize,
         action: &DirectTreeAction<M>,
     ) -> Result<(), String> {
-        self.action_store.append_at(key, action_index, action).await
+        self.action_store.append_at(key, action_index, action)
     }
 }
 
@@ -185,11 +173,11 @@ impl<M: LlmModelMarker> DirectTreeActionLogStoreAdapter<M> {
                     while let Some(request) = request_rx.recv().await {
                         match request {
                             StoreRequest::GetKeys { response_tx } => {
-                                let result = store.get_keys().await;
+                                let result = store.get_keys();
                                 let _ = response_tx.send(result);
                             }
                             StoreRequest::Get { key, response_tx } => {
-                                let result = store.get(key).await;
+                                let result = store.get(key);
                                 let _ = response_tx.send(result);
                             }
                             StoreRequest::GetOrInitMetadata {
@@ -197,8 +185,7 @@ impl<M: LlmModelMarker> DirectTreeActionLogStoreAdapter<M> {
                                 default_metadata,
                                 response_tx,
                             } => {
-                                let result =
-                                    store.get_or_init_metadata(key, &default_metadata).await;
+                                let result = store.get_or_init_metadata(key, &default_metadata);
                                 let _ = response_tx.send(result);
                             }
                             StoreRequest::AppendActionAt {
@@ -207,7 +194,7 @@ impl<M: LlmModelMarker> DirectTreeActionLogStoreAdapter<M> {
                                 action,
                                 response_tx,
                             } => {
-                                let result = store.append_action_at(key, action_index, &action).await;
+                                let result = store.append_action_at(key, action_index, &action);
                                 let _ = response_tx.send(result);
                             }
                         }
@@ -450,6 +437,6 @@ impl<M: LlmModelMarker> AssetFile for AssetFileDirectTreeActionLogs<M> {
     }
     async fn fetch(&self) -> Self::FileModel {
         self.synchronize().await;
-        DirectTreeActionLogStore::<M>::initialize_if_missing(self.file_path()).await
+        DirectTreeActionLogStore::<M>::initialize_if_missing(self.file_path())
     }
 }
