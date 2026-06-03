@@ -5,6 +5,7 @@ use credit_assignment::{
     direct_tool::{
         direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         direct_training_set::AssetFileTrainingTrajectories,
+        hybrid_dataset::Training,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::read_json,
@@ -53,7 +54,7 @@ async fn main() {
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
     } = Args::parse();
-    let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();
+    let rollout_config: DirectRolloutConfig<Training> = read_json(rollout_config_path).unwrap();
     let posterior_hyperparameters =
         read_json::<PosteriorHyperparameters>(posterior_hyperparameters_path).unwrap();
     let posterior_calculation_config = PosteriorCalculationConfig {
@@ -79,7 +80,7 @@ async fn main() {
 
 struct RunProgramArgs {
     config_nickname: String,
-    rollout_config: DirectRolloutConfig,
+    rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize, // the epoch index
     cumulative_avg_abs_advantage_cutoff: f32,
@@ -95,7 +96,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
     } = run_program_args;
-    let asset_file_training_set = AssetFileTrainingTrajectories::<M> {
+    let asset_file_training_set = AssetFileTrainingTrajectories::<M, Training> {
         config_nickname: config_nickname.clone(),
         rollout_config,
         posterior_calculation_config,

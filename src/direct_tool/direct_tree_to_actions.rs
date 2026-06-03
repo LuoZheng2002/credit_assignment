@@ -14,6 +14,7 @@ use crate::direct_tool::direct_tree_action::DirectTreeAction::SubmitAnswer;
 use crate::direct_tool::direct_tree_status::{
     GuidedBranchingSubStatus, SpontaneousBranchingSubStatus, TrunkSubStatus,
 };
+use crate::direct_tool::hybrid_dataset::DatasetSplit;
 use crate::judge_correctness::{JudgeAnswerModel, judge_final_answer};
 use crate::llm_model::MyTokenizer;
 use crate::tool_call_python::{PythonToolResponse, PythonToolServerPool, execute_python_tool_call};
@@ -44,7 +45,7 @@ pub struct TokenBranchingScore {
     pub branching_type: BranchingType,
 }
 
-impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
+impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
     pub fn calculate_per_token_branching_scores(
         &self,
         segment_uncertainty_scores: &BTreeMap<SegmentId, f32>,

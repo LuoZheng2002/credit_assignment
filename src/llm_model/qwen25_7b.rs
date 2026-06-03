@@ -47,6 +47,7 @@ fn build_qwen25_chat_template(user_prompt: &str, enable_thinking: bool) -> Strin
     .unwrap()
 }
 
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Qwen25_7B;
 
 #[derive(Clone)]

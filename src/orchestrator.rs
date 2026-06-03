@@ -14,9 +14,10 @@ use crate::{
         direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         direct_training_set::AssetFileTrainingTrajectories,
         direct_tree_action_log::AssetFileDirectTreeActionLogs,
-        hybrid_dataset::DatasetSplit,
+        hybrid_dataset::{Training, Validation},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
+    get_validation_accuracy::get_validation_accuracy,
     json_line_util::{write_json, write_toml},
     launch_python_training::launch_python_training_process,
     launch_sglang_server::{
@@ -25,7 +26,6 @@ use crate::{
     },
     llm_model::{LlmCliArgs, LlmModelMarker},
     python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
-    read_accuracy::read_accuracy,
 };
 
 pub const MODEL_PARENT_DIR_TEMPLATE_PATH: &str = "config/training/model_parent_dir.jinja";
@@ -130,8 +130,8 @@ pub fn model_metrics_path_from_template(
 pub struct Orchestrator {
     // for rollout
     pub config_nickname: String,
-    pub validation_rollout_config: DirectRolloutConfig,
-    pub training_set_rollout_config: DirectRolloutConfig,
+    pub validation_rollout_config: DirectRolloutConfig<Validation>,
+    pub training_set_rollout_config: DirectRolloutConfig<Training>,
     pub posterior_calculation_config: PosteriorCalculationConfig,
     pub training_rollout_time_limit_secs: usize,
     pub validation_rollout_time_limit_secs: usize,
@@ -267,14 +267,14 @@ impl Orchestrator {
         epoch: usize,
     ) -> Result<(), String> {
         log_info("Reading and logging validation accuracy...");
-        let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
+        let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M, Validation> {
             nickname: self.config_nickname.clone(),
             rollout_config: self.validation_rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
             epoch,
             _phantom: std::marker::PhantomData,
         };
-        let win_rate = read_accuracy(asset_file_action_logs).await;
+        let win_rate = get_validation_accuracy(asset_file_action_logs).await;
         if win_rate.total_plays == 0 {
             return Err("Validation action log is empty, cannot compute accuracy".to_string());
         }
@@ -438,7 +438,7 @@ impl Orchestrator {
 
     async fn validate_model<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
         log_info("Start validating model.");
-        assert!(self.validation_rollout_config.split == DatasetSplit::Validation);
+        // assert!(self.validation_rollout_config.split == DatasetSplit::Validation);
 
         let validation_rollout_program_config = RolloutProgramConfig {
             config_nickname: self.config_nickname.clone(),
@@ -457,7 +457,7 @@ impl Orchestrator {
             num_python_tool_servers: self.num_python_tool_servers,
             total_epochs: self.num_total_epochs,
         };
-        rollout_all::<M>(validation_rollout_program_config).await;
+        rollout_all::<M, Validation>(validation_rollout_program_config).await;
         log_info("Finished validating model.");
         Ok(())
     }
@@ -474,7 +474,7 @@ impl Orchestrator {
         let llm_cli_args = LlmCliArgs {
             sglang_port: sglang_server_handle.sglang_port.clone(),
         };
-        assert!(self.training_set_rollout_config.split == DatasetSplit::Training);
+        // assert!(self.training_set_rollout_config.split == DatasetSplit::Training);
         let training_set_rollout_program_config = RolloutProgramConfig {
             config_nickname: self.config_nickname.clone(),
             rollout_config: self.training_set_rollout_config.clone(),
@@ -487,7 +487,7 @@ impl Orchestrator {
             num_python_tool_servers: self.num_python_tool_servers,
             total_epochs: self.num_total_epochs,
         };
-        rollout_all::<M>(training_set_rollout_program_config).await;
+        rollout_all::<M, Training>(training_set_rollout_program_config).await;
         log_info("Finished collecting training rollout");
         Ok(())
     }

@@ -10,7 +10,7 @@ pub struct LlmCliArgs {
     pub sglang_port: Option<u16>, // used when the model is served by sglang
 }
 
-pub trait LlmModelMarker: Sized + Send + Sync + 'static {
+pub trait LlmModelMarker: Sized + Send + Sync + 'static + Clone {
     type Tokenizer: MyTokenizer<Self>;
     type Callable: LlmCallable<Self> + Send + Sync + 'static;
 

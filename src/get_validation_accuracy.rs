@@ -1,5 +1,5 @@
 use research_utility::{asset_file::AssetFile, progress_tui_server::log_master_progress};
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::{
@@ -7,13 +7,15 @@ use crate::{
         direct_tree::DirectTree,
         direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
         direct_tree_advantage::WinRate,
-        hybrid_dataset::AssetFileHybridDataset,
+        hybrid_dataset::{AssetFileHybridDataset, Validation},
     },
     llm_model::LlmModelMarker,
 };
 
-fn question_is_correct<M: LlmModelMarker>(action_log: &DirectTreeActionLog<M>) -> Option<bool> {
-    let tree = DirectTree::<M>::from_action_log(action_log);
+fn question_is_correct<M: LlmModelMarker>(
+    action_log: &DirectTreeActionLog<M, Validation>,
+) -> Option<bool> {
+    let tree = DirectTree::<M, Validation>::from_action_log(action_log);
     assert!(
         tree.leaf_segment_judgments.len() <= 1,
         "There should be at most one leaf segment judgment for accuracy calculation"
@@ -24,12 +26,10 @@ fn question_is_correct<M: LlmModelMarker>(action_log: &DirectTreeActionLog<M>) -
         .map(|judgment| judgment.is_correct)
 }
 
-pub async fn read_accuracy<M: LlmModelMarker>(
-    asset_file_action_logs: AssetFileDirectTreeActionLogs<M>,
+pub async fn get_validation_accuracy<M: LlmModelMarker>(
+    asset_file_action_logs: AssetFileDirectTreeActionLogs<M, Validation>,
 ) -> WinRate {
-    let asset_file_dataset = AssetFileHybridDataset {
-        split: asset_file_action_logs.rollout_config.split.clone(),
-    };
+    let asset_file_dataset = AssetFileHybridDataset::<Validation>(PhantomData);
     let question_store = asset_file_dataset.fetch().await;
     let action_store = asset_file_action_logs.fetch().await;
     let mut keys = action_store.get_keys().unwrap();

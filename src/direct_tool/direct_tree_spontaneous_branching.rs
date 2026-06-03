@@ -4,6 +4,7 @@ use crate::{
     direct_tool::{
         direct_tree::{ContentIndex, DirectTree, SegmentContent, SegmentId},
         direct_tree_action::TokenPositionInTree,
+        hybrid_dataset::DatasetSplit,
     },
     llm_model::LlmModelMarker,
 };
@@ -19,7 +20,7 @@ pub struct LongestCommonPrefixResult {
     pub diverge_position_in_query: TokenPositionInSegment,
 }
 
-impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
+impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
     // query does not include the root segment
     pub fn find_longest_common_prefix(
         &self,

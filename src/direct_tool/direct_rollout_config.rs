@@ -16,11 +16,13 @@ pub enum AdvantageCalculationPolicy {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct DirectRolloutConfig {
-    pub split: DatasetSplit,
+pub struct DirectRolloutConfig<S: DatasetSplit> {
+    // pub split: DatasetSplit,
     pub branching_policy: BranchingPolicy,
     pub max_num_trunks: usize,
     pub max_num_total_trajectories: usize,
     pub fixed_temperature: NotNan<f32>,
     pub use_tool: bool,
+    #[serde(skip)]
+    pub _phantom: std::marker::PhantomData<S>,
 }

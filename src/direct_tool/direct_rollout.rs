@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::marker::PhantomData;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -191,8 +192,8 @@ pub struct RolloutSharedStates {
 #[derive(Debug, Clone, Copy)]
 pub struct StopRequestedError;
 
-async fn rollout<M: LlmModelMarker>(
-    mut action_log: DirectTreeActionLog<M>,
+async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
+    mut action_log: DirectTreeActionLog<M, S>,
     action_store: ActionStoreAdapter<M>,
     llm_callable: M::Callable,
     client: Client,
@@ -228,7 +229,7 @@ async fn rollout<M: LlmModelMarker>(
         .filter(|action| action_is_llm_call(action))
         .count();
     loop {
-        let tree = DirectTree::<M>::from_action_log(&action_log);
+        let tree = DirectTree::<M, S>::from_action_log(&action_log);
         if tree.completed() {
             break;
         }
@@ -303,9 +304,9 @@ async fn rollout<M: LlmModelMarker>(
     Ok(())
 }
 
-pub struct RolloutProgramConfig {
+pub struct RolloutProgramConfig<S: DatasetSplit> {
     pub config_nickname: String,
-    pub rollout_config: DirectRolloutConfig,
+    pub rollout_config: DirectRolloutConfig<S>,
     pub posterior_calculation_config: PosteriorCalculationConfig,
     pub epoch: usize, // the epoch index
     pub client: Client,
@@ -316,7 +317,9 @@ pub struct RolloutProgramConfig {
     pub total_epochs: usize,
 }
 
-pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig) {
+pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
+    program_config: RolloutProgramConfig<S>,
+) {
     let RolloutProgramConfig {
         config_nickname,
         rollout_config,
@@ -353,11 +356,9 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
             .expect("failed to initialize python tool server pool"),
     );
     let llm_callable = M::Callable::from_cli_args(client.clone(), &llm_cli_args);
-    let asset_file_dataset = AssetFileHybridDataset {
-        split: rollout_config.split.clone(),
-    };
+    let asset_file_dataset = AssetFileHybridDataset::<S>(PhantomData);
     let dataset = asset_file_dataset.fetch().await;
-    let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
+    let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M, S> {
         nickname: config_nickname,
         rollout_config: rollout_config.clone(),
         posterior_calculation_config: posterior_calculation_config.clone(),
@@ -380,7 +381,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
     let mut question_keys = dataset.get_keys().unwrap();
     // sort by question id to ensure deterministic order
     question_keys.sort();
-    if rollout_config.split == DatasetSplit::Training {
+    if S::IS_TRAINING {
         assert!(
             epoch < total_epochs,
             "epoch ({epoch}) must be less than total_epochs ({total_epochs}) for training split"
@@ -480,7 +481,7 @@ pub async fn rollout_all<M: LlmModelMarker>(program_config: RolloutProgramConfig
                     posterior_calculation_config: posterior_calculation_config.clone(),
                     actions,
                 };
-                join_set.spawn(rollout::<M>(
+                join_set.spawn(rollout::<M, S>(
                     action_log,
                     action_store_adapter.clone(),
                     llm_callable.clone(),

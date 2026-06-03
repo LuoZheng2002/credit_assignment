@@ -16,6 +16,7 @@ use super::{
 static QWEN3_06B_TOKENIZER: LazyLock<Tokenizer> =
     LazyLock::new(|| Tokenizer::from_pretrained(Qwen3_06B::API_NAME, None).unwrap());
 
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Qwen3_06B;
 
 #[derive(Clone)]

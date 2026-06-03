@@ -32,28 +32,63 @@ pub type HybridDatasetStore = SqliteStore<usize, HybridDatasetQuestion>;
 // apart from the dataset used in the rollout, we also have different temperature configs, etc.
 
 // For testing, we may be able to do it in one rollout, and extract the accuracy from each dataset respectively.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, clap::ValueEnum)]
-pub enum DatasetSplit {
-    Training,
-    Validation,
-    Testing,
+// #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, clap::ValueEnum)]
+// pub enum DatasetSplit {
+//     Training,
+//     Validation,
+//     Testing,
+// }
+
+pub trait DatasetSplit:
+    Send
+    + Sync
+    + Clone
+    + Serialize
+    + for<'de> Deserialize<'de>
+    + 'static
+    + PartialEq
+    + Eq
+    + std::fmt::Debug
+{
+    const IS_TRAINING: bool;
+    fn dataset_file_postfix() -> String;
 }
-pub struct AssetFileHybridDataset {
-    pub split: DatasetSplit,
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
+pub struct Training;
+impl DatasetSplit for Training {
+    const IS_TRAINING: bool = true;
+    fn dataset_file_postfix() -> String {
+        "train".to_string()
+    }
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
+pub struct Validation;
+impl DatasetSplit for Validation {
+    const IS_TRAINING: bool = false;
+    fn dataset_file_postfix() -> String {
+        "val".to_string()
+    }
 }
 
-impl AssetFileHybridDataset {
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
+pub struct Testing;
+impl DatasetSplit for Testing {
+    const IS_TRAINING: bool = false;
+    fn dataset_file_postfix() -> String {
+        "test".to_string()
+    }
+}
+
+pub struct AssetFileHybridDataset<S: DatasetSplit>(pub std::marker::PhantomData<S>);
+
+impl<S: DatasetSplit> AssetFileHybridDataset<S> {
     pub fn file_path(&self) -> String {
-        match self.split {
-            DatasetSplit::Training => "datasets/hybrid_train.sqlite".to_string(),
-            DatasetSplit::Validation => "datasets/hybrid_val.sqlite".to_string(),
-            DatasetSplit::Testing => "datasets/aggregated_test.sqlite".to_string(),
-        }
+        format!("hybrid_dataset_{}.sqlite", S::dataset_file_postfix())
     }
 }
 
 #[async_trait::async_trait]
-impl AssetFile for AssetFileHybridDataset {
+impl<S: DatasetSplit> AssetFile for AssetFileHybridDataset<S> {
     type FileModel = HybridDatasetStore;
     async fn synchronize(&self) -> research_utility::asset_file::Base64Hash {
         // if the file is stale, we should panic instead of synchronizing, since the file should be updated manually by the user

@@ -8,11 +8,12 @@ use crate::{
             DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus,
             TrunkSubStatus,
         },
+        hybrid_dataset::DatasetSplit,
     },
     llm_model::{LlmModelMarker, TokenArrayWithLogprob},
 };
 
-impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
+impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
     pub fn apply_action(&mut self, action: &DirectTreeAction<M>) {
         match action {
             DirectTreeAction::AppendSegmentContent(segment_content) => match &mut self.status {

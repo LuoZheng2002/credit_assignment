@@ -7,6 +7,7 @@ use credit_assignment::{
     check_python_env::check_sympy_availability,
     direct_tool::{
         direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+        hybrid_dataset::{Training, Validation},
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::{read_json, read_toml},
@@ -109,9 +110,9 @@ async fn main() {
             .await
             .unwrap();
     }
-    let validation_rollout_config: DirectRolloutConfig =
+    let validation_rollout_config: DirectRolloutConfig<Validation> =
         read_json(validation_rollout_config_path).unwrap();
-    let training_set_rollout_config: DirectRolloutConfig =
+    let training_set_rollout_config: DirectRolloutConfig<Training> =
         read_json(training_rollout_config_path).unwrap();
     let posterior_hyperparameters =
         read_json::<PosteriorHyperparameters>(posterior_hyperparameters_path).unwrap();

@@ -245,6 +245,7 @@ fn try_token_to_single_id<M: LlmModelMarker>(token: &str) -> Option<i32> {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Gpt4o;
 
 pub struct Gpt4oTokenizer;

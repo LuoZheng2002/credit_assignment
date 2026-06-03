@@ -22,6 +22,7 @@ use super::qwen_shared::{
 static QWEN3_4B_TOKENIZER: LazyLock<Tokenizer> =
     LazyLock::new(|| Tokenizer::from_pretrained(Qwen3_4B::API_NAME, None).unwrap());
 
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Qwen3_4B;
 
 #[derive(Clone)]

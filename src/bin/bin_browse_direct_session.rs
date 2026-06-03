@@ -9,7 +9,7 @@ use std::time::Duration;
 use clap::Parser;
 use credit_assignment::direct_tool::direct_tree_action::DirectTreeAction;
 use credit_assignment::direct_tool::hybrid_dataset::{
-    AssetFileHybridDataset, HybridDatasetQuestion,
+    AssetFileHybridDataset, HybridDatasetQuestion, Validation,
 };
 use credit_assignment::judge_correctness::CorrectnessJudgment;
 use credit_assignment::{
@@ -80,10 +80,11 @@ struct Args {
 
 const QUESTIONS_PER_PAGE: usize = 10;
 const CONVERSATION_SCROLL_SENSITIVITY: usize = 4;
+type SessionSplit = Validation;
 
 struct QuestionEntry<M: LlmModelMarker> {
     key: usize,
-    action_log: DirectTreeActionLog<M>,
+    action_log: DirectTreeActionLog<M, SessionSplit>,
     win_rate: f64,
     num_correct: usize,
     num_leaves: usize,
@@ -229,7 +230,7 @@ struct TreeDisplaySnapshot<M: LlmModelMarker> {
 }
 
 impl<M: LlmModelMarker> TreeDisplaySnapshot<M> {
-    fn from_tree(tree: DirectTree<M>) -> Self {
+    fn from_tree(tree: DirectTree<'_, M, SessionSplit>) -> Self {
         tree.root_segment_id
             .expect("Direct tree browser requires root segment");
         Self {
@@ -374,13 +375,13 @@ impl<M: LlmModelMarker> TreePage<M> {
 }
 
 fn tree_page_state_from_action_log<M: LlmModelMarker>(
-    action_log: &DirectTreeActionLog<M>,
+    action_log: &DirectTreeActionLog<M, SessionSplit>,
     action_limit: usize,
     width_division_ratio: usize,
     override_hyperparameters: Option<&PosteriorHyperparameters>,
 ) -> TreePageState<M> {
     let partial_log = partial_action_log(action_log, action_limit);
-    let tree = DirectTree::<M>::from_action_log(&partial_log);
+    let tree = DirectTree::<M, SessionSplit>::from_action_log(&partial_log);
     let root_segment_id = tree_root_segment_id(&tree);
     let segment_display_widths = segment_display_widths(&tree, Some(width_division_ratio));
     let segment_advantages_from_posteriors =
@@ -426,7 +427,7 @@ struct App<M: LlmModelMarker> {
     _model_marker: PhantomData<M>,
     override_hyperparameters: Option<PosteriorHyperparameters>,
     // action_log_store: DirectTreeActionLogStore<M>,
-    asset_file_action_logs: AssetFileDirectTreeActionLogs<M>,
+    asset_file_action_logs: AssetFileDirectTreeActionLogs<M, SessionSplit>,
     question_store: SqliteStore<usize, HybridDatasetQuestion>,
     action_store: SqliteTableArrayStore<usize, DirectTreeAction<M>>,
     entry_keys: Vec<usize>,
@@ -453,15 +454,13 @@ struct App<M: LlmModelMarker> {
 
 impl<M: LlmModelMarker> App<M> {
     async fn new(
-        asset_file_action_logs: AssetFileDirectTreeActionLogs<M>,
+        asset_file_action_logs: AssetFileDirectTreeActionLogs<M, SessionSplit>,
         // action_log_store: DirectTreeActionLogStore<M>,
         // entry_keys: Vec<usize>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> Self {
         let (entry_load_tx, entry_load_rx) = unbounded_channel();
-        let asset_file_dataset = AssetFileHybridDataset {
-            split: asset_file_action_logs.rollout_config.split.clone(),
-        };
+        let asset_file_dataset = AssetFileHybridDataset::<SessionSplit>(PhantomData);
         let question_store = asset_file_dataset.fetch().await;
         let action_store = asset_file_action_logs.fetch().await;
         let entry_keys = action_store.get_keys().unwrap();
@@ -1340,7 +1339,7 @@ fn scale_horizontal_scroll(scroll: usize, old_ratio: usize, new_ratio: usize) ->
 }
 
 fn fixed_width_scale_ratio_for_tree<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<M>,
+    tree: &DirectTree<'_, M, SessionSplit>,
 ) -> f64 {
     let trunk_trajectory_lengths: Vec<usize> = tree
         .trunk_leaf_segments
@@ -1362,7 +1361,7 @@ fn fixed_width_scale_ratio_for_tree<M: credit_assignment::llm_model::LlmModelMar
 }
 
 fn segment_display_widths<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<M>,
+    tree: &DirectTree<'_, M, SessionSplit>,
     width_division_ratio: Option<usize>,
 ) -> BTreeMap<SegmentId, usize> {
     let mut widths = BTreeMap::new();
@@ -1382,7 +1381,7 @@ fn segment_display_widths<M: credit_assignment::llm_model::LlmModelMarker>(
 }
 
 fn segment_branching_score_display<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<M>,
+    tree: &DirectTree<'_, M, SessionSplit>,
     width_division_ratio: usize,
     segment_display_widths: &BTreeMap<SegmentId, usize>,
     override_hyperparameters: Option<&PosteriorHyperparameters>,
@@ -1457,7 +1456,7 @@ fn segment_branching_score_display<M: credit_assignment::llm_model::LlmModelMark
 }
 
 fn segment_posterior_stats<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<M>,
+    tree: &DirectTree<'_, M, SessionSplit>,
     override_hyperparameters: Option<&PosteriorHyperparameters>,
 ) -> BTreeMap<SegmentId, SegmentPosteriorStats> {
     let mut stats_by_segment = BTreeMap::new();
@@ -1483,28 +1482,28 @@ fn segment_posterior_stats<M: credit_assignment::llm_model::LlmModelMarker>(
 }
 
 fn scaled_segment_posterior_signal<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<M>,
+    tree: &DirectTree<'_, M, SessionSplit>,
     stats_by_segment: &BTreeMap<SegmentId, SegmentPosteriorStats>,
 ) -> BTreeMap<SegmentId, f32> {
     scaled_segment_posterior_value(tree, stats_by_segment, |stats| stats.signal_to_noise)
 }
 
 fn scaled_segment_posterior_mean<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<M>,
+    tree: &DirectTree<'_, M, SessionSplit>,
     stats_by_segment: &BTreeMap<SegmentId, SegmentPosteriorStats>,
 ) -> BTreeMap<SegmentId, f32> {
     scaled_segment_posterior_value(tree, stats_by_segment, |stats| stats.posterior_mean)
 }
 
 fn scaled_segment_posterior_std<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<M>,
+    tree: &DirectTree<'_, M, SessionSplit>,
     stats_by_segment: &BTreeMap<SegmentId, SegmentPosteriorStats>,
 ) -> BTreeMap<SegmentId, f32> {
     scaled_segment_posterior_value(tree, stats_by_segment, |stats| stats.posterior_std)
 }
 
 fn scaled_segment_posterior_value<M: credit_assignment::llm_model::LlmModelMarker>(
-    tree: &DirectTree<M>,
+    tree: &DirectTree<'_, M, SessionSplit>,
     stats_by_segment: &BTreeMap<SegmentId, SegmentPosteriorStats>,
     value_selector: impl Fn(SegmentPosteriorStats) -> f32,
 ) -> BTreeMap<SegmentId, f32> {
@@ -1677,7 +1676,7 @@ fn write_pattern(canvas: &mut [Vec<char>], row: usize, col: usize, pattern: &str
 }
 
 fn collect_leaf_order<M: LlmModelMarker>(
-    tree: &DirectTree<M>,
+    tree: &DirectTree<'_, M, SessionSplit>,
     root_segment_id: SegmentId,
 ) -> Vec<SegmentId> {
     let mut leaves = Vec::new();
@@ -1699,7 +1698,7 @@ fn collect_leaf_order<M: LlmModelMarker>(
 }
 
 fn path_root_to_segment<M: LlmModelMarker>(
-    tree: &DirectTree<M>,
+    tree: &DirectTree<'_, M, SessionSplit>,
     segment_id: SegmentId,
 ) -> Vec<SegmentId> {
     let mut path = Vec::new();
@@ -1717,7 +1716,7 @@ fn path_root_to_segment<M: LlmModelMarker>(
 }
 
 fn build_segment_graph_lines<M: LlmModelMarker>(
-    tree: &DirectTree<M>,
+    tree: &DirectTree<'_, M, SessionSplit>,
     root_segment_id: SegmentId,
     leaf_segment_judgments: &BTreeMap<SegmentId, CorrectnessJudgment>,
     segment_display_widths: &BTreeMap<SegmentId, usize>,
@@ -2227,9 +2226,9 @@ fn build_conversation_render<M: LlmModelMarker>(
 }
 
 fn partial_action_log<M: LlmModelMarker>(
-    action_log: &DirectTreeActionLog<M>,
+    action_log: &DirectTreeActionLog<M, SessionSplit>,
     action_limit: usize,
-) -> DirectTreeActionLog<M> {
+) -> DirectTreeActionLog<M, SessionSplit> {
     let mut partial_log = action_log.clone();
     partial_log.actions = action_log
         .actions
@@ -2240,13 +2239,13 @@ fn partial_action_log<M: LlmModelMarker>(
     partial_log
 }
 
-fn tree_root_segment_id<M: LlmModelMarker>(tree: &DirectTree<M>) -> SegmentId {
+fn tree_root_segment_id<M: LlmModelMarker>(tree: &DirectTree<'_, M, SessionSplit>) -> SegmentId {
     tree.root_segment_id
         .expect("Direct tree browser requires root segment")
 }
 
 fn segment_advantages_from_posteriors<M: LlmModelMarker>(
-    tree: &DirectTree<M>,
+    tree: &DirectTree<'_, M, SessionSplit>,
     override_hyperparameters: Option<&PosteriorHyperparameters>,
 ) -> BTreeMap<SegmentId, f32> {
     let mut advantages =
@@ -2258,7 +2257,7 @@ fn segment_advantages_from_posteriors<M: LlmModelMarker>(
 }
 
 fn segment_advantages_from_win_rate<M: LlmModelMarker>(
-    tree: &DirectTree<M>,
+    tree: &DirectTree<'_, M, SessionSplit>,
 ) -> BTreeMap<SegmentId, f32> {
     let mut advantages = tree.calculate_segment_advantages_from_win_rate();
     for segment_id in tree.segments.keys().copied() {
@@ -2268,12 +2267,14 @@ fn segment_advantages_from_win_rate<M: LlmModelMarker>(
 }
 
 fn width_division_ratio_for_action_log<M: LlmModelMarker>(
-    action_log: &DirectTreeActionLog<M>,
+    action_log: &DirectTreeActionLog<M, SessionSplit>,
 ) -> usize {
-    width_division_ratio_for_tree(&DirectTree::<M>::from_action_log(action_log))
+    width_division_ratio_for_tree(&DirectTree::<M, SessionSplit>::from_action_log(action_log))
 }
 
-fn width_division_ratio_for_tree<M: LlmModelMarker>(tree: &DirectTree<M>) -> usize {
+fn width_division_ratio_for_tree<M: LlmModelMarker>(
+    tree: &DirectTree<'_, M, SessionSplit>,
+) -> usize {
     let fixed_scale_ratio = fixed_width_scale_ratio_for_tree(tree);
     if fixed_scale_ratio <= 0.0 {
         return 1;
@@ -2282,9 +2283,9 @@ fn width_division_ratio_for_tree<M: LlmModelMarker>(tree: &DirectTree<M>) -> usi
 }
 
 fn question_stats_from_action_log<M: LlmModelMarker>(
-    action_log: &DirectTreeActionLog<M>,
+    action_log: &DirectTreeActionLog<M, SessionSplit>,
 ) -> (usize, usize, f64) {
-    let final_tree = DirectTree::<M>::from_action_log(action_log);
+    let final_tree = DirectTree::<M, SessionSplit>::from_action_log(action_log);
     let num_leaves = final_tree.leaf_segment_judgments.len();
     let num_correct = final_tree
         .leaf_segment_judgments
@@ -2331,7 +2332,7 @@ async fn run_model_app<'a, M: LlmModelMarker>(
         epoch,
         override_hyperparameters,
     } = run_model_app_args;
-    let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M> {
+    let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M, SessionSplit> {
         nickname: config_nickname,
         rollout_config,
         posterior_calculation_config,
@@ -2348,7 +2349,7 @@ async fn run_model_app<'a, M: LlmModelMarker>(
 struct RunModelAppArgs<'a> {
     terminal: &'a mut Terminal<CrosstermBackend<Stdout>>,
     config_nickname: String,
-    rollout_config: DirectRolloutConfig,
+    rollout_config: DirectRolloutConfig<SessionSplit>,
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize, // the epoch index
     override_hyperparameters: Option<PosteriorHyperparameters>,
@@ -2380,7 +2381,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         epoch,
         override_hyperparameters_path,
     } = Args::parse();
-    let rollout_config: DirectRolloutConfig = read_json(rollout_config_path).unwrap();
+    let rollout_config: DirectRolloutConfig<SessionSplit> = read_json(rollout_config_path).unwrap();
     let posterior_hyperparameters =
         read_json::<PosteriorHyperparameters>(posterior_hyperparameters_path).unwrap();
     let override_hyperparameters = override_hyperparameters_path

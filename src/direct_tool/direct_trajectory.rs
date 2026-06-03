@@ -7,7 +7,10 @@ use std::{
 
 use crate::{
     constants::SGLANG_CONTEXT_LENGTH,
-    direct_tool::direct_tree::{DirectTree, SegmentContent, SegmentId},
+    direct_tool::{
+        direct_tree::{DirectTree, SegmentContent, SegmentId},
+        hybrid_dataset::DatasetSplit,
+    },
     llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob},
     token_array::TokenArray,
     tool_call_python::extract_python_tool_call,
@@ -156,7 +159,7 @@ impl<M: LlmModelMarker> TrajectoryContent<M> {
     }
 }
 
-impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
+impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
     pub fn get_trajectory_segments_till_id(&self, segment_id: SegmentId) -> Vec<SegmentId> {
         let mut segments: Vec<SegmentId> = Vec::new();
         let mut current_segment_id = Some(segment_id);

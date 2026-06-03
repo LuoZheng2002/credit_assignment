@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use crate::{
     direct_tool::{
         direct_tree::{DirectTree, SegmentId},
+        hybrid_dataset::DatasetSplit,
         posterior_calculation_config::PosteriorHyperparameters,
     },
     llm_model::LlmModelMarker,
@@ -33,7 +34,7 @@ struct PosteriorObjectiveEvaluation {
     grad_log_stds: Vec<f64>,
 }
 
-impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
+impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
     pub fn calculate_segment_posteriors(
         &self,
         override_hyperparameters: Option<&PosteriorHyperparameters>,

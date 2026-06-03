@@ -7,6 +7,7 @@ use crate::{
         direct_tree_action::DirectTreeAction,
         direct_tree_action_log::DirectTreeActionLog,
         direct_tree_status::{DirectTreeStatus, TrunkSubStatus},
+        hybrid_dataset::DatasetSplit,
         prompt::{prompt_with_tool_call, prompt_without_tool_call},
     },
     judge_correctness::CorrectnessJudgment,
@@ -18,8 +19,8 @@ use crate::llm_model::MyTokenizer;
 
 // this tree is similar to the completed tree in src/agent folder, but now it runs on a lightweight tool-calling context instead of a heavy agent framework
 #[derive(Clone)]
-pub struct DirectTree<'a, M: LlmModelMarker> {
-    pub action_log: &'a DirectTreeActionLog<M>,
+pub struct DirectTree<'a, M: LlmModelMarker, S: DatasetSplit> {
+    pub action_log: &'a DirectTreeActionLog<M, S>,
     // states
     pub status: DirectTreeStatus<M>,
     pub segments: BTreeMap<SegmentId, Segment<M>>, // segment_id -> segment. A segment branched from the middle is destroyed and its id is not reused to avoid hiding sneaky bugs
@@ -36,8 +37,8 @@ pub struct DirectTree<'a, M: LlmModelMarker> {
 
 // pub const NUM_TRUNKS: usize = 4;
 
-impl<'a, M: LlmModelMarker> DirectTree<'a, M> {
-    pub fn from_action_log(action_log: &'a DirectTreeActionLog<M>) -> Self {
+impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
+    pub fn from_action_log(action_log: &'a DirectTreeActionLog<M, S>) -> Self {
         let mut tree = Self {
             action_log,
             status: DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::CollectingSegmentContents {

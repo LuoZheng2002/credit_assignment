@@ -15,7 +15,7 @@ use super::{
 
 static QWEN35_08B_TOKENIZER: LazyLock<Tokenizer> =
     LazyLock::new(|| Tokenizer::from_pretrained(Qwen35_08B::API_NAME, None).unwrap());
-
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Qwen35_08B;
 
 #[derive(Clone)]
