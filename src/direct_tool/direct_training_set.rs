@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use ordered_float::NotNan;
 use research_utility::{
@@ -8,6 +8,8 @@ use research_utility::{
     sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use crate::{
     direct_tool::{
@@ -15,6 +17,7 @@ use crate::{
         direct_tree::{DirectTree, SegmentContent, SegmentId},
         direct_tree_action_log::{
             AssetFileDirectTreeActionLogs, DirectTreeActionLog, DirectTreeActionLogStore,
+            DirectTreeActionLogStoreAdapter,
         },
         hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
@@ -63,41 +66,6 @@ impl TrajectorySelectionState {
             all_average_absolute_advantages: Vec::new(),
             candidate_metadata: Vec::new(),
             cumulative_avg_abs_advantage_cutoff,
-        }
-    }
-
-    fn fold_item(&mut self, sample_index: usize, trajectory_summaries: Vec<TrajectorySummary>) {
-        self.finished_samples += 1;
-        let progress = if self.total_samples == 0 {
-            0.0
-        } else {
-            self.finished_samples as f32 / self.total_samples as f32
-        };
-        log_master_progress(0.5 * progress, "Phase 1/2: Rollout Samples Processed");
-        self.fold_candidate_trajectories(sample_index, trajectory_summaries);
-    }
-
-    fn fold_candidate_trajectories(
-        &mut self,
-        sample_index: usize,
-        trajectory_summaries: Vec<TrajectorySummary>,
-    ) {
-        for (trajectory_index, trajectory_summary) in trajectory_summaries.into_iter().enumerate() {
-            self.total_trajectories += 1;
-            let average_absolute_advantage =
-                NotNan::new(trajectory_summary.average_absolute_advantage)
-                    .expect("Average absolute segment advantage must not be NaN");
-            self.all_average_absolute_advantages
-                .push(*average_absolute_advantage);
-
-            self.candidate_metadata.push(TrajectoryMetadata {
-                sample_index,
-                trajectory_index,
-                question_flat_id: trajectory_summary.question_flat_id,
-                leaf_segment_id: trajectory_summary.leaf_segment_id,
-                average_absolute_advantage,
-                trajectory_token_length: trajectory_summary.trajectory_token_length,
-            });
         }
     }
 
@@ -157,9 +125,9 @@ struct TrainingTrajectorySelectionOutput {
     average_absolute_advantage_cutoff: f32,
 }
 
-pub fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
+pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     action_log_store: DirectTreeActionLogStore<M>,
-    training_trajectory_store: &Arc<Mutex<SqliteStore<usize, DirectTrainingTrajectory<M>>>>,
+    training_trajectory_store: SqliteStore<usize, DirectTrainingTrajectory<M>>,
     cumulative_avg_abs_advantage_cutoff: f32,
     statistics_file_path: String,
     advantage_calculation_policy: AdvantageCalculationPolicy,
@@ -168,122 +136,28 @@ pub fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         cumulative_avg_abs_advantage_cutoff > 0.0 && cumulative_avg_abs_advantage_cutoff <= 1.0,
         "cumulative_avg_abs_advantage_cutoff must be in (0.0, 1.0]"
     );
-
-    // iterate through all action logs
-    let mut keys = action_log_store.get_keys().unwrap();
-    let num_keys = keys.len();
-    // we want to make a histogram
-
-    keys.sort(); // ensure deterministic order
-    let mut selection_state =
-        TrajectorySelectionState::new(num_keys, cumulative_avg_abs_advantage_cutoff);
-    log_info("Converting action logs to trajectories".to_string());
-
-    for (index, key) in keys.iter().copied().enumerate() {
-        let action_log = action_log_store.get(key).unwrap().unwrap();
-        let trajectory_summaries =
-            action_log_to_candidate_summaries::<M>(action_log, advantage_calculation_policy);
-        selection_state.fold_item(index, trajectory_summaries);
-    }
-
+    let action_log_store = DirectTreeActionLogStoreAdapter::new(action_log_store);
+    let (keys, selection_output) = select_training_trajectories_from_rollout_logs::<M>(
+        &action_log_store,
+        cumulative_avg_abs_advantage_cutoff,
+        advantage_calculation_policy,
+    )
+    .await;
     let TrainingTrajectorySelectionOutput {
-        mut selected_metadata,
+        selected_metadata,
         all_average_absolute_advantages,
         total_trajectories,
         average_absolute_advantage_cutoff,
-    } = selection_state.into_output();
+    } = selection_output;
+    let adopted_trajectories = materialize_selected_training_trajectories::<M>(
+        &action_log_store,
+        training_trajectory_store,
+        &keys,
+        selected_metadata,
+        advantage_calculation_policy,
+    )
+    .await;
 
-    selected_metadata.sort_by(|a, b| {
-        b.trajectory_token_length
-            .cmp(&a.trajectory_token_length)
-            .then_with(|| {
-                b.average_absolute_advantage
-                    .cmp(&a.average_absolute_advantage)
-            })
-            .then_with(|| a.sample_index.cmp(&b.sample_index))
-            .then_with(|| a.trajectory_index.cmp(&b.trajectory_index))
-    });
-
-    let adopted_trajectories = selected_metadata.len();
-    assert!(
-        adopted_trajectories > 0,
-        "cumulative_avg_abs_advantage_cutoff kept zero trajectories; increase cutoff"
-    );
-
-    let tolerance = 10.0 * f32::EPSILON;
-    for (output_index, metadata) in selected_metadata.into_iter().enumerate() {
-        let progress = 0.5 + 0.5 * ((output_index + 1) as f32 / adopted_trajectories as f32);
-        log_master_progress(progress, "Phase 2/2: Selected Trajectories Materialized");
-        let key = keys
-            .get(metadata.sample_index)
-            .expect("sample index must reference an existing action log key");
-        let action_log = action_log_store.get(*key).unwrap().unwrap();
-        let selected_trajectory_indices: BTreeSet<usize> =
-            [metadata.trajectory_index].into_iter().collect();
-        let reconstructed_trajectories = action_log_to_selected_trajectories::<M>(
-            action_log,
-            advantage_calculation_policy,
-            &selected_trajectory_indices,
-        );
-        assert_eq!(
-            reconstructed_trajectories.len(),
-            1,
-            "failed to reconstruct selected trajectory for sample index {}, trajectory index {}",
-            metadata.sample_index,
-            metadata.trajectory_index,
-        );
-
-        for (trajectory_index, trajectory) in reconstructed_trajectories.into_iter() {
-            assert_eq!(
-                trajectory.question.flat_id, metadata.question_flat_id,
-                "reconstructed question flat_id mismatch at sample index {}, trajectory index {}",
-                metadata.sample_index, trajectory_index
-            );
-            assert_eq!(
-                trajectory.leaf_segment_id, metadata.leaf_segment_id,
-                "reconstructed leaf segment id mismatch at sample index {}, trajectory index {}",
-                metadata.sample_index, trajectory_index
-            );
-            let expected_average_absolute_advantage = *metadata.average_absolute_advantage;
-            let diff = (trajectory.average_absolute_segment_advantage
-                - expected_average_absolute_advantage)
-                .abs();
-            assert!(
-                diff <= tolerance,
-                "reconstructed average absolute advantage mismatch at sample index {}, trajectory index {}: expected {}, got {}, diff {}",
-                metadata.sample_index,
-                trajectory_index,
-                expected_average_absolute_advantage,
-                trajectory.average_absolute_segment_advantage,
-                diff
-            );
-            assert_eq!(
-                trajectory.input_ids.len(),
-                metadata.trajectory_token_length,
-                "reconstructed token length mismatch at sample index {}, trajectory index {}",
-                metadata.sample_index,
-                trajectory_index
-            );
-            assert_eq!(
-                trajectory.input_ids.len(),
-                trajectory.labels.len(),
-                "kept trajectory must satisfy input_ids.len() == labels.len(); question_flat_id={}",
-                trajectory.question.flat_id
-            );
-            assert_eq!(
-                trajectory.input_ids.len(),
-                trajectory.advantages.len(),
-                "kept trajectory must satisfy input_ids.len() == advantages.len(); question_flat_id={}",
-                trajectory.question.flat_id
-            );
-            training_trajectory_store
-                .lock()
-                .unwrap()
-                .upsert(output_index, &trajectory, SqliteBusyRetryConfig::none())
-                .unwrap();
-        }
-    }
-    log_master_progress(1.0, "Phase 2/2: Selected Trajectories Materialized");
     let max_average_absolute_advantage = *all_average_absolute_advantages.first().unwrap_or(&0.0);
     let min_average_absolute_advantage = *all_average_absolute_advantages.last().unwrap_or(&0.0);
     // we want to output a histogram and the advantage cutoff
@@ -314,6 +188,215 @@ pub fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         "selected_trajectories={} total_trajectories={}",
         statistics.adopted_trajectories, statistics.total_trajectories
     ));
+}
+
+async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker>(
+    action_log_store: &DirectTreeActionLogStoreAdapter<M>,
+    cumulative_avg_abs_advantage_cutoff: f32,
+    advantage_calculation_policy: AdvantageCalculationPolicy,
+) -> (Vec<usize>, TrainingTrajectorySelectionOutput) {
+    let mut keys = action_log_store.get_keys().await.unwrap();
+    let num_keys = keys.len();
+    keys.sort();
+
+    let mut selection_state =
+        TrajectorySelectionState::new(num_keys, cumulative_avg_abs_advantage_cutoff);
+    log_info("Converting action logs to trajectories".to_string());
+    let semaphore = Arc::new(Semaphore::new(200));
+    let mut join_set = JoinSet::new();
+    let mut next_sample_index = 0usize;
+
+    while next_sample_index < keys.len() || !join_set.is_empty() {
+        tokio::select! {
+            permit_result = semaphore.clone().acquire_owned(), if next_sample_index < keys.len() => {
+                let permit = permit_result.expect("selection semaphore should not be closed");
+                let sample_index = next_sample_index;
+                let key = keys[sample_index];
+                next_sample_index += 1;
+                let action_log_store = action_log_store.clone();
+                let advantage_calculation_policy = advantage_calculation_policy.clone();
+                join_set.spawn(async move {
+                    let _permit = permit;
+                    let action_log = action_log_store.get(key).await.unwrap().unwrap();
+                    let trajectory_summaries = action_log_to_candidate_summaries::<M>(
+                        action_log,
+                        advantage_calculation_policy,
+                    );
+                    (sample_index, trajectory_summaries)
+                });
+            }
+            joined = join_set.join_next(), if !join_set.is_empty() => {
+                match joined.expect("join_set must have at least one task") {
+                    Ok((sample_index, trajectory_summaries)) => {
+                        selection_state.finished_samples += 1;
+                        let progress = if selection_state.total_samples == 0 {
+                            0.0
+                        } else {
+                            selection_state.finished_samples as f32 / selection_state.total_samples as f32
+                        };
+                        log_master_progress(0.5 * progress, "Phase 1/2: Rollout Samples Processed");
+
+                        for (trajectory_index, trajectory_summary) in trajectory_summaries.into_iter().enumerate() {
+                            selection_state.total_trajectories += 1;
+                            let average_absolute_advantage =
+                                NotNan::new(trajectory_summary.average_absolute_advantage)
+                                    .expect("Average absolute segment advantage must not be NaN");
+                            selection_state
+                                .all_average_absolute_advantages
+                                .push(*average_absolute_advantage);
+
+                            selection_state.candidate_metadata.push(TrajectoryMetadata {
+                                sample_index,
+                                trajectory_index,
+                                question_flat_id: trajectory_summary.question_flat_id,
+                                leaf_segment_id: trajectory_summary.leaf_segment_id,
+                                average_absolute_advantage,
+                                trajectory_token_length: trajectory_summary.trajectory_token_length,
+                            });
+                        }
+                    }
+                    Err(join_err) => panic!("selection task panicked: {join_err}"),
+                }
+            }
+        }
+    }
+
+    (keys, selection_state.into_output())
+}
+
+async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
+    action_log_store: &DirectTreeActionLogStoreAdapter<M>,
+    training_trajectory_store: SqliteStore<usize, DirectTrainingTrajectory<M>>,
+    keys: &[usize],
+    mut selected_metadata: Vec<TrajectoryMetadata>,
+    advantage_calculation_policy: AdvantageCalculationPolicy,
+) -> usize {
+    selected_metadata.sort_by(|a, b| {
+        b.trajectory_token_length
+            .cmp(&a.trajectory_token_length)
+            .then_with(|| {
+                b.average_absolute_advantage
+                    .cmp(&a.average_absolute_advantage)
+            })
+            .then_with(|| a.sample_index.cmp(&b.sample_index))
+            .then_with(|| a.trajectory_index.cmp(&b.trajectory_index))
+    });
+
+    let adopted_trajectories = selected_metadata.len();
+    assert!(
+        adopted_trajectories > 0,
+        "cumulative_avg_abs_advantage_cutoff kept zero trajectories; increase cutoff"
+    );
+
+    let keys = Arc::new(keys.to_vec());
+    let semaphore = Arc::new(Semaphore::new(200));
+    let mut join_set = JoinSet::new();
+    let mut next_output_index = 0usize;
+    let mut finished_trajectories = 0usize;
+    let tolerance = 10.0 * f32::EPSILON;
+    while next_output_index < selected_metadata.len() || !join_set.is_empty() {
+        let output_index = next_output_index;
+        next_output_index += 1;
+        tokio::select! {
+            permit_result = semaphore.clone().acquire_owned(), if next_output_index < selected_metadata.len() => {
+                let permit = permit_result.expect("materialization semaphore should not be closed");
+                let metadata = selected_metadata[output_index].clone();
+                let action_log_store = action_log_store.clone();
+                let keys = keys.clone();
+                let advantage_calculation_policy = advantage_calculation_policy.clone();
+                join_set.spawn(async move {
+                    let _permit = permit;
+                    let key = keys
+                        .get(metadata.sample_index)
+                        .expect("sample index must reference an existing action log key");
+                    let action_log = action_log_store.get(*key).await.unwrap().unwrap();
+                    let selected_trajectory_indices: BTreeSet<usize> =
+                        [metadata.trajectory_index].into_iter().collect();
+                    let reconstructed_trajectories = action_log_to_selected_trajectories::<M>(
+                        action_log,
+                        advantage_calculation_policy,
+                        &selected_trajectory_indices,
+                    );
+                    assert_eq!(
+                        reconstructed_trajectories.len(),
+                        1,
+                        "failed to reconstruct selected trajectory for sample index {}, trajectory index {}",
+                        metadata.sample_index,
+                        metadata.trajectory_index,
+                    );
+
+                    // let mut trajectories: Vec<(usize, DirectTrainingTrajectory<M>)> = Vec::new();
+
+                    for (trajectory_index, trajectory) in reconstructed_trajectories.into_iter() {
+                        assert_eq!(
+                            trajectory.question.flat_id, metadata.question_flat_id,
+                            "reconstructed question flat_id mismatch at sample index {}, trajectory index {}",
+                            metadata.sample_index, trajectory_index
+                        );
+                        assert_eq!(
+                            trajectory.leaf_segment_id, metadata.leaf_segment_id,
+                            "reconstructed leaf segment id mismatch at sample index {}, trajectory index {}",
+                            metadata.sample_index, trajectory_index
+                        );
+                        let expected_average_absolute_advantage = *metadata.average_absolute_advantage;
+                        let diff = (trajectory.average_absolute_segment_advantage
+                            - expected_average_absolute_advantage)
+                            .abs();
+                        assert!(
+                            diff <= tolerance,
+                            "reconstructed average absolute advantage mismatch at sample index {}, trajectory index {}: expected {}, got {}, diff {}",
+                            metadata.sample_index,
+                            trajectory_index,
+                            expected_average_absolute_advantage,
+                            trajectory.average_absolute_segment_advantage,
+                            diff
+                        );
+                        assert_eq!(
+                            trajectory.input_ids.len(),
+                            metadata.trajectory_token_length,
+                            "reconstructed token length mismatch at sample index {}, trajectory index {}",
+                            metadata.sample_index,
+                            trajectory_index
+                        );
+                        assert_eq!(
+                            trajectory.input_ids.len(),
+                            trajectory.labels.len(),
+                            "kept trajectory must satisfy input_ids.len() == labels.len(); question_flat_id={}",
+                            trajectory.question.flat_id
+                        );
+                        assert_eq!(
+                            trajectory.input_ids.len(),
+                            trajectory.advantages.len(),
+                            "kept trajectory must satisfy input_ids.len() == advantages.len(); question_flat_id={}",
+                            trajectory.question.flat_id
+                        );
+                        // todo: revisit the logic
+                        if trajectory_index == metadata.trajectory_index {
+                            return trajectory;
+                        }
+                    }
+                    unreachable!()
+                });
+            }
+            joined = join_set.join_next(), if !join_set.is_empty() => {
+                match joined.expect("join_set must have at least one task") {
+                    Ok(trajectory) => {
+                        training_trajectory_store
+                            .upsert(output_index, &trajectory, SqliteBusyRetryConfig::none())
+                            .unwrap();
+                        finished_trajectories += 1;
+                        let progress = 0.5
+                            + 0.5 * (finished_trajectories as f32 / adopted_trajectories as f32);
+                        log_master_progress(progress, "Phase 2/2: Selected Trajectories Materialized");
+                    }
+                    Err(join_err) => panic!("materialization task panicked: {join_err}"),
+                }
+            }
+        }
+    }
+    log_master_progress(1.0, "Phase 2/2: Selected Trajectories Materialized");
+
+    adopted_trajectories
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -653,17 +736,17 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
                 std::fs::remove_file(&self.file_path()).unwrap();
             }
             // initialize database
-            let db = Arc::new(Mutex::new(
-                SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(self.file_path()),
-            ));
+            let db =
+                SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(self.file_path());
             let rollout_logs = asset_file_rollout_logs.fetch().await;
             rollout_logs_to_training_trajectories::<M>(
                 rollout_logs,
-                &db,
+                db,
                 self.cumulative_avg_abs_advantage_cutoff,
                 self.statistics_file_path(),
                 self.advantage_calculation_policy,
-            );
+            )
+            .await;
             log_info("Finished generating training trajectories file.");
         }
         write_json(self.version_tracking_path(), &new_tracking_content).unwrap();
