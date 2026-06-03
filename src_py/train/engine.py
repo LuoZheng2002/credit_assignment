@@ -241,6 +241,20 @@ def _resolve_max_batch_size_cap_from_env() -> int | None:
     return parsed
 
 
+def _resolve_reset_batch_size_on_wrap_from_env() -> bool:
+    raw_value = os.environ.get("TRAIN_RESET_BATCH_SIZE_ON_WRAP")
+    if raw_value is None:
+        return True
+    normalized = raw_value.strip().lower()
+    if len(normalized) == 0:
+        return True
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise AssertionError("TRAIN_RESET_BATCH_SIZE_ON_WRAP must be a boolean-like value when set")
+
+
 def _release_step_memory(device: torch.device) -> None:
     gc.collect()
     if torch.cuda.is_available() and device.type == "cuda":
@@ -969,6 +983,7 @@ def train(config: TrainConfig) -> None:
     initial_adaptive_velocity = 0.12
     target_gpu_memory_utilization = 0.90
     max_batch_size_cap = _resolve_max_batch_size_cap_from_env()
+    reset_batch_size_on_wrap = _resolve_reset_batch_size_on_wrap_from_env()
 
     if _is_primary_rank():
         print(f"[status] loading_model=1 model_parent_dir={config.model_parent_dir}")
@@ -984,6 +999,11 @@ def train(config: TrainConfig) -> None:
             "[status] "
             "adaptive_batch_cap=1 "
             f"train_max_batch_size_env={max_batch_size_cap if max_batch_size_cap is not None else 'unset'}"
+        )
+        print(
+            "[status] "
+            "adaptive_batch_wrap_reset=1 "
+            f"train_reset_batch_size_on_wrap={1 if reset_batch_size_on_wrap else 0}"
         )
     tokenizer = AutoTokenizer.from_pretrained(resolved_model_path)
     pad_token_id = _resolve_pad_token_id(tokenizer.pad_token_id)
@@ -1624,6 +1644,22 @@ def train(config: TrainConfig) -> None:
                 sample_index = 0
                 batch_index = 0
                 iteration_index += 1
+                if reset_batch_size_on_wrap:
+                    adaptive_state = AdaptiveBatchState(
+                        next_batch_size=1,
+                        next_batch_size_float=1.0,
+                        velocity=initial_adaptive_velocity,
+                        throughput_ema=adaptive_state.throughput_ema,
+                        best_throughput_ema=adaptive_state.best_throughput_ema,
+                        memory_utilization_ema=adaptive_state.memory_utilization_ema,
+                        previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
+                    )
+                    if _is_primary_rank():
+                        print(
+                            "[status] "
+                            "adaptive_batch_wrap_reset_applied=1 "
+                            f"iteration={iteration_index} next_batch_size={adaptive_state.next_batch_size}"
+                        )
 
             if accumulation_step == config.grad_accum_steps:
                 optimizer.step()
