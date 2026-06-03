@@ -1,11 +1,11 @@
 use std::{collections::BTreeMap, sync::LazyLock};
 
+use minijinja::context;
 use research_utility::{
     asset_file::AssetFile,
     progress_tui_server::{log_info, log_key_value_pair},
 };
 use serde::{Deserialize, Serialize};
-use minijinja::context;
 use tokio::process::Child;
 
 use crate::{
@@ -30,15 +30,16 @@ use crate::{
 
 pub const MODEL_PARENT_DIR_TEMPLATE_PATH: &str = "config/training/model_parent_dir.jinja";
 
-pub static MODEL_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<Result<minijinja::Environment<'static>, String>> =
-    LazyLock::new(|| {
-        let template_source = std::fs::read_to_string(MODEL_PARENT_DIR_TEMPLATE_PATH)
-            .map_err(|err| format!("Failed to read {}: {}", MODEL_PARENT_DIR_TEMPLATE_PATH, err))?;
-        let mut env = minijinja::Environment::new();
-        env.add_template_owned("model_parent_dir", template_source)
-            .map_err(|err| format!("Failed to parse model_parent_dir template: {}", err))?;
-        Ok(env)
-    });
+pub static MODEL_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    let template_source = std::fs::read_to_string(MODEL_PARENT_DIR_TEMPLATE_PATH)
+        .map_err(|err| format!("Failed to read {}: {}", MODEL_PARENT_DIR_TEMPLATE_PATH, err))?;
+    let mut env = minijinja::Environment::new();
+    env.add_template_owned("model_parent_dir", template_source)
+        .map_err(|err| format!("Failed to parse model_parent_dir template: {}", err))?;
+    Ok(env)
+});
 
 pub fn model_parent_dir_from_template(
     model_cli_name: &str,
@@ -295,11 +296,8 @@ impl Orchestrator {
         }
 
         if epoch == 0 {
-            let model_parent_dir = model_parent_dir_from_template(
-                M::CLI_NAME,
-                &self.config_nickname,
-                epoch,
-            )?;
+            let model_parent_dir =
+                model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
             crate::load_initial_model::load_initial_model(&model_parent_dir, M::API_NAME).await?;
         }
 
@@ -307,7 +305,7 @@ impl Orchestrator {
             "Launching inference server for model {}",
             M::CLI_NAME,
         ));
-        let model_path = self.model_folder_path::<M>(epoch);
+        let model_path = model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
         log_info(format!("Using model folder path: {}", model_path));
         let (sglang_port, process) =
             launch_sglang_server_process::<M>(&model_path, self.sglang_server_log_path.as_deref())
@@ -495,14 +493,6 @@ impl Orchestrator {
         Ok(())
     }
 
-    fn model_folder_path<M: LlmModelMarker>(&self, epoch: usize) -> String {
-        format!(
-            "results/{}/{}/epoch_{}/model",
-            M::CLI_NAME,
-            self.config_nickname,
-            epoch
-        )
-    }
     fn epoch_dir<M: LlmModelMarker>(&self, epoch: usize) -> String {
         format!(
             "results/{}/{}/epoch_{}",
