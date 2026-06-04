@@ -408,6 +408,13 @@ def _run_unified_loop(
             and not should_sync
         ):
             sync_context = model.no_sync()
+        collated = None
+        input_ids = None
+        labels = None
+        attention_mask = None
+        advantages = None
+        logits = None
+        loss_output = None
         try:
             collated = collate_training_samples(samples=step_batch.samples, pad_token_id=pad_token_id)
             input_ids = collated.input_ids.to(device=device, non_blocking=True)
@@ -428,6 +435,13 @@ def _run_unified_loop(
         except RuntimeError as exc:
             if not eng._is_cuda_oom_exception(exc):
                 raise
+            collated = None
+            input_ids = None
+            labels = None
+            attention_mask = None
+            advantages = None
+            logits = None
+            loss_output = None
             optimizer.zero_grad(set_to_none=True)
             eng._print_cuda_oom_diagnostics_stderr(
                 rank=rank,
