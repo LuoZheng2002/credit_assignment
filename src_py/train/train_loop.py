@@ -456,12 +456,13 @@ def _run_unified_loop(
                 iteration_index=iteration_index,
                 batch_index=step_batch.batch_index,
                 batch_token_length=max(sample.input_length for sample in step_batch.samples),
-                next_batch_size=(
+                next_batch_size=reduced_batch_size,
+                will_retry=True,
+                next_trajectory_length_cap=(
                     _reduce_trajectory_length_cap(trajectory_length_cap)
                     if adaptive_state.next_batch_size <= 1 and trajectory_length_cap > MIN_TRAJECTORY_LENGTH_CAP
-                    else reduced_batch_size
+                    else None
                 ),
-                will_retry=True,
             )
             if adaptive_state.next_batch_size <= 1:
                 if trajectory_length_cap <= MIN_TRAJECTORY_LENGTH_CAP:

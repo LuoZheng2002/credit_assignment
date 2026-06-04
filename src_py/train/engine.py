@@ -208,14 +208,19 @@ def _print_cuda_oom_stderr(
     batch_token_length: int,
     next_batch_size: int,
     will_retry: bool,
+    next_trajectory_length_cap: int | None = None,
 ) -> None:
     assert batch_token_length > 0, "batch_token_length must be positive"
+    extra = ""
+    if next_trajectory_length_cap is not None:
+        assert next_trajectory_length_cap > 0, "next_trajectory_length_cap must be positive"
+        extra = f" next_trajectory_length_cap={next_trajectory_length_cap}"
     print(
         "[error] "
         f"cuda_oom=1 rank={rank} iteration={iteration_index} "
         f"batch_index={batch_index} batch_token_length={batch_token_length} "
         f"next_batch_size={next_batch_size} "
-        f"will_retry={1 if will_retry else 0}",
+        f"will_retry={1 if will_retry else 0}{extra}",
         file=sys.stderr,
         flush=True,
     )
