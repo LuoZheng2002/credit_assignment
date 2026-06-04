@@ -9,8 +9,11 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "research-utility",
     "torch",
+    "transformers>=4.46.0",
+    "accelerate>=0.34.0",
     "matplotlib>=3.10.9",
     "peft>=0.19.1",
+    "flash-attn>=2.6.3; sys_platform == 'linux'",
     # used for LLM python tool calling
     "sympy>=1.14.0",
     "numpy>=2.4.6",
