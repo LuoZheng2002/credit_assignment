@@ -1,0 +1,12 @@
+cargo run --bin bin_run_test -- \
+    --model-cli-name qwen2.5-7b \
+    --max-rollout-concurrency 200 \
+    --config-nickname notool \
+    --rollout-config-path config/rollout_config_testing_notool.json \
+    --posterior-hyperparameters-path config/posterior_hyperparameters.json \
+    --epoch 3 \
+    --total-epochs 3 \
+    --rollout-time-limit-secs 300 \
+    --num-python-tool-servers 1 \
+    --sglang-server-log-path logs/sglang_server.txt \
+    --ui true
