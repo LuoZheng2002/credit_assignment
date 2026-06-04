@@ -310,6 +310,17 @@ def _gpu_memory_allocated_ratio(device: torch.device) -> float:
     return max(0.0, min(1.0, used_ratio))
 
 
+def _gpu_memory_peak_allocated_ratio(device: torch.device) -> float:
+    if not torch.cuda.is_available() or device.type != "cuda":
+        return 0.0
+    total_bytes = torch.cuda.get_device_properties(device).total_memory
+    if total_bytes <= 0:
+        return 0.0
+    peak_allocated_bytes = torch.cuda.max_memory_allocated(device=device)
+    used_ratio = float(peak_allocated_bytes) / float(total_bytes)
+    return max(0.0, min(1.0, used_ratio))
+
+
 def _gpu_memory_reserved_ratio(device: torch.device) -> float:
     if not torch.cuda.is_available() or device.type != "cuda":
         return 0.0

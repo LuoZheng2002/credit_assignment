@@ -249,6 +249,8 @@ def _run_single_rank_loop(
         assert max_input_token_id < model_vocab_size, "input_ids contain token id out of model vocab range"
         assert max_label_token_id < model_vocab_size, "labels contain token id out of model vocab range"
 
+        if torch.cuda.is_available() and device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device=device)
         step_start = time.perf_counter()
         try:
             collated = collate_training_samples(samples=resolved_batch.samples, pad_token_id=pad_token_id)
@@ -316,7 +318,9 @@ def _run_single_rank_loop(
         throughput_samples_per_sec = float(len(resolved_batch.samples)) / step_elapsed_sec
         measured_tokens_per_sample = float(collated.attention_mask.sum(dim=1).float().mean().item())
         gpu_memory_usage_pct = 100.0 * eng._gpu_memory_utilization(device)
-        gpu_memory_allocated_pct = 100.0 * eng._gpu_memory_allocated_ratio(device)
+        if torch.cuda.is_available() and device.type == "cuda":
+            torch.cuda.synchronize(device=device)
+        gpu_memory_allocated_pct = 100.0 * eng._gpu_memory_peak_allocated_ratio(device)
         gpu_memory_reserved_pct = 100.0 * eng._gpu_memory_reserved_ratio(device)
         print(eng._json_key_value("throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"))
         print(eng._json_key_value("batch_size", str(len(resolved_batch.samples))))
@@ -607,6 +611,8 @@ def _run_multi_rank_loop(
         ):
             sync_context = model.no_sync()
 
+        if torch.cuda.is_available() and device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device=device)
         step_start = time.perf_counter()
         try:
             collated = collate_training_samples(samples=resolved_batch.samples, pad_token_id=pad_token_id)
@@ -650,7 +656,9 @@ def _run_multi_rank_loop(
         throughput_samples_per_sec = float(len(resolved_batch.samples)) / step_elapsed_sec
         measured_tokens_per_sample = float(collated.attention_mask.sum(dim=1).float().mean().item())
         gpu_memory_usage_pct = 100.0 * eng._gpu_memory_utilization(device)
-        gpu_memory_allocated_pct = 100.0 * eng._gpu_memory_allocated_ratio(device)
+        if torch.cuda.is_available() and device.type == "cuda":
+            torch.cuda.synchronize(device=device)
+        gpu_memory_allocated_pct = 100.0 * eng._gpu_memory_peak_allocated_ratio(device)
         gpu_memory_reserved_pct = 100.0 * eng._gpu_memory_reserved_ratio(device)
         print(eng._json_key_value("throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"))
         print(eng._json_key_value("batch_size", str(len(resolved_batch.samples))))
