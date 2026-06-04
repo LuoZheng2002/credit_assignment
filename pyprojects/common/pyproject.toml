@@ -13,7 +13,6 @@ dependencies = [
     "accelerate",
     "matplotlib>=3.10.9",
     "peft",
-    "flash-attn",
     # used for LLM python tool calling
     "sympy>=1.14.0",
     "numpy>=2.4.6",
@@ -35,6 +34,3 @@ research-utility = { path = "../../../research-utility", editable = true }
 [tool.uv]
 environments = ["sys_platform == 'linux'"]
 prerelease = "allow"
-
-[tool.uv.extra-build-dependencies]
-flash-attn = ["torch"]

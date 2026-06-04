@@ -149,23 +149,22 @@ def _load_causal_lm_with_attention(model_path: str, device: torch.device) -> tup
     load_kwargs = {
         "dtype": torch.bfloat16,
     }
-    preferred_backends = ("flash_attention_2", "sdpa")
-    for backend in preferred_backends:
-        try:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                attn_implementation=backend,
-                **load_kwargs,
-            ).to(device)
-            return model, backend
-        except Exception as exc:
-            _release_step_memory(device)
-            if _is_primary_rank():
-                print(
-                    "[status] "
-                    f"attention_backend_request_failed=1 requested_backend={backend} "
-                    f"error_type={type(exc).__name__}"
-                )
+    backend = "sdpa"
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            attn_implementation=backend,
+            **load_kwargs,
+        ).to(device)
+        return model, backend
+    except Exception as exc:
+        _release_step_memory(device)
+        if _is_primary_rank():
+            print(
+                "[status] "
+                f"attention_backend_request_failed=1 requested_backend={backend} "
+                f"error_type={type(exc).__name__}"
+            )
 
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
