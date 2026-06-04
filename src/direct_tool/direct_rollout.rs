@@ -220,10 +220,6 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
 
     let _active_rollouts_guard =
         AtomicCountGuard::new(num_active_rollouts.clone(), "num_active_rollouts");
-    {
-        let _sqlite_waiting_workers_guard =
-            AtomicCountGuard::new(sqlite_waiting_workers.clone(), "sqlite_waiting_workers");
-    }
     let mut llm_calls_so_far = action_log
         .actions
         .iter()
@@ -276,14 +272,19 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
         }
         let newest_action_index = action_log.actions.len();
         action_log.actions.push(action);
-        action_store
-            .append_action_at(
-                action_log.question.flat_id,
-                newest_action_index,
-                action_log.actions.last().unwrap(),
-            )
-            .await
-            .unwrap();
+        {
+            // add sqlite waiting worker guard
+            let _sqlite_waiting_guard =
+                AtomicCountGuard::new(sqlite_waiting_workers.clone(), "sqlite_waiting_workers");
+            action_store
+                .append_action_at(
+                    action_log.question.flat_id,
+                    newest_action_index,
+                    action_log.actions.last().unwrap(),
+                )
+                .await
+                .unwrap();
+        }
     }
     // log_info(format!("Rollout {} finished", question.flat_id));
     let finished = num_finished_trees.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
