@@ -17,7 +17,7 @@ use crate::{
         hybrid_dataset::{Training, Validation},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
-    get_validation_accuracy::get_validation_accuracy,
+    get_accuracy::get_accuracy,
     json_line_util::{write_json, write_toml},
     launch_python_training::launch_python_training_process,
     launch_sglang_server::{
@@ -173,6 +173,7 @@ pub struct OrchestrationProgress {
     pub status: OrchestrationStatus,
     pub epoch: usize,
     pub validation_accuracies: BTreeMap<usize, f32>,
+    pub training_rollout_accuracies: BTreeMap<usize, f32>,
 }
 
 impl Orchestrator {
@@ -213,6 +214,8 @@ impl Orchestrator {
                     ));
                     self.ensure_inference_server_launched::<M>(epoch).await?;
                     self.collect_training_rollout::<M>(epoch).await?;
+                    self.read_and_log_training_rollout_accuracy::<M>(epoch)
+                        .await?;
                     // after rollout collection, we can shut down the inference server
                     self.ensure_inference_server_shut_down::<M>().await;
                     self.update_and_save_progress::<M>(
@@ -285,11 +288,10 @@ impl Orchestrator {
             epoch,
             _phantom: std::marker::PhantomData,
         };
-        let win_rate = get_validation_accuracy(asset_file_action_logs).await;
-        if win_rate.total_plays == 0 {
+        let accuracy_stats = get_accuracy(asset_file_action_logs, "Validation accuracy").await;
+        let Some(accuracy) = accuracy_stats.accuracy() else {
             return Err("Validation action log is empty, cannot compute accuracy".to_string());
-        }
-        let accuracy = win_rate.num_wins as f32 / win_rate.total_plays as f32;
+        };
         self.progress.validation_accuracies.insert(epoch, accuracy);
         log_key_value_pair(
             format!("epoch_{}_start_accuracy", epoch),
@@ -299,8 +301,52 @@ impl Orchestrator {
             Orchestrator::progress_save_path(M::CLI_NAME.into(), &self.config_nickname);
         write_json(&progress_save_path, &self.progress).unwrap();
         log_info(format!(
-            "Epoch {} validation accuracy: {} ({} wins out of {} plays)",
-            epoch, accuracy, win_rate.num_wins, win_rate.total_plays
+            "Epoch {} validation accuracy: {} (weighted wins {:.4} over {} trees, {} trajectories)",
+            epoch,
+            accuracy,
+            accuracy_stats.weighted_num_wins,
+            accuracy_stats.num_trees_with_judgments,
+            accuracy_stats.num_trajectories_judged
+        ));
+        Ok(())
+    }
+
+    async fn read_and_log_training_rollout_accuracy<M: LlmModelMarker>(
+        &mut self,
+        epoch: usize,
+    ) -> Result<(), String> {
+        log_info("Reading and logging training rollout accuracy...");
+        let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M, Training> {
+            nickname: self.config_nickname.clone(),
+            rollout_config: self.training_set_rollout_config.clone(),
+            posterior_calculation_config: self.posterior_calculation_config.clone(),
+            epoch,
+            _phantom: std::marker::PhantomData,
+        };
+        let accuracy_stats =
+            get_accuracy(asset_file_action_logs, "Training rollout accuracy").await;
+        let Some(accuracy) = accuracy_stats.accuracy() else {
+            return Err(
+                "Training rollout action log is empty, cannot compute accuracy".to_string(),
+            );
+        };
+        self.progress
+            .training_rollout_accuracies
+            .insert(epoch, accuracy);
+        log_key_value_pair(
+            format!("epoch_{}_training_rollout_accuracy", epoch),
+            accuracy.to_string(),
+        );
+        let progress_save_path =
+            Orchestrator::progress_save_path(M::CLI_NAME.into(), &self.config_nickname);
+        write_json(&progress_save_path, &self.progress).unwrap();
+        log_info(format!(
+            "Epoch {} training rollout accuracy: {} (weighted wins {:.4} over {} trees, {} trajectories)",
+            epoch,
+            accuracy,
+            accuracy_stats.weighted_num_wins,
+            accuracy_stats.num_trees_with_judgments,
+            accuracy_stats.num_trajectories_judged
         ));
         Ok(())
     }

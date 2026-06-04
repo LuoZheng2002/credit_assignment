@@ -2,7 +2,7 @@ pub mod atomic_count_guard;
 pub mod check_python_env;
 pub mod constants;
 pub mod direct_tool;
-pub mod get_validation_accuracy;
+pub mod get_accuracy;
 pub mod json_line_util;
 pub mod judge_correctness;
 pub mod launch_python_training;

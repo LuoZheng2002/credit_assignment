@@ -147,6 +147,7 @@ async fn main() {
                 status: OrchestrationStatus::WorkingOnValidation,
                 epoch: 0,
                 validation_accuracies: BTreeMap::new(),
+                training_rollout_accuracies: BTreeMap::new(),
             }
         }
     };
