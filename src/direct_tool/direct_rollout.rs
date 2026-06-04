@@ -445,7 +445,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     let mut did_truncate_at_halfway = false;
 
     while next_question_index < truncated_trees_to_finish || !join_set.is_empty() {
-        if !did_truncate_at_halfway && Instant::now() >= halfway_time {
+        if S::IS_TRAINING && !did_truncate_at_halfway && Instant::now() >= halfway_time {
             did_truncate_at_halfway = true;
             let num_finished_branches_so_far =
                 shared_states.num_finished_branches.load(Ordering::Relaxed);
