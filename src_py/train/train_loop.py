@@ -36,28 +36,28 @@ class AdaptiveBatchState:
     previous_tokens_per_sample: float
 
 
-DEFAULT_TRAJECTORY_TOKEN_CAP = 4096
-MIN_TRAJECTORY_TOKEN_CAP = 2
+DEFAULT_TRAJECTORY_LENGTH_CAP = 4096
+MIN_TRAJECTORY_LENGTH_CAP = 2
 
 
-def _reduce_trajectory_token_cap(current_cap: int) -> int:
-    assert current_cap >= MIN_TRAJECTORY_TOKEN_CAP, "current_cap must be >= minimum"
+def _reduce_trajectory_length_cap(current_cap: int) -> int:
+    assert current_cap >= MIN_TRAJECTORY_LENGTH_CAP, "current_cap must be >= minimum"
     reduced = int(current_cap * 0.95)
     if reduced >= current_cap:
         reduced = current_cap - 1
-    return max(MIN_TRAJECTORY_TOKEN_CAP, reduced)
+    return max(MIN_TRAJECTORY_LENGTH_CAP, reduced)
 
 
-def _truncate_sample_to_cap(sample: TrainingSampleTokenized, trajectory_token_cap: int) -> TrainingSampleTokenized:
-    assert trajectory_token_cap >= MIN_TRAJECTORY_TOKEN_CAP, "trajectory_token_cap too small"
-    if sample.input_length <= trajectory_token_cap:
+def _truncate_sample_to_cap(sample: TrainingSampleTokenized, trajectory_length_cap: int) -> TrainingSampleTokenized:
+    assert trajectory_length_cap >= MIN_TRAJECTORY_LENGTH_CAP, "trajectory_length_cap too small"
+    if sample.input_length <= trajectory_length_cap:
         return sample
 
-    start = sample.input_length - trajectory_token_cap
+    start = sample.input_length - trajectory_length_cap
     truncated_input_ids = sample.input_ids[start:]
     truncated_labels = sample.labels[start:]
     assert len(truncated_input_ids) == len(truncated_labels), "truncated token arrays must align"
-    assert len(truncated_input_ids) >= MIN_TRAJECTORY_TOKEN_CAP, "truncated sample is too short"
+    assert len(truncated_input_ids) >= MIN_TRAJECTORY_LENGTH_CAP, "truncated sample is too short"
     return TrainingSampleTokenized(
         id=sample.id,
         input_ids=truncated_input_ids,
@@ -69,9 +69,13 @@ def _truncate_sample_to_cap(sample: TrainingSampleTokenized, trajectory_token_ca
     )
 
 
-def _truncate_samples_to_cap(samples: list[TrainingSampleTokenized], trajectory_token_cap: int) -> list[TrainingSampleTokenized]:
+def _truncate_samples_to_cap(samples: list[TrainingSampleTokenized], trajectory_length_cap: int) -> list[TrainingSampleTokenized]:
     assert len(samples) > 0, "samples cannot be empty"
-    return [_truncate_sample_to_cap(sample, trajectory_token_cap) for sample in samples]
+    return [_truncate_sample_to_cap(sample, trajectory_length_cap) for sample in samples]
+
+
+def _emit_trajectory_length_cap(*, cap: int, eng: Any) -> None:
+    print(eng._json_key_value("trajectory_length_cap", str(cap)))
 
 
 def _is_primary_rank() -> bool:
@@ -193,7 +197,7 @@ def _run_unified_loop(
     if is_distributed:
         assert lazy_loader.sample_count >= world_size, "sample_count must be >= world_size for distributed training"
 
-    trajectory_token_cap = DEFAULT_TRAJECTORY_TOKEN_CAP
+    trajectory_length_cap = DEFAULT_TRAJECTORY_LENGTH_CAP
 
     sample_count = lazy_loader.sample_count
     distributed_batch_limit = (sample_count // world_size) if is_distributed else -1
@@ -259,6 +263,7 @@ def _run_unified_loop(
     max_label_token_id = -1
     data_model_name = expected_model_name
 
+    _emit_trajectory_length_cap(cap=trajectory_length_cap, eng=eng)
     if _is_primary_rank():
         print(
             "[startup] tokenizer special tokens "
@@ -365,7 +370,7 @@ def _run_unified_loop(
             )
 
         resolved_batch = window.resolved_batch
-        step_samples = _truncate_samples_to_cap(resolved_batch.samples, trajectory_token_cap)
+        step_samples = _truncate_samples_to_cap(resolved_batch.samples, trajectory_length_cap)
         step_batch = ResolvedTrainingBatch(
             batch_index=resolved_batch.batch_index,
             ids=resolved_batch.ids,
@@ -438,35 +443,49 @@ def _run_unified_loop(
                 batch_index=step_batch.batch_index,
                 batch_token_length=max(sample.input_length for sample in step_batch.samples),
                 next_batch_size=(
-                    _reduce_trajectory_token_cap(trajectory_token_cap)
-                    if adaptive_state.next_batch_size <= 1 and trajectory_token_cap > MIN_TRAJECTORY_TOKEN_CAP
+                    _reduce_trajectory_length_cap(trajectory_length_cap)
+                    if adaptive_state.next_batch_size <= 1 and trajectory_length_cap > MIN_TRAJECTORY_LENGTH_CAP
                     else reduced_batch_size
                 ),
                 will_retry=True,
             )
             if adaptive_state.next_batch_size <= 1:
-                if trajectory_token_cap <= MIN_TRAJECTORY_TOKEN_CAP:
+                if trajectory_length_cap <= MIN_TRAJECTORY_LENGTH_CAP:
                     raise
-                next_cap = _reduce_trajectory_token_cap(trajectory_token_cap)
+                next_cap = _reduce_trajectory_length_cap(trajectory_length_cap)
                 if is_distributed:
                     if _is_primary_rank():
                         print(
+                            "[warning] "
+                            "oom_at_batch_size_1=1 "
+                            f"trajectory_length_cap_old={trajectory_length_cap} "
+                            f"trajectory_length_cap_new={next_cap}"
+                        )
+                        print(
                             "[status] "
-                            f"adaptive_trajectory_cap_reduced=1 old_cap={trajectory_token_cap} "
+                            f"adaptive_trajectory_cap_reduced=1 old_cap={trajectory_length_cap} "
                             f"new_cap={next_cap} reason=oom_at_batch_size_1"
                         )
-                        trajectory_token_cap = next_cap
-                    cap_tensor = torch.tensor([trajectory_token_cap], dtype=torch.int64, device=device)
+                        trajectory_length_cap = next_cap
+                    cap_tensor = torch.tensor([trajectory_length_cap], dtype=torch.int64, device=device)
                     torch.distributed.broadcast(cap_tensor, src=0)
-                    trajectory_token_cap = int(cap_tensor.item())
+                    trajectory_length_cap = int(cap_tensor.item())
+                    _emit_trajectory_length_cap(cap=trajectory_length_cap, eng=eng)
                 else:
                     if _is_primary_rank():
                         print(
+                            "[warning] "
+                            "oom_at_batch_size_1=1 "
+                            f"trajectory_length_cap_old={trajectory_length_cap} "
+                            f"trajectory_length_cap_new={next_cap}"
+                        )
+                        print(
                             "[status] "
-                            f"adaptive_trajectory_cap_reduced=1 old_cap={trajectory_token_cap} "
+                            f"adaptive_trajectory_cap_reduced=1 old_cap={trajectory_length_cap} "
                             f"new_cap={next_cap} reason=oom_at_batch_size_1"
                         )
-                    trajectory_token_cap = next_cap
+                    trajectory_length_cap = next_cap
+                    _emit_trajectory_length_cap(cap=trajectory_length_cap, eng=eng)
                 continue
             if _is_primary_rank():
                 adaptive_state = AdaptiveBatchState(
@@ -509,7 +528,7 @@ def _run_unified_loop(
         print(eng._json_key_value("next_batch_size", str(adaptive_state.next_batch_size)))
         print(eng._json_key_value("next_batch_size_int", str(adaptive_state.next_batch_size)))
         print(eng._json_key_value("next_batch_size_float", f"{adaptive_state.next_batch_size_float:.2f}"))
-        print(eng._json_key_value("trajectory_token_cap", str(trajectory_token_cap)))
+        print(eng._json_key_value("trajectory_length_cap", str(trajectory_length_cap)))
         print(eng._json_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}"))
         print(f"gpu_memory_usage_pct: {gpu_memory_usage_pct:.2f}%")
         print(eng._json_key_value("gpu_memory_allocated_pct", f"{gpu_memory_allocated_pct:.2f}"))
@@ -601,7 +620,7 @@ def _run_unified_loop(
                     "step_time_sec": float(step_elapsed_sec),
                     "throughput_samples_per_sec": throughput_samples_per_sec,
                     "gpu_memory_usage_pct": gpu_memory_usage_pct,
-                    "trajectory_token_cap": trajectory_token_cap,
+                    "trajectory_length_cap": trajectory_length_cap,
                 }
                 for key, value in loss_output.stats.items():
                     log_payload[key] = value
