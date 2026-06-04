@@ -9,9 +9,6 @@ from typing import Iterator
 from research_utility import SqliteStore
 
 
-MAX_TRAJECTORY_TOKENS = 4096
-
-
 @dataclass(frozen=True)
 class QuestionNodeId:
     question_id: int
@@ -74,26 +71,6 @@ def _parse_positive_int(value: object, field_name: str) -> int:
     assert isinstance(value, int), f"{field_name} must be int"
     assert value >= 0, f"{field_name} must be non-negative"
     return value
-
-
-def _truncate_direct_trajectory_tokens(
-    input_ids: list[int],
-    labels: list[int],
-    token_advantages: list[float],
-    max_tokens: int,
-) -> tuple[list[int], list[int], list[float]]:
-    assert max_tokens > 0, "max_tokens must be positive"
-    assert len(input_ids) == len(labels), "input_ids and labels lengths must match"
-    assert len(input_ids) == len(token_advantages), "input_ids and advantages lengths must match"
-    if len(input_ids) <= max_tokens:
-        return input_ids, labels, token_advantages
-
-    start_index = len(input_ids) - max_tokens
-    return (
-        input_ids[start_index:],
-        labels[start_index:],
-        token_advantages[start_index:],
-    )
 
 
 def _parse_tokenized_payload(payload: object) -> TrainingSampleTokenized:
@@ -167,13 +144,6 @@ def _parse_direct_training_trajectory_payload(
     assert len(input_ids) > 0, "input_ids cannot be empty"
     assert len(labels) == len(input_ids), "labels and input_ids lengths must match"
     assert len(token_advantages) == len(input_ids), "advantages and input_ids lengths must match"
-
-    input_ids, labels, token_advantages = _truncate_direct_trajectory_tokens(
-        input_ids=input_ids,
-        labels=labels,
-        token_advantages=token_advantages,
-        max_tokens=MAX_TRAJECTORY_TOKENS,
-    )
 
     assert len(input_ids) >= 2, "trajectory must contain at least two tokens"
 

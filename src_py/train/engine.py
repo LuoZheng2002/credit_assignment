@@ -14,7 +14,7 @@ import time
 import numpy as np
 import torch
 
-from .batch_dataset import LazyResolvedBatchLoader, ResolvedTrainingBatch, load_resolved_training_batches
+from .batch_dataset import LazyResolvedBatchLoader
 from .train_loop import run_training_loop
 
 
@@ -347,21 +347,6 @@ def _init_distributed_device() -> torch.device:
         atexit.register(_shutdown_distributed_process_group)
 
     return torch.device("cuda", local_rank)
-
-
-def _shard_batches_for_rank(
-    ordered_batches: list[ResolvedTrainingBatch],
-    rank: int,
-    world_size: int,
-) -> list[ResolvedTrainingBatch]:
-    assert len(ordered_batches) > 0, "ordered_batches must be non-empty"
-    assert rank >= 0, "rank must be non-negative"
-    assert world_size > 0, "world_size must be positive"
-    assert rank < world_size, "rank must be < world_size"
-
-    local_batches = [batch for index, batch in enumerate(ordered_batches) if index % world_size == rank]
-    assert len(local_batches) > 0, "each rank must receive at least one batch"
-    return local_batches
 
 
 def _save_checkpoint(
@@ -879,63 +864,6 @@ def _resolve_local_model_path(model_parent_dir: str) -> str:
     return str(normalized)
 
 
-def _verify_tokenizer_model_match(
-    model_path: str,
-    tokenizer_name_or_path: str,
-    ordered_batches: list[ResolvedTrainingBatch],
-    model_vocab_size: int,
-) -> dict[str, str | int]:
-    assert len(ordered_batches) > 0, "ordered_batches must be non-empty"
-    assert model_vocab_size > 0, "model_vocab_size must be positive"
-
-    expected_model_name = model_path.strip()
-    tokenizer_name = tokenizer_name_or_path.strip()
-    assert len(expected_model_name) > 0, "model_path cannot be empty"
-    assert len(tokenizer_name) > 0, "tokenizer_name_or_path cannot be empty"
-    assert (
-        tokenizer_name == expected_model_name
-    ), "tokenizer name_or_path must exactly match model_path"
-
-    data_model_names: set[str] = set()
-    max_input_token_id = -1
-    max_label_token_id = -1
-    for resolved_batch in ordered_batches:
-        if len(resolved_batch.model_official_name.strip()) > 0:
-            data_model_names.add(resolved_batch.model_official_name)
-        for sample in resolved_batch.samples:
-            if len(sample.model_official_name.strip()) > 0:
-                data_model_names.add(sample.model_official_name)
-            for token_id in sample.input_ids:
-                assert token_id >= 0, "input_ids must be non-negative"
-                if token_id > max_input_token_id:
-                    max_input_token_id = token_id
-            for token_id in sample.labels:
-                if token_id == -100:
-                    continue
-                assert token_id >= 0, "supervised label token ids must be non-negative"
-                if token_id > max_label_token_id:
-                    max_label_token_id = token_id
-
-    if len(data_model_names) > 0:
-        assert len(data_model_names) == 1, "training data must contain exactly one model_official_name"
-        data_model_name = next(iter(data_model_names))
-        assert (
-            data_model_name == expected_model_name
-        ), "training data model_official_name must match model_path"
-    else:
-        data_model_name = expected_model_name
-    assert max_input_token_id < model_vocab_size, "input_ids contain token id out of model vocab range"
-    assert max_label_token_id < model_vocab_size, "labels contain token id out of model vocab range"
-
-    return {
-        "model_official_name": data_model_name,
-        "tokenizer_name_or_path": tokenizer_name,
-        "model_vocab_size": model_vocab_size,
-        "max_input_token_id": max_input_token_id,
-        "max_label_token_id": max_label_token_id,
-    }
-
-
 def _build_lora_model(
     model_path: str,
     lora_rank: int,
@@ -1127,73 +1055,6 @@ def train(config: TrainConfig) -> None:
     elif _is_primary_rank():
         print("[status] loading_resume_checkpoint=0 starting_fresh=1")
 
-    if world_size > 1:
-        ordered_batches: list[ResolvedTrainingBatch] = load_resolved_training_batches(
-            training_trajectory_sqlite_path=config.training_trajectory_sqlite_path,
-            batch_size=initial_batch_size,
-            model_official_name=expected_model_name,
-            first_n_training_samples=0,
-        )
-        verification = _verify_tokenizer_model_match(
-            model_path=expected_model_name,
-            tokenizer_name_or_path=tokenizer.name_or_path,
-            ordered_batches=ordered_batches,
-            model_vocab_size=model_vocab_size,
-        )
-
-        if _is_primary_rank():
-            print(
-                "[startup] tokenizer special tokens "
-                f"pad_token_id={pad_token_id} eos_token_id={eos_token_id} bos_token_id={bos_token_id}"
-            )
-            _log_json_line(
-                logs_path,
-                {
-                    "step": 0,
-                    "iteration": -1,
-                    "batch_index": -1,
-                    "model_vocab_size": int(verification["model_vocab_size"]),
-                    "max_input_token_id": int(verification["max_input_token_id"]),
-                    "max_label_token_id": int(verification["max_label_token_id"]),
-                    "pad_token_id": pad_token_id,
-                    "eos_token_id": eos_token_id,
-                    "bos_token_id": bos_token_id,
-                    "rank": rank,
-                    "world_size": world_size,
-                    "local_batch_count": len(ordered_batches) // world_size,
-                    "next_batch_size": initial_batch_size,
-                    "next_batch_size_int": initial_batch_size,
-                    "next_batch_size_float": float(initial_batch_size),
-                },
-            )
-        run_training_loop(
-            config=config,
-            model=model,
-            optimizer=optimizer,
-            resume_state=resume_state,
-            rank=rank,
-            world_size=world_size,
-            device=device,
-            pad_token_id=pad_token_id,
-            eos_token_id=eos_token_id,
-            bos_token_id=bos_token_id,
-            model_vocab_size=model_vocab_size,
-            expected_model_name=expected_model_name,
-            logs_path=logs_path,
-            checkpoints_parent_dir=checkpoints_parent_dir,
-            final_model_output_parent_dir=final_model_output_parent_dir,
-            resolved_model_path=resolved_model_path,
-            tokenizer=tokenizer,
-            initial_batch_size=initial_batch_size,
-            initial_adaptive_velocity=initial_adaptive_velocity,
-            target_gpu_memory_utilization=target_gpu_memory_utilization,
-            max_batch_size_cap=max_batch_size_cap,
-            reset_batch_size_on_wrap=reset_batch_size_on_wrap,
-            ordered_batches=ordered_batches,
-            lazy_loader=None,
-        )
-        return
-
     lazy_loader = LazyResolvedBatchLoader(
         training_trajectory_sqlite_path=config.training_trajectory_sqlite_path,
         model_official_name=expected_model_name,
@@ -1223,7 +1084,6 @@ def train(config: TrainConfig) -> None:
             target_gpu_memory_utilization=target_gpu_memory_utilization,
             max_batch_size_cap=max_batch_size_cap,
             reset_batch_size_on_wrap=reset_batch_size_on_wrap,
-            ordered_batches=None,
             lazy_loader=lazy_loader,
         )
     finally:
