@@ -4,7 +4,7 @@
 # #SBATCH --error=slurm/empty_%j.err         # Error log
 #SBATCH --partition=gpuA100x4
 # #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=32
 #SBATCH --ntasks=1
 #SBATCH --mem=32G
 #SBATCH --account=bfdz-delta-gpu

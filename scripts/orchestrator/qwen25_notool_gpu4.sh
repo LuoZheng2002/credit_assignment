@@ -16,5 +16,5 @@ cargo run --bin bin_orchestrator -- \
     --num-python-tool-servers 1 \
     --sglang-server-log-path logs/sglang_server.txt \
     --message-log-path logs/messages.txt \
-    --num-gpus 4 \
+    --num-gpus 1 \
     --ui true

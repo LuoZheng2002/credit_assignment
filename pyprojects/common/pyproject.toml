@@ -9,18 +9,18 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "research-utility",
     "torch",
-    "transformers>=4.46.0",
-    "accelerate>=0.34.0",
+    "transformers",
+    "accelerate",
     "matplotlib>=3.10.9",
-    "peft>=0.19.1",
-    "flash-attn>=2.6.3; sys_platform == 'linux'",
+    "peft",
+    "flash-attn",
     # used for LLM python tool calling
     "sympy>=1.14.0",
     "numpy>=2.4.6",
     "scipy>=1.17.1",
     "numexpr>=2.14.1",
-    "flash-linear-attention>=0.5.0",
-    "causal-conv1d>=1.6.2.post1",
+    "flash-linear-attention",
+    "causal-conv1d",
 ]
 
 [[tool.uv.index]]
