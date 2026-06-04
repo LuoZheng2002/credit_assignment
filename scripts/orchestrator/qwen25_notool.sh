@@ -17,4 +17,4 @@ cargo run --bin bin_orchestrator -- \
     --sglang-server-log-path logs/sglang_server.txt \
     --message-log-path logs/messages.txt \
     --num-gpus 1 \
-    --ui false
+    --ui true
