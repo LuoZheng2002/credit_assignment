@@ -143,6 +143,37 @@ def _forward_logits(model_engine: torch.nn.Module, input_ids: torch.Tensor, atte
     return logits
 
 
+def _load_causal_lm_with_attention(model_path: str, device: torch.device) -> tuple[torch.nn.Module, str]:
+    from transformers import AutoModelForCausalLM
+
+    load_kwargs = {
+        "dtype": torch.bfloat16,
+    }
+    preferred_backends = ("flash_attention_2", "sdpa")
+    for backend in preferred_backends:
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                attn_implementation=backend,
+                **load_kwargs,
+            ).to(device)
+            return model, backend
+        except Exception as exc:
+            _release_step_memory(device)
+            if _is_primary_rank():
+                print(
+                    "[status] "
+                    f"attention_backend_request_failed=1 requested_backend={backend} "
+                    f"error_type={type(exc).__name__}"
+                )
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        **load_kwargs,
+    ).to(device)
+    return model, "eager"
+
+
 def _get_rank_world_size() -> tuple[int, int]:
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         return torch.distributed.get_rank(), torch.distributed.get_world_size()
@@ -904,7 +935,7 @@ def _build_lora_model(
     lora_dropout: float,
     lora_target_modules_csv: str,
     device: torch.device,
-) -> torch.nn.Module:
+) -> tuple[torch.nn.Module, str]:
     assert lora_rank > 0, "lora_rank must be positive"
     assert lora_alpha > 0, "lora_alpha must be positive"
     assert lora_dropout >= 0.0 and lora_dropout < 1.0, "lora_dropout must be in [0, 1)"
@@ -912,12 +943,7 @@ def _build_lora_model(
     assert len(targets) > 0, "lora_target_modules_csv must contain at least one module"
 
     from peft import LoraConfig, get_peft_model
-    from transformers import AutoModelForCausalLM
-
-    base_model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        dtype=torch.bfloat16,
-    ).to(device)
+    base_model, attention_backend = _load_causal_lm_with_attention(model_path=model_path, device=device)
     base_model.gradient_checkpointing_enable()
 
     lora_config = LoraConfig(
@@ -931,18 +957,14 @@ def _build_lora_model(
     model = get_peft_model(base_model, lora_config)
     trainable_count = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     assert trainable_count > 0, "LoRA model must expose trainable parameters"
-    return model
+    return model, attention_backend
 
 
-def _build_fsdp_model(model_path: str, device: torch.device) -> torch.nn.Module:
+def _build_fsdp_model(model_path: str, device: torch.device) -> tuple[torch.nn.Module, str]:
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
     from torch.distributed.fsdp import MixedPrecision
-    from transformers import AutoModelForCausalLM
 
-    base_model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        dtype=torch.bfloat16,
-    ).to(device)
+    base_model, attention_backend = _load_causal_lm_with_attention(model_path=model_path, device=device)
     base_model.gradient_checkpointing_enable()
 
     mixed_precision = MixedPrecision(
@@ -950,7 +972,7 @@ def _build_fsdp_model(model_path: str, device: torch.device) -> torch.nn.Module:
         reduce_dtype=torch.bfloat16,
         buffer_dtype=torch.bfloat16,
     )
-    return FSDP(base_model, device_id=device, mixed_precision=mixed_precision)
+    return FSDP(base_model, device_id=device, mixed_precision=mixed_precision), attention_backend
 
 
 def train(config: TrainConfig) -> None:
@@ -1011,7 +1033,7 @@ def train(config: TrainConfig) -> None:
     bos_token_id = _normalize_optional_token_id(tokenizer.bos_token_id)
 
     if config.training_plan == "lora_current":
-        model = _build_lora_model(
+        model, attention_backend = _build_lora_model(
             model_path=resolved_model_path,
             lora_rank=config.lora_rank,
             lora_alpha=config.lora_alpha,
@@ -1020,7 +1042,9 @@ def train(config: TrainConfig) -> None:
             device=device,
         )
     else:
-        model = _build_fsdp_model(model_path=resolved_model_path, device=device)
+        model, attention_backend = _build_fsdp_model(model_path=resolved_model_path, device=device)
+
+    print(f"[startup] rank={rank} attention_backend={attention_backend}")
 
     input_embeddings = model.get_input_embeddings()
     assert input_embeddings is not None, "model must expose input embeddings"

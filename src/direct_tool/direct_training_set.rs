@@ -27,6 +27,8 @@ use crate::{
     llm_model::LlmModelMarker,
 };
 
+const MAX_TRAINING_TRAJECTORY_TOKEN_LENGTH: usize = 4096;
+
 #[derive(Debug, Clone)]
 struct TrajectoryMetadata<S: DatasetSplit> {
     question_flat_id: QuestionFlatId<S>,
@@ -123,6 +125,46 @@ struct TrainingTrajectorySelectionOutput<S: DatasetSplit> {
     all_average_absolute_advantages: Vec<f32>,
     total_trajectories: usize,
     average_absolute_advantage_cutoff: f32,
+}
+
+fn truncate_trajectory_tokens(
+    input_ids: &mut Vec<i32>,
+    labels: &mut Vec<i32>,
+    advantages: &mut Vec<f32>,
+) {
+    assert_eq!(
+        input_ids.len(),
+        labels.len(),
+        "input_ids and labels must have the same length before truncation"
+    );
+    assert_eq!(
+        input_ids.len(),
+        advantages.len(),
+        "input_ids and advantages must have the same length before truncation"
+    );
+    if input_ids.len() <= MAX_TRAINING_TRAJECTORY_TOKEN_LENGTH {
+        return;
+    }
+
+    let start = input_ids.len() - MAX_TRAINING_TRAJECTORY_TOKEN_LENGTH;
+    input_ids.drain(0..start);
+    labels.drain(0..start);
+    advantages.drain(0..start);
+
+    assert_eq!(
+        input_ids.len(),
+        labels.len(),
+        "input_ids and labels must have the same length after truncation"
+    );
+    assert_eq!(
+        input_ids.len(),
+        advantages.len(),
+        "input_ids and advantages must have the same length after truncation"
+    );
+    assert!(
+        input_ids.len() <= MAX_TRAINING_TRAJECTORY_TOKEN_LENGTH,
+        "trajectory length must be capped after truncation"
+    );
 }
 
 pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
@@ -546,7 +588,7 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
             question_flat_id: tree.action_log.question.flat_id,
             leaf_segment_id: best_leaf,
             average_absolute_advantage,
-            trajectory_token_length,
+            trajectory_token_length: trajectory_token_length.min(MAX_TRAINING_TRAJECTORY_TOKEN_LENGTH),
         });
         leaf_segment_ids.remove(&best_leaf);
     }
@@ -649,6 +691,12 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
         assert_eq!(average_absolute_advantage, best_average_absolute_advantage);
 
         if should_materialize {
+            truncate_trajectory_tokens(&mut input_ids, &mut labels, &mut advantages);
+            assert!(input_ids.len() >= 2, "trajectory must contain at least two tokens");
+            assert!(
+                labels.iter().skip(1).any(|label| *label != -100),
+                "trajectory must contain at least one supervised token after causal shift"
+            );
             reconstructed.push((
                 trajectory_index,
                 DirectTrainingTrajectory {
