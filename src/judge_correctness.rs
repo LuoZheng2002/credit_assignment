@@ -12,11 +12,13 @@ const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/comple
 const OPENROUTER_CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const OPENAI_GPT4O_MODEL: &str = "gpt-4o";
 const OPENROUTER_DEEPSEEK_V4_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
+const OPENROUTER_GEMINI_25_FLASH_LITE_MODEL: &str = "google/gemini-2.5-flash-lite";
 
 #[derive(Clone, Copy)]
 pub enum JudgeAnswerModel {
     Gpt4o,
     DeepseekV4Flash,
+    Gemini25FlashLite,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +97,12 @@ async fn fetch_judge_evaluation(
             "OPENROUTER_API_KEY",
             true,
         ),
+        JudgeAnswerModel::Gemini25FlashLite => (
+            OPENROUTER_CHAT_COMPLETIONS_URL,
+            OPENROUTER_GEMINI_25_FLASH_LITE_MODEL,
+            "OPENROUTER_API_KEY",
+            true,
+        ),
     };
 
     let api_key = std::env::var(api_key_env)
@@ -115,7 +123,10 @@ async fn fetch_judge_evaluation(
     if auth_is_bearer {
         request_builder = request_builder.bearer_auth(api_key);
     }
-    if matches!(judge_model, JudgeAnswerModel::DeepseekV4Flash) {
+    if matches!(
+        judge_model,
+        JudgeAnswerModel::DeepseekV4Flash | JudgeAnswerModel::Gemini25FlashLite
+    ) {
         request_builder = request_builder
             .header("HTTP-Referer", "https://github.com/luoz/credit_assignment")
             .header("X-Title", "credit_assignment");

@@ -242,7 +242,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     &self.action_log.question.correct_answer,
                     &self.action_log.question.question,
                     client,
-                    JudgeAnswerModel::DeepseekV4Flash,
+                    JudgeAnswerModel::Gemini25FlashLite,
                     judge_waiting_workers,
                 )
                 .await;
