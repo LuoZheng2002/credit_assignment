@@ -453,7 +453,8 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
                 let target_total_branches = num_finished_branches_so_far.saturating_mul(2);
                 truncated_trees_to_finish = target_total_branches
                     .div_ceil(shared_states.trajectories_per_tree)
-                    .max(next_question_index);
+                    .max(next_question_index)
+                    .min(question_keys.len());
                 question_keys.truncate(truncated_trees_to_finish);
                 log_key_value_pair(
                     "halfway_target_total_branches_to_finish",
