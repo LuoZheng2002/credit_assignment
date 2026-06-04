@@ -486,6 +486,9 @@ def _run_unified_loop(
                         )
                     trajectory_length_cap = next_cap
                     _emit_trajectory_length_cap(cap=trajectory_length_cap, eng=eng)
+                eng._release_step_memory(device)
+                if torch.cuda.is_available() and device.type == "cuda":
+                    torch.cuda.synchronize(device=device)
                 continue
             if _is_primary_rank():
                 adaptive_state = AdaptiveBatchState(
