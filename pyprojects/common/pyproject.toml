@@ -35,3 +35,6 @@ research-utility = { path = "../../../research-utility", editable = true }
 [tool.uv]
 environments = ["sys_platform == 'linux'"]
 prerelease = "allow"
+
+[tool.uv.extra-build-dependencies]
+flash-attn = ["torch"]
