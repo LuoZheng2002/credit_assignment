@@ -13,12 +13,28 @@ const OPENROUTER_CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat
 const OPENAI_GPT4O_MODEL: &str = "gpt-4o";
 const OPENROUTER_DEEPSEEK_V4_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
 const OPENROUTER_GEMINI_25_FLASH_LITE_MODEL: &str = "google/gemini-2.5-flash-lite";
+const OPENROUTER_GEMINI_25_FLASH_MODEL: &str = "google/gemini-2.5-flash";
+const OPENROUTER_GPT_41_MINI_MODEL: &str = "openai/gpt-4.1-mini";
 
 #[derive(Clone, Copy)]
 pub enum JudgeAnswerModel {
     Gpt4o,
     DeepseekV4Flash,
     Gemini25FlashLite,
+    Gemini25Flash,
+    Gpt41Mini,
+}
+
+impl JudgeAnswerModel {
+    fn display_name(&self) -> &'static str {
+        match self {
+            JudgeAnswerModel::Gpt4o => OPENAI_GPT4O_MODEL,
+            JudgeAnswerModel::DeepseekV4Flash => OPENROUTER_DEEPSEEK_V4_FLASH_MODEL,
+            JudgeAnswerModel::Gemini25FlashLite => OPENROUTER_GEMINI_25_FLASH_LITE_MODEL,
+            JudgeAnswerModel::Gemini25Flash => OPENROUTER_GEMINI_25_FLASH_MODEL,
+            JudgeAnswerModel::Gpt41Mini => OPENROUTER_GPT_41_MINI_MODEL,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,44 +53,62 @@ async fn judge_answer_task(
 ) -> bool {
     let prompt = format!(
         "You are an answer checker that checks a model's answer against the reference answer. Judge if the model's answer is equivalent to the reference answer. \
+Do not attempt to solve the problem yourself, only judge whether the given answer and the reference answer is equivalent. \
 If the model's answer contains units but the reference answer does not, treat them as equivalent if the numerical values are the same. \n\
 The question is: \"{}\". \
 The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
         question, model_answer, correct_answer
     );
     let mut last_error: Option<String> = None;
+    let attempts_per_model: usize = 5;
+    let mut model_sequence = vec![judge_model];
+    if !matches!(judge_model, JudgeAnswerModel::Gemini25Flash) {
+        model_sequence.push(JudgeAnswerModel::Gemini25Flash);
+    }
+    if !matches!(judge_model, JudgeAnswerModel::Gpt41Mini) {
+        model_sequence.push(JudgeAnswerModel::Gpt41Mini);
+    }
 
-    let num_attempts: usize = 20;
-
-    for attempt in 0..=num_attempts {
-        match fetch_judge_evaluation(&client, &prompt, judge_model).await {
-            Ok(evaluation) => {
-                let evaluation = evaluation.trim().to_lowercase();
-                if evaluation.contains("incorrect") {
-                    return false;
-                }
-                if evaluation.contains("correct") {
-                    return true;
-                }
-                last_error = Some(format!("Unexpected evaluation result: {}", evaluation));
-            }
-            Err(error) => {
-                last_error = Some(error.to_string());
-            }
+    let total_attempts = attempts_per_model * model_sequence.len();
+    for (model_index, model_to_try) in model_sequence.into_iter().enumerate() {
+        if model_index > 0 {
+            log_warning(format!(
+                "Falling back to judge model {} after previous model failures",
+                model_to_try.display_name()
+            ));
         }
-        log_warning(format!(
-            "Judger returned invalid response, attempt {}",
-            attempt
-        ));
+        for attempt in 1..=attempts_per_model {
+            match fetch_judge_evaluation(&client, &prompt, model_to_try).await {
+                Ok(evaluation) => {
+                    let evaluation = evaluation.trim().to_lowercase();
+                    if evaluation.contains("incorrect") {
+                        return false;
+                    }
+                    if evaluation.contains("correct") {
+                        return true;
+                    }
+                    last_error = Some(format!("Unexpected evaluation result: {}", evaluation));
+                }
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                }
+            }
+            log_warning(format!(
+                "Judger returned invalid response with model {}, attempt {}/{}",
+                model_to_try.display_name(),
+                attempt,
+                attempts_per_model
+            ));
 
-        if attempt < num_attempts {
-            sleep(Duration::from_secs(1)).await;
+            if attempt < attempts_per_model {
+                sleep(Duration::from_secs(1)).await;
+            }
         }
     }
 
     panic!(
-        "Failed to judge answer after {} attempts: {}",
-        num_attempts,
+        "Failed to judge answer after {} attempts across primary and fallback models: {}",
+        total_attempts,
         last_error.unwrap_or_else(|| "unknown error".to_string())
     );
 }
@@ -103,6 +137,18 @@ async fn fetch_judge_evaluation(
             "OPENROUTER_API_KEY",
             true,
         ),
+        JudgeAnswerModel::Gemini25Flash => (
+            OPENROUTER_CHAT_COMPLETIONS_URL,
+            OPENROUTER_GEMINI_25_FLASH_MODEL,
+            "OPENROUTER_API_KEY",
+            true,
+        ),
+        JudgeAnswerModel::Gpt41Mini => (
+            OPENROUTER_CHAT_COMPLETIONS_URL,
+            OPENROUTER_GPT_41_MINI_MODEL,
+            "OPENROUTER_API_KEY",
+            true,
+        ),
     };
 
     let api_key = std::env::var(api_key_env)
@@ -125,7 +171,10 @@ async fn fetch_judge_evaluation(
     }
     if matches!(
         judge_model,
-        JudgeAnswerModel::DeepseekV4Flash | JudgeAnswerModel::Gemini25FlashLite
+        JudgeAnswerModel::DeepseekV4Flash
+            | JudgeAnswerModel::Gemini25FlashLite
+            | JudgeAnswerModel::Gemini25Flash
+            | JudgeAnswerModel::Gpt41Mini
     ) {
         request_builder = request_builder
             .header("HTTP-Referer", "https://github.com/luoz/credit_assignment")
