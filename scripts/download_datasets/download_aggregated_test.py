@@ -1,6 +1,6 @@
-"""Build an aggregated test sqlite database from 5 datasets.
+"""Build an aggregated test sqlite database from 6 datasets.
 
-Datasets are concatenated in order: deepmath, math, gsm8k, aime25, amc23.
+Datasets are concatenated in order: deepmath, math, gsm8k, aime24, aime25, amc23.
 The test set does not overlap with hybrid_train.sqlite or hybrid_val.sqlite.
 """
 
@@ -13,6 +13,7 @@ from research_utility import SqliteStore
 from test_set_sqlite_common import (
     TRAINING_DATASET_NAMES,
     install_hf_token,
+    load_aime24_test,
     load_aime25_test,
     load_amc23_test,
     load_deepmath_test,
@@ -28,11 +29,12 @@ COMBINED_CLEARANCE = TRAIN_SAMPLES_PER_DATASET + VAL_SAMPLES_PER_DATASET
 MIN_SAMPLES = 1_000
 DEFAULT_SAMPLE_SEED = 42
 
-DATASET_ORDER = ("deepmath", "math", "gsm8k", "aime25", "amc23")
+DATASET_ORDER = ("deepmath", "math", "gsm8k", "aime24", "aime25", "amc23")
 
 _DATASET_LOADERS = {
     "math": load_math_test,
     "gsm8k": load_gsm8k_test,
+    "aime24": load_aime24_test,
     "aime25": load_aime25_test,
     "amc23": load_amc23_test,
 }

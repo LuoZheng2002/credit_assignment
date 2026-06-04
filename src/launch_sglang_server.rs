@@ -18,8 +18,10 @@ pub fn model_uses_sglang<M: LlmModelMarker>() -> bool {
 
 pub async fn launch_sglang_server_process<M: LlmModelMarker>(
     model_path: &str,
+    num_gpus: usize,
     sglang_server_log_path: Option<&str>,
 ) -> Result<(u16, Child), String> {
+    assert!(num_gpus > 0, "num_gpus must be positive");
     let sglang_port = resolve_sglang_port();
     let mut command = Command::new("uv");
     command
@@ -35,6 +37,8 @@ pub async fn launch_sglang_server_process<M: LlmModelMarker>(
         .arg("0.0.0.0")
         .arg("--port")
         .arg(sglang_port.to_string())
+        .arg("--dp")
+        .arg(num_gpus.to_string())
         .arg("--context-length")
         .arg(SGLANG_CONTEXT_LENGTH.to_string())
         // .arg("--load-balance-method")

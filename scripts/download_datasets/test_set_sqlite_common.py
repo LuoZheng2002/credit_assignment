@@ -99,6 +99,10 @@ def load_gsm8k_test() -> object:
     return concatenate_datasets([main, socratic])
 
 
+def load_aime24_test() -> object:
+    return load_dataset("math-ai/aime24", "default", split="test")
+
+
 def load_aime25_test() -> object:
     return load_dataset("math-ai/aime25", "default", split="test")
 
@@ -122,6 +126,11 @@ def normalize_entry(dataset_name: str, raw: dict[str, object]) -> tuple[str, str
         question = get_required_field(raw, dataset_name, ["question"])
         answer = get_required_field(raw, dataset_name, ["answer"])
         return question, parse_gsm8k_final_answer(answer)
+
+    if dataset_name == "aime24":
+        question = get_required_field(raw, dataset_name, ["problem", "question"])
+        solution = get_required_field(raw, dataset_name, ["solution"])
+        return question, extract_boxed_content(solution) or solution.strip()
 
     if dataset_name == "aime25":
         question = get_required_field(raw, dataset_name, ["problem", "question"])

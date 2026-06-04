@@ -9,6 +9,7 @@ from test_set_sqlite_common import (
     DEFAULT_SAMPLE_SEED,
     build_and_write_test_sqlite,
     install_hf_token,
+    load_aime24_test,
     load_aime25_test,
     load_amc23_test,
     load_deepmath_test,
@@ -57,6 +58,9 @@ def main() -> None:
 
     gsm8k = load_gsm8k_test()
     _run_one(repo_root, "gsm8k", gsm8k, "test", args.sample_seed)
+
+    aime24 = load_aime24_test()
+    _run_one(repo_root, "aime24", aime24, "test", args.sample_seed)
 
     aime25 = load_aime25_test()
     _run_one(repo_root, "aime25", aime25, "test", args.sample_seed)
