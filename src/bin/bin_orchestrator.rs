@@ -1,6 +1,7 @@
 use std::backtrace::Backtrace;
 
 use clap::{ArgAction, Parser, ValueEnum};
+use proctitle::set_title;
 use std::collections::BTreeMap;
 
 use credit_assignment::{
@@ -99,6 +100,8 @@ async fn main() {
         num_iterations_limit,
         num_gpus,
     } = Args::parse();
+    let process_title = format!("orchestrator_{}_{}", model_cli_name, config_nickname);
+    set_title(&process_title);
     check_sympy_availability().unwrap();
     assert!(
         num_python_tool_servers > 0,

@@ -569,6 +569,7 @@ dependencies = [
  "minijinja",
  "ordered-float 5.3.0",
  "parking_lot",
+ "proctitle",
  "rand 0.10.0",
  "ratatui",
  "ratatui-core",
@@ -2225,6 +2226,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "proctitle"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "924cd8a0de90723d63fed19c5035ea129913a0bc998b37686a67f1eaf6a2aab5"
+dependencies = [
+ "lazy_static",
+ "libc",
+ "winapi",
 ]
 
 [[package]]
