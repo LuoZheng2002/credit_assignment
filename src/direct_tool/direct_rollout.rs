@@ -379,7 +379,14 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     let action_store =
         SqliteTableArrayStore::<QuestionFlatId<S>, DirectTreeAction<M>>::initialize_if_missing(
             asset_file_action_logs.actions_file_path(),
-        );
+        )
+        .unwrap_or_else(|e| {
+            panic!(
+                "Failed to open direct action log sqlite table array store at {}: {}",
+                asset_file_action_logs.actions_file_path(),
+                e
+            )
+        });
     let action_store_adapter = ActionStoreAdapter::new(action_store);
     let mut question_keys = dataset.get_keys().unwrap();
     // sort by question id to ensure deterministic order

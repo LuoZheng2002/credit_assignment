@@ -464,5 +464,12 @@ impl<M: LlmModelMarker, S: DatasetSplit> AssetFile for AssetFileDirectTreeAction
         SqliteTableArrayStore::<QuestionFlatId<S>, DirectTreeAction<M>>::initialize_if_missing(
             self.actions_file_path(),
         )
+        .unwrap_or_else(|e| {
+            panic!(
+                "Failed to open direct action log sqlite table array store at {}: {}",
+                self.actions_file_path(),
+                e
+            )
+        })
     }
 }

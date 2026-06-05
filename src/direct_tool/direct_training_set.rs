@@ -800,6 +800,13 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
     async fn fetch(&self) -> Self::FileModel {
         self.synchronize().await;
         SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(self.file_path())
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Failed to open training trajectories sqlite store at {}: {}",
+                    self.file_path(),
+                    e
+                )
+            })
     }
     async fn synchronize(&self) -> Base64Hash {
         let asset_file_rollout_logs = AssetFileDirectTreeActionLogs::<M, Training> {
@@ -843,7 +850,14 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
             }
             // initialize database
             let training_trajectory_store =
-                SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(self.file_path());
+                SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(self.file_path())
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "Failed to initialize training trajectories sqlite store at {}: {}",
+                            self.file_path(),
+                            e
+                        )
+                    });
             let asset_file_dataset = AssetFileHybridDataset::<Training>(PhantomData);
             let dataset_store = asset_file_dataset.fetch().await;
             let action_store = asset_file_rollout_logs.fetch().await;
