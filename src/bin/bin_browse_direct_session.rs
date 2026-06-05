@@ -644,11 +644,12 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
                             let question_preview =
                                 single_line_preview(&entry.action_log.question.question, 72);
                             format!(
-                                "#{}  win {:>5.1}% ({}/{})  {}",
+                                "#{}  win {:>5.1}% ({}/{})  [{}] {}",
                                 entry.key.0,
                                 entry.win_rate * 100.0,
                                 entry.num_correct,
                                 entry.num_leaves,
+                                entry.action_log.question.dataset_name,
                                 question_preview
                             )
                         }
