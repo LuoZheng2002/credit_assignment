@@ -407,6 +407,7 @@ def _run_unified_loop(
         advantages = None
         logits = None
         loss_output = None
+        loss = None
         try:
             collated = collate_training_samples(samples=step_batch.samples, pad_token_id=pad_token_id)
             input_ids = collated.input_ids.to(device=device, non_blocking=True)
@@ -434,6 +435,7 @@ def _run_unified_loop(
             advantages = None
             logits = None
             loss_output = None
+            loss = None
             optimizer.zero_grad(set_to_none=True)
             if hasattr(model, "zero_grad"):
                 model.zero_grad(set_to_none=True)
@@ -454,7 +456,8 @@ def _run_unified_loop(
                 next_batch_size=(adaptive_state.next_batch_size if requested_batch_size <= 1 else reduced_batch_size),
                 will_retry=requested_batch_size > 1,
             )
-            if requested_batch_size <= 1:
+            should_skip_sample = requested_batch_size <= 1
+            if should_skip_sample:
                 skipped_samples = requested_batch_size * world_size if is_distributed else requested_batch_size
                 if _is_primary_rank():
                     print(
@@ -477,11 +480,7 @@ def _run_unified_loop(
                         },
                     )
                 global_sample_cursor += skipped_samples
-                eng._release_step_memory(device)
-                if torch.cuda.is_available() and device.type == "cuda":
-                    torch.cuda.synchronize(device=device)
-                continue
-            if _is_primary_rank():
+            elif _is_primary_rank():
                 adaptive_state = AdaptiveBatchState(
                     next_batch_size=reduced_batch_size,
                     next_batch_size_float=float(reduced_batch_size),
@@ -505,6 +504,9 @@ def _run_unified_loop(
                         "next_batch_size_float": adaptive_state.next_batch_size_float,
                     },
                 )
+            eng._release_step_memory(device)
+            if torch.cuda.is_available() and device.type == "cuda":
+                torch.cuda.synchronize(device=device)
             continue
 
         step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
