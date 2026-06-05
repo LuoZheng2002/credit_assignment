@@ -142,7 +142,7 @@ impl<S: DatasetSplit> AssetFile for AssetFileHybridDataset<S> {
     }
     async fn fetch(&self) -> Self::FileModel {
         self.synchronize().await;
-        SqliteStore::assume_initialized(self.file_path()).unwrap_or_else(|e| {
+        SqliteStore::assume_initialized(self.file_path(), true).unwrap_or_else(|e| {
             panic!(
                 "Failed to open hybrid dataset sqlite store at {}: {}",
                 self.file_path(),

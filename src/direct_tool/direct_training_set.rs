@@ -799,7 +799,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
     type FileModel = SqliteStore<usize, DirectTrainingTrajectory<M>>;
     async fn fetch(&self) -> Self::FileModel {
         self.synchronize().await;
-        SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(self.file_path())
+        SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(self.file_path(), false)
             .unwrap_or_else(|e| {
                 panic!(
                     "Failed to open training trajectories sqlite store at {}: {}",
