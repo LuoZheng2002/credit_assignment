@@ -12,7 +12,7 @@ cargo run --bin bin_orchestrator -- \
     --training-config-common-path config/training/common.toml \
     --training-time 600 \
     --training-rollout-time-limit-secs 600 \
-    --validation-rollout-time-limit-secs 600 \
+    --validation-rollout-time-limit-secs 1200 \
     --num-python-tool-servers 1 \
     --sglang-server-log-path logs/sglang_server_qwen25_branch8.txt \
     --message-log-path logs/messages_qwen25_branch8.txt \
