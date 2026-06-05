@@ -27,7 +27,7 @@ use crate::{
     llm_model::LlmModelMarker,
 };
 
-const MAX_TRAINING_TRAJECTORY_TOKEN_LENGTH: usize = 4096;
+const MAX_TRAINING_TRAJECTORY_TOKEN_LENGTH: usize = 8192;
 
 #[derive(Debug, Clone)]
 struct TrajectoryMetadata<S: DatasetSplit> {
