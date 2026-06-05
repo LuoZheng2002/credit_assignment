@@ -194,12 +194,14 @@ impl Orchestrator {
                     self.ensure_inference_server_launched::<M>(epoch).await?;
                     self.validate_model::<M>(epoch).await?;
                     self.read_and_log_validation_accuracy::<M>(epoch).await?;
+                    self.sweep_previous_model_dirs_after_validation::<M>(epoch)?;
                     if epoch >= self.num_total_epochs {
                         log_info(&format!(
                             "Finished all {} epochs of orchestration",
                             self.num_total_epochs
                         ));
                         self.ensure_inference_server_shut_down::<M>().await;
+                        self.cleanup_epoch_model_dir_if_not_best::<M>(epoch)?;
                         break;
                     }
                     self.update_and_save_progress::<M>(
@@ -249,6 +251,7 @@ impl Orchestrator {
                         epoch
                     ));
                     self.train_model::<M>(epoch).await?;
+                    self.cleanup_epoch_artifacts_after_training::<M>(epoch)?;
                     assert!(epoch < self.num_total_epochs);
                     // do the final validation
                     self.update_and_save_progress::<M>(
@@ -602,6 +605,198 @@ impl Orchestrator {
             ));
         }
 
+        Ok(())
+    }
+
+    fn cleanup_epoch_artifacts_after_training<M: LlmModelMarker>(
+        &self,
+        epoch: usize,
+    ) -> Result<(), String> {
+        self.destroy_epoch_checkpoint_folder::<M>(epoch)?;
+        self.destroy_epoch_rollout_action_logs::<M>(epoch)?;
+        self.destroy_epoch_training_trajectories::<M>(epoch)?;
+        self.cleanup_epoch_model_dir_if_not_best::<M>(epoch)?;
+        Ok(())
+    }
+
+    fn destroy_epoch_checkpoint_folder<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
+        let checkpoint_parent_dir =
+            model_checkpoint_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+        let checkpoints_dir = format!("{}/checkpoints", checkpoint_parent_dir);
+        let latest_checkpoint_path = format!("{}/latest_checkpoint.txt", checkpoint_parent_dir);
+
+        if Path::new(&checkpoints_dir).exists() {
+            std::fs::remove_dir_all(&checkpoints_dir).map_err(|err| {
+                format!(
+                    "Failed to remove checkpoint directory for epoch {} ({}): {}",
+                    epoch, checkpoints_dir, err
+                )
+            })?;
+            log_info(format!(
+                "Removed checkpoint directory after training for epoch {}: {}",
+                epoch, checkpoints_dir
+            ));
+        }
+
+        if Path::new(&latest_checkpoint_path).exists() {
+            std::fs::remove_file(&latest_checkpoint_path).map_err(|err| {
+                format!(
+                    "Failed to remove latest checkpoint pointer for epoch {} ({}): {}",
+                    epoch, latest_checkpoint_path, err
+                )
+            })?;
+            log_info(format!(
+                "Removed latest checkpoint pointer after training for epoch {}: {}",
+                epoch, latest_checkpoint_path
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn destroy_epoch_rollout_action_logs<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
+        let training_logs = AssetFileDirectTreeActionLogs::<M, Training> {
+            nickname: self.config_nickname.clone(),
+            rollout_config: self.training_set_rollout_config.clone(),
+            posterior_calculation_config: self.posterior_calculation_config.clone(),
+            epoch,
+            _phantom: std::marker::PhantomData,
+        };
+        self.delete_file_if_exists(
+            &training_logs.actions_file_path(),
+            &format!("training rollout action logs for epoch {}", epoch),
+        )?;
+
+        let validation_logs = AssetFileDirectTreeActionLogs::<M, Validation> {
+            nickname: self.config_nickname.clone(),
+            rollout_config: self.validation_rollout_config.clone(),
+            posterior_calculation_config: self.posterior_calculation_config.clone(),
+            epoch,
+            _phantom: std::marker::PhantomData,
+        };
+        self.delete_file_if_exists(
+            &validation_logs.actions_file_path(),
+            &format!("validation rollout action logs for epoch {}", epoch),
+        )?;
+
+        Ok(())
+    }
+
+    fn destroy_epoch_training_trajectories<M: LlmModelMarker>(
+        &self,
+        epoch: usize,
+    ) -> Result<(), String> {
+        let asset_file_training_trajectories = AssetFileTrainingTrajectories {
+            config_nickname: self.config_nickname.clone(),
+            epoch,
+            rollout_config: self.training_set_rollout_config.clone(),
+            posterior_calculation_config: self.posterior_calculation_config.clone(),
+            cumulative_avg_abs_advantage_cutoff: self.cumulative_avg_abs_advantage_cutoff,
+            advantage_calculation_policy: self.advantage_calculation_policy,
+            _phantom: std::marker::PhantomData::<M>,
+        };
+        self.delete_file_if_exists(
+            &asset_file_training_trajectories.file_path(),
+            &format!("training trajectories sqlite for epoch {}", epoch),
+        )
+    }
+
+    fn cleanup_epoch_model_dir_if_not_best<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
+        let Some(&epoch_accuracy) = self.progress.validation_accuracies.get(&epoch) else {
+            return Err(format!(
+                "Missing validation accuracy for epoch {}, cannot decide model cleanup",
+                epoch
+            ));
+        };
+        let max_accuracy_through_epoch = self
+            .progress
+            .validation_accuracies
+            .iter()
+            .filter(|(logged_epoch, _)| **logged_epoch <= epoch)
+            .map(|(_, accuracy)| *accuracy)
+            .max_by(|a, b| a.total_cmp(b))
+            .ok_or_else(|| {
+                format!(
+                    "No validation accuracy recorded through epoch {}, cannot decide model cleanup",
+                    epoch
+                )
+            })?;
+        let keep_model_dir = epoch_accuracy >= max_accuracy_through_epoch;
+        if keep_model_dir {
+            log_info(format!(
+                "Keeping model directory for epoch {} because validation accuracy {:.6} is best so far",
+                epoch, epoch_accuracy
+            ));
+            return Ok(());
+        }
+
+        if epoch == 0 {
+            log_info(
+                "Skipping epoch 0 model directory deletion because epoch 0 parent path is a shared root",
+            );
+            return Ok(());
+        }
+
+        let model_parent_dir = model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+        self.delete_dir_if_exists(
+            &model_parent_dir,
+            &format!("model parent directory for epoch {}", epoch),
+        )
+    }
+
+    fn sweep_previous_model_dirs_after_validation<M: LlmModelMarker>(
+        &self,
+        current_epoch: usize,
+    ) -> Result<(), String> {
+        let best_epoch_so_far = self
+            .progress
+            .validation_accuracies
+            .iter()
+            .filter(|(epoch, _)| **epoch <= current_epoch)
+            .max_by(|a, b| a.1.total_cmp(b.1).then_with(|| a.0.cmp(b.0)))
+            .map(|(epoch, _)| *epoch)
+            .ok_or_else(|| {
+                format!(
+                    "No validation accuracies recorded up to epoch {}, cannot sweep model directories",
+                    current_epoch
+                )
+            })?;
+
+        for epoch in self.progress.validation_accuracies.keys().copied() {
+            if epoch >= current_epoch || epoch == best_epoch_so_far {
+                continue;
+            }
+            if epoch == 0 {
+                log_info(
+                    "Skipping epoch 0 model directory deletion during sweep because epoch 0 parent path is a shared root",
+                );
+                continue;
+            }
+            let model_parent_dir =
+                model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+            self.delete_dir_if_exists(
+                &model_parent_dir,
+                &format!("non-best previous model parent directory for epoch {}", epoch),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn delete_file_if_exists(&self, path: &str, description: &str) -> Result<(), String> {
+        if Path::new(path).exists() {
+            std::fs::remove_file(path)
+                .map_err(|err| format!("Failed to remove {} ({}): {}", description, path, err))?;
+            log_info(format!("Removed {}: {}", description, path));
+        }
+        Ok(())
+    }
+
+    fn delete_dir_if_exists(&self, path: &str, description: &str) -> Result<(), String> {
+        if Path::new(path).exists() {
+            std::fs::remove_dir_all(path)
+                .map_err(|err| format!("Failed to remove {} ({}): {}", description, path, err))?;
+            log_info(format!("Removed {}: {}", description, path));
+        }
         Ok(())
     }
 
