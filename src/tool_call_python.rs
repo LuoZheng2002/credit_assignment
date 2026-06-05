@@ -71,7 +71,6 @@ impl PythonToolResponse {
 }
 
 const PYTHON_TOOL_TIMEOUT_MS: u64 = 5000;
-const PYTHON_TOOL_QUEUE_TIMEOUT_MS: u64 = PYTHON_TOOL_TIMEOUT_MS + 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PythonToolRequestWire {
@@ -174,19 +173,11 @@ impl PythonToolWorkerHandle {
                 "Python tool worker queue closed unexpectedly.".to_string(),
             );
         }
-        let response = match timeout(
-            Duration::from_millis(PYTHON_TOOL_QUEUE_TIMEOUT_MS),
-            response_rx,
-        )
-        .await
-        {
-            Ok(Ok(response)) => response,
-            Ok(Err(_)) => PythonToolResponse::PythonError(
+        let response = match response_rx.await {
+            Ok(response) => response,
+            Err(_) => PythonToolResponse::PythonError(
                 "Python tool worker response channel closed unexpectedly.".to_string(),
             ),
-            Err(_) => {
-                PythonToolResponse::PythonError("Python code execution timed out.".to_string())
-            }
         };
         self.inflight.fetch_sub(1, Ordering::SeqCst);
         response
@@ -382,15 +373,11 @@ async fn execute_request_on_runtime(
         );
     }
 
-    let response_line = timeout(
-        Duration::from_millis(PYTHON_TOOL_TIMEOUT_MS),
-        runtime.stdout_lines.next_line(),
-    )
-    .await;
+    let response_line = runtime.stdout_lines.next_line().await;
 
     let line = match response_line {
-        Ok(Ok(Some(line))) => line,
-        Ok(Ok(None)) => {
+        Ok(Some(line)) => line,
+        Ok(None) => {
             return (
                 PythonToolResponse::PythonError(format!(
                     "Python tool worker {} closed stdout unexpectedly.",
@@ -399,18 +386,12 @@ async fn execute_request_on_runtime(
                 true,
             );
         }
-        Ok(Err(error)) => {
+        Err(error) => {
             return (
                 PythonToolResponse::PythonError(format!(
                     "Failed to read python tool worker {} response: {}",
                     worker_id, error
                 )),
-                true,
-            );
-        }
-        Err(_) => {
-            return (
-                PythonToolResponse::PythonError("Python code execution timed out.".to_string()),
                 true,
             );
         }
