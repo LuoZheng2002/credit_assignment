@@ -16,5 +16,6 @@ RUST_BACKTRACE=1 cargo run --bin bin_orchestrator -- \
     --num-python-tool-servers 4 \
     --sglang-server-log-path logs/sglang_server.txt \
     --message-log-path logs/messages.txt \
+    --tui-server-port 7878 \
     --num-gpus 1 \
     --ui true

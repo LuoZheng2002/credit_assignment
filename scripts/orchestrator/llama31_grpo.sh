@@ -16,5 +16,6 @@ cargo run --bin bin_orchestrator -- \
     --num-python-tool-servers 1 \
     --sglang-server-log-path logs/sglang_server_llama31_grpo.txt \
     --message-log-path logs/messages_llama31_grpo.txt \
+    --tui-server-port 7878 \
     --num-gpus 1 \
     --ui true
