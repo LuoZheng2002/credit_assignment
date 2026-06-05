@@ -3,8 +3,9 @@ use research_utility::{
     progress_tui_server::log_warning,
     sqlite_table_array_store::SqliteTableArrayStore,
 };
+use minijinja::context;
 use serde::{Deserialize, Serialize};
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::LazyLock};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
@@ -21,6 +22,50 @@ use crate::{
 };
 
 const ACTION_LOG_SCHEMA_VERSION: usize = 3;
+const ACTION_LOGS_PARENT_DIR_TEMPLATE_PATH: &str = "config/training/action_logs_parent_dir.jinja";
+
+fn load_template_environment(
+    template_path: &str,
+    template_name: &'static str,
+) -> Result<minijinja::Environment<'static>, String> {
+    let template_source = std::fs::read_to_string(template_path)
+        .map_err(|err| format!("Failed to read {}: {}", template_path, err))?;
+    let mut env = minijinja::Environment::new();
+    env.add_template_owned(template_name, template_source)
+        .map_err(|err| format!("Failed to parse {} template: {}", template_name, err))?;
+    Ok(env)
+}
+
+fn action_logs_parent_dir_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+) -> Result<String, String> {
+    static ACTION_LOGS_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
+        Result<minijinja::Environment<'static>, String>,
+    > = LazyLock::new(|| {
+        load_template_environment(ACTION_LOGS_PARENT_DIR_TEMPLATE_PATH, "action_logs_parent_dir")
+    });
+
+    let env = ACTION_LOGS_PARENT_DIR_TEMPLATE_ENVIRONMENT
+        .as_ref()
+        .map_err(|err| err.clone())?;
+    let template = env
+        .get_template("action_logs_parent_dir")
+        .map_err(|err| format!("Failed to load action_logs_parent_dir template: {}", err))?;
+    let rendered = template
+        .render(context! {
+            model_cli_name => model_cli_name,
+            config_nickname => config_nickname,
+            epoch => epoch,
+        })
+        .map_err(|err| format!("Failed to render action_logs_parent_dir template: {}", err))?;
+    let rendered = rendered.trim().to_string();
+    if rendered.is_empty() {
+        return Err("Rendered action_logs_parent_dir template is empty".to_string());
+    }
+    Ok(rendered)
+}
 
 #[derive(Clone)]
 pub struct DirectTreeActionLog<M: LlmModelMarker, S: DatasetSplit> {
@@ -342,13 +387,9 @@ impl<M: LlmModelMarker, S: DatasetSplit> AssetFileDirectTreeActionLogs<M, S> {
         short_hash
     }
     pub fn actions_file_path(&self) -> String {
-        format!(
-            "results/{}/{}/epoch_{}/action_logs_{}.sqlite",
-            M::CLI_NAME,
-            self.nickname,
-            self.epoch,
-            self.to_short_hash()
-        )
+        let parent_dir = action_logs_parent_dir_from_template(M::CLI_NAME, &self.nickname, self.epoch)
+            .unwrap_or_else(|err| panic!("Failed to resolve action logs parent directory: {}", err));
+        format!("{}/action_logs_{}.sqlite", parent_dir, self.to_short_hash())
     }
     fn version_tracking_path(&self) -> String {
         format!(
