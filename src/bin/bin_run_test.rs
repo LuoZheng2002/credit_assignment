@@ -12,10 +12,16 @@ use credit_assignment::{
     },
     get_accuracy::{TestAccuracyResult, get_test_accuracies},
     json_line_util::{read_json, write_json},
+    launch_sglang_server::{
+        best_effort_shutdown_stale_sglang_server, launch_sglang_server_process, model_uses_sglang,
+        shut_down_sglang_server_process,
+    },
     llm_model::{
         Gpt4o, LlmCliArgs, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B,
         Qwen35_08B,
     },
+    load_initial_model::load_initial_model,
+    orchestrator::model_parent_dir_from_template,
 };
 use reqwest::Client;
 use research_utility::progress_tui_server::ProgressTuiServer;
@@ -49,6 +55,8 @@ struct Args {
     rollout_time_limit_secs: usize,
     #[arg(long, default_value_t = 1)]
     num_python_tool_servers: usize,
+    #[arg(long, default_value_t = 1)]
+    num_gpus: usize,
     #[arg(long)]
     sglang_server_log_path: Option<String>,
 }
@@ -70,6 +78,7 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
     args: &Args,
     client: Client,
     posterior_calculation_config: PosteriorCalculationConfig,
+    llm_cli_args: LlmCliArgs,
 ) -> TestAccuracyResult {
     let program_config = RolloutProgramConfig {
         config_nickname: args.config_nickname.clone(),
@@ -78,7 +87,7 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
         epoch: args.epoch,
         client,
         max_rollout_concurrency: args.max_rollout_concurrency,
-        llm_cli_args: args.llm_cli_args.clone(),
+        llm_cli_args,
         rollout_time_limit_secs: args.rollout_time_limit_secs,
         num_python_tool_servers: args.num_python_tool_servers,
         total_epochs: args.total_epochs,
@@ -100,6 +109,54 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
     .await
 }
 
+async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
+    rollout_config: DirectRolloutConfig<Testing>,
+    args: &Args,
+    client: Client,
+    posterior_calculation_config: PosteriorCalculationConfig,
+) -> Result<TestAccuracyResult, String> {
+    if !model_uses_sglang::<M>() {
+        return Ok(
+            run_rollout_and_compute_accuracy::<M>(
+                rollout_config,
+                args,
+                client,
+                posterior_calculation_config,
+                args.llm_cli_args.clone(),
+            )
+            .await,
+        );
+    }
+
+    best_effort_shutdown_stale_sglang_server().await;
+    let model_parent_dir =
+        model_parent_dir_from_template(M::CLI_NAME, &args.config_nickname, args.epoch)?;
+    if args.epoch == 0 {
+        load_initial_model(&model_parent_dir, M::API_NAME).await?;
+    }
+    let model_path = format!("{}/model", model_parent_dir);
+    let (sglang_port, mut process) = launch_sglang_server_process::<M>(
+        &model_path,
+        args.num_gpus,
+        args.sglang_server_log_path.as_deref(),
+    )
+    .await?;
+
+    let mut llm_cli_args = args.llm_cli_args.clone();
+    llm_cli_args.sglang_port = Some(sglang_port);
+    let test_result = run_rollout_and_compute_accuracy::<M>(
+        rollout_config,
+        args,
+        client,
+        posterior_calculation_config,
+        llm_cli_args,
+    )
+    .await;
+
+    shut_down_sglang_server_process(&mut process).await;
+    Ok(test_result)
+}
+
 macro_rules! run_model_for_testing {
     ($model_name:expr, $rollout_config:expr, $args:expr, $client:expr, $posterior:expr;
      $( $model_enum:path, $model_ty:ty ),+ $(,)?) => {{
@@ -112,7 +169,7 @@ macro_rules! run_model_for_testing {
         match model_name {
             $(
                 $model_enum => {
-                    run_rollout_and_compute_accuracy::<$model_ty>(
+                    run_rollout_and_compute_accuracy_with_server::<$model_ty>(
                         rollout_config,
                         args,
                         client,
@@ -143,6 +200,7 @@ async fn main() {
         args.num_python_tool_servers > 0,
         "num_python_tool_servers must be positive"
     );
+    assert!(args.num_gpus > 0, "num_gpus must be positive");
     assert!(args.total_epochs > 0, "total_epochs must be positive");
 
     println!("Starting test accuracy evaluation pipeline...");
@@ -180,7 +238,8 @@ async fn main() {
         LlmModelName::Qwen35_4b, Qwen35_4B,
         LlmModelName::Qwen35_08b, Qwen35_08B,
         LlmModelName::Gpt4o, Gpt4o
-    );
+    )
+    .unwrap();
 
     let output_path = format!(
         "results/{}/{}/test_accuracy_epoch_{}.json",
