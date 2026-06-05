@@ -1,0 +1,20 @@
+cargo run --bin bin_orchestrator -- \
+    --model-cli-name gemma-3-4b-it \
+    --max-rollout-concurrency 300 \
+    --config-nickname std \
+    --validation-rollout-config-path config/rollout_config_validation_tool.json \
+    --training-rollout-config-path config/rollout_config_training_std.json \
+    --posterior-hyperparameters-path config/posterior_hyperparameters.json \
+    --num-total-epochs 20 \
+    --cumulative-avg-abs-advantage-cutoff 0.5 \
+    --num-iterations-limit 3 \
+    --advantage-calculation-policy tree-mappo-posterior \
+    --training-config-common-path config/training/common.toml \
+    --training-time 600 \
+    --training-rollout-time-limit-secs 600 \
+    --validation-rollout-time-limit-secs 600 \
+    --num-python-tool-servers 1 \
+    --sglang-server-log-path logs/sglang_server_gemma3_std.txt \
+    --message-log-path logs/messages_gemma3_std.txt \
+    --num-gpus 1 \
+    --ui true
