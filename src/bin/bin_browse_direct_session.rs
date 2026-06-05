@@ -467,7 +467,8 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
         let asset_file_dataset = AssetFileHybridDataset::<S>(PhantomData);
         let question_store = asset_file_dataset.fetch().await;
         let action_store = asset_file_action_logs.fetch().await;
-        let entry_keys = action_store.get_keys().unwrap();
+        let mut entry_keys = action_store.get_keys().unwrap();
+        entry_keys.sort_by_key(|key| key.0);
         let entry_cache = std::iter::repeat_with(|| EntryLoadState::Unloaded)
             .take(entry_keys.len())
             .collect();
