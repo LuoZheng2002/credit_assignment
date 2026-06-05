@@ -1,20 +1,20 @@
 cargo run --bin bin_orchestrator -- \
-    --model-cli-name qwen3-4b \
+    --model-cli-name qwen2.5-7b \
     --max-rollout-concurrency 300 \
-    --config-nickname grpo \
+    --config-nickname treerpo \
     --validation-rollout-config-path config/rollout_config_validation_tool.json \
-    --training-rollout-config-path config/rollout_config_training_grpo.json \
+    --training-rollout-config-path config/rollout_config_training_treerpo.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --num-total-epochs 20 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
     --num-iterations-limit 3 \
-    --advantage-calculation-policy tree-mappo-posterior \
+    --advantage-calculation-policy tree-rpo-win-rate \
     --training-config-common-path config/training/common.toml \
     --training-time 600 \
     --training-rollout-time-limit-secs 600 \
     --validation-rollout-time-limit-secs 600 \
     --num-python-tool-servers 1 \
-    --sglang-server-log-path logs/sglang_server_qwen34_grpo.txt \
-    --message-log-path logs/messages_qwen34_grpo.txt \
+    --sglang-server-log-path logs/sglang_server_qwen25_treerpo.txt \
+    --message-log-path logs/messages_qwen25_treerpo.txt \
     --num-gpus 1 \
     --ui true

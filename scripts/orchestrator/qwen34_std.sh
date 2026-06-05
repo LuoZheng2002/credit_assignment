@@ -2,8 +2,8 @@ cargo run --bin bin_orchestrator -- \
     --model-cli-name qwen3-4b \
     --max-rollout-concurrency 300 \
     --config-nickname std \
-    --validation-rollout-config-path config/rollout_config_validation.json \
-    --training-rollout-config-path config/rollout_config_training.json \
+    --validation-rollout-config-path config/rollout_config_validation_tool.json \
+    --training-rollout-config-path config/rollout_config_training_std.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --num-total-epochs 20 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \

@@ -2,7 +2,7 @@ RUST_BACKTRACE=1 cargo run --bin bin_orchestrator -- \
     --model-cli-name qwen3.5-0.8b \
     --max-rollout-concurrency 200 \
     --config-nickname tra16 \
-    --validation-rollout-config-path config/rollout_config_validation.json \
+    --validation-rollout-config-path config/rollout_config_validation_tool.json \
     --training-rollout-config-path config/rollout_config_training_qwen35_08_temp0_7.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --num-total-epochs 3 \
