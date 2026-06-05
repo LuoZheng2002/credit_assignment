@@ -1,0 +1,8 @@
+{
+    "split": "Training",
+    "branching_policy": "TreeMappoGuided",
+    "max_num_trunks": 8,
+    "max_num_total_trajectories": 8,
+    "fixed_temperature": 0.7,
+    "use_tool": true
+}
