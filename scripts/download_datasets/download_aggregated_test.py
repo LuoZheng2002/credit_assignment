@@ -55,7 +55,7 @@ def _write_store_entries(db_path: Path, payload_rows: list[dict[str, object]]) -
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Download and build aggregated_test.sqlite")
+    parser = argparse.ArgumentParser(description="Download and build hybrid_test.sqlite")
     parser.add_argument(
         "--sample-seed",
         type=int,
@@ -66,14 +66,14 @@ def main() -> None:
         "--output",
         type=Path,
         default=None,
-        help="Output sqlite path (default: <repo>/datasets/aggregated_test.sqlite)",
+        help="Output sqlite path (default: <repo>/datasets/hybrid_test.sqlite)",
     )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[2]
     install_hf_token(repo_root)
 
-    output_path = args.output or (repo_root / "datasets" / "aggregated_test.sqlite")
+    output_path = args.output or (repo_root / "datasets" / "hybrid_test.sqlite")
 
     all_rows: list[dict[str, object]] = []
     flat_id = 0
