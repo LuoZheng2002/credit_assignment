@@ -443,6 +443,9 @@ def _run_unified_loop(
             logits = None
             loss_output = None
             optimizer.zero_grad(set_to_none=True)
+            if hasattr(model, "zero_grad"):
+                model.zero_grad(set_to_none=True)
+            accumulation_step = 0
             eng._print_cuda_oom_diagnostics_stderr(
                 rank=rank,
                 iteration_index=iteration_index,
