@@ -5,7 +5,7 @@ cargo run --bin bin_orchestrator -- \
     --validation-rollout-config-path config/rollout_config_validation_notool.json \
     --training-rollout-config-path config/rollout_config_training_notool.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
-    --num-total-epochs 6 \
+    --num-total-epochs 20 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
     --num-iterations-limit 3 \
     --advantage-calculation-policy tree-mappo-posterior \
@@ -14,7 +14,7 @@ cargo run --bin bin_orchestrator -- \
     --training-rollout-time-limit-secs 600 \
     --validation-rollout-time-limit-secs 600 \
     --num-python-tool-servers 1 \
-    --sglang-server-log-path logs/sglang_server.txt \
-    --message-log-path logs/messages.txt \
+    --sglang-server-log-path logs/sglang_server_qwen25.txt \
+    --message-log-path logs/messages_qwen25.txt \
     --num-gpus 1 \
     --ui true

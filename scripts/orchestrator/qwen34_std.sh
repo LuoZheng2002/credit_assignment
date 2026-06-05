@@ -5,7 +5,7 @@ cargo run --bin bin_orchestrator -- \
     --validation-rollout-config-path config/rollout_config_validation.json \
     --training-rollout-config-path config/rollout_config_training.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
-    --num-total-epochs 6 \
+    --num-total-epochs 20 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
     --num-iterations-limit 3 \
     --advantage-calculation-policy tree-mappo-posterior \
