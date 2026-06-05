@@ -40,14 +40,6 @@ DEFAULT_TRAJECTORY_LENGTH_CAP = 4096
 MIN_TRAJECTORY_LENGTH_CAP = 2
 
 
-def _reduce_trajectory_length_cap(current_cap: int) -> int:
-    assert current_cap >= MIN_TRAJECTORY_LENGTH_CAP, "current_cap must be >= minimum"
-    reduced = int(current_cap * 0.95)
-    if reduced >= current_cap:
-        reduced = current_cap - 1
-    return max(MIN_TRAJECTORY_LENGTH_CAP, reduced)
-
-
 def _truncate_sample_to_cap(sample: TrainingSampleTokenized, trajectory_length_cap: int) -> TrainingSampleTokenized:
     assert trajectory_length_cap >= MIN_TRAJECTORY_LENGTH_CAP, "trajectory_length_cap too small"
     if sample.input_length <= trajectory_length_cap:
@@ -459,51 +451,32 @@ def _run_unified_loop(
                 iteration_index=iteration_index,
                 batch_index=step_batch.batch_index,
                 batch_token_length=max(sample.input_length for sample in step_batch.samples),
-                next_batch_size=reduced_batch_size,
-                will_retry=True,
-                next_trajectory_length_cap=(
-                    _reduce_trajectory_length_cap(trajectory_length_cap)
-                    if adaptive_state.next_batch_size <= 1 and trajectory_length_cap > MIN_TRAJECTORY_LENGTH_CAP
-                    else None
-                ),
+                next_batch_size=(adaptive_state.next_batch_size if requested_batch_size <= 1 else reduced_batch_size),
+                will_retry=requested_batch_size > 1,
             )
-            if adaptive_state.next_batch_size <= 1:
-                if trajectory_length_cap <= MIN_TRAJECTORY_LENGTH_CAP:
-                    raise
-                next_cap = _reduce_trajectory_length_cap(trajectory_length_cap)
-                if is_distributed:
-                    if _is_primary_rank():
-                        print(
-                            "[warning] "
-                            "oom_at_batch_size_1=1 "
-                            f"trajectory_length_cap_old={trajectory_length_cap} "
-                            f"trajectory_length_cap_new={next_cap}"
-                        )
-                        print(
-                            "[status] "
-                            f"adaptive_trajectory_cap_reduced=1 old_cap={trajectory_length_cap} "
-                            f"new_cap={next_cap} reason=oom_at_batch_size_1"
-                        )
-                        trajectory_length_cap = next_cap
-                    cap_tensor = torch.tensor([trajectory_length_cap], dtype=torch.int64, device=device)
-                    torch.distributed.broadcast(cap_tensor, src=0)
-                    trajectory_length_cap = int(cap_tensor.item())
-                    _emit_trajectory_length_cap(cap=trajectory_length_cap, eng=eng)
-                else:
-                    if _is_primary_rank():
-                        print(
-                            "[warning] "
-                            "oom_at_batch_size_1=1 "
-                            f"trajectory_length_cap_old={trajectory_length_cap} "
-                            f"trajectory_length_cap_new={next_cap}"
-                        )
-                        print(
-                            "[status] "
-                            f"adaptive_trajectory_cap_reduced=1 old_cap={trajectory_length_cap} "
-                            f"new_cap={next_cap} reason=oom_at_batch_size_1"
-                        )
-                    trajectory_length_cap = next_cap
-                    _emit_trajectory_length_cap(cap=trajectory_length_cap, eng=eng)
+            if requested_batch_size <= 1:
+                skipped_samples = requested_batch_size * world_size if is_distributed else requested_batch_size
+                if _is_primary_rank():
+                    print(
+                        "[warning] "
+                        "oom_at_batch_size_1=1 "
+                        f"skipped_samples={skipped_samples} "
+                        f"sample_index={global_sample_cursor}"
+                    )
+                    eng._log_json_line(
+                        logs_path,
+                        {
+                            "step": global_step,
+                            "iteration": iteration_index,
+                            "batch_index": step_batch.batch_index,
+                            "oom": 1,
+                            "oom_skipped_sample": 1,
+                            "skipped_samples": skipped_samples,
+                            "next_batch_size": adaptive_state.next_batch_size,
+                            "next_batch_size_float": adaptive_state.next_batch_size_float,
+                        },
+                    )
+                global_sample_cursor += skipped_samples
                 eng._release_step_memory(device)
                 if torch.cuda.is_available() and device.type == "cuda":
                     torch.cuda.synchronize(device=device)
