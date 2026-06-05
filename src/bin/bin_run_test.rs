@@ -17,8 +17,8 @@ use credit_assignment::{
         shut_down_sglang_server_process,
     },
     llm_model::{
-        Gpt4o, LlmCliArgs, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B,
-        Qwen35_08B,
+        Gemma3_4BIt, Gpt4o, Llama31_8BInstruct, LlmCliArgs, LlmModelMarker, LlmModelName,
+        Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
     load_initial_model::load_initial_model,
     orchestrator::model_parent_dir_from_template,
@@ -64,6 +64,8 @@ struct Args {
 fn model_cli_name_to_string(model_name: &LlmModelName) -> String {
     match model_name {
         LlmModelName::Gpt4o => Gpt4o::CLI_NAME,
+        LlmModelName::Gemma3_4b => Gemma3_4BIt::CLI_NAME,
+        LlmModelName::Llama31_8b => Llama31_8BInstruct::CLI_NAME,
         LlmModelName::Qwen3_06b => Qwen3_06B::CLI_NAME,
         LlmModelName::Qwen3_4b => Qwen3_4B::CLI_NAME,
         LlmModelName::Qwen25_7b => Qwen25_7B::CLI_NAME,
@@ -237,6 +239,8 @@ async fn main() {
         LlmModelName::Qwen3_4b, Qwen3_4B,
         LlmModelName::Qwen35_4b, Qwen35_4B,
         LlmModelName::Qwen35_08b, Qwen35_08B,
+        LlmModelName::Gemma3_4b, Gemma3_4BIt,
+        LlmModelName::Llama31_8b, Llama31_8BInstruct,
         LlmModelName::Gpt4o, Gpt4o
     )
     .unwrap();

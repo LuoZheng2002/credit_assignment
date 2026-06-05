@@ -4,6 +4,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[derive(Clone, Debug, Copy)]
 pub enum LlmModelName {
     Gpt4o,
+    Gemma3_4b,
+    Llama31_8b,
     Qwen25_7b,
     Qwen3_06b,
     Qwen3_4b,
@@ -15,6 +17,8 @@ impl ValueEnum for LlmModelName {
     fn value_variants<'a>() -> &'a [Self] {
         &[
             Self::Gpt4o,
+            Self::Gemma3_4b,
+            Self::Llama31_8b,
             Self::Qwen25_7b,
             Self::Qwen3_06b,
             Self::Qwen3_4b,
@@ -54,6 +58,8 @@ impl LlmModelName {
     pub fn cli_name(&self) -> &'static str {
         match self {
             LlmModelName::Gpt4o => "gpt-4o",
+            LlmModelName::Gemma3_4b => "gemma-3-4b-it",
+            LlmModelName::Llama31_8b => "llama-3.1-8b-instruct",
             LlmModelName::Qwen25_7b => "qwen2.5-7b",
             LlmModelName::Qwen3_06b => "qwen3-0.6b",
             LlmModelName::Qwen3_4b => "qwen3-4b",
@@ -65,6 +71,8 @@ impl LlmModelName {
     pub fn api_name(&self) -> &'static str {
         match self {
             LlmModelName::Gpt4o => "gpt-4o",
+            LlmModelName::Gemma3_4b => "google/gemma-3-4b-it",
+            LlmModelName::Llama31_8b => "meta-llama/Llama-3.1-8B-Instruct",
             LlmModelName::Qwen25_7b => "Qwen/Qwen2.5-7B-Instruct",
             LlmModelName::Qwen3_06b => "Qwen/Qwen3-0.6B",
             LlmModelName::Qwen3_4b => "Qwen/Qwen3-4B",
@@ -80,13 +88,16 @@ impl LlmModelName {
             | LlmModelName::Qwen3_4b
             | LlmModelName::Qwen35_08b
             | LlmModelName::Qwen35_4b => true,
-            LlmModelName::Gpt4o => false,
+            LlmModelName::Gpt4o
+            | LlmModelName::Gemma3_4b
+            | LlmModelName::Llama31_8b => false,
         }
     }
 
     pub fn is_gpt(&self) -> bool {
         match self {
             LlmModelName::Gpt4o => true,
+            LlmModelName::Gemma3_4b | LlmModelName::Llama31_8b => false,
             LlmModelName::Qwen25_7b
             | LlmModelName::Qwen3_06b
             | LlmModelName::Qwen3_4b

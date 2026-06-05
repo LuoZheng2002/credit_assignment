@@ -11,8 +11,8 @@ use credit_assignment::{
     },
     json_line_util::read_json,
     llm_model::{
-        Gpt4o, LlmCliArgs, LlmModelMarker, LlmModelName, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B,
-        Qwen35_08B,
+        Gemma3_4BIt, Gpt4o, Llama31_8BInstruct, LlmCliArgs, LlmModelMarker, LlmModelName,
+        Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
 };
 use reqwest::Client;
@@ -165,6 +165,8 @@ async fn main() {
         LlmModelName::Qwen3_4b, Qwen3_4B,
         LlmModelName::Qwen35_4b, Qwen35_4B,
         LlmModelName::Qwen35_08b, Qwen35_08B,
+        LlmModelName::Gemma3_4b, Gemma3_4BIt,
+        LlmModelName::Llama31_8b, Llama31_8BInstruct,
         LlmModelName::Gpt4o, Gpt4o;
         DatasetSplitEnum::Training, Training,
         DatasetSplitEnum::Validation, Validation,

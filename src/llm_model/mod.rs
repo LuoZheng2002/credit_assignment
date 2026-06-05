@@ -1,4 +1,6 @@
+pub mod gemma3_4b_it;
 pub mod gpt_4o;
+pub mod llama31_8b_instruct;
 pub mod llm_model_name;
 pub mod llm_model_traits;
 pub mod qwen25_7b;
@@ -10,7 +12,11 @@ pub mod qwen_shared;
 
 pub use crate::token_array::TokenArray;
 pub use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate, Top8Candidates};
+pub use gemma3_4b_it::{Gemma3_4BIt, Gemma3_4BItLlmCallable, Gemma3_4BItTokenizer};
 pub use gpt_4o::{Gpt4o, Gpt4oLlmCallable, Gpt4oTokenizer};
+pub use llama31_8b_instruct::{
+    Llama31_8BInstruct, Llama31_8BInstructLlmCallable, Llama31_8BInstructTokenizer,
+};
 pub use llm_model_name::LlmModelName;
 pub(crate) use llm_model_traits::trim_tail_eos_if_needed;
 pub use llm_model_traits::{LlmCallable, LlmCliArgs, LlmModelMarker, MyTokenizer};

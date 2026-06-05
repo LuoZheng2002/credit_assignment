@@ -12,7 +12,10 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_line_util::{read_json, read_toml},
-    llm_model::{Gpt4o, LlmModelName, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B},
+    llm_model::{
+        Gemma3_4BIt, Gpt4o, Llama31_8BInstruct, LlmModelName, Qwen3_4B, Qwen3_06B, Qwen25_7B,
+        Qwen35_4B, Qwen35_08B,
+    },
     orchestrator::{OrchestrationProgress, OrchestrationStatus, Orchestrator},
     python_training_config::PythonTrainingConfigCommon,
 };
@@ -178,6 +181,10 @@ async fn main() {
 
     let result = match model_name {
         LlmModelName::Gpt4o => orchestrator.orchestrate::<Gpt4o>().await,
+        LlmModelName::Gemma3_4b => orchestrator.orchestrate::<Gemma3_4BIt>().await,
+        LlmModelName::Llama31_8b => {
+            orchestrator.orchestrate::<Llama31_8BInstruct>().await
+        }
         LlmModelName::Qwen3_06b => orchestrator.orchestrate::<Qwen3_06B>().await,
         LlmModelName::Qwen3_4b => orchestrator.orchestrate::<Qwen3_4B>().await,
         LlmModelName::Qwen25_7b => orchestrator.orchestrate::<Qwen25_7B>().await,
