@@ -21,8 +21,20 @@ pub struct HybridDatasetQuestion<S: DatasetSplit> {
 //     }
 // }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct QuestionFlatId<S: DatasetSplit>(pub usize, pub std::marker::PhantomData<S>);
+
+impl<S: DatasetSplit> std::fmt::Debug for QuestionFlatId<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl<S: DatasetSplit> std::fmt::Display for QuestionFlatId<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 impl<S: DatasetSplit> Serialize for QuestionFlatId<S> {
     fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
