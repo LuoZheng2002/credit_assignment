@@ -3,6 +3,7 @@ use serde_json::Value;
 use tokenizers::Tokenizer;
 
 use crate::constants::SGLANG_CONTEXT_LENGTH;
+use crate::llm_model::LlmModelMarker;
 use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate};
 
 pub(crate) fn wrap_python_response_xml(raw_python_response: &str) -> String {
@@ -160,13 +161,18 @@ impl SharedSglangLlmCallable {
         Ok(generated_tokens)
     }
 
-    pub(crate) async fn generate_tokens_with_logprobs_from_tokens<M>(
+    pub(crate) async fn generate_tokens_with_logprobs_from_tokens<M: LlmModelMarker>(
         &self,
         tokens: Vec<i32>,
         passes_in_stop: bool,
         temperature: f32,
     ) -> Result<TokenArrayWithLogprob<M>, String> {
         let max_new_tokens = remaining_generation_tokens(tokens.len())?;
+        let logprob_start_len: i64 = if M::CLI_NAME.starts_with("gemma-") {
+            tokens.len() as i64
+        } else {
+            -1
+        };
         let mut body = serde_json::json!({
             "input_ids": tokens.clone(),
             "sampling_params": {
@@ -175,7 +181,7 @@ impl SharedSglangLlmCallable {
                 "no_stop_trim": true,
             },
             "return_logprob": true,
-            "logprob_start_len": -1,
+            "logprob_start_len": logprob_start_len,
             "top_logprobs_num": 8,
             "stream": false,
         });
