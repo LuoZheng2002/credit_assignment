@@ -828,10 +828,19 @@ def _update_adaptive_batch_state(
     )
 
 
-def _resolve_pad_token_id(tokenizer_pad_token_id: int | None) -> int:
-    assert tokenizer_pad_token_id is not None, "tokenizer.pad_token_id must be defined for training"
-    assert tokenizer_pad_token_id >= 0, "tokenizer.pad_token_id must be non-negative"
-    return int(tokenizer_pad_token_id)
+def _resolve_pad_token_id(tokenizer_pad_token_id: int | None, tokenizer_eos_token_id: int | None) -> int:
+    if tokenizer_pad_token_id is not None:
+        assert tokenizer_pad_token_id >= 0, "tokenizer.pad_token_id must be non-negative"
+        return int(tokenizer_pad_token_id)
+
+    if tokenizer_eos_token_id is not None:
+        assert tokenizer_eos_token_id >= 0, "tokenizer.eos_token_id must be non-negative"
+        return int(tokenizer_eos_token_id)
+
+    raise AssertionError(
+        "tokenizer.pad_token_id is undefined and tokenizer.eos_token_id is also undefined; "
+        "cannot resolve a padding token for training"
+    )
 
 
 def _normalize_optional_token_id(token_id: int | None) -> int:
@@ -969,9 +978,16 @@ def train(config: TrainConfig) -> None:
             f"train_reset_batch_size_on_wrap={1 if reset_batch_size_on_wrap else 0}"
         )
     tokenizer = AutoTokenizer.from_pretrained(resolved_model_path)
-    pad_token_id = _resolve_pad_token_id(tokenizer.pad_token_id)
     eos_token_id = _normalize_optional_token_id(tokenizer.eos_token_id)
+    pad_token_id = _resolve_pad_token_id(tokenizer.pad_token_id, tokenizer.eos_token_id)
     bos_token_id = _normalize_optional_token_id(tokenizer.bos_token_id)
+    if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
+        tokenizer.pad_token_id = int(tokenizer.eos_token_id)
+        if _is_primary_rank():
+            print(
+                "[status] "
+                f"tokenizer_pad_token_fallback=1 fallback_source=eos_token_id pad_token_id={tokenizer.pad_token_id}"
+            )
 
     if config.training_plan == "lora_current":
         model, attention_backend = _build_lora_model(

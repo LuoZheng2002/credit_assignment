@@ -2,7 +2,7 @@ import unittest
 
 from src_py.train.batch_dataset import ResolvedTrainingBatch
 from src_py.train.data_sqlite import QuestionNodeId, TrainingSampleTokenized
-from src_py.train.engine import _shard_batches_for_rank, _verify_tokenizer_model_match
+from src_py.train.engine import _resolve_pad_token_id, _shard_batches_for_rank, _verify_tokenizer_model_match
 
 
 def _build_sample(
@@ -24,6 +24,16 @@ def _build_sample(
 
 
 class TestEngineTokenizerVerification(unittest.TestCase):
+    def test_resolve_pad_token_id_prefers_defined_pad(self) -> None:
+        self.assertEqual(7, _resolve_pad_token_id(tokenizer_pad_token_id=7, tokenizer_eos_token_id=2))
+
+    def test_resolve_pad_token_id_falls_back_to_eos(self) -> None:
+        self.assertEqual(2, _resolve_pad_token_id(tokenizer_pad_token_id=None, tokenizer_eos_token_id=2))
+
+    def test_resolve_pad_token_id_raises_when_pad_and_eos_missing(self) -> None:
+        with self.assertRaises(AssertionError):
+            _resolve_pad_token_id(tokenizer_pad_token_id=None, tokenizer_eos_token_id=None)
+
     def test_shard_batches_for_rank_disjoint_and_complete(self) -> None:
         model_name = "Qwen/Qwen2.5-7B-Instruct"
         batches: list[ResolvedTrainingBatch] = []
