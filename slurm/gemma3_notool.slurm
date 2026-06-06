@@ -11,4 +11,20 @@
 #SBATCH --account=bfdz-delta-gpu
 #SBATCH --time=04:00:00
 
-bash scripts/orchestrator/gemma3_notool.sh
+max_retries=5
+for trial in $(seq 1 "$max_retries"); do
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Trial ${trial}/${max_retries}: running gemma3_notool orchestrator"
+    trial_start_time=$(date +%s)
+    if bash scripts/orchestrator/gemma3_notool.sh; then
+        trial_end_time=$(date +%s)
+        elapsed_seconds=$((trial_end_time - trial_start_time))
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Trial ${trial}/${max_retries}: succeeded (elapsed ${elapsed_seconds}s)"
+        exit 0
+    fi
+    trial_end_time=$(date +%s)
+    elapsed_seconds=$((trial_end_time - trial_start_time))
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Trial ${trial}/${max_retries}: failed (elapsed ${elapsed_seconds}s)"
+done
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] All ${max_retries} trials failed"
+exit 1
