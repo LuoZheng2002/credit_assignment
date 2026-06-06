@@ -18,7 +18,7 @@ use credit_assignment::{
     },
     llm_model::{
         Gemma3_4BIt, Gpt4o, Llama31_8BInstruct, LlmCliArgs, LlmModelMarker, LlmModelName,
-        Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
+        Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
     load_initial_model::load_initial_model,
     orchestrator::model_parent_dir_from_template,
@@ -69,6 +69,7 @@ fn model_cli_name_to_string(model_name: &LlmModelName) -> String {
         LlmModelName::Gpt4o => Gpt4o::CLI_NAME,
         LlmModelName::Gemma3_4b => Gemma3_4BIt::CLI_NAME,
         LlmModelName::Llama31_8b => Llama31_8BInstruct::CLI_NAME,
+        LlmModelName::Mistral7bInstructV03 => Mistral7BInstructV03::CLI_NAME,
         LlmModelName::Qwen3_06b => Qwen3_06B::CLI_NAME,
         LlmModelName::Qwen3_4b => Qwen3_4B::CLI_NAME,
         LlmModelName::Qwen25_7b => Qwen25_7B::CLI_NAME,
@@ -121,16 +122,14 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
     posterior_calculation_config: PosteriorCalculationConfig,
 ) -> Result<TestAccuracyResult, String> {
     if !model_uses_sglang::<M>() {
-        return Ok(
-            run_rollout_and_compute_accuracy::<M>(
-                rollout_config,
-                args,
-                client,
-                posterior_calculation_config,
-                args.llm_cli_args.clone(),
-            )
-            .await,
-        );
+        return Ok(run_rollout_and_compute_accuracy::<M>(
+            rollout_config,
+            args,
+            client,
+            posterior_calculation_config,
+            args.llm_cli_args.clone(),
+        )
+        .await);
     }
 
     best_effort_shutdown_stale_sglang_server().await;
@@ -223,8 +222,8 @@ async fn main() {
             args.sglang_server_log_path.clone(),
             |_command| {},
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
     }
     let model_cli_name = model_cli_name_to_string(&model_name);
     let rollout_config: DirectRolloutConfig<Testing> =
@@ -248,6 +247,7 @@ async fn main() {
         LlmModelName::Qwen35_08b, Qwen35_08B,
         LlmModelName::Gemma3_4b, Gemma3_4BIt,
         LlmModelName::Llama31_8b, Llama31_8BInstruct,
+        LlmModelName::Mistral7bInstructV03, Mistral7BInstructV03,
         LlmModelName::Gpt4o, Gpt4o
     )
     .unwrap();

@@ -588,7 +588,8 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
             question_flat_id: tree.action_log.question.flat_id,
             leaf_segment_id: best_leaf,
             average_absolute_advantage,
-            trajectory_token_length: trajectory_token_length.min(MAX_TRAINING_TRAJECTORY_TOKEN_LENGTH),
+            trajectory_token_length: trajectory_token_length
+                .min(MAX_TRAINING_TRAJECTORY_TOKEN_LENGTH),
         });
         leaf_segment_ids.remove(&best_leaf);
     }
@@ -692,7 +693,10 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
 
         if should_materialize {
             truncate_trajectory_tokens(&mut input_ids, &mut labels, &mut advantages);
-            assert!(input_ids.len() >= 2, "trajectory must contain at least two tokens");
+            assert!(
+                input_ids.len() >= 2,
+                "trajectory must contain at least two tokens"
+            );
             assert!(
                 labels.iter().skip(1).any(|label| *label != -100),
                 "trajectory must contain at least one supervised token after causal shift"
@@ -799,14 +803,17 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
     type FileModel = SqliteStore<usize, DirectTrainingTrajectory<M>>;
     async fn fetch(&self) -> Self::FileModel {
         self.synchronize().await;
-        SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(self.file_path(), false)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Failed to open training trajectories sqlite store at {}: {}",
-                    self.file_path(),
-                    e
-                )
-            })
+        SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(
+            self.file_path(),
+            false,
+        )
+        .unwrap_or_else(|e| {
+            panic!(
+                "Failed to open training trajectories sqlite store at {}: {}",
+                self.file_path(),
+                e
+            )
+        })
     }
     async fn synchronize(&self) -> Base64Hash {
         let asset_file_rollout_logs = AssetFileDirectTreeActionLogs::<M, Training> {

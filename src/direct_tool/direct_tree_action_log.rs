@@ -1,9 +1,9 @@
+use minijinja::context;
 use research_utility::{
     asset_file::{AssetFile, Base64Hash, hash_file},
     progress_tui_server::log_warning,
     sqlite_table_array_store::SqliteTableArrayStore,
 };
-use minijinja::context;
 use serde::{Deserialize, Serialize};
 use std::{marker::PhantomData, sync::LazyLock};
 use tokio::sync::{mpsc, oneshot};
@@ -44,7 +44,10 @@ fn action_logs_parent_dir_from_template(
     static ACTION_LOGS_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
         Result<minijinja::Environment<'static>, String>,
     > = LazyLock::new(|| {
-        load_template_environment(ACTION_LOGS_PARENT_DIR_TEMPLATE_PATH, "action_logs_parent_dir")
+        load_template_environment(
+            ACTION_LOGS_PARENT_DIR_TEMPLATE_PATH,
+            "action_logs_parent_dir",
+        )
     });
 
     let env = ACTION_LOGS_PARENT_DIR_TEMPLATE_ENVIRONMENT
@@ -387,8 +390,11 @@ impl<M: LlmModelMarker, S: DatasetSplit> AssetFileDirectTreeActionLogs<M, S> {
         short_hash
     }
     pub fn actions_file_path(&self) -> String {
-        let parent_dir = action_logs_parent_dir_from_template(M::CLI_NAME, &self.nickname, self.epoch)
-            .unwrap_or_else(|err| panic!("Failed to resolve action logs parent directory: {}", err));
+        let parent_dir =
+            action_logs_parent_dir_from_template(M::CLI_NAME, &self.nickname, self.epoch)
+                .unwrap_or_else(|err| {
+                    panic!("Failed to resolve action logs parent directory: {}", err)
+                });
         format!("{}/action_logs_{}.sqlite", parent_dir, self.to_short_hash())
     }
     fn version_tracking_path(&self) -> String {

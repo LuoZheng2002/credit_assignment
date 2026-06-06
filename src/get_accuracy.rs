@@ -140,7 +140,10 @@ pub async fn get_per_question_accuracies<M: LlmModelMarker, S: DatasetSplit>(
     let mut keys = action_store.get_keys().unwrap();
     keys.sort();
 
-    log_master_progress(0.0, format!("{}: Calculating per-question", progress_bar_label));
+    log_master_progress(
+        0.0,
+        format!("{}: Calculating per-question", progress_bar_label),
+    );
 
     let num_keys = keys.len();
     let mut results = vec![None; num_keys];
@@ -240,7 +243,10 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
     let mut keys = action_store.get_keys().unwrap();
     keys.sort();
 
-    log_master_progress(0.0, format!("{}: Calculating per-dataset", progress_bar_label));
+    log_master_progress(
+        0.0,
+        format!("{}: Calculating per-dataset", progress_bar_label),
+    );
 
     let num_keys = keys.len();
     let mut dataset_per_trunk_correct: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -325,7 +331,11 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
             .collect();
         let n = accuracy_values.len() as f32;
         let mean = accuracy_values.iter().sum::<f32>() / n;
-        let variance = accuracy_values.iter().map(|a| (a - mean).powi(2)).sum::<f32>() / (n - 1.0);
+        let variance = accuracy_values
+            .iter()
+            .map(|a| (a - mean).powi(2))
+            .sum::<f32>()
+            / (n - 1.0);
         let std_err = (variance / n).sqrt();
         let confidence_interval_half_width = 1.96 * std_err;
         per_dataset.insert(

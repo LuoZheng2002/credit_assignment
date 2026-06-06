@@ -12,7 +12,7 @@ use credit_assignment::{
     json_line_util::read_json,
     llm_model::{
         Gemma3_4BIt, Gpt4o, Llama31_8BInstruct, LlmCliArgs, LlmModelMarker, LlmModelName,
-        Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
+        Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
 };
 use reqwest::Client;
@@ -158,8 +158,8 @@ async fn main() {
             args.sglang_server_log_path.clone(),
             |_command| {},
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
     }
     run_rollout!(
         model_name,
@@ -174,6 +174,7 @@ async fn main() {
         LlmModelName::Qwen35_08b, Qwen35_08B,
         LlmModelName::Gemma3_4b, Gemma3_4BIt,
         LlmModelName::Llama31_8b, Llama31_8BInstruct,
+        LlmModelName::Mistral7bInstructV03, Mistral7BInstructV03,
         LlmModelName::Gpt4o, Gpt4o;
         DatasetSplitEnum::Training, Training,
         DatasetSplitEnum::Validation, Validation,

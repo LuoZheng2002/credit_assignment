@@ -619,7 +619,10 @@ impl Orchestrator {
         Ok(())
     }
 
-    fn destroy_epoch_checkpoint_folder<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
+    fn destroy_epoch_checkpoint_folder<M: LlmModelMarker>(
+        &self,
+        epoch: usize,
+    ) -> Result<(), String> {
         let checkpoint_parent_dir =
             model_checkpoint_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
         let checkpoints_dir = format!("{}/checkpoints", checkpoint_parent_dir);
@@ -654,7 +657,10 @@ impl Orchestrator {
         Ok(())
     }
 
-    fn destroy_epoch_rollout_action_logs<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
+    fn destroy_epoch_rollout_action_logs<M: LlmModelMarker>(
+        &self,
+        epoch: usize,
+    ) -> Result<(), String> {
         let training_logs = AssetFileDirectTreeActionLogs::<M, Training> {
             nickname: self.config_nickname.clone(),
             rollout_config: self.training_set_rollout_config.clone(),
@@ -701,7 +707,10 @@ impl Orchestrator {
         )
     }
 
-    fn cleanup_epoch_model_dir_if_not_best<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
+    fn cleanup_epoch_model_dir_if_not_best<M: LlmModelMarker>(
+        &self,
+        epoch: usize,
+    ) -> Result<(), String> {
         let Some(&epoch_accuracy) = self.progress.validation_accuracies.get(&epoch) else {
             return Err(format!(
                 "Missing validation accuracy for epoch {}, cannot decide model cleanup",
@@ -737,7 +746,8 @@ impl Orchestrator {
             return Ok(());
         }
 
-        let model_parent_dir = model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+        let model_parent_dir =
+            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
         self.delete_dir_if_exists(
             &model_parent_dir,
             &format!("model parent directory for epoch {}", epoch),
@@ -776,7 +786,10 @@ impl Orchestrator {
                 model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
             self.delete_dir_if_exists(
                 &model_parent_dir,
-                &format!("non-best previous model parent directory for epoch {}", epoch),
+                &format!(
+                    "non-best previous model parent directory for epoch {}",
+                    epoch
+                ),
             )?;
         }
         Ok(())

@@ -15,8 +15,8 @@ use credit_assignment::{
     },
     json_line_util::read_json,
     llm_model::{
-        Gemma3_4BIt, Gpt4o, Llama31_8BInstruct, LlmModelMarker, LlmModelName, MyTokenizer,
-        Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
+        Gemma3_4BIt, Gpt4o, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
+        MyTokenizer, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
 };
 use crossterm::cursor::Show;
@@ -704,8 +704,9 @@ async fn main() {
     match model {
         LlmModelName::Gpt4o => run_program::<Gpt4o>(run_program_args).await,
         LlmModelName::Gemma3_4b => run_program::<Gemma3_4BIt>(run_program_args).await,
-        LlmModelName::Llama31_8b => {
-            run_program::<Llama31_8BInstruct>(run_program_args).await
+        LlmModelName::Llama31_8b => run_program::<Llama31_8BInstruct>(run_program_args).await,
+        LlmModelName::Mistral7bInstructV03 => {
+            run_program::<Mistral7BInstructV03>(run_program_args).await
         }
         LlmModelName::Qwen3_06b => run_program::<Qwen3_06B>(run_program_args).await,
         LlmModelName::Qwen3_4b => run_program::<Qwen3_4B>(run_program_args).await,

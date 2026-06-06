@@ -688,7 +688,9 @@ fn single_eos_response<M: LlmModelMarker>() -> TokenArrayWithLogprob<M> {
 }
 
 fn is_context_length_exceeded_error(error: &str) -> bool {
-    error.to_ascii_lowercase().contains("context length exceeded")
+    error
+        .to_ascii_lowercase()
+        .contains("context length exceeded")
 }
 
 fn concise_failure_reason(error: &str) -> String {
