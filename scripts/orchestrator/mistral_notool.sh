@@ -1,9 +1,9 @@
 cargo run --bin bin_orchestrator -- \
-    --model-cli-name gemma-3-4b-it \
+    --model-cli-name mistral-7b-instruct-v0.3 \
     --max-rollout-concurrency 300 \
-    --config-nickname std \
-    --validation-rollout-config-path config/rollout_config_validation_tool.json \
-    --training-rollout-config-path config/rollout_config_training_std.json \
+    --config-nickname notool \
+    --validation-rollout-config-path config/rollout_config_validation_notool.json \
+    --training-rollout-config-path config/rollout_config_training_notool.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --num-total-epochs 20 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
@@ -14,8 +14,8 @@ cargo run --bin bin_orchestrator -- \
     --training-rollout-time-limit-secs 600 \
     --validation-rollout-time-limit-secs 1200 \
     --num-python-tool-servers 1 \
-    --sglang-server-log-path logs/sglang_server_gemma3_std.txt \
-    --message-log-path logs/messages_gemma3_std.txt \
+    --sglang-server-log-path logs/sglang_server_mistral_notool.txt \
+    --message-log-path logs/messages_mistral_notool.txt \
     --tui-server-port 7878 \
     --num-gpus 1 \
     --ui true

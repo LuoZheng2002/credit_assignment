@@ -1,9 +1,9 @@
 cargo run --bin bin_orchestrator -- \
-    --model-cli-name llama-3.1-8b-instruct \
+    --model-cli-name gemma-3-4b-it \
     --max-rollout-concurrency 300 \
-    --config-nickname grpo \
-    --validation-rollout-config-path config/rollout_config_validation_tool.json \
-    --training-rollout-config-path config/rollout_config_training_grpo.json \
+    --config-nickname notool \
+    --validation-rollout-config-path config/rollout_config_validation_notool.json \
+    --training-rollout-config-path config/rollout_config_training_notool.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --num-total-epochs 20 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
@@ -14,8 +14,8 @@ cargo run --bin bin_orchestrator -- \
     --training-rollout-time-limit-secs 600 \
     --validation-rollout-time-limit-secs 1200 \
     --num-python-tool-servers 1 \
-    --sglang-server-log-path logs/sglang_server_llama31_grpo.txt \
-    --message-log-path logs/messages_llama31_grpo.txt \
+    --sglang-server-log-path logs/sglang_server_gemma3_notool.txt \
+    --message-log-path logs/messages_gemma3_notool.txt \
     --tui-server-port 7878 \
     --num-gpus 1 \
     --ui true
