@@ -12,8 +12,15 @@ use tokio::time::{Instant, sleep, timeout};
 
 use crate::{constants::SGLANG_CONTEXT_LENGTH, llm_model::LlmModelMarker};
 
+const GEMMA_MEM_FRACTION_STATIC: &str = "0.72";
+const GEMMA_MAX_RUNNING_REQUESTS: &str = "8";
+
 pub fn model_uses_sglang<M: LlmModelMarker>() -> bool {
     !M::CLI_NAME.starts_with("gpt-")
+}
+
+fn model_is_gemma<M: LlmModelMarker>() -> bool {
+    M::CLI_NAME.starts_with("gemma-")
 }
 
 pub async fn launch_sglang_server_process<M: LlmModelMarker>(
@@ -47,6 +54,16 @@ pub async fn launch_sglang_server_process<M: LlmModelMarker>(
         // .arg("--schedule-policy")
         // .arg("lpm")
         ;
+
+    if model_is_gemma::<M>() {
+        command
+            .arg("--mem-fraction-static")
+            .arg(GEMMA_MEM_FRACTION_STATIC)
+            .arg("--max-running-requests")
+            .arg(GEMMA_MAX_RUNNING_REQUESTS)
+            .env("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True");
+    }
+
     #[cfg(unix)]
     command.process_group(0);
 
