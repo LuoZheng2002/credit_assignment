@@ -687,6 +687,10 @@ fn single_eos_response<M: LlmModelMarker>() -> TokenArrayWithLogprob<M> {
     )
 }
 
+fn is_context_length_exceeded_error(error: &str) -> bool {
+    error.to_ascii_lowercase().contains("context length exceeded")
+}
+
 fn concise_failure_reason(error: &str) -> String {
     const MAX_REASON_CHARS: usize = 120;
     let first_line = error.lines().next().unwrap_or("").trim();
@@ -711,6 +715,7 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
         prompt_tokens.push(start_token);
     }
     let mut response = None;
+    let mut last_error: Option<String> = None;
     for trial in 1..=3 {
         let _num_sglang_waiting_workers_guard = AtomicCountGuard::new(
             sglang_waiting_workers.clone(),
@@ -728,6 +733,15 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
                 break;
             }
             Err(error) => {
+                if is_context_length_exceeded_error(&error) {
+                    log_warning(format!(
+                        "generate_tokens_with_logprobs hit context limit on trial {}/3; using synthetic EOS response without retry: {}",
+                        trial, error
+                    ));
+                    response = Some(single_eos_response::<M>());
+                    break;
+                }
+                last_error = Some(error.clone());
                 log_warning(format!(
                     "generate_tokens_with_logprobs failed on trial {}/3: {}",
                     trial, error
@@ -736,7 +750,12 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
         }
     }
 
-    let mut response = response.unwrap_or_else(|| single_eos_response::<M>());
+    let mut response = response.unwrap_or_else(|| {
+        panic!(
+            "generate_tokens_with_logprobs failed after 3 trials. Last error: {}",
+            last_error.unwrap_or_else(|| "unknown error".to_string())
+        )
+    });
     let decoded_response = response.decode();
     if response.tokens.is_empty() {
         panic!(

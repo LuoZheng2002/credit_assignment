@@ -7,8 +7,8 @@ use tokenizers::Tokenizer;
 
 use crate::token_array::TokenArray;
 
-use super::qwen_shared::{
-    SharedQwenLlmCallable, build_qwen25_python_response_turn_disable_thinking,
+use super::sglang_model_shared::{
+    SharedSglangLlmCallable, build_qwen25_python_response_turn_disable_thinking,
     build_qwen25_python_response_turn_enable_thinking, decode_from_i32_ids, encode_to_i32_ids,
     token_to_i32_id,
 };
@@ -52,13 +52,13 @@ pub struct Qwen25_7B;
 
 #[derive(Clone)]
 pub struct Qwen25LlmCallable {
-    shared: SharedQwenLlmCallable,
+    shared: SharedSglangLlmCallable,
 }
 
 impl Qwen25LlmCallable {
     pub(crate) fn new(client: Client, sglang_port: u16) -> Self {
         Self {
-            shared: SharedQwenLlmCallable::new(client, sglang_port),
+            shared: SharedSglangLlmCallable::new(client, sglang_port),
         }
     }
 }

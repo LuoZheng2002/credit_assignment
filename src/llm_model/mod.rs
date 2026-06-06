@@ -8,7 +8,7 @@ pub mod qwen35_08b;
 pub mod qwen35_4b;
 pub mod qwen3_06b;
 pub mod qwen3_4b;
-pub mod qwen_shared;
+pub mod sglang_model_shared;
 
 pub use crate::token_array::TokenArray;
 pub use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate, Top8Candidates};

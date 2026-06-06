@@ -5,8 +5,8 @@ use serde::Serialize;
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
-use super::qwen_shared::{
-    SharedQwenLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
+use super::sglang_model_shared::{
+    SharedSglangLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
     wrap_python_response_xml,
 };
 use super::{
@@ -57,13 +57,13 @@ pub struct Gemma3_4BIt;
 
 #[derive(Clone)]
 pub struct Gemma3_4BItLlmCallable {
-    shared: SharedQwenLlmCallable,
+    shared: SharedSglangLlmCallable,
 }
 
 impl Gemma3_4BItLlmCallable {
     pub(crate) fn new(client: Client, sglang_port: u16) -> Self {
         Self {
-            shared: SharedQwenLlmCallable::new(client, sglang_port),
+            shared: SharedSglangLlmCallable::new(client, sglang_port),
         }
     }
 }

@@ -108,12 +108,12 @@ pub(crate) fn token_to_i32_id(tokenizer: &Tokenizer, token: &str, api_name: &str
 }
 
 #[derive(Clone)]
-pub(crate) struct SharedQwenLlmCallable {
+pub(crate) struct SharedSglangLlmCallable {
     client: Client,
     sglang_port: u16,
 }
 
-impl SharedQwenLlmCallable {
+impl SharedSglangLlmCallable {
     pub(crate) fn new(client: Client, sglang_port: u16) -> Self {
         assert!(sglang_port > 0, "SGLang port must be greater than 0");
         Self {
@@ -203,11 +203,11 @@ impl SharedQwenLlmCallable {
             .json(&body)
             .send()
             .await
-            .map_err(|err| format!("Qwen request failed to {}: {}", url, err))?;
+            .map_err(|err| format!("SGLang request failed to {}: {}", url, err))?;
         response
             .json()
             .await
-            .map_err(|err| format!("Qwen failed to parse JSON from {}: {}", url, err))
+            .map_err(|err| format!("SGLang failed to parse JSON from {}: {}", url, err))
     }
 }
 
@@ -223,7 +223,7 @@ fn parse_sglang_generated_token_ids(
 ) -> Result<Vec<i32>, String> {
     let output_ids = json["output_ids"].as_array().ok_or_else(|| {
         format!(
-            "Qwen SGLang response missing output_ids on {}: {}",
+            "SGLang response missing output_ids on {}: {}",
             backend_label,
             json_compact(json)
         )
@@ -234,13 +234,13 @@ fn parse_sglang_generated_token_ids(
         .map(|token| {
             let raw = token.as_i64().ok_or_else(|| {
                 format!(
-                    "Qwen SGLang output_ids entry must be an integer on {}: {:?}",
+                    "SGLang output_ids entry must be an integer on {}: {:?}",
                     backend_label, token
                 )
             })?;
             i32::try_from(raw).map_err(|_| {
                 format!(
-                    "Qwen SGLang token id must fit in i32 on {}: {:?}",
+                    "SGLang token id must fit in i32 on {}: {:?}",
                     backend_label, token
                 )
             })
@@ -260,7 +260,7 @@ fn parse_sglang_response_with_logprobs<M>(
 ) -> Result<TokenArrayWithLogprob<M>, String> {
     if let Some(error_message) = json["error"]["message"].as_str() {
         return Err(format!(
-            "Qwen completion with logprobs failed on {}: {}. Full response: {}",
+            "SGLang completion with logprobs failed on {}: {}. Full response: {}",
             backend_label,
             error_message,
             json_compact(json)
@@ -271,7 +271,7 @@ fn parse_sglang_response_with_logprobs<M>(
         .as_array()
         .unwrap_or_else(|| {
             panic!(
-                "Qwen SGLang response missing meta_info.output_token_logprobs on {}: {}",
+                "SGLang response missing meta_info.output_token_logprobs on {}: {}",
                 backend_label,
                 json_compact(json)
             )
@@ -281,7 +281,7 @@ fn parse_sglang_response_with_logprobs<M>(
         .as_array()
         .unwrap_or_else(|| {
             panic!(
-                "Qwen SGLang response missing meta_info.output_top_logprobs on {}: {}",
+                "SGLang response missing meta_info.output_top_logprobs on {}: {}",
                 backend_label,
                 json_compact(json)
             )
@@ -291,7 +291,7 @@ fn parse_sglang_response_with_logprobs<M>(
         parse_sglang_output_token_ids_from_token_logprobs(token_logprobs, backend_label);
     assert!(
         top_logprobs.len() == generated_tokens.len(),
-        "Qwen SGLang output_top_logprobs length mismatch on {}: output_top_logprobs={} generated_tokens={} generated_token_ids={:?}",
+        "SGLang output_top_logprobs length mismatch on {}: output_top_logprobs={} generated_tokens={} generated_token_ids={:?}",
         backend_label,
         top_logprobs.len(),
         generated_tokens.len(),
@@ -350,25 +350,25 @@ fn parse_sglang_output_token_ids_from_token_logprobs(
         .map(|entry| {
             let entry_items = entry.as_array().unwrap_or_else(|| {
                 panic!(
-                    "Qwen SGLang output_token_logprob entry must be an array on {}: {:?}",
+                    "SGLang output_token_logprob entry must be an array on {}: {:?}",
                     backend_label, entry
                 )
             });
             assert!(
                 entry_items.len() >= 2,
-                "Qwen SGLang output_token_logprob entry must have at least 2 fields on {}: {:?}",
+                "SGLang output_token_logprob entry must have at least 2 fields on {}: {:?}",
                 backend_label,
                 entry
             );
             let token_id_raw = entry_items[1].as_i64().unwrap_or_else(|| {
                 panic!(
-                    "Qwen SGLang output_token_logprob token id must be an integer on {}: {:?}",
+                    "SGLang output_token_logprob token id must be an integer on {}: {:?}",
                     backend_label, entry
                 )
             });
             i32::try_from(token_id_raw).unwrap_or_else(|_| {
                 panic!(
-                    "Qwen SGLang output_token_logprob token id must fit in i32 on {}: {:?}",
+                    "SGLang output_token_logprob token id must fit in i32 on {}: {:?}",
                     backend_label, entry
                 )
             })
@@ -393,27 +393,27 @@ fn parse_sglang_top_logprob_candidates(
         .filter_map(|entry| {
             let entry_items = entry.as_array().unwrap_or_else(|| {
                 panic!(
-                    "Qwen SGLang top_logprob entry must be an array on {}: {:?}",
+                    "SGLang top_logprob entry must be an array on {}: {:?}",
                     backend_label, entry
                 )
             });
             assert!(
                 entry_items.len() >= 2,
-                "Qwen SGLang top_logprob entry must have at least 2 fields on {}: {:?}",
+                "SGLang top_logprob entry must have at least 2 fields on {}: {:?}",
                 backend_label,
                 entry
             );
 
             let logprob = entry_items[0].as_f64().unwrap_or_else(|| {
                 panic!(
-                    "Qwen SGLang top_logprob value must be f64-compatible on {}: {:?}",
+                    "SGLang top_logprob value must be f64-compatible on {}: {:?}",
                     backend_label, entry
                 )
             }) as f32;
 
             let token_id_raw = entry_items[1].as_i64().unwrap_or_else(|| {
                 panic!(
-                    "Qwen SGLang top_logprob token id must be an integer on {}: {:?}",
+                    "SGLang top_logprob token id must be an integer on {}: {:?}",
                     backend_label, entry
                 )
             });
