@@ -837,7 +837,7 @@ async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
             Ok(new_content)
         }
         TrajectoryContent::ReasoningOrToolCallComplete(tokens) => {
-            if let Some(tool_call) = trajectory.try_get_last_content_tool_call() {
+            if use_tool && let Some(tool_call) = trajectory.try_get_last_content_tool_call() {
                 // log_key_value_pair("info".to_string(), "Executing a tool call".to_string());
                 let _num_tool_waiting_workers_guard =
                     AtomicCountGuard::new(tool_waiting_workers, "tool_waiting_workers".to_string());
