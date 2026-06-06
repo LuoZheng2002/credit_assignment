@@ -166,6 +166,7 @@ pub enum OrchestrationStatus {
     WorkingOnTrainingRolloutCollection,
     WorkingOnTrainingSetGeneration,
     WorkingOnTraining,
+    Completed,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -202,6 +203,7 @@ impl Orchestrator {
                         ));
                         self.ensure_inference_server_shut_down::<M>().await;
                         self.cleanup_epoch_model_dir_if_not_best::<M>(epoch)?;
+                        self.update_and_save_progress::<M>(OrchestrationStatus::Completed, epoch);
                         break;
                     }
                     self.update_and_save_progress::<M>(
@@ -258,6 +260,13 @@ impl Orchestrator {
                         OrchestrationStatus::WorkingOnValidation,
                         epoch + 1,
                     );
+                }
+                OrchestrationStatus::Completed => {
+                    log_info(format!(
+                        "Orchestration already completed at epoch {}; exiting without additional work",
+                        epoch
+                    ));
+                    break;
                 }
             }
         }
