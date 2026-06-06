@@ -3,6 +3,7 @@ model_parent_dir = "results/qwen3.5-0.8b/tra16/epoch_0" # expects model/ inside 
 training_trajectory_sqlite_path = "results/qwen3.5-0.8b/tra16/epoch_0/training_trajectories_89c3a49a.sqlite"
 checkpoints_parent_dir = "results/qwen3.5-0.8b/tra16/epoch_0"
 final_model_output_parent_dir = "results/qwen3.5-0.8b/tra16/epoch_1" # final model writes to model/ under this folder
+training_summary_parent_dir = "results/qwen3.5-0.8b/tra16/epoch_0"
 advantage_clip = 3.0
 learning_rate = 1e-05
 weight_decay = 0.01

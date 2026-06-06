@@ -25,6 +25,7 @@ class TrainConfig:
     training_trajectory_sqlite_path: str
     checkpoints_parent_dir: str
     final_model_output_parent_dir: str
+    training_summary_parent_dir: str
     advantage_clip: float
     learning_rate: float
     weight_decay: float
@@ -56,6 +57,11 @@ class ResumeState:
     adaptive_previous_tokens_per_sample: float = 0.0
     adaptive_next_batch_size_float: float = 0.0
     elapsed_training_time_sec: float = 0.0
+    samples_trained: int = 0
+    samples_available: int = 0
+    max_average_absolute_advantage: float = -1.0
+    min_average_absolute_advantage: float = -1.0
+    median_average_absolute_advantage: float = -1.0
 
 
 @dataclass(frozen=True)
@@ -288,6 +294,42 @@ def _resolve_reset_batch_size_on_wrap_from_env() -> bool:
     raise AssertionError("TRAIN_RESET_BATCH_SIZE_ON_WRAP must be a boolean-like value when set")
 
 
+def _resolve_max_grad_norm_from_env() -> float:
+    raw_value = os.environ.get("TRAIN_MAX_GRAD_NORM")
+    if raw_value is None:
+        return 1.0
+    normalized = raw_value.strip()
+    if len(normalized) == 0:
+        return 1.0
+    parsed = float(normalized)
+    assert parsed >= 0.0, "TRAIN_MAX_GRAD_NORM must be >= 0 when set"
+    return parsed
+
+
+def _resolve_lr_warmup_steps_from_env() -> int:
+    raw_value = os.environ.get("TRAIN_LR_WARMUP_STEPS")
+    if raw_value is None:
+        return 100
+    normalized = raw_value.strip()
+    if len(normalized) == 0:
+        return 100
+    parsed = int(normalized)
+    assert parsed >= 0, "TRAIN_LR_WARMUP_STEPS must be >= 0 when set"
+    return parsed
+
+
+def _resolve_lr_min_scale_from_env() -> float:
+    raw_value = os.environ.get("TRAIN_LR_MIN_SCALE")
+    if raw_value is None:
+        return 0.1
+    normalized = raw_value.strip()
+    if len(normalized) == 0:
+        return 0.1
+    parsed = float(normalized)
+    assert parsed > 0.0 and parsed <= 1.0, "TRAIN_LR_MIN_SCALE must be in (0, 1] when set"
+    return parsed
+
+
 def _release_step_memory(device: torch.device) -> None:
     gc.collect()
     if torch.cuda.is_available() and device.type == "cuda":
@@ -373,6 +415,11 @@ def _save_checkpoint(
     adaptive_previous_tokens_per_sample: float = 0.0,
     adaptive_next_batch_size_float: float = 0.0,
     elapsed_training_time_sec: float = 0.0,
+    samples_trained: int = 0,
+    samples_available: int = 0,
+    max_average_absolute_advantage: float = -1.0,
+    min_average_absolute_advantage: float = -1.0,
+    median_average_absolute_advantage: float = -1.0,
 ) -> None:
     assert global_step >= 0, "global_step must be non-negative"
     assert next_iteration_index >= 0, "next_iteration_index must be non-negative"
@@ -382,6 +429,11 @@ def _save_checkpoint(
     assert next_batch_size >= 0, "next_batch_size must be non-negative"
     assert elapsed_training_time_sec >= 0.0, "elapsed_training_time_sec must be non-negative"
     assert np.isfinite(elapsed_training_time_sec), "elapsed_training_time_sec must be finite"
+    assert samples_trained >= 0, "samples_trained must be non-negative"
+    assert samples_available >= 0, "samples_available must be non-negative"
+    assert np.isfinite(max_average_absolute_advantage), "max_average_absolute_advantage must be finite"
+    assert np.isfinite(min_average_absolute_advantage), "min_average_absolute_advantage must be finite"
+    assert np.isfinite(median_average_absolute_advantage), "median_average_absolute_advantage must be finite"
 
     rank, _ = _get_rank_world_size()
     checkpoint_dir = output_dir / "checkpoints"
@@ -399,6 +451,11 @@ def _save_checkpoint(
         "adaptive_previous_tokens_per_sample": adaptive_previous_tokens_per_sample,
         "adaptive_next_batch_size_float": adaptive_next_batch_size_float,
         "elapsed_training_time_sec": elapsed_training_time_sec,
+        "samples_trained": samples_trained,
+        "samples_available": samples_available,
+        "max_average_absolute_advantage": max_average_absolute_advantage,
+        "min_average_absolute_advantage": min_average_absolute_advantage,
+        "median_average_absolute_advantage": median_average_absolute_advantage,
         "accumulation_step": accumulation_step,
         "training_plan": training_plan,
         "rank": rank,
@@ -659,6 +716,11 @@ def _load_checkpoint(
             )
         ),
         elapsed_training_time_sec=float(training_state.get("elapsed_training_time_sec", 0.0)),
+        samples_trained=int(training_state.get("samples_trained", 0)),
+        samples_available=int(training_state.get("samples_available", 0)),
+        max_average_absolute_advantage=float(training_state.get("max_average_absolute_advantage", -1.0)),
+        min_average_absolute_advantage=float(training_state.get("min_average_absolute_advantage", -1.0)),
+        median_average_absolute_advantage=float(training_state.get("median_average_absolute_advantage", -1.0)),
     )
     assert resume_state.global_step >= 0, "resume global_step must be non-negative"
     assert resume_state.next_iteration_index >= 0, "resume iteration index must be non-negative"
@@ -681,6 +743,17 @@ def _load_checkpoint(
     ), "resume adaptive_next_batch_size_float must be finite"
     assert np.isfinite(resume_state.elapsed_training_time_sec), "resume elapsed_training_time_sec must be finite"
     assert resume_state.elapsed_training_time_sec >= 0.0, "resume elapsed_training_time_sec must be non-negative"
+    assert resume_state.samples_trained >= 0, "resume samples_trained must be non-negative"
+    assert resume_state.samples_available >= 0, "resume samples_available must be non-negative"
+    assert np.isfinite(
+        resume_state.max_average_absolute_advantage
+    ), "resume max_average_absolute_advantage must be finite"
+    assert np.isfinite(
+        resume_state.min_average_absolute_advantage
+    ), "resume min_average_absolute_advantage must be finite"
+    assert np.isfinite(
+        resume_state.median_average_absolute_advantage
+    ), "resume median_average_absolute_advantage must be finite"
     assert (
         resume_state.accumulation_step == 0
     ), "resuming from partial gradient accumulation is not supported"
@@ -941,6 +1014,7 @@ def train(config: TrainConfig) -> None:
     assert len(config.resume_checkpoint_tag.strip()) > 0, "resume_checkpoint_tag cannot be empty"
     assert len(config.checkpoints_parent_dir.strip()) > 0, "checkpoints_parent_dir cannot be empty"
     assert len(config.final_model_output_parent_dir.strip()) > 0, "final_model_output_parent_dir cannot be empty"
+    assert len(config.training_summary_parent_dir.strip()) > 0, "training_summary_parent_dir cannot be empty"
 
     from transformers import AutoTokenizer
 
@@ -956,6 +1030,9 @@ def train(config: TrainConfig) -> None:
     target_gpu_memory_utilization = 0.8
     max_batch_size_cap = _resolve_max_batch_size_cap_from_env()
     reset_batch_size_on_wrap = _resolve_reset_batch_size_on_wrap_from_env()
+    max_grad_norm = _resolve_max_grad_norm_from_env()
+    lr_warmup_steps = _resolve_lr_warmup_steps_from_env()
+    lr_min_scale = _resolve_lr_min_scale_from_env()
 
     if _is_primary_rank():
         print(f"[status] loading_model=1 model_parent_dir={config.model_parent_dir}")
@@ -976,6 +1053,11 @@ def train(config: TrainConfig) -> None:
             "[status] "
             "adaptive_batch_wrap_reset=1 "
             f"train_reset_batch_size_on_wrap={1 if reset_batch_size_on_wrap else 0}"
+        )
+        print(
+            "[status] "
+            "optimization_stability=1 "
+            f"max_grad_norm={max_grad_norm:.4f} lr_warmup_steps={lr_warmup_steps} lr_min_scale={lr_min_scale:.4f}"
         )
     tokenizer = AutoTokenizer.from_pretrained(resolved_model_path)
     eos_token_id = _normalize_optional_token_id(tokenizer.eos_token_id)
@@ -1047,6 +1129,7 @@ def train(config: TrainConfig) -> None:
         next_batch_size=initial_batch_size,
         adaptive_velocity=initial_adaptive_velocity,
         adaptive_next_batch_size_float=float(initial_batch_size),
+        samples_trained=0,
     )
     if len(resolved_resume_tag) > 0:
         if _is_primary_rank():
@@ -1072,6 +1155,12 @@ def train(config: TrainConfig) -> None:
                 adaptive_memory_utilization_ema=resume_state.adaptive_memory_utilization_ema,
                 adaptive_previous_tokens_per_sample=resume_state.adaptive_previous_tokens_per_sample,
                 adaptive_next_batch_size_float=float(initial_batch_size),
+                elapsed_training_time_sec=resume_state.elapsed_training_time_sec,
+                samples_trained=resume_state.samples_trained,
+                samples_available=resume_state.samples_available,
+                max_average_absolute_advantage=resume_state.max_average_absolute_advantage,
+                min_average_absolute_advantage=resume_state.min_average_absolute_advantage,
+                median_average_absolute_advantage=resume_state.median_average_absolute_advantage,
             )
     elif _is_primary_rank():
         print("[status] loading_resume_checkpoint=0 starting_fresh=1")
@@ -1098,6 +1187,7 @@ def train(config: TrainConfig) -> None:
             logs_path=logs_path,
             checkpoints_parent_dir=checkpoints_parent_dir,
             final_model_output_parent_dir=final_model_output_parent_dir,
+            training_summary_parent_dir=config.training_summary_parent_dir,
             resolved_model_path=resolved_model_path,
             tokenizer=tokenizer,
             initial_batch_size=initial_batch_size,
@@ -1105,6 +1195,9 @@ def train(config: TrainConfig) -> None:
             target_gpu_memory_utilization=target_gpu_memory_utilization,
             max_batch_size_cap=max_batch_size_cap,
             reset_batch_size_on_wrap=reset_batch_size_on_wrap,
+            max_grad_norm=max_grad_norm,
+            lr_warmup_steps=lr_warmup_steps,
+            lr_min_scale=lr_min_scale,
             lazy_loader=lazy_loader,
         )
     finally:

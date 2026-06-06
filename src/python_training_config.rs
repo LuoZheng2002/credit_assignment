@@ -11,6 +11,7 @@ pub struct PythonTrainingConfig {
     pub training_trajectory_sqlite_path: String,
     pub checkpoints_parent_dir: String,
     pub final_model_output_parent_dir: String, // final model writes to model/ under this folder
+    pub training_summary_parent_dir: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

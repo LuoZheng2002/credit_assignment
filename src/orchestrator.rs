@@ -31,6 +31,8 @@ use crate::{
 pub const MODEL_PARENT_DIR_TEMPLATE_PATH: &str = "config/training/model_parent_dir.jinja";
 pub const MODEL_CHECKPOINT_DIR_TEMPLATE_PATH: &str = "config/training/model_checkpoint_dir.jinja";
 pub const MODEL_METRICS_PATH_TEMPLATE_PATH: &str = "config/training/model_metrics_path.jinja";
+pub const TRAINING_SUMMARY_PARENT_DIR_TEMPLATE_PATH: &str =
+    "config/training/training_summary_parent_dir.jinja";
 
 fn load_template_environment(
     template_path: &str,
@@ -85,6 +87,15 @@ pub static MODEL_METRICS_PATH_TEMPLATE_ENVIRONMENT: LazyLock<
     load_template_environment(MODEL_METRICS_PATH_TEMPLATE_PATH, "model_metrics_path")
 });
 
+pub static TRAINING_SUMMARY_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    load_template_environment(
+        TRAINING_SUMMARY_PARENT_DIR_TEMPLATE_PATH,
+        "training_summary_parent_dir",
+    )
+});
+
 pub fn model_parent_dir_from_template(
     model_cli_name: &str,
     config_nickname: &str,
@@ -121,6 +132,20 @@ pub fn model_metrics_path_from_template(
     render_template_for_epoch(
         &MODEL_METRICS_PATH_TEMPLATE_ENVIRONMENT,
         "model_metrics_path",
+        model_cli_name,
+        config_nickname,
+        epoch,
+    )
+}
+
+pub fn training_summary_parent_dir_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+) -> Result<String, String> {
+    render_template_for_epoch(
+        &TRAINING_SUMMARY_PARENT_DIR_TEMPLATE_ENVIRONMENT,
+        "training_summary_parent_dir",
         model_cli_name,
         config_nickname,
         epoch,
@@ -859,6 +884,8 @@ impl Orchestrator {
             model_checkpoint_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
         let final_model_output_parent_dir =
             model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch + 1)?;
+        let training_summary_parent_dir =
+            training_summary_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
         // first we need to write the training config to the expected location
         let training_config = PythonTrainingConfig {
             common: self.training_config_common.clone(),
@@ -868,6 +895,7 @@ impl Orchestrator {
             training_trajectory_sqlite_path,
             checkpoints_parent_dir,
             final_model_output_parent_dir,
+            training_summary_parent_dir,
         };
         let training_config_path = self.python_training_config_path::<M>(epoch);
         write_toml(&training_config_path, &training_config).unwrap();

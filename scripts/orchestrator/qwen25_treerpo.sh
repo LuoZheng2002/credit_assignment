@@ -7,7 +7,7 @@ cargo run --bin bin_orchestrator -- \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --num-total-epochs 20 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
-    --num-iterations-limit 3 \
+    --num-iterations-limit 5 \
     --advantage-calculation-policy tree-rpo-win-rate \
     --training-config-common-path config/training/common.toml \
     --training-time 600 \

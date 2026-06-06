@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import dataclass
+import json
+import math
 from pathlib import Path
+import statistics
 import time
 from typing import Any
 
@@ -111,12 +114,76 @@ def _maybe_emit_master_progress(*, clock: TrainingLoopClock, samples_trained: in
     clock.last_master_progress_time = now
 
 
-def _flush_partial_gradients(*, optimizer: torch.optim.Optimizer, accumulation_step: int, global_step: int) -> tuple[int, int]:
+def _compute_lr_multiplier(*, step_index: int, warmup_steps: int, min_lr_scale: float) -> float:
+    assert step_index >= 0, "step_index must be non-negative"
+    assert warmup_steps >= 0, "warmup_steps must be non-negative"
+    assert min_lr_scale > 0.0 and min_lr_scale <= 1.0, "min_lr_scale must be in (0, 1]"
+
+    if warmup_steps > 0 and step_index < warmup_steps:
+        warmup_scale = float(step_index + 1) / float(warmup_steps)
+        return max(min_lr_scale, min(1.0, warmup_scale))
+
+    if warmup_steps <= 0:
+        return 1.0
+
+    decay_scale = math.sqrt(float(warmup_steps) / float(max(step_index, warmup_steps)))
+    return max(min_lr_scale, min(1.0, decay_scale))
+
+
+def _set_optimizer_learning_rate(
+    *,
+    optimizer: torch.optim.Optimizer,
+    base_learning_rate: float,
+    step_index: int,
+    warmup_steps: int,
+    min_lr_scale: float,
+) -> float:
+    multiplier = _compute_lr_multiplier(
+        step_index=step_index,
+        warmup_steps=warmup_steps,
+        min_lr_scale=min_lr_scale,
+    )
+    current_learning_rate = base_learning_rate * multiplier
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = current_learning_rate
+    return current_learning_rate
+
+
+def _maybe_clip_gradients(*, model: torch.nn.Module, max_grad_norm: float) -> float | None:
+    if max_grad_norm <= 0.0:
+        return None
+    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+    if isinstance(grad_norm, torch.Tensor):
+        return float(grad_norm.detach().item())
+    return float(grad_norm)
+
+
+def _flush_partial_gradients(
+    *,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    accumulation_step: int,
+    global_step: int,
+    max_grad_norm: float,
+    base_learning_rate: float,
+    lr_warmup_steps: int,
+    lr_min_scale: float,
+) -> tuple[int, int, float | None, float]:
     if accumulation_step <= 0:
-        return accumulation_step, global_step
+        current_lr = float(optimizer.param_groups[0]["lr"])
+        return accumulation_step, global_step, None, current_lr
+    clipped_grad_norm = _maybe_clip_gradients(model=model, max_grad_norm=max_grad_norm)
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
-    return 0, global_step + 1
+    next_global_step = global_step + 1
+    current_lr = _set_optimizer_learning_rate(
+        optimizer=optimizer,
+        base_learning_rate=base_learning_rate,
+        step_index=next_global_step,
+        warmup_steps=lr_warmup_steps,
+        min_lr_scale=lr_min_scale,
+    )
+    return 0, next_global_step, clipped_grad_norm, current_lr
 
 
 def _finalize_training_run(*, rank: int, global_step: int, training_time: float, final_model_output_parent_dir: Path, eng: Any) -> None:
@@ -157,6 +224,51 @@ def _broadcast_adaptive_state_distributed(*, adaptive_state: AdaptiveBatchState)
     )
 
 
+def _compute_abs_advantage_stats_for_available_samples(
+    *, lazy_loader: LazyResolvedBatchLoader
+) -> tuple[float, float, float]:
+    assert lazy_loader.sample_count > 0, "sample_count must be positive"
+    absolute_advantages: list[float] = []
+    for sample_index in range(lazy_loader.sample_count):
+        sample = lazy_loader.get_sample(sample_index)
+        absolute_advantages.append(abs(float(sample.advantage)))
+    assert len(absolute_advantages) > 0, "absolute_advantages cannot be empty"
+    max_abs_advantage = max(absolute_advantages)
+    min_abs_advantage = min(absolute_advantages)
+    median_abs_advantage = float(statistics.median(absolute_advantages))
+    return max_abs_advantage, min_abs_advantage, median_abs_advantage
+
+
+def _write_training_summary(
+    *,
+    training_summary_parent_dir: str,
+    samples_available: int,
+    samples_trained: int,
+    max_average_absolute_advantage: float,
+    min_average_absolute_advantage: float,
+    median_average_absolute_advantage: float,
+    total_training_time_sec: float,
+) -> None:
+    assert len(training_summary_parent_dir.strip()) > 0, "training_summary_parent_dir cannot be empty"
+    assert samples_available > 0, "samples_available must be positive"
+    assert samples_trained >= 0, "samples_trained must be non-negative"
+    assert total_training_time_sec >= 0.0, "total_training_time_sec must be non-negative"
+    iterations = float(samples_trained) / float(samples_available)
+    payload = {
+        "samples_available": int(samples_available),
+        "samples_trained": int(samples_trained),
+        "iterations": float(iterations),
+        "max_average_absolute_advantage": float(max_average_absolute_advantage),
+        "min_average_absolute_advantage": float(min_average_absolute_advantage),
+        "median_average_absolute_advantage": float(median_average_absolute_advantage),
+        "total_training_time_sec": float(total_training_time_sec),
+    }
+    output_parent = Path(training_summary_parent_dir)
+    output_parent.mkdir(parents=True, exist_ok=True)
+    output_path = output_parent / "training_summary.json"
+    output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
 def _run_unified_loop(
     *,
     config: Any,
@@ -175,6 +287,7 @@ def _run_unified_loop(
     logs_path: Path,
     checkpoints_parent_dir: Path,
     final_model_output_parent_dir: Path,
+    training_summary_parent_dir: str,
     resolved_model_path: str,
     tokenizer: Any,
     initial_batch_size: int,
@@ -182,6 +295,9 @@ def _run_unified_loop(
     target_gpu_memory_utilization: float,
     max_batch_size_cap: int | None,
     reset_batch_size_on_wrap: bool,
+    max_grad_norm: float,
+    lr_warmup_steps: int,
+    lr_min_scale: float,
     eng: Any,
 ) -> None:
     assert lazy_loader.sample_count > 0, "training set must be non-empty"
@@ -192,6 +308,23 @@ def _run_unified_loop(
     trajectory_length_cap = DEFAULT_TRAJECTORY_LENGTH_CAP
 
     sample_count = lazy_loader.sample_count
+    samples_available = sample_count
+    if (
+        resume_state.samples_available == samples_available
+        and resume_state.max_average_absolute_advantage >= 0.0
+        and resume_state.min_average_absolute_advantage >= 0.0
+        and resume_state.median_average_absolute_advantage >= 0.0
+    ):
+        max_average_absolute_advantage = float(resume_state.max_average_absolute_advantage)
+        min_average_absolute_advantage = float(resume_state.min_average_absolute_advantage)
+        median_average_absolute_advantage = float(resume_state.median_average_absolute_advantage)
+    else:
+        (
+            max_average_absolute_advantage,
+            min_average_absolute_advantage,
+            median_average_absolute_advantage,
+        ) = _compute_abs_advantage_stats_for_available_samples(lazy_loader=lazy_loader)
+
     distributed_batch_limit = (sample_count // world_size) if is_distributed else -1
     fallback_sample_index = max(0, resume_state.next_batch_cursor) * max(1, initial_batch_size)
     global_sample_cursor = resume_state.next_sample_index
@@ -258,6 +391,14 @@ def _run_unified_loop(
     _emit_trajectory_length_cap(cap=trajectory_length_cap, eng=eng)
     if _is_primary_rank():
         print(
+            "[status] "
+            "training_set_advantage_stats=1 "
+            f"samples_available={samples_available} "
+            f"max_average_absolute_advantage={max_average_absolute_advantage:.6f} "
+            f"min_average_absolute_advantage={min_average_absolute_advantage:.6f} "
+            f"median_average_absolute_advantage={median_average_absolute_advantage:.6f}"
+        )
+        print(
             "[startup] tokenizer special tokens "
             f"pad_token_id={pad_token_id} eos_token_id={eos_token_id} bos_token_id={bos_token_id}"
         )
@@ -284,12 +425,19 @@ def _run_unified_loop(
 
     global_step = resume_state.global_step
     accumulation_step = resume_state.accumulation_step
+    current_learning_rate = _set_optimizer_learning_rate(
+        optimizer=optimizer,
+        base_learning_rate=config.learning_rate,
+        step_index=global_step,
+        warmup_steps=lr_warmup_steps,
+        min_lr_scale=lr_min_scale,
+    )
     resumed_elapsed_training_time_sec = min(config.training_time, max(0.0, resume_state.elapsed_training_time_sec))
     clock = _init_training_loop_clock(
         training_time=config.training_time,
         resumed_elapsed_training_time_sec=resumed_elapsed_training_time_sec,
     )
-    samples_trained = 0
+    samples_trained = max(0, int(resume_state.samples_trained))
     optimizer.zero_grad(set_to_none=True)
 
     iteration_index = max(0, resume_state.next_iteration_index)
@@ -531,11 +679,15 @@ def _run_unified_loop(
             print(eng._json_key_value("global_step", str(global_step)))
             print(eng._json_key_value("iteration", str(iteration_index)))
             print(eng._json_key_value("batch_index", str(step_batch.batch_index)))
+            print(eng._json_key_value("learning_rate", f"{current_learning_rate:.10f}"))
             for stat_key, stat_value in loss_output.stats.items():
                 print(eng._json_key_value(stat_key, f"{stat_value:.6f}"))
 
         accumulation_step += 1
-        samples_trained += len(step_batch.samples)
+        if is_distributed:
+            samples_trained += requested_batch_size * world_size
+        else:
+            samples_trained += len(step_batch.samples)
         if is_distributed:
             global_sample_cursor += requested_batch_size * world_size
             if global_sample_cursor >= sample_count:
@@ -581,10 +733,18 @@ def _run_unified_loop(
                         )
 
         if accumulation_step == config.grad_accum_steps:
+            clipped_grad_norm = _maybe_clip_gradients(model=model, max_grad_norm=max_grad_norm)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             accumulation_step = 0
             global_step += 1
+            current_learning_rate = _set_optimizer_learning_rate(
+                optimizer=optimizer,
+                base_learning_rate=config.learning_rate,
+                step_index=global_step,
+                warmup_steps=lr_warmup_steps,
+                min_lr_scale=lr_min_scale,
+            )
 
             if (not is_distributed) or _is_primary_rank():
                 adaptive_state = eng._update_adaptive_batch_state(
@@ -613,7 +773,10 @@ def _run_unified_loop(
                     "throughput_samples_per_sec": throughput_samples_per_sec,
                     "gpu_memory_usage_pct": gpu_memory_usage_pct,
                     "trajectory_length_cap": trajectory_length_cap,
+                    "learning_rate": float(current_learning_rate),
                 }
+                if clipped_grad_norm is not None:
+                    log_payload["grad_norm"] = float(clipped_grad_norm)
                 for key, value in loss_output.stats.items():
                     log_payload[key] = value
                 eng._log_json_line(logs_path, log_payload)
@@ -648,15 +811,30 @@ def _run_unified_loop(
                     adaptive_previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
                     adaptive_next_batch_size_float=adaptive_state.next_batch_size_float,
                     elapsed_training_time_sec=_elapsed_training_time_sec(clock=clock, now=now),
+                    samples_trained=samples_trained,
+                    samples_available=samples_available,
+                    max_average_absolute_advantage=max_average_absolute_advantage,
+                    min_average_absolute_advantage=min_average_absolute_advantage,
+                    median_average_absolute_advantage=median_average_absolute_advantage,
                 )
                 clock.last_checkpoint_save_time = now
 
-    accumulation_step, global_step = _flush_partial_gradients(
+    accumulation_step, global_step, clipped_grad_norm, current_learning_rate = _flush_partial_gradients(
+        model=model,
         optimizer=optimizer,
         accumulation_step=accumulation_step,
         global_step=global_step,
+        max_grad_norm=max_grad_norm,
+        base_learning_rate=config.learning_rate,
+        lr_warmup_steps=lr_warmup_steps,
+        lr_min_scale=lr_min_scale,
     )
+    if _is_primary_rank() and clipped_grad_norm is not None:
+        print(eng._json_key_value("flush_grad_norm", f"{clipped_grad_norm:.6f}"))
+    if _is_primary_rank():
+        print(eng._json_key_value("learning_rate", f"{current_learning_rate:.10f}"))
 
+    total_training_time_sec = _elapsed_training_time_sec(clock=clock)
     eng._save_checkpoint(
         model=model,
         optimizer=optimizer,
@@ -675,7 +853,12 @@ def _run_unified_loop(
         adaptive_memory_utilization_ema=adaptive_state.memory_utilization_ema,
         adaptive_previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
         adaptive_next_batch_size_float=adaptive_state.next_batch_size_float,
-        elapsed_training_time_sec=_elapsed_training_time_sec(clock=clock),
+        elapsed_training_time_sec=total_training_time_sec,
+        samples_trained=samples_trained,
+        samples_available=samples_available,
+        max_average_absolute_advantage=max_average_absolute_advantage,
+        min_average_absolute_advantage=min_average_absolute_advantage,
+        median_average_absolute_advantage=median_average_absolute_advantage,
     )
     eng._save_final_model_folder(
         model=model,
@@ -684,6 +867,21 @@ def _run_unified_loop(
         source_model_path=resolved_model_path,
         tokenizer=tokenizer,
     )
+    if _is_primary_rank():
+        _write_training_summary(
+            training_summary_parent_dir=training_summary_parent_dir,
+            samples_available=samples_available,
+            samples_trained=samples_trained,
+            max_average_absolute_advantage=max_average_absolute_advantage,
+            min_average_absolute_advantage=min_average_absolute_advantage,
+            median_average_absolute_advantage=median_average_absolute_advantage,
+            total_training_time_sec=total_training_time_sec,
+        )
+        print(
+            "[status] "
+            "training_summary_written=1 "
+            f"training_summary_parent_dir={training_summary_parent_dir}"
+        )
     _finalize_training_run(
         rank=rank,
         global_step=global_step,
@@ -710,6 +908,7 @@ def run_training_loop(
     logs_path: Path,
     checkpoints_parent_dir: Path,
     final_model_output_parent_dir: Path,
+    training_summary_parent_dir: str,
     resolved_model_path: str,
     tokenizer: Any,
     initial_batch_size: int,
@@ -717,6 +916,9 @@ def run_training_loop(
     target_gpu_memory_utilization: float,
     max_batch_size_cap: int | None,
     reset_batch_size_on_wrap: bool,
+    max_grad_norm: float,
+    lr_warmup_steps: int,
+    lr_min_scale: float,
     lazy_loader: LazyResolvedBatchLoader | None,
 ) -> None:
     from . import engine as eng
@@ -739,6 +941,7 @@ def run_training_loop(
         logs_path=logs_path,
         checkpoints_parent_dir=checkpoints_parent_dir,
         final_model_output_parent_dir=final_model_output_parent_dir,
+        training_summary_parent_dir=training_summary_parent_dir,
         resolved_model_path=resolved_model_path,
         tokenizer=tokenizer,
         initial_batch_size=initial_batch_size,
@@ -746,5 +949,8 @@ def run_training_loop(
         target_gpu_memory_utilization=target_gpu_memory_utilization,
         max_batch_size_cap=max_batch_size_cap,
         reset_batch_size_on_wrap=reset_batch_size_on_wrap,
+        max_grad_norm=max_grad_norm,
+        lr_warmup_steps=lr_warmup_steps,
+        lr_min_scale=lr_min_scale,
         eng=eng,
     )

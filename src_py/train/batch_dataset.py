@@ -103,6 +103,11 @@ class LazyResolvedBatchLoader:
     def close(self) -> None:
         self._store.close()
 
+    def get_sample(self, sample_index: int) -> TrainingSampleTokenized:
+        assert sample_index >= 0, "sample_index must be non-negative"
+        assert sample_index < self.sample_count, "sample_index out of range"
+        return self._store.get_sample(sample_index)
+
     def resolve_batch(self, sample_index: int, batch_size: int, batch_index: int) -> LazyBatchWindow:
         assert sample_index >= 0, "sample_index must be non-negative"
         assert sample_index < self.sample_count, "sample_index out of range"
