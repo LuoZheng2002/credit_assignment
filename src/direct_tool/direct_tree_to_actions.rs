@@ -704,6 +704,23 @@ fn concise_failure_reason(error: &str) -> String {
     format!("{}...", truncated)
 }
 
+fn concise_model_response(response: &str) -> String {
+    const MAX_RESPONSE_CHARS: usize = 40;
+    const EDGE_RESPONSE_CHARS: usize = 20;
+
+    let response_len = response.chars().count();
+    if response_len <= MAX_RESPONSE_CHARS {
+        return response.to_string();
+    }
+
+    let prefix: String = response.chars().take(EDGE_RESPONSE_CHARS).collect();
+    let suffix: String = response
+        .chars()
+        .skip(response_len - EDGE_RESPONSE_CHARS)
+        .collect();
+    format!("{}...{}", prefix, suffix)
+}
+
 async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSplit>(
     _question_flat_id: QuestionFlatId<S>,
     trajectory: &DirectTrajectory<M>,
@@ -815,7 +832,7 @@ async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
             .await?;
             Ok(new_content)
         }
-        TrajectoryContent::ReasoningOrToolCallComplete(_) => {
+        TrajectoryContent::ReasoningOrToolCallComplete(tokens) => {
             if let Some(tool_call) = trajectory.try_get_last_content_tool_call() {
                 // log_key_value_pair("info".to_string(), "Executing a tool call".to_string());
                 let _num_tool_waiting_workers_guard =
@@ -834,9 +851,11 @@ async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
                 let response_tokenized = tool_response.with_multi_turn_chat_template::<M>(false);
                 Ok(SegmentContent::ToolResponse(response_tokenized))
             } else {
+                let response = tokens.decode();
+                let concise_response = concise_model_response(&response);
                 log_warning(format!(
-                    "The model ended a sequence without a boxed answer or python tool call. Continuing generation. Flat id: {:?}",
-                    question_flat_id
+                    "The model ended a sequence without a boxed answer or python tool call. Flat id: {:?}. Response: {:?}",
+                    question_flat_id, concise_response
                 ));
                 generate_reasoning_or_tool_call_content::<M, S>(
                     question_flat_id,
