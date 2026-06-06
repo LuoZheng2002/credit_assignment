@@ -343,6 +343,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     self.action_log.question.flat_id,
                     &trajectory,
                     generation_start_token,
+                    self.action_log.rollout_config.use_tool,
                     llm_callable,
                     python_tool_pool,
                     sglang_waiting_workers,
@@ -725,6 +726,7 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
     _question_flat_id: QuestionFlatId<S>,
     trajectory: &DirectTrajectory<M>,
     new_branch_start_token: Option<i32>,
+    use_tool: bool,
     llm_callable: &M::Callable,
     sglang_waiting_workers: Arc<AtomicUsize>,
     stop_signal: Arc<AtomicBool>,
@@ -744,7 +746,7 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
             return Err(StopRequestedError);
         }
         let generation_result = llm_callable
-            .generate_tokens_with_logprobs(prompt_tokens.clone(), true, 1.0, true)
+            .generate_tokens_with_logprobs(prompt_tokens.clone(), use_tool, 1.0, true)
             .await;
         match generation_result {
             Ok(result) => {
@@ -799,6 +801,7 @@ async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
     question_flat_id: QuestionFlatId<S>,
     trajectory: &DirectTrajectory<M>,
     new_branch_start_token: Option<i32>,
+    use_tool: bool,
     // current_content: &[SegmentContent],
     // client: Client,
     llm_callable: &M::Callable,
@@ -825,6 +828,7 @@ async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
                 question_flat_id,
                 trajectory,
                 new_branch_start_token,
+                use_tool,
                 llm_callable,
                 sglang_waiting_workers,
                 stop_signal,
@@ -861,6 +865,7 @@ async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
                     question_flat_id,
                     trajectory,
                     new_branch_start_token,
+                    use_tool,
                     llm_callable,
                     sglang_waiting_workers,
                     stop_signal,
