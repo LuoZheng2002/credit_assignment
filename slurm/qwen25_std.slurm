@@ -11,5 +11,4 @@
 #SBATCH --account=bfdz-delta-gpu
 #SBATCH --time=04:00:00
 
-nohup bash scripts/orchestrator/qwen25_std.sh > logs/nohup_qwen25_std.txt 2>&1 &
-sleep infinity
+bash scripts/orchestrator/qwen25_std.sh

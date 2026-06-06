@@ -11,5 +11,4 @@
 #SBATCH --account=bfdz-delta-gpu
 #SBATCH --time=04:00:00
 
-nohup bash scripts/orchestrator/gemma3_std.sh > logs/nohup_gemma3_std.txt 2>&1 &
-sleep infinity
+bash scripts/orchestrator/gemma3_std.sh
