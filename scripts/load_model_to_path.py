@@ -8,6 +8,23 @@ from pathlib import Path
 from huggingface_hub import snapshot_download
 
 
+def _has_hf_model_weights(model_dir: Path) -> bool:
+    return (model_dir / "model.safetensors").is_file() or (model_dir / "model.safetensors.index.json").is_file()
+
+
+def _remove_redundant_consolidated_weights(model_dir: Path) -> int:
+    if not _has_hf_model_weights(model_dir):
+        return 0
+
+    removed = 0
+    for pattern in ("consolidated*.safetensors", "consolidated*.safetensors.index.json"):
+        for file_path in model_dir.glob(pattern):
+            if file_path.is_file():
+                file_path.unlink()
+                removed += 1
+    return removed
+
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -48,6 +65,10 @@ def main() -> None:
         local_dir=output_path,
         token=os.environ.get("HF_TOKEN") or None,
     )
+
+    removed = _remove_redundant_consolidated_weights(output_path)
+    if removed > 0:
+        print(f"Removed {removed} redundant consolidated safetensors files from: {output_path}")
 
     print(f"Done. Local model folder is ready at: {output_path}")
 
