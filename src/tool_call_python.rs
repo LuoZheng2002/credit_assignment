@@ -251,8 +251,6 @@ async fn spawn_python_tool_server_runtime(
     let mut command = Command::new("uv");
     command
         .arg("run")
-        .arg("--project")
-        .arg("pyprojects/common")
         .arg("-m")
         .arg("src_py.tool_server.main")
         .arg("--parent-pid")

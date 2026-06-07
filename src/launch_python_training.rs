@@ -40,8 +40,6 @@ pub async fn launch_python_training_process(
     let mut command = Command::new("uv");
     command
         .arg("run")
-        .arg("--project")
-        .arg("pyprojects/common")
         .arg("torchrun")
         .arg("--nproc_per_node")
         .arg(num_gpus.to_string())
