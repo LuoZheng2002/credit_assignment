@@ -2,7 +2,7 @@
 # #SBATCH --job-name=empty       # Job name
 # #SBATCH --output=slurm/empty_%j.out        # Standard output log (%j = job ID)
 # #SBATCH --error=slurm/empty_%j.err         # Error log
-#SBATCH --partition=gpuA100x4
+# #SBATCH --partition=gpuA100x4
 # #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=32
 #SBATCH --ntasks=1
