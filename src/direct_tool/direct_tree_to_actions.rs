@@ -331,7 +331,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
             "Root segment id must exist when creating trunk trajectory or spontaneous branch",
         );
         let trajectory = self.get_trajectory(target_segment_id, cumulative_content_array);
-        match trajectory.try_get_answer() {
+        match trajectory.try_get_answer(self.action_log.rollout_config.use_tool) {
             Some(final_answer) => Ok(SubmitAnswer(final_answer)),
             None => {
                 let generation_start_token = if cumulative_content_array.is_empty() {

@@ -185,6 +185,7 @@ pub struct Orchestrator {
 
 pub struct InferenceServerHandle {
     pub epoch: usize,
+    pub use_tool: bool,
     pub sglang_port: Option<u16>,
     pub process: Option<Child>,
 }
@@ -231,7 +232,11 @@ impl Orchestrator {
                 OrchestrationStatus::WorkingOnValidation => {
                     log_state(format!("Epoch {}: Working on validation", epoch));
                     assert!(epoch <= self.num_total_epochs);
-                    self.ensure_inference_server_launched::<M>(epoch).await?;
+                    self.ensure_inference_server_launched::<M>(
+                        epoch,
+                        self.validation_rollout_config.use_tool,
+                    )
+                    .await?;
                     self.validate_model::<M>(epoch).await?;
                     self.read_and_log_validation_accuracy::<M>(epoch).await?;
                     self.sweep_previous_model_dirs_after_validation::<M>(epoch)?;
@@ -255,7 +260,11 @@ impl Orchestrator {
                         "Epoch {}: Working on training rollout collection",
                         epoch
                     ));
-                    self.ensure_inference_server_launched::<M>(epoch).await?;
+                    self.ensure_inference_server_launched::<M>(
+                        epoch,
+                        self.training_set_rollout_config.use_tool,
+                    )
+                    .await?;
                     self.collect_training_rollout::<M>(epoch).await?;
                     self.read_and_log_training_rollout_accuracy::<M>(epoch)
                         .await?;
@@ -423,39 +432,42 @@ impl Orchestrator {
     async fn ensure_inference_server_launched<M: LlmModelMarker>(
         &mut self,
         epoch: usize,
+        use_tool: bool,
     ) -> Result<(), String> {
         if let Some(handle) = &self.inference_server_handle {
             log_info(format!(
-                "ensure_inference_server_launched: found existing handle (stored_epoch={}, has_port={}, has_process={}) while requesting epoch {}",
+                "ensure_inference_server_launched: found existing handle (stored_epoch={}, stored_use_tool={}, has_port={}, has_process={}) while requesting epoch {} use_tool={}",
                 handle.epoch,
+                handle.use_tool,
                 handle.sglang_port.is_some(),
                 handle.process.is_some(),
                 epoch,
+                use_tool,
             ));
-            if handle.epoch == epoch {
+            if handle.epoch == epoch && handle.use_tool == use_tool {
                 // already launched for this epoch
                 log_info(format!(
-                    "ensure_inference_server_launched: reusing existing inference server handle for epoch {}",
-                    epoch
+                    "ensure_inference_server_launched: reusing existing inference server handle for epoch {} use_tool={}",
+                    epoch, use_tool
                 ));
                 return Ok(());
             } else {
                 // first shut down the previous one
                 log_info(format!(
-                    "ensure_inference_server_launched: existing handle epoch {} differs from requested epoch {}, shutting down first",
-                    handle.epoch, epoch
+                    "ensure_inference_server_launched: existing handle (epoch={}, use_tool={}) differs from requested (epoch={}, use_tool={}), shutting down first",
+                    handle.epoch, handle.use_tool, epoch, use_tool
                 ));
                 self.ensure_inference_server_shut_down::<M>().await;
                 // then continue to launch the new one
-                self.launch_inference_server::<M>(epoch).await?;
+                self.launch_inference_server::<M>(epoch, use_tool).await?;
             }
         } else {
             // not launched, just launch
             log_info(format!(
-                "ensure_inference_server_launched: no existing handle for requested epoch {}, launching new server",
-                epoch
+                "ensure_inference_server_launched: no existing handle for requested epoch {} use_tool={}, launching new server",
+                epoch, use_tool
             ));
-            self.launch_inference_server::<M>(epoch).await?;
+            self.launch_inference_server::<M>(epoch, use_tool).await?;
         }
         Ok(())
     }
@@ -463,6 +475,7 @@ impl Orchestrator {
     async fn launch_inference_server<M: LlmModelMarker>(
         &mut self,
         epoch: usize,
+        use_tool: bool,
     ) -> Result<(), String> {
         assert!(
             self.inference_server_handle.is_none(),
@@ -472,6 +485,7 @@ impl Orchestrator {
         if !model_uses_sglang::<M>() {
             self.inference_server_handle = Some(InferenceServerHandle {
                 epoch,
+                use_tool,
                 sglang_port: None,
                 process: None,
             });
@@ -497,6 +511,7 @@ impl Orchestrator {
         let (sglang_port, process) = launch_sglang_server_process::<M>(
             &model_path,
             self.num_gpus,
+            use_tool,
             self.sglang_server_log_path.as_deref(),
         )
         .await?;
@@ -507,6 +522,7 @@ impl Orchestrator {
 
         self.inference_server_handle = Some(InferenceServerHandle {
             epoch,
+            use_tool,
             sglang_port: Some(sglang_port),
             process: Some(process),
         });
@@ -517,8 +533,9 @@ impl Orchestrator {
     async fn ensure_inference_server_shut_down<M: LlmModelMarker>(&mut self) {
         if let Some(handle) = self.inference_server_handle.take() {
             log_info(format!(
-                "Shutting down inference server (stored_epoch={}, has_port={}, has_process={})...",
+                "Shutting down inference server (stored_epoch={}, stored_use_tool={}, has_port={}, has_process={})...",
                 handle.epoch,
+                handle.use_tool,
                 handle.sglang_port.is_some(),
                 handle.process.is_some(),
             ));

@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    constants::sglang_context_length_for_model,
+    constants::sglang_context_length,
     direct_tool::{
         direct_tree::{DirectTree, SegmentContent, SegmentId},
         hybrid_dataset::DatasetSplit,
@@ -47,13 +47,13 @@ impl<M: LlmModelMarker> DirectTrajectory<M> {
         }
         prompt_tokens
     }
-    pub fn try_get_answer(&self) -> Option<FinalAnswer> {
+    pub fn try_get_answer(&self, use_tool: bool) -> Option<FinalAnswer> {
         let trajectory_length = self
             .trajectory_contents
             .iter()
             .map(|content| content.tokens().len())
             .sum::<usize>();
-        let context_length = sglang_context_length_for_model::<M>();
+        let context_length = sglang_context_length(use_tool);
         if trajectory_length >= context_length - CONTEXT_LENGTH_SAFETY_MARGIN {
             log_warning(format!(
                 "Trajectory context length exceeded, submitting answer. trajectory_length={}, limit={}",

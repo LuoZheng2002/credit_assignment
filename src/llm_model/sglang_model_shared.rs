@@ -2,7 +2,7 @@ use reqwest::Client;
 use serde_json::Value;
 use tokenizers::Tokenizer;
 
-use crate::constants::sglang_context_length_for_model;
+use crate::constants::sglang_context_length;
 use crate::llm_model::LlmModelMarker;
 use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate};
 
@@ -63,8 +63,8 @@ pub(crate) fn build_qwen35_python_response_turn_disable_thinking(
     )
 }
 
-fn remaining_generation_tokens<M: LlmModelMarker>(prompt_len: usize) -> Result<usize, String> {
-    let context_length = sglang_context_length_for_model::<M>();
+fn remaining_generation_tokens(prompt_len: usize, use_tool: bool) -> Result<usize, String> {
+    let context_length = sglang_context_length(use_tool);
     let remaining = context_length
         .checked_sub(prompt_len + 1)
         .ok_or_else(|| {
@@ -129,7 +129,7 @@ impl SharedSglangLlmCallable {
         tokens: Vec<i32>,
         passes_in_stop: bool,
     ) -> Result<Vec<i32>, String> {
-        let max_new_tokens = remaining_generation_tokens::<M>(tokens.len())?;
+        let max_new_tokens = remaining_generation_tokens(tokens.len(), passes_in_stop)?;
         let mut body = serde_json::json!({
             "input_ids": tokens.clone(),
             "sampling_params": {
@@ -168,7 +168,7 @@ impl SharedSglangLlmCallable {
         passes_in_stop: bool,
         temperature: f32,
     ) -> Result<TokenArrayWithLogprob<M>, String> {
-        let max_new_tokens = remaining_generation_tokens::<M>(tokens.len())?;
+        let max_new_tokens = remaining_generation_tokens(tokens.len(), passes_in_stop)?;
         let logprob_start_len: i64 = if M::CLI_NAME.starts_with("gemma-") {
             tokens.len() as i64
         } else {

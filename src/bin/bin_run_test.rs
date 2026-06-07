@@ -142,6 +142,7 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
     let (sglang_port, mut process) = launch_sglang_server_process::<M>(
         &model_path,
         args.num_gpus,
+        rollout_config.use_tool,
         args.sglang_server_log_path.as_deref(),
     )
     .await?;
