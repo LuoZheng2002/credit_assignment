@@ -1037,7 +1037,10 @@ def train(config: TrainConfig) -> None:
     max_batch_size_cap = _resolve_max_batch_size_cap_from_env()
     reset_batch_size_on_wrap = _resolve_reset_batch_size_on_wrap_from_env()
     max_grad_norm = _resolve_max_grad_norm_from_env()
-    lr_warmup_steps = _resolve_lr_warmup_steps_from_env()
+    lr_warmup_micro_batches = _resolve_lr_warmup_steps_from_env()
+    lr_warmup_steps = 0
+    if lr_warmup_micro_batches > 0:
+        lr_warmup_steps = max(1, lr_warmup_micro_batches // config.grad_accum_steps)
     lr_min_scale = _resolve_lr_min_scale_from_env()
 
     if _is_primary_rank():
@@ -1063,7 +1066,11 @@ def train(config: TrainConfig) -> None:
         print(
             "[status] "
             "optimization_stability=1 "
-            f"max_grad_norm={max_grad_norm:.4f} lr_warmup_steps={lr_warmup_steps} lr_min_scale={lr_min_scale:.4f}"
+            f"max_grad_norm={max_grad_norm:.4f} "
+            f"lr_warmup_micro_batches={lr_warmup_micro_batches} "
+            f"lr_warmup_steps={lr_warmup_steps} "
+            f"grad_accum_steps={config.grad_accum_steps} "
+            f"lr_min_scale={lr_min_scale:.4f}"
         )
     tokenizer = AutoTokenizer.from_pretrained(resolved_model_path)
     eos_token_id = _normalize_optional_token_id(tokenizer.eos_token_id)
