@@ -1,0 +1,13 @@
+#!/bin/bash
+
+#SBATCH --job-name=qwen34_std_fsdp
+#SBATCH --output=slurm/logs/qwen34_std_fsdp_%j.out
+#SBATCH --error=slurm/logs/qwen34_std_fsdp_%j.err
+#SBATCH --gres=gpu:nvidia_a100:1
+#SBATCH --cpus-per-task=32
+#SBATCH --ntasks=1
+#SBATCH --mem=32G
+#SBATCH --account=bfdz-delta-gpu
+#SBATCH --time=04:00:00
+
+bash scripts/orchestrator/qwen34_std_fsdp.sh

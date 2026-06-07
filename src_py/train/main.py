@@ -3,11 +3,17 @@ from __future__ import annotations
 import argparse
 
 from .engine import TrainConfig, train
+from .training_plan import TRAINING_PLAN_FSDP, TRAINING_PLAN_LORA
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train causal LM with LoRA or FSDP")
-    parser.add_argument("--training-plan", type=str, required=True)
+    parser.add_argument(
+        "--training-plan",
+        type=str,
+        required=True,
+        choices=[TRAINING_PLAN_LORA, TRAINING_PLAN_FSDP, "lora_current", "full_fsdp_backup"],
+    )
     parser.add_argument("--model-parent-dir", type=str, required=True)
     parser.add_argument("--training-trajectory-sqlite-path", type=str, required=True)
     parser.add_argument("--checkpoints-parent-dir", type=str, required=True)
@@ -21,10 +27,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grad-accum-steps", type=int, required=True)
     parser.add_argument("--log-time-interval", type=float, required=True)
     parser.add_argument("--checkpoint-save-time-interval", type=float, required=True)
-    parser.add_argument("--lora-rank", type=int, required=True)
-    parser.add_argument("--lora-alpha", type=int, required=True)
-    parser.add_argument("--lora-dropout", type=float, required=True)
-    parser.add_argument("--lora-target-modules-csv", type=str, required=True)
+    parser.add_argument("--lora-rank", type=int, required=False, default=64)
+    parser.add_argument("--lora-alpha", type=int, required=False, default=128)
+    parser.add_argument("--lora-dropout", type=float, required=False, default=0.05)
+    parser.add_argument(
+        "--lora-target-modules-csv",
+        type=str,
+        required=False,
+        default="q_proj,k_proj,v_proj,o_proj",
+    )
     parser.add_argument("--resume-checkpoint-tag", type=str, required=False, default="auto")
     parser.add_argument("--seed", type=int, required=True)
     return parser

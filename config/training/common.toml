@@ -1,4 +1,4 @@
-training_plan = "lora_current"
+training_plan = "lora"
 advantage_clip = 3.0
 learning_rate = 2e-05
 weight_decay = 0.01

@@ -17,8 +17,8 @@ Example setup:
 
 ## 1) Choose Training Plan
 
-- `lora_current`: current default plan (LoRA adapters).
-- `full_fsdp_backup`: backup plan (full-model FSDP).
+- `lora`: default plan (LoRA adapters).
+- `fsdp`: full-model FSDP plan (no LoRA).
 
 ## 2) Start Training (TOML config path only)
 
@@ -61,7 +61,7 @@ The checkpoint payload folder for a run is:
 
 Its internal files are owned by training/resume logic and treated as opaque externally. Current files include:
 
-- `model_state.pt` (LoRA adapter state dict for `lora_current`; full model state dict for `full_fsdp_backup`)
+- `model_state.pt` (LoRA adapter state dict for `lora`; full model state dict for `fsdp`)
 - `optimizer_state.rank{rank}.pt`
 - `training_state.rank{rank}.pt`
 

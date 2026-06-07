@@ -33,7 +33,7 @@ class TestEngineCheckpoint(unittest.TestCase):
                 optimizer=optimizer,
                 output_dir=output_dir,
                 checkpoint_tag="checkpoints",
-                training_plan="lora_current",
+                training_plan="lora",
                 global_step=3,
                 next_iteration_index=1,
                 next_batch_cursor=2,
@@ -49,7 +49,7 @@ class TestEngineCheckpoint(unittest.TestCase):
                 optimizer=optimizer,
                 output_dir=output_dir,
                 checkpoint_tag="checkpoints",
-                training_plan="lora_current",
+                training_plan="lora",
             )
 
             self.assertTrue(torch.allclose(expected_weight, model.weight.detach()))
@@ -72,12 +72,38 @@ class TestEngineCheckpoint(unittest.TestCase):
                     optimizer=optimizer,
                     output_dir=output_dir,
                     checkpoint_tag="bad",
-                    training_plan="lora_current",
+                    training_plan="lora",
                     global_step=1,
                     next_iteration_index=0,
                     next_batch_cursor=1,
                     accumulation_step=1,
                 )
+
+    def test_checkpoint_plan_aliases_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir)
+            model = torch.nn.Linear(4, 3)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+            _save_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                output_dir=output_dir,
+                checkpoint_tag="checkpoints",
+                training_plan="lora_current",
+                global_step=1,
+                next_iteration_index=0,
+                next_batch_cursor=0,
+                accumulation_step=0,
+            )
+            resumed = _load_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                output_dir=output_dir,
+                checkpoint_tag="checkpoints",
+                training_plan="lora",
+            )
+            self.assertEqual(1, resumed.global_step)
 
     def test_resolve_resume_checkpoint_tag_latest_and_auto(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -15,6 +15,11 @@ import numpy as np
 import torch
 
 from .batch_dataset import LazyResolvedBatchLoader
+from .training_plan import (
+    TRAINING_PLAN_FSDP,
+    TRAINING_PLAN_LORA,
+    assert_supported_training_plan,
+)
 from .train_loop import run_training_loop
 
 
@@ -421,6 +426,7 @@ def _save_checkpoint(
     min_average_absolute_advantage: float = -1.0,
     median_average_absolute_advantage: float = -1.0,
 ) -> None:
+    training_plan = assert_supported_training_plan(training_plan)
     assert global_step >= 0, "global_step must be non-negative"
     assert next_iteration_index >= 0, "next_iteration_index must be non-negative"
     assert next_batch_cursor >= 0, "next_batch_cursor must be non-negative"
@@ -464,7 +470,7 @@ def _save_checkpoint(
     torch.save(metadata_payload, checkpoint_dir / f"training_state.rank{rank}.pt")
     torch.save(optimizer.state_dict(), checkpoint_dir / f"optimizer_state.rank{rank}.pt")
 
-    if training_plan == "lora_current":
+    if training_plan == TRAINING_PLAN_LORA:
         if rank == 0:
             unwrapped = model.module if hasattr(model, "module") else model
             torch.save(_extract_lora_checkpoint_state_dict(unwrapped), checkpoint_dir / "model_state.pt")
@@ -472,14 +478,14 @@ def _save_checkpoint(
         _distributed_barrier()
         return
 
-    assert training_plan == "full_fsdp_backup", "unknown training plan for checkpointing"
+    assert training_plan == TRAINING_PLAN_FSDP, "unknown training plan for checkpointing"
     from torch.distributed.fsdp import (
         FullyShardedDataParallel as FSDP,
         FullStateDictConfig,
         StateDictType,
     )
 
-    assert isinstance(model, FSDP), "full_fsdp_backup checkpoint expects FSDP model"
+    assert isinstance(model, FSDP), "fsdp checkpoint expects FSDP model"
     save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
     with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
         state_dict = model.state_dict()
@@ -503,6 +509,7 @@ def _save_final_model_folder(
     source_model_path: str,
     tokenizer: object,
 ) -> None:
+    training_plan = assert_supported_training_plan(training_plan)
     final_model_output_path = final_model_output_parent_dir / "model"
     source_model_folder = Path(source_model_path).expanduser().resolve()
     rank, _ = _get_rank_world_size()
@@ -547,7 +554,7 @@ def _save_final_model_folder(
 
     _distributed_barrier()
 
-    if training_plan == "lora_current":
+    if training_plan == TRAINING_PLAN_LORA:
         if rank == 0:
             unwrapped = model.module if hasattr(model, "module") else model
             export_model = unwrapped.merge_and_unload() if hasattr(unwrapped, "merge_and_unload") else unwrapped
@@ -560,14 +567,14 @@ def _save_final_model_folder(
         _distributed_barrier()
         return
 
-    assert training_plan == "full_fsdp_backup", "unknown training plan for final model export"
+    assert training_plan == TRAINING_PLAN_FSDP, "unknown training plan for final model export"
     from torch.distributed.fsdp import (
         FullyShardedDataParallel as FSDP,
         FullStateDictConfig,
         StateDictType,
     )
 
-    assert isinstance(model, FSDP), "full_fsdp_backup final export expects FSDP model"
+    assert isinstance(model, FSDP), "fsdp final export expects FSDP model"
     save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
     with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
         state_dict = model.state_dict()
@@ -646,6 +653,7 @@ def _load_checkpoint(
     checkpoint_tag: str,
     training_plan: str,
 ) -> ResumeState:
+    training_plan = assert_supported_training_plan(training_plan)
     assert len(checkpoint_tag.strip()) > 0, "checkpoint_tag cannot be empty"
 
     rank, _ = _get_rank_world_size()
@@ -667,24 +675,24 @@ def _load_checkpoint(
     assert training_state_path.exists(), f"missing training state: {training_state_path}"
 
     model_state_dict = torch.load(model_state_path, map_location="cpu")
-    if training_plan == "lora_current":
+    if training_plan == TRAINING_PLAN_LORA:
         unwrapped = model.module if hasattr(model, "module") else model
         assert isinstance(model_state_dict, dict), "checkpoint model state must be a state_dict"
         _load_lora_checkpoint_state_dict(unwrapped, model_state_dict)
     else:
-        assert training_plan == "full_fsdp_backup", "unknown training plan for checkpoint loading"
+        assert training_plan == TRAINING_PLAN_FSDP, "unknown training plan for checkpoint loading"
         from torch.distributed.fsdp import (
             FullyShardedDataParallel as FSDP,
             FullStateDictConfig,
             StateDictType,
         )
 
-        assert isinstance(model, FSDP), "full_fsdp_backup loading expects FSDP model"
+        assert isinstance(model, FSDP), "fsdp loading expects FSDP model"
         load_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=False)
         with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, load_policy):
             incompatible = model.load_state_dict(model_state_dict, strict=True)
 
-    if training_plan != "lora_current":
+    if training_plan != TRAINING_PLAN_LORA:
         assert len(incompatible.missing_keys) == 0, "checkpoint model state is missing keys"
         assert len(incompatible.unexpected_keys) == 0, "checkpoint model state has unexpected keys"
 
@@ -692,7 +700,8 @@ def _load_checkpoint(
     optimizer.load_state_dict(optimizer_state)
 
     training_state = torch.load(training_state_path, map_location="cpu")
-    assert training_state["training_plan"] == training_plan, "checkpoint training plan mismatch"
+    checkpoint_training_plan = assert_supported_training_plan(str(training_state["training_plan"]))
+    assert checkpoint_training_plan == training_plan, "checkpoint training plan mismatch"
     next_iteration_index_obj = training_state.get("next_iteration_index")
     if next_iteration_index_obj is None:
         next_iteration_index_obj = training_state.get("next_epoch_index")
@@ -999,10 +1008,7 @@ def _build_fsdp_model(model_path: str, device: torch.device) -> tuple[torch.nn.M
 
 
 def train(config: TrainConfig) -> None:
-    assert config.training_plan in {
-        "lora_current",
-        "full_fsdp_backup",
-    }, "training_plan must be one of: lora_current, full_fsdp_backup"
+    training_plan = assert_supported_training_plan(config.training_plan)
     assert config.advantage_clip > 0.0, "advantage_clip must be positive"
     assert config.learning_rate > 0.0, "learning_rate must be positive"
     assert config.weight_decay >= 0.0, "weight_decay must be non-negative"
@@ -1040,7 +1046,7 @@ def train(config: TrainConfig) -> None:
     if _is_primary_rank():
         print(
             "[status] "
-            f"start_training=1 training_plan={config.training_plan} "
+            f"start_training=1 training_plan={training_plan} "
             f"world_size={world_size} training_time={config.training_time:.1f}s "
             f"model_path={resolved_model_path}"
         )
@@ -1071,7 +1077,7 @@ def train(config: TrainConfig) -> None:
                 f"tokenizer_pad_token_fallback=1 fallback_source=eos_token_id pad_token_id={tokenizer.pad_token_id}"
             )
 
-    if config.training_plan == "lora_current":
+    if training_plan == TRAINING_PLAN_LORA:
         model, attention_backend = _build_lora_model(
             model_path=resolved_model_path,
             lora_rank=config.lora_rank,
@@ -1096,7 +1102,7 @@ def train(config: TrainConfig) -> None:
         betas=(0.9, 0.95),
     )
 
-    if config.training_plan == "lora_current" and world_size > 1:
+    if training_plan == TRAINING_PLAN_LORA and world_size > 1:
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[device.index],
@@ -1139,7 +1145,7 @@ def train(config: TrainConfig) -> None:
             optimizer=optimizer,
             output_dir=checkpoints_parent_dir,
             checkpoint_tag=resolved_resume_tag,
-            training_plan=config.training_plan,
+            training_plan=training_plan,
         )
         if resume_state.next_batch_size == 0:
             resume_state = ResumeState(

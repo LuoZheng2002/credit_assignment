@@ -15,6 +15,7 @@ from .batch_dataset import LazyResolvedBatchLoader, ResolvedTrainingBatch
 from .collator import collate_training_samples
 from .data_sqlite import TrainingSampleTokenized
 from .losses import compute_advantage_weighted_causal_lm_loss
+from .training_plan import assert_supported_training_plan
 
 
 @dataclass
@@ -301,6 +302,7 @@ def _run_unified_loop(
     eng: Any,
 ) -> None:
     assert lazy_loader.sample_count > 0, "training set must be non-empty"
+    training_plan = assert_supported_training_plan(config.training_plan)
     is_distributed = world_size > 1
     if is_distributed:
         assert lazy_loader.sample_count >= world_size, "sample_count must be >= world_size for distributed training"
@@ -541,12 +543,7 @@ def _run_unified_loop(
         step_start = time.perf_counter()
         should_sync = (accumulation_step + 1) == config.grad_accum_steps
         sync_context = nullcontext()
-        if (
-            is_distributed
-            and config.training_plan == "lora_current"
-            and hasattr(model, "no_sync")
-            and not should_sync
-        ):
+        if is_distributed and hasattr(model, "no_sync") and not should_sync:
             sync_context = model.no_sync()
         collated = None
         input_ids = None
@@ -797,7 +794,7 @@ def _run_unified_loop(
                     optimizer=optimizer,
                     output_dir=checkpoints_parent_dir,
                     checkpoint_tag=checkpoint_tag,
-                    training_plan=config.training_plan,
+                    training_plan=training_plan,
                     global_step=global_step,
                     next_iteration_index=iteration_index,
                     next_batch_cursor=global_sample_cursor,
@@ -840,7 +837,7 @@ def _run_unified_loop(
         optimizer=optimizer,
         output_dir=checkpoints_parent_dir,
         checkpoint_tag="checkpoints",
-        training_plan=config.training_plan,
+        training_plan=training_plan,
         global_step=global_step,
         next_iteration_index=iteration_index,
         next_batch_cursor=global_sample_cursor,
@@ -862,7 +859,7 @@ def _run_unified_loop(
     )
     eng._save_final_model_folder(
         model=model,
-        training_plan=config.training_plan,
+        training_plan=training_plan,
         final_model_output_parent_dir=final_model_output_parent_dir,
         source_model_path=resolved_model_path,
         tokenizer=tokenizer,

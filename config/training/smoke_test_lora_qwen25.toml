@@ -1,4 +1,4 @@
-training_plan = "lora_current"
+training_plan = "lora"
 model_parent_dir = "" # to be determined (expects model/ Hugging Face folder inside)
 training_trajectory_sqlite_path = "" # to be determined
 checkpoints_parent_dir = "" # to be determined (typically an epoch_x folder; trainer writes checkpoints/ inside)

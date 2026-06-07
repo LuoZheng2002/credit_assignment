@@ -20,7 +20,7 @@ def _to_toml(payload: dict[str, object]) -> str:
 class TestMainFromConfig(unittest.TestCase):
     def test_load_train_config_from_toml_success(self) -> None:
         payload = {
-            "training_plan": "lora_current",
+            "training_plan": "lora",
             "model_parent_dir": "/tmp/models/qwen35_08b_parent",
             "training_trajectory_sqlite_path": "/tmp/training_trajectories.sqlite",
             "checkpoints_parent_dir": "/tmp/run_a",
@@ -44,13 +44,13 @@ class TestMainFromConfig(unittest.TestCase):
             config_path = Path(tmp_dir) / "config.toml"
             config_path.write_text(_to_toml(payload), encoding="utf-8")
             config = _load_train_config_from_toml(str(config_path))
-            self.assertEqual("lora_current", config.training_plan)
+            self.assertEqual("lora", config.training_plan)
             self.assertEqual("auto", config.resume_checkpoint_tag)
             self.assertEqual(10, int(config.training_time))
 
     def test_load_train_config_from_toml_requires_training_time(self) -> None:
         payload = {
-            "training_plan": "lora_current",
+            "training_plan": "lora",
             "model_parent_dir": "/tmp/models/qwen35_08b_parent",
             "training_trajectory_sqlite_path": "/tmp/training_trajectories.sqlite",
             "checkpoints_parent_dir": "/tmp/run_a",
@@ -78,7 +78,7 @@ class TestMainFromConfig(unittest.TestCase):
 
     def test_load_train_config_from_toml_rejects_missing_or_extra_keys(self) -> None:
         payload = {
-            "training_plan": "lora_current",
+            "training_plan": "lora",
             "model_parent_dir": "/tmp/models/qwen35_08b_parent",
             "training_trajectory_sqlite_path": "/tmp/training_trajectories.sqlite",
             "checkpoints_parent_dir": "/tmp/run_a",

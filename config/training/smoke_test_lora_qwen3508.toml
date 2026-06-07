@@ -1,4 +1,4 @@
-training_plan = "lora_current"
+training_plan = "lora"
 model_parent_dir = "results/qwen3.5-0.8b/tra16/epoch_0" # expects model/ inside this folder
 training_trajectory_sqlite_path = "results/qwen3.5-0.8b/tra16/epoch_0/training_trajectories_89c3a49a.sqlite"
 checkpoints_parent_dir = "results/qwen3.5-0.8b/tra16/epoch_0"
