@@ -3,7 +3,7 @@
 #SBATCH --job-name=qwen25_tempo_fsdp
 #SBATCH --output=slurm/logs/qwen25_tempo_fsdp_%j.out
 #SBATCH --error=slurm/logs/qwen25_tempo_fsdp_%j.err
-#SBATCH --gres=gpu:nvidia_a100:1
+#SBATCH --gres=gpu:nvidia_a100:4
 #SBATCH --cpus-per-task=32
 #SBATCH --ntasks=1
 #SBATCH --mem=32G
