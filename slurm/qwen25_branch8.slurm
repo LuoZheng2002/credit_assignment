@@ -3,8 +3,7 @@
 #SBATCH --job-name=qwen25_branch8
 #SBATCH --output=slurm/logs/qwen25_branch8_%j.out
 #SBATCH --error=slurm/logs/qwen25_branch8_%j.err
-#SBATCH --gres=gpu:1
-#SBATCH --partition=gpuA100x4
+#SBATCH --gres=gpu:nvidia_a100:1
 #SBATCH --cpus-per-task=32
 #SBATCH --ntasks=1
 #SBATCH --mem=32G
