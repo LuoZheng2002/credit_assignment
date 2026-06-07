@@ -27,6 +27,10 @@ use crate::{
         direct_tree::{DirectTree, SegmentContent},
         direct_tree_action::DirectTreeAction,
         direct_tree_action_log::{ActionStoreAdapter, AssetFileDirectTreeActionLogs},
+        direct_tree_status::{
+            DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus,
+            TrunkSubStatus,
+        },
         hybrid_dataset::{AssetFileHybridDataset, DatasetSplit},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
@@ -34,14 +38,14 @@ use crate::{
     tool_call_python::PythonToolServerPool,
 };
 
-struct LlmCallStats {
+struct DistributionStats {
     sketch: KllFloatSketch,
     num_samples: usize,
     min: usize,
     max: usize,
 }
 
-impl LlmCallStats {
+impl DistributionStats {
     fn new() -> Self {
         Self {
             sketch: KllFloatSketch::new().expect("failed to initialize KLL sketch"),
@@ -51,18 +55,18 @@ impl LlmCallStats {
         }
     }
 
-    fn update_and_get_summary(&mut self, llm_calls: usize) -> LlmCallSummary {
-        self.sketch.update(llm_calls as f32);
+    fn update_and_get_summary(&mut self, value: usize) -> DistributionSummary {
+        self.sketch.update(value as f32);
         if self.num_samples == 0 {
-            self.min = llm_calls;
-            self.max = llm_calls;
+            self.min = value;
+            self.max = value;
         } else {
-            self.min = std::cmp::min(self.min, llm_calls);
-            self.max = std::cmp::max(self.max, llm_calls);
+            self.min = std::cmp::min(self.min, value);
+            self.max = std::cmp::max(self.max, value);
         }
         self.num_samples += 1;
 
-        LlmCallSummary {
+        DistributionSummary {
             min: self.min,
             median: quantile_to_usize(self.sketch.get_quantile(0.5)),
             q3: quantile_to_usize(self.sketch.get_quantile(0.75)),
@@ -71,11 +75,18 @@ impl LlmCallStats {
     }
 }
 
-struct LlmCallSummary {
+struct DistributionSummary {
     min: usize,
     median: usize,
     q3: usize,
     max: usize,
+}
+
+fn condensed_distribution(summary: &DistributionSummary) -> String {
+    format!(
+        "({}, {}, {}, {})",
+        summary.min, summary.median, summary.q3, summary.max
+    )
 }
 
 fn quantile_to_usize(value: f32) -> usize {
@@ -90,6 +101,45 @@ fn action_is_llm_call<M: LlmModelMarker>(action: &DirectTreeAction<M>) -> bool {
         action,
         DirectTreeAction::AppendSegmentContent(SegmentContent::ReasoningOrToolCall { .. })
     )
+}
+
+fn trajectory_length_being_judged<M: LlmModelMarker, S: DatasetSplit>(
+    tree: &DirectTree<M, S>,
+) -> Option<usize> {
+    match &tree.status {
+        DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::JudgingSegment {
+            finalized_content_array,
+            ..
+        }) => {
+            let root_segment_id = tree.root_segment_id.expect("root segment must exist");
+            Some(
+                tree.get_trajectory(root_segment_id, finalized_content_array)
+                    .to_prompt_tokens()
+                    .len(),
+            )
+        }
+        DirectTreeStatus::WorkingOnGuidedBranching(GuidedBranchingSubStatus::JudgingSegment {
+            parent_segment_id,
+            finalized_content_array,
+            ..
+        }) => Some(
+            tree.get_trajectory(*parent_segment_id, finalized_content_array)
+                .to_prompt_tokens()
+                .len(),
+        ),
+        DirectTreeStatus::WorkingOnSpontaneousBranching(
+            SpontaneousBranchingSubStatus::JudgingSegment {
+                parent_segment_id,
+                prefix_trimmed_content_array,
+                ..
+            },
+        ) => Some(
+            tree.get_trajectory(*parent_segment_id, prefix_trimmed_content_array)
+                .to_prompt_tokens()
+                .len(),
+        ),
+        _ => None,
+    }
 }
 
 async fn run_progress_timer(
@@ -183,7 +233,9 @@ pub struct RolloutSharedStates {
     num_finished_branches: Arc<AtomicUsize>,
     num_finished_trees: Arc<AtomicUsize>,
     num_correct_branches: Arc<AtomicUsize>,
-    llm_call_stats: Arc<parking_lot::RwLock<LlmCallStats>>,
+    llm_call_stats: Arc<parking_lot::RwLock<DistributionStats>>,
+    trajectory_length_stats: Arc<parking_lot::RwLock<DistributionStats>>,
+    correct_trajectory_length_stats: Arc<parking_lot::RwLock<DistributionStats>>,
     num_active_rollouts: Arc<AtomicUsize>,
     total_llm_calls: Arc<AtomicUsize>,
     trajectories_per_tree: usize,
@@ -212,6 +264,8 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
         num_finished_trees,
         num_correct_branches,
         llm_call_stats,
+        trajectory_length_stats,
+        correct_trajectory_length_stats,
         num_active_rollouts,
         total_llm_calls,
         trajectories_per_tree,
@@ -263,6 +317,24 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
                 );
                 let running_accuracy = num_correct as f32 / finished as f32;
                 log_key_value_pair("Rollout running accuracy", running_accuracy.to_string());
+                if let Some(trajectory_length) = trajectory_length_being_judged(&tree) {
+                    let summary = trajectory_length_stats
+                        .write()
+                        .update_and_get_summary(trajectory_length);
+                    log_key_value_pair(
+                        "trajectory_length (min, median, q3, max)",
+                        condensed_distribution(&summary),
+                    );
+                    if correctness_judgment.is_correct {
+                        let correct_summary = correct_trajectory_length_stats
+                            .write()
+                            .update_and_get_summary(trajectory_length);
+                        log_key_value_pair(
+                            "correct_trajectory_length (min, median, q3, max)",
+                            condensed_distribution(&correct_summary),
+                        );
+                    }
+                }
             }
             _ => {}
         }
@@ -299,10 +371,10 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
     let summary = llm_call_stats
         .write()
         .update_and_get_summary(llm_calls_so_far);
-    log_key_value_pair("min_llm_calls_per_tree", summary.min.to_string());
-    log_key_value_pair("median_llm_calls_per_tree", summary.median.to_string());
-    log_key_value_pair("third_quartile_llm_calls_per_tree", summary.q3.to_string());
-    log_key_value_pair("max_llm_calls_per_tree", summary.max.to_string());
+    log_key_value_pair(
+        "llm_calls_per_tree (min, median, q3, max)",
+        condensed_distribution(&summary),
+    );
     Ok(())
 }
 
@@ -416,7 +488,10 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     let num_finished_trees = Arc::new(AtomicUsize::new(0));
     let num_correct_branches = Arc::new(AtomicUsize::new(0));
     let num_active_rollouts = Arc::new(AtomicUsize::new(0));
-    let llm_call_stats = Arc::new(parking_lot::RwLock::new(LlmCallStats::new()));
+    let llm_call_stats = Arc::new(parking_lot::RwLock::new(DistributionStats::new()));
+    let trajectory_length_stats = Arc::new(parking_lot::RwLock::new(DistributionStats::new()));
+    let correct_trajectory_length_stats =
+        Arc::new(parking_lot::RwLock::new(DistributionStats::new()));
     let total_llm_calls = Arc::new(AtomicUsize::new(0));
     let total_trees_to_finish = question_keys.len();
 
@@ -431,6 +506,8 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         num_finished_trees,
         num_correct_branches,
         llm_call_stats,
+        trajectory_length_stats,
+        correct_trajectory_length_stats,
         num_active_rollouts,
         total_llm_calls,
         trajectories_per_tree: rollout_config.max_num_total_trajectories,
