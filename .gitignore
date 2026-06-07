@@ -7,7 +7,7 @@ tokenizers
 *.out
 *.err
 AgentFlow
-results
+results*
 pwd.txt
 examine.json
 activate_environment.sh
