@@ -85,7 +85,7 @@ impl LlmCallable<Gemma3_4BIt> for Gemma3_4BItLlmCallable {
         passes_in_stop: bool,
     ) -> Result<Vec<i32>, String> {
         self.shared
-            .generate_tokens_from_tokens(prompt_or_tokens, passes_in_stop)
+            .generate_tokens_from_tokens::<Gemma3_4BIt>(prompt_or_tokens, passes_in_stop)
             .await
     }
 

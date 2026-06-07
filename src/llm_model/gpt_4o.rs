@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 use tiktoken_rs::{CoreBPE, bpe_for_model};
 
-use crate::constants::SGLANG_CONTEXT_LENGTH;
+use crate::constants::SGLANG_CONTEXT_LENGTH_COMMON;
 use crate::token_array::TokenArray;
 
 use super::{
@@ -63,18 +63,18 @@ impl Gpt4oLlmCallable {
 }
 
 fn remaining_generation_tokens(prompt_len: usize) -> Result<usize, String> {
-    let remaining = SGLANG_CONTEXT_LENGTH
+    let remaining = SGLANG_CONTEXT_LENGTH_COMMON
         .checked_sub(prompt_len + 1)
         .ok_or_else(|| {
             format!(
                 "Context length exceeded before generation (prompt_length={}, limit={}).",
-                prompt_len, SGLANG_CONTEXT_LENGTH
+                prompt_len, SGLANG_CONTEXT_LENGTH_COMMON
             )
         })?;
     if remaining == 0 {
         return Err(format!(
             "Context length exceeded before generation (prompt_length={}, limit={}).",
-            prompt_len, SGLANG_CONTEXT_LENGTH
+            prompt_len, SGLANG_CONTEXT_LENGTH_COMMON
         ));
     }
     Ok(remaining)

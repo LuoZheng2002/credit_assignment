@@ -2,7 +2,7 @@ use reqwest::Client;
 use serde_json::Value;
 use tokenizers::Tokenizer;
 
-use crate::constants::SGLANG_CONTEXT_LENGTH;
+use crate::constants::sglang_context_length_for_model;
 use crate::llm_model::LlmModelMarker;
 use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate};
 
@@ -63,19 +63,20 @@ pub(crate) fn build_qwen35_python_response_turn_disable_thinking(
     )
 }
 
-fn remaining_generation_tokens(prompt_len: usize) -> Result<usize, String> {
-    let remaining = SGLANG_CONTEXT_LENGTH
+fn remaining_generation_tokens<M: LlmModelMarker>(prompt_len: usize) -> Result<usize, String> {
+    let context_length = sglang_context_length_for_model::<M>();
+    let remaining = context_length
         .checked_sub(prompt_len + 1)
         .ok_or_else(|| {
             format!(
                 "Context length exceeded before generation (prompt_length={}, limit={}).",
-                prompt_len, SGLANG_CONTEXT_LENGTH
+                prompt_len, context_length
             )
         })?;
     if remaining == 0 {
         return Err(format!(
             "Context length exceeded before generation (prompt_length={}, limit={}).",
-            prompt_len, SGLANG_CONTEXT_LENGTH
+            prompt_len, context_length
         ));
     }
     Ok(remaining)
@@ -123,12 +124,12 @@ impl SharedSglangLlmCallable {
         }
     }
 
-    pub(crate) async fn generate_tokens_from_tokens(
+    pub(crate) async fn generate_tokens_from_tokens<M: LlmModelMarker>(
         &self,
         tokens: Vec<i32>,
         passes_in_stop: bool,
     ) -> Result<Vec<i32>, String> {
-        let max_new_tokens = remaining_generation_tokens(tokens.len())?;
+        let max_new_tokens = remaining_generation_tokens::<M>(tokens.len())?;
         let mut body = serde_json::json!({
             "input_ids": tokens.clone(),
             "sampling_params": {
@@ -167,7 +168,7 @@ impl SharedSglangLlmCallable {
         passes_in_stop: bool,
         temperature: f32,
     ) -> Result<TokenArrayWithLogprob<M>, String> {
-        let max_new_tokens = remaining_generation_tokens(tokens.len())?;
+        let max_new_tokens = remaining_generation_tokens::<M>(tokens.len())?;
         let logprob_start_len: i64 = if M::CLI_NAME.starts_with("gemma-") {
             tokens.len() as i64
         } else {

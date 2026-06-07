@@ -84,7 +84,7 @@ impl LlmCallable<Mistral7BInstructV03> for Mistral7BInstructV03LlmCallable {
         passes_in_stop: bool,
     ) -> Result<Vec<i32>, String> {
         self.shared
-            .generate_tokens_from_tokens(prompt_or_tokens, passes_in_stop)
+            .generate_tokens_from_tokens::<Mistral7BInstructV03>(prompt_or_tokens, passes_in_stop)
             .await
     }
 

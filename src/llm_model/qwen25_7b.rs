@@ -76,7 +76,7 @@ impl LlmCallable<Qwen25_7B> for Qwen25LlmCallable {
         passes_in_stop: bool,
     ) -> Result<Vec<i32>, String> {
         self.shared
-            .generate_tokens_from_tokens(prompt_or_tokens, passes_in_stop)
+            .generate_tokens_from_tokens::<Qwen25_7B>(prompt_or_tokens, passes_in_stop)
             .await
     }
 

@@ -10,7 +10,7 @@ use research_utility::progress_tui_server::log_info;
 use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep, timeout};
 
-use crate::{constants::SGLANG_CONTEXT_LENGTH, llm_model::LlmModelMarker};
+use crate::{constants::sglang_context_length_for_model, llm_model::LlmModelMarker};
 
 pub fn model_uses_sglang<M: LlmModelMarker>() -> bool {
     !M::CLI_NAME.starts_with("gpt-")
@@ -40,7 +40,7 @@ pub async fn launch_sglang_server_process<M: LlmModelMarker>(
         .arg("--dp")
         .arg(num_gpus.to_string())
         .arg("--context-length")
-        .arg(SGLANG_CONTEXT_LENGTH.to_string())
+        .arg(sglang_context_length_for_model::<M>().to_string())
         // .arg("--load-balance-method")
         // .arg("total_tokens")
         // .arg("--enable-mixed-chunk")

@@ -87,7 +87,7 @@ impl LlmCallable<Llama31_8BInstruct> for Llama31_8BInstructLlmCallable {
         passes_in_stop: bool,
     ) -> Result<Vec<i32>, String> {
         self.shared
-            .generate_tokens_from_tokens(prompt_or_tokens, passes_in_stop)
+            .generate_tokens_from_tokens::<Llama31_8BInstruct>(prompt_or_tokens, passes_in_stop)
             .await
     }
 
