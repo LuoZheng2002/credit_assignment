@@ -201,8 +201,19 @@ pub enum OrchestrationStatus {
 pub struct OrchestrationProgress {
     pub status: OrchestrationStatus,
     pub epoch: usize,
-    pub validation_accuracies: BTreeMap<usize, f32>,
-    pub training_rollout_accuracies: BTreeMap<usize, f32>,
+    pub validation_accuracies: BTreeMap<usize, (f32, f32, f32)>,
+    pub training_rollout_accuracies: BTreeMap<usize, (f32, f32, f32)>,
+}
+
+fn accuracy_tuple_to_string(accuracies: (f32, f32, f32)) -> String {
+    format!(
+        "({:.6}, {:.6}, {:.6})",
+        accuracies.0, accuracies.1, accuracies.2
+    )
+}
+
+fn average_accuracy(accuracies: (f32, f32, f32)) -> f32 {
+    (accuracies.0 + accuracies.1 + accuracies.2) / 3.0
 }
 
 impl Orchestrator {
@@ -329,21 +340,30 @@ impl Orchestrator {
             _phantom: std::marker::PhantomData,
         };
         let accuracy_stats = get_accuracy(asset_file_action_logs, "Validation accuracy").await;
-        let Some(accuracy) = accuracy_stats.accuracy() else {
+        let Some(accuracies) = accuracy_stats.accuracy_tuple() else {
             return Err("Validation action log is empty, cannot compute accuracy".to_string());
         };
-        self.progress.validation_accuracies.insert(epoch, accuracy);
+        self.progress.validation_accuracies.insert(epoch, accuracies);
         log_key_value_pair(
-            format!("epoch_{}_start_accuracy", epoch),
-            accuracy.to_string(),
+            format!("epoch_{}_validation_accuracy_deepmath", epoch),
+            accuracies.0.to_string(),
+        );
+        log_key_value_pair(
+            format!("epoch_{}_validation_accuracy_math", epoch),
+            accuracies.1.to_string(),
+        );
+        log_key_value_pair(
+            format!("epoch_{}_validation_accuracy_gsm8k", epoch),
+            accuracies.2.to_string(),
         );
         let progress_save_path =
             Orchestrator::progress_save_path(M::CLI_NAME.into(), &self.config_nickname);
         write_json(&progress_save_path, &self.progress).unwrap();
         log_info(format!(
-            "Epoch {} validation accuracy: {} (weighted wins {:.4} over {} trees, {} trajectories)",
+            "Epoch {} validation accuracies (deepmath, math, gsm8k): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
             epoch,
-            accuracy,
+            accuracy_tuple_to_string(accuracies),
+            average_accuracy(accuracies),
             accuracy_stats.weighted_num_wins,
             accuracy_stats.num_trees_with_judgments,
             accuracy_stats.num_trajectories_judged
@@ -365,25 +385,34 @@ impl Orchestrator {
         };
         let accuracy_stats =
             get_accuracy(asset_file_action_logs, "Training rollout accuracy").await;
-        let Some(accuracy) = accuracy_stats.accuracy() else {
+        let Some(accuracies) = accuracy_stats.accuracy_tuple() else {
             return Err(
                 "Training rollout action log is empty, cannot compute accuracy".to_string(),
             );
         };
         self.progress
             .training_rollout_accuracies
-            .insert(epoch, accuracy);
+            .insert(epoch, accuracies);
         log_key_value_pair(
-            format!("epoch_{}_training_rollout_accuracy", epoch),
-            accuracy.to_string(),
+            format!("epoch_{}_training_rollout_accuracy_deepmath", epoch),
+            accuracies.0.to_string(),
+        );
+        log_key_value_pair(
+            format!("epoch_{}_training_rollout_accuracy_math", epoch),
+            accuracies.1.to_string(),
+        );
+        log_key_value_pair(
+            format!("epoch_{}_training_rollout_accuracy_gsm8k", epoch),
+            accuracies.2.to_string(),
         );
         let progress_save_path =
             Orchestrator::progress_save_path(M::CLI_NAME.into(), &self.config_nickname);
         write_json(&progress_save_path, &self.progress).unwrap();
         log_info(format!(
-            "Epoch {} training rollout accuracy: {} (weighted wins {:.4} over {} trees, {} trajectories)",
+            "Epoch {} training rollout accuracies (deepmath, math, gsm8k): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
             epoch,
-            accuracy,
+            accuracy_tuple_to_string(accuracies),
+            average_accuracy(accuracies),
             accuracy_stats.weighted_num_wins,
             accuracy_stats.num_trees_with_judgments,
             accuracy_stats.num_trajectories_judged
@@ -748,18 +777,19 @@ impl Orchestrator {
         &self,
         epoch: usize,
     ) -> Result<(), String> {
-        let Some(&epoch_accuracy) = self.progress.validation_accuracies.get(&epoch) else {
+        let Some(&epoch_accuracies) = self.progress.validation_accuracies.get(&epoch) else {
             return Err(format!(
                 "Missing validation accuracy for epoch {}, cannot decide model cleanup",
                 epoch
             ));
         };
-        let max_accuracy_through_epoch = self
+        let epoch_avg_accuracy = average_accuracy(epoch_accuracies);
+        let max_avg_accuracy_through_epoch = self
             .progress
             .validation_accuracies
             .iter()
             .filter(|(logged_epoch, _)| **logged_epoch <= epoch)
-            .map(|(_, accuracy)| *accuracy)
+            .map(|(_, accuracies)| average_accuracy(*accuracies))
             .max_by(|a, b| a.total_cmp(b))
             .ok_or_else(|| {
                 format!(
@@ -767,11 +797,13 @@ impl Orchestrator {
                     epoch
                 )
             })?;
-        let keep_model_dir = epoch_accuracy >= max_accuracy_through_epoch;
+        let keep_model_dir = epoch_avg_accuracy >= max_avg_accuracy_through_epoch;
         if keep_model_dir {
             log_info(format!(
-                "Keeping model directory for epoch {} because validation accuracy {:.6} is best so far",
-                epoch, epoch_accuracy
+                "Keeping model directory for epoch {} because validation average accuracy {:.6} from tuple {} is best so far",
+                epoch,
+                epoch_avg_accuracy,
+                accuracy_tuple_to_string(epoch_accuracies)
             ));
             return Ok(());
         }
@@ -800,7 +832,11 @@ impl Orchestrator {
             .validation_accuracies
             .iter()
             .filter(|(epoch, _)| **epoch <= current_epoch)
-            .max_by(|a, b| a.1.total_cmp(b.1).then_with(|| a.0.cmp(b.0)))
+            .max_by(|a, b| {
+                average_accuracy(*a.1)
+                    .total_cmp(&average_accuracy(*b.1))
+                    .then_with(|| a.0.cmp(b.0))
+            })
             .map(|(epoch, _)| *epoch)
             .ok_or_else(|| {
                 format!(

@@ -13,12 +13,42 @@ use crate::{
 
 use serde::{Deserialize, Serialize};
 
+const DEEPMATH_DATASET_NAME: &str = "deepmath";
+const MATH_DATASET_NAME: &str = "math";
+const GSM8K_DATASET_NAME: &str = "gsm8k";
+
+#[derive(Debug, Clone, Copy)]
+struct DatasetBucketStats {
+    weighted_num_wins: f32,
+    weighted_total_plays: f32,
+}
+
+impl DatasetBucketStats {
+    fn new() -> Self {
+        Self {
+            weighted_num_wins: 0.0,
+            weighted_total_plays: 0.0,
+        }
+    }
+
+    fn update(&mut self, num_correct_trajectories: usize, total_trajectories: usize) {
+        self.weighted_num_wins += num_correct_trajectories as f32 / total_trajectories as f32;
+        self.weighted_total_plays += 1.0;
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AccuracyStats {
     pub weighted_num_wins: f32,
     pub weighted_total_plays: f32,
     pub num_trees_with_judgments: usize,
     pub num_trajectories_judged: usize,
+    pub deepmath_weighted_num_wins: f32,
+    pub deepmath_weighted_total_plays: f32,
+    pub math_weighted_num_wins: f32,
+    pub math_weighted_total_plays: f32,
+    pub gsm8k_weighted_num_wins: f32,
+    pub gsm8k_weighted_total_plays: f32,
 }
 
 impl AccuracyStats {
@@ -28,6 +58,32 @@ impl AccuracyStats {
         } else {
             Some(self.weighted_num_wins / self.weighted_total_plays)
         }
+    }
+
+    pub fn accuracy_tuple(&self) -> Option<(f32, f32, f32)> {
+        if self.deepmath_weighted_total_plays == 0.0
+            || self.math_weighted_total_plays == 0.0
+            || self.gsm8k_weighted_total_plays == 0.0
+        {
+            return None;
+        }
+        Some((
+            self.deepmath_weighted_num_wins / self.deepmath_weighted_total_plays,
+            self.math_weighted_num_wins / self.math_weighted_total_plays,
+            self.gsm8k_weighted_num_wins / self.gsm8k_weighted_total_plays,
+        ))
+    }
+}
+
+fn dataset_bucket_name(dataset_name: &str) -> &'static str {
+    match dataset_name {
+        DEEPMATH_DATASET_NAME => DEEPMATH_DATASET_NAME,
+        MATH_DATASET_NAME => MATH_DATASET_NAME,
+        GSM8K_DATASET_NAME => GSM8K_DATASET_NAME,
+        _ => panic!(
+            "Unsupported dataset_name '{}' in get_accuracy; expected one of: deepmath, math, gsm8k",
+            dataset_name
+        ),
     }
 }
 
@@ -64,6 +120,9 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
     let mut weighted_total_plays = 0.0f32;
     let mut num_trees_with_judgments = 0usize;
     let mut num_trajectories_judged = 0usize;
+    let mut deepmath_stats = DatasetBucketStats::new();
+    let mut math_stats = DatasetBucketStats::new();
+    let mut gsm8k_stats = DatasetBucketStats::new();
 
     const MAX_CONCURRENT_TASKS: usize = 200;
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS));
@@ -79,6 +138,7 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
                 next_key_index += 1;
 
                 let question = question_store.get(key).unwrap().unwrap();
+                let dataset_name = dataset_bucket_name(&question.dataset_name).to_string();
                 let actions = action_store.load_table_sorted(key).unwrap();
                 let action_log = DirectTreeActionLog {
                     question,
@@ -91,20 +151,35 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
 
                 join_set.spawn(async move {
                     let _permit = permit;
-                    tree_accuracy::<M, S>(&action_log)
+                    (dataset_name, tree_accuracy::<M, S>(&action_log))
                 });
             }
             joined = join_set.join_next(), if !join_set.is_empty() => {
                 finished += 1;
 
                 match joined.expect("join_set must have at least one task") {
-                    Ok(result) => {
+                    Ok((dataset_name, result)) => {
                         if let Some((num_correct_trajectories, total_trajectories)) = result {
                             weighted_num_wins +=
                                 num_correct_trajectories as f32 / total_trajectories as f32;
                             weighted_total_plays += 1.0;
                             num_trees_with_judgments += 1;
                             num_trajectories_judged += total_trajectories;
+                            match dataset_name.as_str() {
+                                DEEPMATH_DATASET_NAME => {
+                                    deepmath_stats
+                                        .update(num_correct_trajectories, total_trajectories)
+                                }
+                                MATH_DATASET_NAME => {
+                                    math_stats.update(num_correct_trajectories, total_trajectories)
+                                }
+                                GSM8K_DATASET_NAME => {
+                                    gsm8k_stats.update(num_correct_trajectories, total_trajectories)
+                                }
+                                _ => unreachable!(
+                                    "dataset name was validated before task spawn"
+                                ),
+                            }
                         }
                     }
                     Err(join_err) => panic!("accuracy task panicked: {join_err}"),
@@ -127,6 +202,12 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
         weighted_total_plays,
         num_trees_with_judgments,
         num_trajectories_judged,
+        deepmath_weighted_num_wins: deepmath_stats.weighted_num_wins,
+        deepmath_weighted_total_plays: deepmath_stats.weighted_total_plays,
+        math_weighted_num_wins: math_stats.weighted_num_wins,
+        math_weighted_total_plays: math_stats.weighted_total_plays,
+        gsm8k_weighted_num_wins: gsm8k_stats.weighted_num_wins,
+        gsm8k_weighted_total_plays: gsm8k_stats.weighted_total_plays,
     }
 }
 
