@@ -26,6 +26,7 @@ use crate::{
     },
     llm_model::{LlmCliArgs, LlmModelMarker},
     python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
+    util::storage_dir_from_env,
 };
 
 pub const MODEL_PARENT_DIR_TEMPLATE_PATH: &str = "config/training/model_parent_dir.jinja";
@@ -53,12 +54,14 @@ fn render_template_for_epoch(
     config_nickname: &str,
     epoch: usize,
 ) -> Result<String, String> {
+    let storage_dir = storage_dir_from_env()?;
     let env = template_env.as_ref().map_err(|err| err.clone())?;
     let template = env
         .get_template(template_name)
         .map_err(|err| format!("Failed to load {} template: {}", template_name, err))?;
     let rendered = template
         .render(context! {
+            storage_dir => storage_dir,
             model_cli_name => model_cli_name,
             config_nickname => config_nickname,
             epoch => epoch,

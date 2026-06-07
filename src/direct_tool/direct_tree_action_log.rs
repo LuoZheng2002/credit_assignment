@@ -19,6 +19,7 @@ use crate::{
     },
     json_line_util::{read_json, write_json},
     llm_model::LlmModelMarker,
+    util::storage_dir_from_env,
 };
 
 const ACTION_LOG_SCHEMA_VERSION: usize = 3;
@@ -41,6 +42,7 @@ fn action_logs_parent_dir_from_template(
     config_nickname: &str,
     epoch: usize,
 ) -> Result<String, String> {
+    let storage_dir = storage_dir_from_env()?;
     static ACTION_LOGS_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
         Result<minijinja::Environment<'static>, String>,
     > = LazyLock::new(|| {
@@ -58,6 +60,7 @@ fn action_logs_parent_dir_from_template(
         .map_err(|err| format!("Failed to load action_logs_parent_dir template: {}", err))?;
     let rendered = template
         .render(context! {
+            storage_dir => storage_dir,
             model_cli_name => model_cli_name,
             config_nickname => config_nickname,
             epoch => epoch,

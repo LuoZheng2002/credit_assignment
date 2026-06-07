@@ -1,5 +1,5 @@
 {% if epoch == 0 %}
-/work/hdd/bfdz/zluo8/credit-assignment/results/{{ model_cli_name }}
+{{ storage_dir }}/results/{{ model_cli_name }}
 {% else %}
-/work/hdd/bfdz/zluo8/credit-assignment/results/{{ model_cli_name }}/{{ config_nickname }}/epoch_{{ epoch }}
+{{ storage_dir }}/results/{{ model_cli_name }}/{{ config_nickname }}/epoch_{{ epoch }}
 {% endif %}

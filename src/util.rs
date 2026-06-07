@@ -1,4 +1,4 @@
-use std::future::Future;
+use std::{future::Future, sync::LazyLock};
 
 pub fn block_on_async<F: Future>(future: F) -> F::Output {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -51,4 +51,22 @@ pub fn extract_boxed_content(text: &str) -> Option<String> {
     }
 
     None
+}
+
+pub fn storage_dir_from_env() -> Result<String, String> {
+    static STORAGE_DIR: LazyLock<Result<String, String>> = LazyLock::new(|| {
+        dotenvy::dotenv().ok();
+        let storage_dir = std::env::var("STORAGE_DIR")
+            .map_err(|err| format!("Failed to read STORAGE_DIR from environment: {}", err))?;
+        let storage_dir = storage_dir.trim();
+        if storage_dir.is_empty() {
+            return Err("STORAGE_DIR is set but empty".to_string());
+        }
+        Ok(storage_dir.to_string())
+    });
+
+    STORAGE_DIR
+        .as_ref()
+        .map(|storage_dir| storage_dir.clone())
+        .map_err(|err| err.clone())
 }
