@@ -15,6 +15,6 @@ cargo run --bin bin_orchestrator -- \
     --validation-rollout-time-limit-secs 1200 \
     --num-python-tool-servers 1 \
     --sglang-server-log-path logs/sglang_server_qwen34.txt \
-    --tui-log-path logs/std.bin \
+    --tui-log-path logs/qwen3-4b_std.bin \
     --num-gpus 1 \
     --ui true

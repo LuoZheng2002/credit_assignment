@@ -15,6 +15,6 @@ cargo run --bin bin_orchestrator -- \
     --validation-rollout-time-limit-secs 1200 \
     --num-python-tool-servers 1 \
     --sglang-server-log-path logs/sglang_server_qwen25_treerpo_fsdp.txt \
-    --tui-log-path logs/treerpo_fsdp.bin \
+    --tui-log-path logs/qwen2.5-7b_treerpo_fsdp.bin \
     --num-gpus 4 \
     --ui true

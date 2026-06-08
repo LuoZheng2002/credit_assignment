@@ -15,6 +15,6 @@ cargo run --bin bin_orchestrator -- \
     --validation-rollout-time-limit-secs 1200 \
     --num-python-tool-servers 1 \
     --sglang-server-log-path logs/sglang_server_mistral_notool.txt \
-    --tui-log-path logs/notool.bin \
+    --tui-log-path logs/mistral-7b-instruct-v0.3_notool.bin \
     --num-gpus 1 \
     --ui true
