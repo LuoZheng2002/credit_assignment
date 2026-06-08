@@ -65,7 +65,7 @@ struct Args {
     #[arg(long)]
     sglang_server_log_path: Option<String>,
     #[arg(long)]
-    message_log_path: Option<String>,
+    tui_log_path: Option<String>,
     #[arg(long)]
     num_gpus: usize,
     #[arg(long, action = ArgAction::Set)]
@@ -97,7 +97,7 @@ async fn main() {
         validation_rollout_time_limit_secs,
         num_python_tool_servers,
         sglang_server_log_path,
-        message_log_path,
+        tui_log_path,
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         training_config_common_path,
@@ -115,7 +115,7 @@ async fn main() {
 
     if ui {
         ProgressTuiLogger::initialize(
-            message_log_path.unwrap_or_else(|| DEFAULT_PROGRESS_TUI_LOG_PATH.to_string()),
+            tui_log_path.unwrap_or_else(|| DEFAULT_PROGRESS_TUI_LOG_PATH.to_string()),
         )
         .await
         .unwrap();

@@ -15,7 +15,6 @@ cargo run --bin bin_orchestrator -- \
     --validation-rollout-time-limit-secs 1200 \
     --num-python-tool-servers 1 \
     --sglang-server-log-path logs/sglang_server_gemma3_notool.txt \
-    --message-log-path logs/messages_gemma3_notool.txt \
-    --tui-server-port 7878 \
+    --tui-log-path logs/notool.bin \
     --num-gpus 1 \
     --ui true
