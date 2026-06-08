@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::Path, sync::LazyLock};
 use minijinja::context;
 use research_utility::{
     asset_file::AssetFile,
-    progress_tui_server::{log_info, log_key_value_pair, log_state},
+    progress_tui_logger::{log_info, log_key_value_pair, log_state},
 };
 use serde::{Deserialize, Serialize};
 use tokio::process::Child;
@@ -352,7 +352,9 @@ impl Orchestrator {
         let Some(accuracies) = accuracy_stats.accuracy_tuple() else {
             return Err("Validation action log is empty, cannot compute accuracy".to_string());
         };
-        self.progress.validation_accuracies.insert(epoch, accuracies);
+        self.progress
+            .validation_accuracies
+            .insert(epoch, accuracies);
         log_key_value_pair(
             format!("epoch_{}_validation_accuracy_deepmath", epoch),
             accuracies.0.to_string(),

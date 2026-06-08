@@ -2,15 +2,15 @@
 
 set -euo pipefail
 
-if [ "$#" -ne 2 ]; then
-    echo "Usage: $0 <hostname> <port>"
+if [ "$#" -gt 1 ]; then
+    echo "Usage: $0 [progress_log_file]"
     exit 1
 fi
 
-hostname="$1"
-port="$2"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+log_file="${1:-$script_dir/progress_tui_log.bin}"
 
-cd "../research-utility"
+cd "$script_dir/../research-utility"
 
 cargo run --bin bin_progress_tui -- \
-    --addr "$hostname:$port"
+    --log-file "$log_file"

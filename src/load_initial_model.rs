@@ -1,6 +1,6 @@
 use std::process::Stdio;
 
-use research_utility::progress_tui_server::{log_info, log_warning};
+use research_utility::progress_tui_logger::{log_info, log_warning};
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 

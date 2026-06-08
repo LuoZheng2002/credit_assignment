@@ -1,7 +1,7 @@
 use std::{path::Path, process::Stdio};
 
 use research_utility::message::TuiMessage;
-use research_utility::progress_tui_server::{log_info, log_message, log_warning};
+use research_utility::progress_tui_logger::{log_info, log_message, log_warning};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;

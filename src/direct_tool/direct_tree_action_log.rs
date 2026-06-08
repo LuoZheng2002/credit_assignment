@@ -1,7 +1,7 @@
 use minijinja::context;
 use research_utility::{
     asset_file::{AssetFile, Base64Hash, hash_file},
-    progress_tui_server::log_warning,
+    progress_tui_logger::log_warning,
     sqlite_table_array_store::SqliteTableArrayStore,
 };
 use serde::{Deserialize, Serialize};

@@ -10,7 +10,7 @@ use reqwest::Client;
 use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
 use research_utility::{
     asset_file::AssetFile,
-    progress_tui_server::{
+    progress_tui_logger::{
         delete_worker_progress_bar, log_key_value_pair, log_master_progress, log_worker_progress,
     },
 };

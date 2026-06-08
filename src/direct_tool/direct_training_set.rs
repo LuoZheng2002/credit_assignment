@@ -6,7 +6,7 @@ use ordered_float::NotNan;
 use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
 use research_utility::{
     asset_file::{AssetFile, Base64Hash, hash_file},
-    progress_tui_server::{log_info, log_key_value_pair, log_master_progress, log_warning},
+    progress_tui_logger::{log_info, log_key_value_pair, log_master_progress, log_warning},
     sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
 };
 use serde::{Deserialize, Serialize};

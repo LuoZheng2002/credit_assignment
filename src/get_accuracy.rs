@@ -1,4 +1,4 @@
-use research_utility::{asset_file::AssetFile, progress_tui_server::log_master_progress};
+use research_utility::{asset_file::AssetFile, progress_tui_logger::log_master_progress};
 use std::{collections::BTreeMap, marker::PhantomData, sync::Arc};
 use tokio::{sync::Semaphore, task::JoinSet};
 

@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 use reqwest::Client;
-use research_utility::progress_tui_server::log_warning;
+use research_utility::progress_tui_logger::log_warning;
 
 use crate::atomic_count_guard::AtomicCountGuard;
 use crate::direct_tool::direct_rollout::StopRequestedError;

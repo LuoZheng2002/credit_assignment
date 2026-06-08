@@ -24,8 +24,9 @@ use credit_assignment::{
     orchestrator::model_parent_dir_from_template,
 };
 use reqwest::Client;
-use research_utility::progress_tui_protocol::DEFAULT_PROGRESS_SCREEN_TCP_PORT;
-use research_utility::progress_tui_server::ProgressTuiServer;
+use research_utility::progress_tui_logger::ProgressTuiLogger;
+
+const DEFAULT_PROGRESS_TUI_LOG_PATH: &str = "progress_tui_log.bin";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -60,8 +61,8 @@ struct Args {
     num_gpus: usize,
     #[arg(long)]
     sglang_server_log_path: Option<String>,
-    #[arg(long, default_value_t = DEFAULT_PROGRESS_SCREEN_TCP_PORT)]
-    tui_server_port: u16,
+    #[arg(long, default_value = DEFAULT_PROGRESS_TUI_LOG_PATH)]
+    progress_tui_log_path: String,
 }
 
 fn model_cli_name_to_string(model_name: &LlmModelName) -> String {
@@ -218,13 +219,9 @@ async fn main() {
 
     let model_name = LlmModelName::from_str(&args.model_cli_name, true).unwrap();
     if args.ui {
-        ProgressTuiServer::initialize(
-            args.tui_server_port,
-            args.sglang_server_log_path.clone(),
-            |_command| {},
-        )
-        .await
-        .unwrap();
+        ProgressTuiLogger::initialize(args.progress_tui_log_path.clone())
+            .await
+            .unwrap();
     }
     let model_cli_name = model_cli_name_to_string(&model_name);
     let rollout_config: DirectRolloutConfig<Testing> =
@@ -261,6 +258,6 @@ async fn main() {
     println!("Test accuracy results written to {}", output_path);
 
     if args.ui {
-        ProgressTuiServer::shutdown().await.unwrap();
+        ProgressTuiLogger::shutdown().await.unwrap();
     }
 }

@@ -19,10 +19,11 @@ use credit_assignment::{
     orchestrator::{OrchestrationProgress, OrchestrationStatus, Orchestrator},
     python_training_config::PythonTrainingConfigCommon,
 };
-use research_utility::progress_tui_protocol::DEFAULT_PROGRESS_SCREEN_TCP_PORT;
-use research_utility::progress_tui_server::{
-    ProgressTuiServer, log_exit_hint, log_info, log_warning, log_window_name,
+use research_utility::progress_tui_logger::{
+    ProgressTuiLogger, log_exit_hint, log_info, log_warning, log_window_name,
 };
+
+const DEFAULT_PROGRESS_TUI_LOG_PATH: &str = "progress_tui_log.bin";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -65,8 +66,6 @@ struct Args {
     sglang_server_log_path: Option<String>,
     #[arg(long)]
     message_log_path: Option<String>,
-    #[arg(long, default_value_t = DEFAULT_PROGRESS_SCREEN_TCP_PORT)]
-    tui_server_port: u16,
     #[arg(long)]
     num_gpus: usize,
     #[arg(long, action = ArgAction::Set)]
@@ -99,7 +98,6 @@ async fn main() {
         num_python_tool_servers,
         sglang_server_log_path,
         message_log_path,
-        tui_server_port,
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         training_config_common_path,
@@ -116,9 +114,11 @@ async fn main() {
     );
 
     if ui {
-        ProgressTuiServer::initialize(tui_server_port, message_log_path, |_command| {})
-            .await
-            .unwrap();
+        ProgressTuiLogger::initialize(
+            message_log_path.unwrap_or_else(|| DEFAULT_PROGRESS_TUI_LOG_PATH.to_string()),
+        )
+        .await
+        .unwrap();
         log_window_name(format!(
             "Orchestrator Program. model: {}, config_nickname: {}",
             model_cli_name, config_nickname
@@ -201,6 +201,6 @@ async fn main() {
         log_warning(format!("Orchestrator exits with error: {}", e));
     }
     if ui {
-        ProgressTuiServer::shutdown().await.unwrap();
+        ProgressTuiLogger::shutdown().await.unwrap();
     }
 }
