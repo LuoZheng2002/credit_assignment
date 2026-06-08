@@ -13,7 +13,7 @@ cargo run --bin bin_orchestrator -- \
     --training-time 600 \
     --training-rollout-time-limit-secs 600 \
     --validation-rollout-time-limit-secs 1200 \
-    --num-python-tool-servers 1 \
+    --max-python-processes 1 \
     --sglang-server-log-path logs/sglang_server_qwen25_grpo.txt \
     --tui-log-path logs/qwen2.5-7b_grpo.bin \
     --num-gpus 1 \

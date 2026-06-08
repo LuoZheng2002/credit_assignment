@@ -50,7 +50,7 @@ struct Args {
     #[arg(long)]
     rollout_time_limit_secs: usize,
     #[arg(long, default_value_t = 1)]
-    num_python_tool_servers: usize,
+    max_python_processes: usize,
     #[arg(long)]
     sglang_server_log_path: Option<String>,
     #[arg(long, default_value = DEFAULT_PROGRESS_TUI_LOG_PATH)]
@@ -72,7 +72,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         max_rollout_concurrency: args.max_rollout_concurrency,
         llm_cli_args: args.llm_cli_args.clone(),
         rollout_time_limit_secs: args.rollout_time_limit_secs,
-        num_python_tool_servers: args.num_python_tool_servers,
+        max_python_processes: args.max_python_processes,
         total_epochs: args.total_epochs,
     };
     rollout_all::<M, S>(program_config).await;
@@ -139,8 +139,8 @@ async fn main() {
     let args = Args::parse();
     check_sympy_availability().unwrap();
     assert!(
-        args.num_python_tool_servers > 0,
-        "num_python_tool_servers must be positive"
+        args.max_python_processes > 0,
+        "max_python_processes must be positive"
     );
     assert!(args.total_epochs > 0, "total_epochs must be positive");
 

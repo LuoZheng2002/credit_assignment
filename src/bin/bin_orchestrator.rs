@@ -61,7 +61,7 @@ struct Args {
     #[arg(long)]
     validation_rollout_time_limit_secs: usize,
     #[arg(long, default_value_t = 1)]
-    num_python_tool_servers: usize,
+    max_python_processes: usize,
     #[arg(long)]
     sglang_server_log_path: Option<String>,
     #[arg(long)]
@@ -95,7 +95,7 @@ async fn main() {
         ui,
         training_rollout_time_limit_secs,
         validation_rollout_time_limit_secs,
-        num_python_tool_servers,
+        max_python_processes,
         sglang_server_log_path,
         tui_log_path,
         cumulative_avg_abs_advantage_cutoff,
@@ -109,8 +109,8 @@ async fn main() {
     set_title(&process_title);
     check_sympy_availability().unwrap();
     assert!(
-        num_python_tool_servers > 0,
-        "num_python_tool_servers must be positive"
+        max_python_processes > 0,
+        "max_python_processes must be positive"
     );
 
     if ui {
@@ -169,7 +169,7 @@ async fn main() {
         num_total_epochs,
         training_rollout_time_limit_secs,
         validation_rollout_time_limit_secs,
-        num_python_tool_servers,
+        max_python_processes,
         client,
         max_rollout_concurrency,
         inference_server_handle: None,

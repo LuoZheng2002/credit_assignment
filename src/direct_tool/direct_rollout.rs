@@ -421,7 +421,7 @@ pub struct RolloutProgramConfig<S: DatasetSplit> {
     pub max_rollout_concurrency: usize,
     pub llm_cli_args: LlmCliArgs,
     pub rollout_time_limit_secs: usize,
-    pub num_python_tool_servers: usize,
+    pub max_python_processes: usize,
     pub total_epochs: usize,
 }
 
@@ -437,12 +437,12 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         max_rollout_concurrency,
         llm_cli_args,
         rollout_time_limit_secs,
-        num_python_tool_servers,
+        max_python_processes,
         total_epochs,
     } = program_config;
     assert!(
-        num_python_tool_servers > 0,
-        "num_python_tool_servers must be positive"
+        max_python_processes > 0,
+        "max_python_processes must be positive"
     );
     assert!(
         rollout_time_limit_secs > 0,
@@ -459,7 +459,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     let total_secs = rollout_time_limit_secs as f32;
 
     let python_tool_pool = Arc::new(
-        PythonToolServerPool::new(num_python_tool_servers)
+        PythonToolServerPool::new(max_python_processes)
             .await
             .expect("failed to initialize python tool server pool"),
     );

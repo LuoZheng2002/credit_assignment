@@ -323,17 +323,14 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         if self.trunk_leaf_segments.is_empty() {
             return false;
         }
-        let mut judgments = self
-            .trunk_leaf_segments
-            .iter()
-            .map(|segment_id| {
-                self.leaf_segment_judgments
-                    .get(segment_id)
-                    .unwrap_or_else(|| {
-                        panic!("Trunk leaf segment {segment_id:?} is missing a judgment")
-                    })
-                    .is_correct
-            });
+        let mut judgments = self.trunk_leaf_segments.iter().map(|segment_id| {
+            self.leaf_segment_judgments
+                .get(segment_id)
+                .unwrap_or_else(|| {
+                    panic!("Trunk leaf segment {segment_id:?} is missing a judgment")
+                })
+                .is_correct
+        });
         let Some(first_is_correct) = judgments.next() else {
             return false;
         };

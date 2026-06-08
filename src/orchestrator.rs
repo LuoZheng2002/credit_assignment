@@ -163,7 +163,7 @@ pub struct Orchestrator {
     pub posterior_calculation_config: PosteriorCalculationConfig,
     pub training_rollout_time_limit_secs: usize,
     pub validation_rollout_time_limit_secs: usize,
-    pub num_python_tool_servers: usize,
+    pub max_python_processes: usize,
     pub inference_server_handle: Option<InferenceServerHandle>,
     pub sglang_server_log_path: Option<String>,
     // for training set generation
@@ -602,7 +602,7 @@ impl Orchestrator {
                     .and_then(|handle| handle.sglang_port),
             },
             rollout_time_limit_secs: self.validation_rollout_time_limit_secs,
-            num_python_tool_servers: self.num_python_tool_servers,
+            max_python_processes: self.max_python_processes,
             total_epochs: self.num_total_epochs,
         };
         rollout_all::<M, Validation>(validation_rollout_program_config).await;
@@ -632,7 +632,7 @@ impl Orchestrator {
             max_rollout_concurrency: self.max_rollout_concurrency,
             llm_cli_args,
             rollout_time_limit_secs: self.training_rollout_time_limit_secs,
-            num_python_tool_servers: self.num_python_tool_servers,
+            max_python_processes: self.max_python_processes,
             total_epochs: self.num_total_epochs,
         };
         rollout_all::<M, Training>(training_set_rollout_program_config).await;
