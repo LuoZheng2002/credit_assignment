@@ -202,19 +202,19 @@ pub enum OrchestrationStatus {
 pub struct OrchestrationProgress {
     pub status: OrchestrationStatus,
     pub epoch: usize,
-    pub validation_accuracies: BTreeMap<usize, (f32, f32, f32)>,
-    pub training_rollout_accuracies: BTreeMap<usize, (f32, f32, f32)>,
+    pub validation_accuracies: BTreeMap<usize, (f32, f32, f32, f32)>,
+    pub training_rollout_accuracies: BTreeMap<usize, (f32, f32, f32, f32)>,
 }
 
-fn accuracy_tuple_to_string(accuracies: (f32, f32, f32)) -> String {
+fn accuracy_tuple_to_string(accuracies: (f32, f32, f32, f32)) -> String {
     format!(
-        "({:.6}, {:.6}, {:.6})",
-        accuracies.0, accuracies.1, accuracies.2
+        "({:.6}, {:.6}, {:.6}, {:.6})",
+        accuracies.0, accuracies.1, accuracies.2, accuracies.3
     )
 }
 
-fn average_accuracy(accuracies: (f32, f32, f32)) -> f32 {
-    (accuracies.0 + accuracies.1 + accuracies.2) / 3.0
+fn average_accuracy(accuracies: (f32, f32, f32, f32)) -> f32 {
+    accuracies.0
 }
 
 impl Orchestrator {
@@ -357,21 +357,21 @@ impl Orchestrator {
             .insert(epoch, accuracies);
         log_key_value_pair(
             format!("epoch_{}_validation_accuracy_deepmath", epoch),
-            accuracies.0.to_string(),
-        );
-        log_key_value_pair(
-            format!("epoch_{}_validation_accuracy_math", epoch),
             accuracies.1.to_string(),
         );
         log_key_value_pair(
-            format!("epoch_{}_validation_accuracy_gsm8k", epoch),
+            format!("epoch_{}_validation_accuracy_math", epoch),
             accuracies.2.to_string(),
+        );
+        log_key_value_pair(
+            format!("epoch_{}_validation_accuracy_gsm8k", epoch),
+            accuracies.3.to_string(),
         );
         let progress_save_path =
             Orchestrator::progress_save_path(M::CLI_NAME.into(), &self.config_nickname);
         write_json(&progress_save_path, &self.progress).unwrap();
         log_info(format!(
-            "Epoch {} validation accuracies (deepmath, math, gsm8k): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
+            "Epoch {} validation accuracies (avg, deepmath, math, gsm8k): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
             epoch,
             accuracy_tuple_to_string(accuracies),
             average_accuracy(accuracies),
@@ -406,21 +406,21 @@ impl Orchestrator {
             .insert(epoch, accuracies);
         log_key_value_pair(
             format!("epoch_{}_training_rollout_accuracy_deepmath", epoch),
-            accuracies.0.to_string(),
-        );
-        log_key_value_pair(
-            format!("epoch_{}_training_rollout_accuracy_math", epoch),
             accuracies.1.to_string(),
         );
         log_key_value_pair(
-            format!("epoch_{}_training_rollout_accuracy_gsm8k", epoch),
+            format!("epoch_{}_training_rollout_accuracy_math", epoch),
             accuracies.2.to_string(),
+        );
+        log_key_value_pair(
+            format!("epoch_{}_training_rollout_accuracy_gsm8k", epoch),
+            accuracies.3.to_string(),
         );
         let progress_save_path =
             Orchestrator::progress_save_path(M::CLI_NAME.into(), &self.config_nickname);
         write_json(&progress_save_path, &self.progress).unwrap();
         log_info(format!(
-            "Epoch {} training rollout accuracies (deepmath, math, gsm8k): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
+            "Epoch {} training rollout accuracies (avg, deepmath, math, gsm8k): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
             epoch,
             accuracy_tuple_to_string(accuracies),
             average_accuracy(accuracies),

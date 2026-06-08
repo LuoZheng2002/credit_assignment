@@ -519,6 +519,9 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
     if !tree.completed() {
         return Vec::new();
     }
+    if tree_has_uniform_leaf_correctness(&tree) {
+        return Vec::new();
+    }
     let root_segment_id = tree
         .root_segment_id
         .expect("DirectTree must have root_segment_id");
@@ -606,6 +609,9 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
     }
     let tree = DirectTree::<M, Training>::from_action_log(&action_log);
     if !tree.completed() {
+        return Vec::new();
+    }
+    if tree_has_uniform_leaf_correctness(&tree) {
         return Vec::new();
     }
     let root_segment_id = tree
@@ -719,6 +725,16 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
     }
 
     reconstructed
+}
+
+fn tree_has_uniform_leaf_correctness<M: LlmModelMarker, S: DatasetSplit>(
+    tree: &DirectTree<M, S>,
+) -> bool {
+    let mut judgments = tree.leaf_segment_judgments.values().map(|j| j.is_correct);
+    let Some(first_is_correct) = judgments.next() else {
+        return false;
+    };
+    judgments.all(|is_correct| is_correct == first_is_correct)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

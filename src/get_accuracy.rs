@@ -60,14 +60,16 @@ impl AccuracyStats {
         }
     }
 
-    pub fn accuracy_tuple(&self) -> Option<(f32, f32, f32)> {
+    pub fn accuracy_tuple(&self) -> Option<(f32, f32, f32, f32)> {
         if self.deepmath_weighted_total_plays == 0.0
             || self.math_weighted_total_plays == 0.0
             || self.gsm8k_weighted_total_plays == 0.0
         {
             return None;
         }
+        let average_accuracy = self.accuracy()?;
         Some((
+            average_accuracy,
             self.deepmath_weighted_num_wins / self.deepmath_weighted_total_plays,
             self.math_weighted_num_wins / self.math_weighted_total_plays,
             self.gsm8k_weighted_num_wins / self.gsm8k_weighted_total_plays,

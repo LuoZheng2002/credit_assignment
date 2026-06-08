@@ -142,6 +142,26 @@ fn trajectory_length_being_judged<M: LlmModelMarker, S: DatasetSplit>(
     }
 }
 
+fn classify_all_same_trunk_tree<M: LlmModelMarker, S: DatasetSplit>(
+    tree: &DirectTree<M, S>,
+) -> Option<bool> {
+    if tree.trunk_leaf_segments.len() != tree.action_log.rollout_config.max_num_trunks {
+        return None;
+    }
+    let mut trunk_correctness = tree.trunk_leaf_segments.iter().map(|segment_id| {
+        tree.leaf_segment_judgments
+            .get(segment_id)
+            .unwrap_or_else(|| panic!("Trunk leaf segment {segment_id:?} is missing judgment"))
+            .is_correct
+    });
+    let first = trunk_correctness.next()?;
+    if trunk_correctness.all(|is_correct| is_correct == first) {
+        Some(first)
+    } else {
+        None
+    }
+}
+
 async fn run_progress_timer(
     start_time: Instant,
     deadline: Instant,
@@ -233,6 +253,8 @@ pub struct RolloutSharedStates {
     num_finished_branches: Arc<AtomicUsize>,
     num_finished_trees: Arc<AtomicUsize>,
     num_correct_branches: Arc<AtomicUsize>,
+    num_all_correct_trees: Arc<AtomicUsize>,
+    num_all_incorrect_trees: Arc<AtomicUsize>,
     llm_call_stats: Arc<parking_lot::RwLock<DistributionStats>>,
     trajectory_length_stats: Arc<parking_lot::RwLock<DistributionStats>>,
     correct_trajectory_length_stats: Arc<parking_lot::RwLock<DistributionStats>>,
@@ -263,6 +285,8 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
         num_finished_branches,
         num_finished_trees,
         num_correct_branches,
+        num_all_correct_trees,
+        num_all_incorrect_trees,
         llm_call_stats,
         trajectory_length_stats,
         correct_trajectory_length_stats,
@@ -356,6 +380,16 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
                 )
                 .await
                 .unwrap();
+        }
+    }
+    let final_tree = DirectTree::<M, S>::from_action_log(&action_log);
+    if let Some(all_correct) = classify_all_same_trunk_tree(&final_tree) {
+        if all_correct {
+            let num = num_all_correct_trees.fetch_add(1, Ordering::Relaxed) + 1;
+            log_key_value_pair("num_all_correct_trees", num.to_string());
+        } else {
+            let num = num_all_incorrect_trees.fetch_add(1, Ordering::Relaxed) + 1;
+            log_key_value_pair("num_all_incorrect_trees", num.to_string());
         }
     }
     // log_info(format!("Rollout {} finished", question.flat_id));
@@ -487,6 +521,8 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     let num_finished_branches = Arc::new(AtomicUsize::new(0));
     let num_finished_trees = Arc::new(AtomicUsize::new(0));
     let num_correct_branches = Arc::new(AtomicUsize::new(0));
+    let num_all_correct_trees = Arc::new(AtomicUsize::new(0));
+    let num_all_incorrect_trees = Arc::new(AtomicUsize::new(0));
     let num_active_rollouts = Arc::new(AtomicUsize::new(0));
     let llm_call_stats = Arc::new(parking_lot::RwLock::new(DistributionStats::new()));
     let trajectory_length_stats = Arc::new(parking_lot::RwLock::new(DistributionStats::new()));
@@ -505,6 +541,8 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         num_finished_branches,
         num_finished_trees,
         num_correct_branches,
+        num_all_correct_trees,
+        num_all_incorrect_trees,
         llm_call_stats,
         trajectory_length_stats,
         correct_trajectory_length_stats,
