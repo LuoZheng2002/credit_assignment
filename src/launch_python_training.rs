@@ -13,18 +13,18 @@ pub struct PythonTrainingProcessHandle {
 
 pub async fn launch_python_training_process(
     num_gpus: usize,
-    training_config_path: String,
+    training_job_folder_path: String,
 ) -> PythonTrainingProcessHandle {
     assert!(num_gpus > 0, "num_gpus must be positive");
-    let config_path = training_config_path.trim();
+    let job_folder_path = training_job_folder_path.trim();
     assert!(
-        !config_path.is_empty(),
-        "training_config_path cannot be empty"
+        !job_folder_path.is_empty(),
+        "training_job_folder_path cannot be empty"
     );
     assert!(
-        Path::new(config_path).is_file(),
-        "training config file does not exist: {}",
-        config_path
+        Path::new(job_folder_path).is_dir(),
+        "training job folder does not exist: {}",
+        job_folder_path
     );
 
     let master_port = std::env::var("MASTER_PORT")
@@ -47,28 +47,28 @@ pub async fn launch_python_training_process(
         .arg(master_port)
         .arg("-m")
         .arg("src_py.train.main_from_config")
-        .arg("--config-toml-path")
-        .arg(config_path)
+        .arg("--job-folder-path")
+        .arg(job_folder_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
     let mut process = command.spawn().unwrap_or_else(|err| {
         panic!(
-            "Failed to launch python training process with config {}: {}",
-            config_path, err
+            "Failed to launch python training process with job folder {}: {}",
+            job_folder_path, err
         )
     });
 
     let stdout = process.stdout.take().unwrap_or_else(|| {
         panic!(
             "Failed to capture stdout for python training process ({})",
-            config_path
+            job_folder_path
         )
     });
     let stderr = process.stderr.take().unwrap_or_else(|| {
         panic!(
             "Failed to capture stderr for python training process ({})",
-            config_path
+            job_folder_path
         )
     });
 

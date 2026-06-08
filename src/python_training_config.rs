@@ -6,12 +6,10 @@ pub struct PythonTrainingConfig {
     pub common: PythonTrainingConfigCommon,
     pub training_time: f32,
     pub num_iterations_limit: usize,
-    // paths
-    pub model_parent_dir: String,
-    pub training_trajectory_sqlite_path: String,
-    pub checkpoints_parent_dir: String,
-    pub final_model_output_parent_dir: String, // final model writes to model/ under this folder
-    pub training_summary_parent_dir: String,
+    pub storage_root_dir: String,
+    pub model_cli_name: String,
+    pub config_nickname: String,
+    pub epoch: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

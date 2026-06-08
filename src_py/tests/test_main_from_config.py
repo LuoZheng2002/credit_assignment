@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src_py.train.main_from_config import _load_train_config_from_toml
+from src_py.train.main_from_config import _load_train_config_from_job_folder
 
 
 def _to_toml(payload: dict[str, object]) -> str:
@@ -18,13 +18,13 @@ def _to_toml(payload: dict[str, object]) -> str:
 
 
 class TestMainFromConfig(unittest.TestCase):
-    def test_load_train_config_from_toml_success(self) -> None:
+    def test_load_train_config_from_job_folder_success(self) -> None:
         payload = {
             "training_plan": "lora",
-            "model_parent_dir": "/tmp/models/qwen35_08b_parent",
-            "training_trajectory_sqlite_path": "/tmp/training_trajectories.sqlite",
-            "checkpoints_parent_dir": "/tmp/run_a",
-            "final_model_output_parent_dir": "/tmp/final_model_hf_parent",
+            "storage_root_dir": "/tmp/storage_root",
+            "model_cli_name": "qwen35_08b",
+            "config_nickname": "run_a",
+            "epoch": 3,
             "advantage_clip": 3.0,
             "learning_rate": 1e-5,
             "weight_decay": 0.01,
@@ -41,20 +41,24 @@ class TestMainFromConfig(unittest.TestCase):
             "seed": 42,
         }
         with tempfile.TemporaryDirectory() as tmp_dir:
-            config_path = Path(tmp_dir) / "config.toml"
+            job_dir = Path(tmp_dir) / "job_a"
+            (job_dir / "input").mkdir(parents=True, exist_ok=True)
+            (job_dir / "input" / "training_trajectories.sqlite").write_bytes(b"sqlite")
+            config_path = job_dir / "train_request.toml"
             config_path.write_text(_to_toml(payload), encoding="utf-8")
-            config = _load_train_config_from_toml(str(config_path))
+            config = _load_train_config_from_job_folder(str(job_dir))
             self.assertEqual("lora", config.training_plan)
             self.assertEqual("auto", config.resume_checkpoint_tag)
             self.assertEqual(10, int(config.training_time))
+            self.assertTrue(config.training_trajectory_sqlite_path.endswith("training_trajectories.sqlite"))
 
-    def test_load_train_config_from_toml_requires_training_time(self) -> None:
+    def test_load_train_config_from_job_folder_uses_derived_paths(self) -> None:
         payload = {
             "training_plan": "lora",
-            "model_parent_dir": "/tmp/models/qwen35_08b_parent",
-            "training_trajectory_sqlite_path": "/tmp/training_trajectories.sqlite",
-            "checkpoints_parent_dir": "/tmp/run_a",
-            "final_model_output_parent_dir": "/tmp/final_model_hf_parent",
+            "storage_root_dir": "/tmp/storage_root",
+            "model_cli_name": "qwen35_08b",
+            "config_nickname": "run_a",
+            "epoch": 0,
             "advantage_clip": 3.0,
             "learning_rate": 1e-5,
             "weight_decay": 0.01,
@@ -71,18 +75,22 @@ class TestMainFromConfig(unittest.TestCase):
             "seed": 42,
         }
         with tempfile.TemporaryDirectory() as tmp_dir:
-            config_path = Path(tmp_dir) / "config.toml"
+            job_dir = Path(tmp_dir) / "job_b"
+            (job_dir / "input").mkdir(parents=True, exist_ok=True)
+            (job_dir / "input" / "training_trajectories.sqlite").write_bytes(b"sqlite")
+            config_path = job_dir / "train_request.toml"
             config_path.write_text(_to_toml(payload), encoding="utf-8")
-            config = _load_train_config_from_toml(str(config_path))
-            self.assertEqual(10, int(config.training_time))
+            config = _load_train_config_from_job_folder(str(job_dir))
+            self.assertIn("/tmp/storage_root/results/qwen35_08b", config.model_parent_dir)
+            self.assertIn("/tmp/storage_root/results/qwen35_08b/run_a/epoch_0", config.checkpoints_parent_dir)
 
-    def test_load_train_config_from_toml_rejects_missing_or_extra_keys(self) -> None:
+    def test_load_train_config_from_job_folder_requires_uploaded_sqlite(self) -> None:
         payload = {
             "training_plan": "lora",
-            "model_parent_dir": "/tmp/models/qwen35_08b_parent",
-            "training_trajectory_sqlite_path": "/tmp/training_trajectories.sqlite",
-            "checkpoints_parent_dir": "/tmp/run_a",
-            "final_model_output_parent_dir": "/tmp/final_model_hf_parent",
+            "storage_root_dir": "/tmp/storage_root",
+            "model_cli_name": "qwen35_08b",
+            "config_nickname": "run_a",
+            "epoch": 2,
             "advantage_clip": 3.0,
             "learning_rate": 1e-5,
             "weight_decay": 0.01,
@@ -96,13 +104,14 @@ class TestMainFromConfig(unittest.TestCase):
             "lora_dropout": 0.0,
             "lora_target_modules_csv": "q_proj,k_proj",
             "seed": 42,
-            "unexpected": 123,
         }
         with tempfile.TemporaryDirectory() as tmp_dir:
-            config_path = Path(tmp_dir) / "bad_config.toml"
+            job_dir = Path(tmp_dir) / "job_missing_sqlite"
+            job_dir.mkdir(parents=True, exist_ok=True)
+            config_path = job_dir / "train_request.toml"
             config_path.write_text(_to_toml(payload), encoding="utf-8")
             with self.assertRaises(AssertionError):
-                _load_train_config_from_toml(str(config_path))
+                _load_train_config_from_job_folder(str(job_dir))
 
 
 if __name__ == "__main__":

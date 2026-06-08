@@ -19,14 +19,16 @@ use crate::{
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     get_accuracy::get_accuracy,
-    json_line_util::{write_json, write_toml},
-    launch_python_training::launch_python_training_process,
+    hpc_training_client::HpcTrainingClient,
+    json_line_util::write_json,
     launch_sglang_server::{
         best_effort_shutdown_stale_sglang_server, launch_sglang_server_process, model_uses_sglang,
         shut_down_sglang_server_process,
     },
     llm_model::{LlmCliArgs, LlmModelMarker},
+    modal_training_client::{ModalTrainStartRequest, ModalTrainingClient},
     python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
+    training_job_client::TrainingJobClient,
     util::storage_dir_from_env,
 };
 
@@ -184,6 +186,10 @@ pub struct Orchestrator {
     pub num_gpus: usize,
     pub compute_backend: ComputeBackend,
     pub modal_sglang_base_url: Option<String>,
+    pub modal_training_base_url: Option<String>,
+    pub modal_auth_token_env_var: Option<String>,
+    pub modal_training_poll_interval_secs: usize,
+    pub hpc_training_job_root_dir: Option<String>,
 }
 
 pub struct InferenceServerHandle {
@@ -968,11 +974,6 @@ impl Orchestrator {
             epoch,
             self.inference_server_handle.is_some()
         ));
-        if self.compute_backend == ComputeBackend::Modal {
-            log_info(
-                "Modal backend selected; training still runs via local torchrun in this phase",
-            );
-        }
         let asset_file_training_trajectories = AssetFileTrainingTrajectories {
             config_nickname: self.config_nickname.clone(),
             epoch,
@@ -983,56 +984,90 @@ impl Orchestrator {
             _phantom: std::marker::PhantomData::<M>,
         };
         let training_trajectory_sqlite_path = asset_file_training_trajectories.file_path();
-        let model_parent_dir =
-            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
-        let checkpoints_parent_dir =
-            model_checkpoint_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
-        let final_model_output_parent_dir =
-            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch + 1)?;
-        let training_summary_parent_dir =
-            training_summary_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
-        // first we need to write the training config to the expected location
+        let storage_root_dir = storage_dir_from_env()?;
         let training_config = PythonTrainingConfig {
             common: self.training_config_common.clone(),
             training_time: self.training_time,
             num_iterations_limit: self.num_iterations_limit,
-            model_parent_dir,
-            training_trajectory_sqlite_path,
-            checkpoints_parent_dir,
-            final_model_output_parent_dir,
-            training_summary_parent_dir,
+            storage_root_dir,
+            model_cli_name: M::CLI_NAME.to_string(),
+            config_nickname: self.config_nickname.clone(),
+            epoch,
         };
-        let training_config_path = self.python_training_config_path::<M>(epoch);
-        write_toml(&training_config_path, &training_config).unwrap();
-        // launch the training python code
-        let mut handle = launch_python_training_process(self.num_gpus, training_config_path).await;
-        // wait for it to finish, do not interrupt unless the process crashes
-        let exit_status = handle
-            .process
-            .wait()
-            .await
-            .map_err(|err| format!("Failed to wait for python training process: {}", err))?;
-        handle
-            .io_listener_task
-            .await
-            .map_err(|err| format!("Python training log listener task failed: {}", err))?;
-        if !exit_status.success() {
-            return Err(format!(
-                "Python training process exited with non-zero status: {}",
-                exit_status
-            ));
+
+        let request = ModalTrainStartRequest {
+            model_cli_name: M::CLI_NAME.to_string(),
+            config_nickname: self.config_nickname.clone(),
+            epoch,
+            num_gpus: self.num_gpus,
+            training_config: training_config.clone(),
+        };
+        match self.compute_backend {
+            ComputeBackend::Modal => {
+                let base_url = self
+                    .modal_training_base_url
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        "Modal backend requires --modal-training-base-url for training"
+                            .to_string()
+                    })?;
+                let modal_client = ModalTrainingClient::new(
+                    self.client.clone(),
+                    base_url,
+                    self.modal_auth_token_env_var.as_deref(),
+                )?;
+                self.run_training_job(&modal_client, &request, &training_trajectory_sqlite_path)
+                    .await?;
+            }
+            ComputeBackend::Hpc => {
+                let storage_root = storage_dir_from_env()?;
+                let default_job_root = format!("{}/hpc_training_jobs", storage_root);
+                let job_root = self
+                    .hpc_training_job_root_dir
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(default_job_root.as_str());
+                let hpc_client = HpcTrainingClient::new(job_root, self.num_gpus)?;
+                self.run_training_job(&hpc_client, &request, &training_trajectory_sqlite_path)
+                    .await?;
+            }
         }
         log_info("Finished training model.");
         Ok(())
     }
 
-    fn python_training_config_path<M: LlmModelMarker>(&self, epoch: usize) -> String {
-        format!(
-            "results/{}/{}/epoch_{}/python_training_config.toml",
-            M::CLI_NAME,
-            self.config_nickname,
-            epoch
-        )
+    async fn run_training_job<C: TrainingJobClient>(
+        &self,
+        training_client: &C,
+        request: &ModalTrainStartRequest,
+        training_trajectory_sqlite_path: &str,
+    ) -> Result<(), String> {
+        let started = training_client.start_training(request).await?;
+        log_info(format!(
+            "{} training job started: {}. Uploading trajectories from {}",
+            training_client.backend_label(),
+            started.job_id,
+            training_trajectory_sqlite_path,
+        ));
+        training_client
+            .upload_trajectory_file(&started.job_id, training_trajectory_sqlite_path)
+            .await?;
+        let poll_interval = std::time::Duration::from_secs(
+            u64::try_from(self.modal_training_poll_interval_secs)
+                .map_err(|_| "training poll interval secs overflowed u64".to_string())?,
+        );
+        training_client
+            .wait_until_done(&started.job_id, poll_interval)
+            .await?;
+        log_info(format!(
+            "{} training job {} completed successfully",
+            training_client.backend_label(),
+            started.job_id
+        ));
+        Ok(())
     }
 }
 impl Drop for Orchestrator {

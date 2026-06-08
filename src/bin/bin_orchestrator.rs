@@ -73,6 +73,14 @@ struct Args {
     compute_backend: ComputeBackend,
     #[arg(long)]
     modal_sglang_base_url: Option<String>,
+    #[arg(long)]
+    modal_training_base_url: Option<String>,
+    #[arg(long)]
+    modal_auth_token_env_var: Option<String>,
+    #[arg(long, default_value_t = 5)]
+    modal_training_poll_interval_secs: usize,
+    #[arg(long)]
+    hpc_training_job_root_dir: Option<String>,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
 }
@@ -111,6 +119,10 @@ async fn main() {
         num_gpus,
         compute_backend,
         modal_sglang_base_url,
+        modal_training_base_url,
+        modal_auth_token_env_var,
+        modal_training_poll_interval_secs,
+        hpc_training_job_root_dir,
     } = Args::parse();
     let process_title = format!("orchestrator_{}_{}", model_cli_name, config_nickname);
     set_title(&process_title);
@@ -120,13 +132,25 @@ async fn main() {
         "max_python_processes must be positive"
     );
     if compute_backend == ComputeBackend::Modal {
-        let base_url = modal_sglang_base_url
+        let sglang_base_url = modal_sglang_base_url
             .as_deref()
             .map(str::trim)
             .unwrap_or_default();
         assert!(
-            !base_url.is_empty(),
+            !sglang_base_url.is_empty(),
             "--modal-sglang-base-url must be provided when --compute-backend=modal"
+        );
+        let training_base_url = modal_training_base_url
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default();
+        assert!(
+            !training_base_url.is_empty(),
+            "--modal-training-base-url must be provided when --compute-backend=modal"
+        );
+        assert!(
+            modal_training_poll_interval_secs > 0,
+            "--modal-training-poll-interval-secs must be positive"
         );
     }
 
@@ -200,6 +224,10 @@ async fn main() {
         num_gpus,
         compute_backend,
         modal_sglang_base_url,
+        modal_training_base_url,
+        modal_auth_token_env_var,
+        modal_training_poll_interval_secs,
+        hpc_training_job_root_dir,
     };
 
     let result = match model_name {
