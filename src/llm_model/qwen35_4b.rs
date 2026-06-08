@@ -23,22 +23,16 @@ pub struct Qwen35_4BLlmCallable {
     shared: SharedSglangLlmCallable,
 }
 
-impl Qwen35_4BLlmCallable {
-    pub(crate) fn new(client: Client, sglang_port: u16) -> Self {
-        Self {
-            shared: SharedSglangLlmCallable::new(client, sglang_port),
-        }
-    }
-}
-
 #[async_trait]
 impl LlmCallable<Qwen35_4B> for Qwen35_4BLlmCallable {
     fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
-        let sglang_port = llm_cli_args
-            .sglang_port
-            .expect("Qwen3.5-4B model requires sglang port");
-
-        Qwen35_4BLlmCallable::new(client, sglang_port)
+        Self {
+            shared: SharedSglangLlmCallable::from_llm_cli_args(
+                client,
+                llm_cli_args,
+                "Qwen3.5-4B model",
+            ),
+        }
     }
     async fn generate_tokens(
         &self,

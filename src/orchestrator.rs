@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Child;
 
 use crate::{
+    compute_backend::ComputeBackend,
     direct_tool::{
         direct_rollout::{RolloutProgramConfig, rollout_all},
         direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
@@ -181,12 +182,15 @@ pub struct Orchestrator {
     pub training_time: f32,
     pub num_iterations_limit: usize,
     pub num_gpus: usize,
+    pub compute_backend: ComputeBackend,
+    pub modal_sglang_base_url: Option<String>,
 }
 
 pub struct InferenceServerHandle {
     pub epoch: usize,
     pub use_tool: bool,
     pub sglang_port: Option<u16>,
+    pub sglang_base_url: Option<String>,
     pub process: Option<Child>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -489,12 +493,37 @@ impl Orchestrator {
                 epoch,
                 use_tool,
                 sglang_port: None,
+                sglang_base_url: None,
                 process: None,
             });
             log_info(format!(
                 "Model {} does not need a local inference server",
                 M::CLI_NAME
             ));
+            return Ok(());
+        }
+        if self.compute_backend == ComputeBackend::Modal {
+            let sglang_base_url = self
+                .modal_sglang_base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    "Modal backend requires a non-empty modal sglang base URL".to_string()
+                })?
+                .to_string();
+            log_info(format!(
+                "Using Modal inference endpoint for model {}: {}",
+                M::CLI_NAME,
+                sglang_base_url
+            ));
+            self.inference_server_handle = Some(InferenceServerHandle {
+                epoch,
+                use_tool,
+                sglang_port: None,
+                sglang_base_url: Some(sglang_base_url),
+                process: None,
+            });
             return Ok(());
         }
         let model_parent_dir =
@@ -526,6 +555,7 @@ impl Orchestrator {
             epoch,
             use_tool,
             sglang_port: Some(sglang_port),
+            sglang_base_url: None,
             process: Some(process),
         });
         log_info("Inference server launched");
@@ -535,10 +565,11 @@ impl Orchestrator {
     async fn ensure_inference_server_shut_down<M: LlmModelMarker>(&mut self) {
         if let Some(handle) = self.inference_server_handle.take() {
             log_info(format!(
-                "Shutting down inference server (stored_epoch={}, stored_use_tool={}, has_port={}, has_process={})...",
+                "Shutting down inference server (stored_epoch={}, stored_use_tool={}, has_port={}, has_base_url={}, has_process={})...",
                 handle.epoch,
                 handle.use_tool,
                 handle.sglang_port.is_some(),
+                handle.sglang_base_url.is_some(),
                 handle.process.is_some(),
             ));
             if let Some(mut process) = handle.process {
@@ -568,10 +599,16 @@ impl Orchestrator {
             log_info("Inference server shut down");
         } else {
             if model_uses_sglang::<M>() {
-                log_info(
-                    "ensure_inference_server_shut_down: no inference server handle present; checking for stale sglang process on configured port",
-                );
-                best_effort_shutdown_stale_sglang_server().await;
+                if self.compute_backend == ComputeBackend::Hpc {
+                    log_info(
+                        "ensure_inference_server_shut_down: no inference server handle present; checking for stale sglang process on configured port",
+                    );
+                    best_effort_shutdown_stale_sglang_server().await;
+                } else {
+                    log_info(
+                        "ensure_inference_server_shut_down: no Modal inference handle present; no local process cleanup needed",
+                    );
+                }
             } else {
                 log_info(
                     "ensure_inference_server_shut_down: no inference server handle present; nothing to shut down",
@@ -600,6 +637,10 @@ impl Orchestrator {
                     .inference_server_handle
                     .as_ref()
                     .and_then(|handle| handle.sglang_port),
+                sglang_base_url: self
+                    .inference_server_handle
+                    .as_ref()
+                    .and_then(|handle| handle.sglang_base_url.clone()),
             },
             rollout_time_limit_secs: self.validation_rollout_time_limit_secs,
             max_python_processes: self.max_python_processes,
@@ -621,6 +662,7 @@ impl Orchestrator {
         };
         let llm_cli_args = LlmCliArgs {
             sglang_port: sglang_server_handle.sglang_port.clone(),
+            sglang_base_url: sglang_server_handle.sglang_base_url.clone(),
         };
         // assert!(self.training_set_rollout_config.split == DatasetSplit::Training);
         let training_set_rollout_program_config = RolloutProgramConfig {
@@ -926,6 +968,11 @@ impl Orchestrator {
             epoch,
             self.inference_server_handle.is_some()
         ));
+        if self.compute_backend == ComputeBackend::Modal {
+            log_info(
+                "Modal backend selected; training still runs via local torchrun in this phase",
+            );
+        }
         let asset_file_training_trajectories = AssetFileTrainingTrajectories {
             config_nickname: self.config_nickname.clone(),
             epoch,

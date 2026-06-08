@@ -61,21 +61,16 @@ pub struct Mistral7BInstructV03LlmCallable {
     shared: SharedSglangLlmCallable,
 }
 
-impl Mistral7BInstructV03LlmCallable {
-    pub(crate) fn new(client: Client, sglang_port: u16) -> Self {
-        Self {
-            shared: SharedSglangLlmCallable::new(client, sglang_port),
-        }
-    }
-}
-
 #[async_trait]
 impl LlmCallable<Mistral7BInstructV03> for Mistral7BInstructV03LlmCallable {
     fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
-        let sglang_port = llm_cli_args
-            .sglang_port
-            .expect("Mistral-7B-Instruct-v0.3 model requires sglang port");
-        Mistral7BInstructV03LlmCallable::new(client, sglang_port)
+        Self {
+            shared: SharedSglangLlmCallable::from_llm_cli_args(
+                client,
+                llm_cli_args,
+                "Mistral-7B-Instruct-v0.3 model",
+            ),
+        }
     }
 
     async fn generate_tokens(

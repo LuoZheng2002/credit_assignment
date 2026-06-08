@@ -3,7 +3,7 @@ use serde_json::Value;
 use tokenizers::Tokenizer;
 
 use crate::constants::sglang_context_length;
-use crate::llm_model::LlmModelMarker;
+use crate::llm_model::{LlmCliArgs, LlmModelMarker};
 use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate};
 
 pub(crate) fn wrap_python_response_xml(raw_python_response: &str) -> String {
@@ -110,7 +110,8 @@ pub(crate) fn token_to_i32_id(tokenizer: &Tokenizer, token: &str, api_name: &str
 #[derive(Clone)]
 pub(crate) struct SharedSglangLlmCallable {
     client: Client,
-    sglang_port: u16,
+    generate_url: String,
+    backend_label: String,
 }
 
 impl SharedSglangLlmCallable {
@@ -118,8 +119,36 @@ impl SharedSglangLlmCallable {
         assert!(sglang_port > 0, "SGLang port must be greater than 0");
         Self {
             client,
-            sglang_port,
+            generate_url: format!("http://localhost:{}/generate", sglang_port),
+            backend_label: format!("SGLang port {}", sglang_port),
         }
+    }
+
+    pub(crate) fn new_with_base_url(client: Client, sglang_base_url: &str) -> Self {
+        let base_url = sglang_base_url.trim().trim_end_matches('/');
+        assert!(
+            !base_url.is_empty(),
+            "SGLang base URL must be non-empty for remote inference",
+        );
+        Self {
+            client,
+            generate_url: format!("{}/generate", base_url),
+            backend_label: format!("SGLang endpoint {}", base_url),
+        }
+    }
+
+    pub(crate) fn from_llm_cli_args(
+        client: Client,
+        llm_cli_args: &LlmCliArgs,
+        model_name_for_error: &str,
+    ) -> Self {
+        if let Some(base_url) = llm_cli_args.sglang_base_url.as_deref() {
+            return Self::new_with_base_url(client, base_url);
+        }
+        let sglang_port = llm_cli_args
+            .sglang_port
+            .unwrap_or_else(|| panic!("{} requires sglang port or sglang base URL", model_name_for_error));
+        Self::new(client, sglang_port)
     }
 
     pub(crate) async fn generate_tokens_from_tokens<M: LlmModelMarker>(
@@ -142,10 +171,7 @@ impl SharedSglangLlmCallable {
         }
 
         let response = self
-            .post_json(
-                &format!("http://localhost:{}/generate", self.sglang_port),
-                body,
-            )
+            .post_json(&self.generate_url, body)
             .await?;
 
         if let Some(error_message) = response["error"]["message"].as_str() {
@@ -155,7 +181,7 @@ impl SharedSglangLlmCallable {
         let generated_tokens = parse_sglang_generated_token_ids(
             &response,
             &tokens,
-            &format!("SGLang port {}", self.sglang_port),
+            &self.backend_label,
         )?;
         Ok(generated_tokens)
     }
@@ -189,13 +215,10 @@ impl SharedSglangLlmCallable {
         }
 
         let json = self
-            .post_json(
-                &format!("http://localhost:{}/generate", self.sglang_port),
-                body,
-            )
+            .post_json(&self.generate_url, body)
             .await?;
         let result = parse_sglang_response_with_logprobs(
-            &format!("SGLang port {}", self.sglang_port),
+            &self.backend_label,
             &json,
         )?;
         Ok(result)

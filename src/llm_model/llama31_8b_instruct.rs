@@ -64,21 +64,16 @@ pub struct Llama31_8BInstructLlmCallable {
     shared: SharedSglangLlmCallable,
 }
 
-impl Llama31_8BInstructLlmCallable {
-    pub(crate) fn new(client: Client, sglang_port: u16) -> Self {
-        Self {
-            shared: SharedSglangLlmCallable::new(client, sglang_port),
-        }
-    }
-}
-
 #[async_trait]
 impl LlmCallable<Llama31_8BInstruct> for Llama31_8BInstructLlmCallable {
     fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
-        let sglang_port = llm_cli_args
-            .sglang_port
-            .expect("Llama-3.1-8B-Instruct model requires sglang port");
-        Llama31_8BInstructLlmCallable::new(client, sglang_port)
+        Self {
+            shared: SharedSglangLlmCallable::from_llm_cli_args(
+                client,
+                llm_cli_args,
+                "Llama-3.1-8B-Instruct model",
+            ),
+        }
     }
 
     async fn generate_tokens(

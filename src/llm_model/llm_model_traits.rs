@@ -8,6 +8,8 @@ use crate::{llm_model::TokenArrayWithLogprob, token_array::TokenArray};
 pub struct LlmCliArgs {
     #[arg(long)]
     pub sglang_port: Option<u16>, // used when the model is served by sglang
+    #[arg(long)]
+    pub sglang_base_url: Option<String>, // used when the model is served by remote sglang-compatible endpoint
 }
 
 pub trait LlmModelMarker: Sized + Send + Sync + 'static + Clone {

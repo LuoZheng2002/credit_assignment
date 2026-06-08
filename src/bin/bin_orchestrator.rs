@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use credit_assignment::{
     check_python_env::check_sympy_availability,
+    compute_backend::ComputeBackend,
     direct_tool::{
         direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         hybrid_dataset::{Training, Validation},
@@ -68,6 +69,10 @@ struct Args {
     tui_log_path: Option<String>,
     #[arg(long)]
     num_gpus: usize,
+    #[arg(long, value_enum)]
+    compute_backend: ComputeBackend,
+    #[arg(long)]
+    modal_sglang_base_url: Option<String>,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
 }
@@ -104,6 +109,8 @@ async fn main() {
         training_time,
         num_iterations_limit,
         num_gpus,
+        compute_backend,
+        modal_sglang_base_url,
     } = Args::parse();
     let process_title = format!("orchestrator_{}_{}", model_cli_name, config_nickname);
     set_title(&process_title);
@@ -112,6 +119,16 @@ async fn main() {
         max_python_processes > 0,
         "max_python_processes must be positive"
     );
+    if compute_backend == ComputeBackend::Modal {
+        let base_url = modal_sglang_base_url
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default();
+        assert!(
+            !base_url.is_empty(),
+            "--modal-sglang-base-url must be provided when --compute-backend=modal"
+        );
+    }
 
     if ui {
         ProgressTuiLogger::initialize(
@@ -181,6 +198,8 @@ async fn main() {
         num_iterations_limit,
         progress,
         num_gpus,
+        compute_backend,
+        modal_sglang_base_url,
     };
 
     let result = match model_name {
