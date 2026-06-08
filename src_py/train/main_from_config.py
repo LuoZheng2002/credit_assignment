@@ -15,23 +15,23 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _model_parent_dir(storage_root_dir: Path, model_cli_name: str, config_nickname: str, epoch: int) -> Path:
+def _model_parent_dir(artifact_root_dir: Path, model_cli_name: str, config_nickname: str, epoch: int) -> Path:
     if epoch == 0:
-        return storage_root_dir / "results" / model_cli_name
-    return storage_root_dir / "results" / model_cli_name / config_nickname / f"epoch_{epoch}"
+        return artifact_root_dir / "results" / model_cli_name
+    return artifact_root_dir / "results" / model_cli_name / config_nickname / f"epoch_{epoch}"
 
 
-def _checkpoint_parent_dir(storage_root_dir: Path, model_cli_name: str, config_nickname: str, epoch: int) -> Path:
-    return storage_root_dir / "results" / model_cli_name / config_nickname / f"epoch_{epoch}"
+def _checkpoint_parent_dir(artifact_root_dir: Path, model_cli_name: str, config_nickname: str, epoch: int) -> Path:
+    return artifact_root_dir / "results" / model_cli_name / config_nickname / f"epoch_{epoch}"
 
 
 def _final_model_output_parent_dir(
-    storage_root_dir: Path,
+    artifact_root_dir: Path,
     model_cli_name: str,
     config_nickname: str,
     epoch: int,
 ) -> Path:
-    return storage_root_dir / "results" / model_cli_name / config_nickname / f"epoch_{epoch + 1}"
+    return artifact_root_dir / "results" / model_cli_name / config_nickname / f"epoch_{epoch + 1}"
 
 
 def _load_train_config_from_job_folder(job_folder_path: str) -> TrainConfig:
@@ -47,7 +47,11 @@ def _load_train_config_from_job_folder(job_folder_path: str) -> TrainConfig:
         payload = tomllib.load(handle)
     assert isinstance(payload, dict), "config toml root must be a table"
 
-    storage_root_dir = Path(payload["storage_root_dir"]).expanduser().resolve()
+    hpc_training_root_dir = payload.get("hpc_training_root_dir")
+    if isinstance(hpc_training_root_dir, str) and hpc_training_root_dir.strip():
+        artifact_root_dir = Path(hpc_training_root_dir).expanduser().resolve()
+    else:
+        artifact_root_dir = Path(payload["artifact_root_dir"]).expanduser().resolve()
     model_cli_name = str(payload["model_cli_name"])
     config_nickname = str(payload["config_nickname"])
     epoch = int(payload["epoch"])
@@ -58,10 +62,10 @@ def _load_train_config_from_job_folder(job_folder_path: str) -> TrainConfig:
         f"{training_trajectory_sqlite_path}"
     )
 
-    model_parent_dir = _model_parent_dir(storage_root_dir, model_cli_name, config_nickname, epoch)
-    checkpoints_parent_dir = _checkpoint_parent_dir(storage_root_dir, model_cli_name, config_nickname, epoch)
+    model_parent_dir = _model_parent_dir(artifact_root_dir, model_cli_name, config_nickname, epoch)
+    checkpoints_parent_dir = _checkpoint_parent_dir(artifact_root_dir, model_cli_name, config_nickname, epoch)
     final_model_output_parent_dir = _final_model_output_parent_dir(
-        storage_root_dir,
+        artifact_root_dir,
         model_cli_name,
         config_nickname,
         epoch,

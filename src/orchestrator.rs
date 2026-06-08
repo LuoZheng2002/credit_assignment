@@ -29,7 +29,7 @@ use crate::{
     modal_training_client::{ModalTrainStartRequest, ModalTrainingClient},
     python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
     training_job_client::TrainingJobClient,
-    util::storage_dir_from_env,
+    util::{hpc_training_root_dir_from_env, storage_dir_from_env},
 };
 
 pub const MODEL_PARENT_DIR_TEMPLATE_PATH: &str = "config/training/model_parent_dir.jinja";
@@ -189,7 +189,7 @@ pub struct Orchestrator {
     pub modal_training_base_url: Option<String>,
     pub modal_auth_token_env_var: Option<String>,
     pub modal_training_poll_interval_secs: usize,
-    pub hpc_training_job_root_dir: Option<String>,
+    pub hpc_training_base_url: Option<String>,
 }
 
 pub struct InferenceServerHandle {
@@ -984,12 +984,20 @@ impl Orchestrator {
             _phantom: std::marker::PhantomData::<M>,
         };
         let training_trajectory_sqlite_path = asset_file_training_trajectories.file_path();
-        let storage_root_dir = storage_dir_from_env()?;
+        let artifact_root_dir = match self.compute_backend {
+            ComputeBackend::Modal => storage_dir_from_env()?,
+            ComputeBackend::Hpc => hpc_training_root_dir_from_env()?,
+        };
         let training_config = PythonTrainingConfig {
             common: self.training_config_common.clone(),
             training_time: self.training_time,
             num_iterations_limit: self.num_iterations_limit,
-            storage_root_dir,
+            artifact_root_dir: artifact_root_dir.clone(),
+            hpc_training_root_dir: if self.compute_backend == ComputeBackend::Hpc {
+                Some(artifact_root_dir.clone())
+            } else {
+                None
+            },
             model_cli_name: M::CLI_NAME.to_string(),
             config_nickname: self.config_nickname.clone(),
             epoch,
@@ -1022,15 +1030,19 @@ impl Orchestrator {
                     .await?;
             }
             ComputeBackend::Hpc => {
-                let storage_root = storage_dir_from_env()?;
-                let default_job_root = format!("{}/hpc_training_jobs", storage_root);
-                let job_root = self
-                    .hpc_training_job_root_dir
+                let base_url = self
+                    .hpc_training_base_url
                     .as_deref()
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
-                    .unwrap_or(default_job_root.as_str());
-                let hpc_client = HpcTrainingClient::new(job_root, self.num_gpus)?;
+                    .ok_or_else(|| {
+                        "HPC backend requires --hpc-training-base-url for training".to_string()
+                    })?;
+                let hpc_client = HpcTrainingClient::new(
+                    self.client.clone(),
+                    base_url,
+                    self.modal_auth_token_env_var.as_deref(),
+                )?;
                 self.run_training_job(&hpc_client, &request, &training_trajectory_sqlite_path)
                     .await?;
             }

@@ -19,6 +19,7 @@ use credit_assignment::{
     },
     orchestrator::{OrchestrationProgress, OrchestrationStatus, Orchestrator},
     python_training_config::PythonTrainingConfigCommon,
+    util::hpc_training_root_dir_from_env,
 };
 use research_utility::progress_tui_logger::{
     ProgressTuiLogger, log_exit_hint, log_info, log_warning, log_window_name,
@@ -80,7 +81,7 @@ struct Args {
     #[arg(long, default_value_t = 5)]
     modal_training_poll_interval_secs: usize,
     #[arg(long)]
-    hpc_training_job_root_dir: Option<String>,
+    hpc_training_base_url: Option<String>,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
 }
@@ -122,7 +123,7 @@ async fn main() {
         modal_training_base_url,
         modal_auth_token_env_var,
         modal_training_poll_interval_secs,
-        hpc_training_job_root_dir,
+        hpc_training_base_url,
     } = Args::parse();
     let process_title = format!("orchestrator_{}_{}", model_cli_name, config_nickname);
     set_title(&process_title);
@@ -152,6 +153,26 @@ async fn main() {
             modal_training_poll_interval_secs > 0,
             "--modal-training-poll-interval-secs must be positive"
         );
+    }
+    if compute_backend == ComputeBackend::Hpc {
+        let training_base_url = hpc_training_base_url
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default();
+        assert!(
+            !training_base_url.is_empty(),
+            "--hpc-training-base-url must be provided when --compute-backend=hpc"
+        );
+        assert!(
+            modal_training_poll_interval_secs > 0,
+            "--modal-training-poll-interval-secs must be positive"
+        );
+        hpc_training_root_dir_from_env().unwrap_or_else(|err| {
+            panic!(
+                "HPC backend requires HPC_TRAINING_ROOT_DIR to be set for training artifacts: {}",
+                err
+            )
+        });
     }
 
     if ui {
@@ -227,7 +248,7 @@ async fn main() {
         modal_training_base_url,
         modal_auth_token_env_var,
         modal_training_poll_interval_secs,
-        hpc_training_job_root_dir,
+        hpc_training_base_url,
     };
 
     let result = match model_name {

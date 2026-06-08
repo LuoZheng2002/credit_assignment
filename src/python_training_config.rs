@@ -6,7 +6,9 @@ pub struct PythonTrainingConfig {
     pub common: PythonTrainingConfigCommon,
     pub training_time: f32,
     pub num_iterations_limit: usize,
-    pub storage_root_dir: String,
+    pub artifact_root_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hpc_training_root_dir: Option<String>,
     pub model_cli_name: String,
     pub config_nickname: String,
     pub epoch: usize,

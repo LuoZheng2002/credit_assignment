@@ -70,3 +70,25 @@ pub fn storage_dir_from_env() -> Result<String, String> {
         .map(|storage_dir| storage_dir.clone())
         .map_err(|err| err.clone())
 }
+
+pub fn hpc_training_root_dir_from_env() -> Result<String, String> {
+    static HPC_TRAINING_ROOT_DIR: LazyLock<Result<String, String>> = LazyLock::new(|| {
+        dotenvy::dotenv().ok();
+        let root_dir = std::env::var("HPC_TRAINING_ROOT_DIR").map_err(|err| {
+            format!(
+                "Failed to read HPC_TRAINING_ROOT_DIR from environment: {}",
+                err
+            )
+        })?;
+        let root_dir = root_dir.trim();
+        if root_dir.is_empty() {
+            return Err("HPC_TRAINING_ROOT_DIR is set but empty".to_string());
+        }
+        Ok(root_dir.to_string())
+    });
+
+    HPC_TRAINING_ROOT_DIR
+        .as_ref()
+        .map(|root_dir| root_dir.clone())
+        .map_err(|err| err.clone())
+}
