@@ -61,16 +61,58 @@ Minimum API:
 - `GET /train/status/{job_id}` -> state + metrics/log cursor + artifact refs
 - `POST /train/cancel/{job_id}`
 
-### 3) Model resolution for future epochs
+### 3) Epoch-keyed training contract (no path resolution API)
 
-Need deterministic lookup by:
+Use logical model keys only:
 - `model_cli_name`
 - `config_nickname`
 - `epoch`
 
-Minimum API:
-- `GET /models/resolve?model_cli_name=...&config_nickname=...&epoch=...`
-  -> returns model reference for inference/training resume.
+Contract:
+- Service reads model for `epoch` internally.
+- Service writes trained output to internal location for `epoch + 1`.
+- Client does not request or compose explicit model paths.
+
+### 4) Server-side HTTP semantics (to implement)
+
+`POST /train/start`
+- Request headers:
+  - `Idempotency-Key: {model_cli_name}/{config_nickname}/epoch_{epoch}`
+- Success responses:
+  - `200 OK` with `{ "job_id": "...", "created": true }` when new job is created.
+  - `200 OK` with `{ "job_id": "...", "created": false }` when key already exists and same logical request is reused.
+- Error responses:
+  - `409 Conflict` with code `IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD` when key exists but payload hash differs.
+  - `400 Bad Request` for malformed request.
+  - `401/403` for auth failures.
+  - `429` when rate-limited.
+  - `500` for server/internal errors.
+
+`PUT /train/upload_trajectory/{job_id}`
+- Success responses:
+  - `200 OK` when upload accepted.
+  - `200 OK` when identical upload is replayed for same `job_id`.
+- Error responses:
+  - `404 Not Found` when `job_id` unknown.
+  - `409 Conflict` when upload attempted after terminal state (`succeeded|failed|cancelled`).
+  - `413 Payload Too Large` for oversized artifact.
+
+`GET /train/status/{job_id}`
+- Success response: `200 OK` with:
+  - `status`: one of `queued|starting|running|succeeded|failed|cancelled`
+  - `progress_message`: optional string
+  - `progress_fraction`: optional float in `[0.0, 1.0]`
+  - `error_code`: optional machine-readable string for terminal failures
+  - `error_message`: optional human-readable message for terminal failures
+- Error responses:
+  - `404 Not Found` when `job_id` unknown.
+
+`POST /train/cancel/{job_id}`
+- Success responses:
+  - `200 OK` with `cancelled=true` when transition applied.
+  - `200 OK` with `cancelled=false` when already terminal (`succeeded|failed|cancelled`).
+- Error responses:
+  - `404 Not Found` when `job_id` unknown.
 
 ---
 
@@ -157,18 +199,19 @@ Acceptance:
 - End-to-end epoch train step succeeds on Modal.
 - Failure and cancellation behavior is explicit and logged.
 
-## Phase 4 - Model Registry/Resolution by Epoch
+## Phase 4 - Epoch Resume + Idempotency
 
-Objective: support epoch-indexed model retrieval for continued orchestration.
+Objective: make resume robust without exposing physical model paths.
 
 Work:
-- Add model resolution call before inference/training start when backend is Modal.
 - Keep existing local path template logic for HPC; do not remove.
-- Define stable model key convention:
+- Enforce stable logical key convention:
   - key = `{model_cli_name}/{config_nickname}/epoch_{epoch}`
+- Make `/train/start` idempotent for logical epoch keys.
+- Ensure service-side lookup handles resume/retry for completed and in-flight jobs.
 
 Acceptance:
-- Orchestrator can resume at any epoch using resolved Modal model reference.
+- Orchestrator can resume at any epoch by reusing logical epoch identifiers only.
 
 ## Phase 5 - Hardening and Operational Readiness
 
@@ -216,7 +259,7 @@ Before implementation, freeze:
 - Modal auth method (bearer token, key header, or signed request)
 - Training trajectory upload protocol and max artifact size
 - Training status schema (states, progress %, metric fields, log pagination)
-- Model resolve response schema and versioning fields
+- `/train/start` idempotency semantics and payload-hash policy
 - Error schema (machine-readable code + human message)
 
 Without these, Rust integration will churn.
@@ -248,8 +291,8 @@ Without these, Rust integration will churn.
    - Rollouts via remote sglang-compatible endpoint
 3. **M3: Modal Training PR**
    - Remote training jobs with progress reporting
-4. **M4: Model Resolve + Resume PR**
-   - Epoch-addressable model retrieval operational
+4. **M4: Idempotent Resume PR**
+   - Epoch-keyed start idempotency operational (`Idempotency-Key`)
 5. **M5: Hardening + Docs PR**
    - production-readiness checks and runbooks
 

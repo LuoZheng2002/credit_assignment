@@ -1,0 +1,439 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import subprocess
+import threading
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+import modal
+import modal.experimental
+
+MINUTES = 60
+APP_NAME = "credit-assignment-sglang-service"
+PORT = 8000
+SGLANG_PORT = 30000
+REGION = os.environ.get("MODAL_REGION", "us-east")
+GPU = os.environ.get("MODAL_GPU", "H100:1")
+MODEL_NAME = os.environ.get("SGLANG_MODEL_NAME", "Qwen/Qwen3.5-4B")
+
+HF_CACHE_PATH = "/root/.cache/huggingface"
+JOBS_ROOT = Path("/mnt/service-state/jobs")
+IDEMPOTENCY_ROOT = Path("/mnt/service-state/idempotency")
+SERVICE_STATE_ROOT = Path("/mnt/service-state")
+
+service_state_volume = modal.Volume.from_name(
+    "credit-assignment-modal-service-state", create_if_missing=True
+)
+hf_cache_volume = modal.Volume.from_name("credit-assignment-hf-cache", create_if_missing=True)
+
+image = (
+    modal.Image.from_registry("lmsysorg/sglang:v0.5.10.post1-cu126")
+    .entrypoint([])
+    .pip_install("fastapi>=0.115.0", "uvicorn>=0.32.0", "requests>=2.32.0")
+    .add_local_dir(".", remote_path="/root/credit_assignment")
+    .env(
+        {
+            "HF_HUB_CACHE": HF_CACHE_PATH,
+            "PYTHONPATH": "/root/credit_assignment",
+        }
+    )
+)
+
+app = modal.App(name=APP_NAME)
+
+
+def _payload_hash(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _key_filename(idempotency_key: str) -> str:
+    key_hash = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+    return f"{key_hash}.json"
+
+
+def _ensure_dirs() -> None:
+    SERVICE_STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    JOBS_ROOT.mkdir(parents=True, exist_ok=True)
+    IDEMPOTENCY_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _to_toml_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value == float("inf") or value == float("-inf"):
+            raise ValueError("inf is not supported in train_request.toml")
+        if value != value:
+            raise ValueError("nan is not supported in train_request.toml")
+        return repr(value)
+    if isinstance(value, str):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    raise ValueError(f"Unsupported value type for train_request.toml: {type(value)}")
+
+
+def _write_flat_toml(path: Path, payload: dict[str, Any]) -> None:
+    lines: list[str] = []
+    for key in sorted(payload.keys()):
+        value = payload[key]
+        if value is None:
+            continue
+        if isinstance(value, (dict, list)):
+            raise ValueError(f"Nested training_config field is not supported for key: {key}")
+        lines.append(f"{key} = {_to_toml_scalar(value)}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@app.cls(
+    image=image,
+    gpu=GPU,
+    region=REGION,
+    startup_timeout=20 * MINUTES,
+    min_containers=1,
+    volumes={
+        "/mnt/service-state": service_state_volume,
+        HF_CACHE_PATH: hf_cache_volume,
+    },
+)
+@modal.experimental.http_server(
+    port=PORT,
+    proxy_regions=[REGION],
+    exit_grace_period=30,
+)
+@modal.concurrent(target_inputs=32)
+class SglangTrainingService:
+    @modal.enter()
+    def startup(self) -> None:
+        _ensure_dirs()
+        self._lock = threading.Lock()
+        self._job_threads: dict[str, threading.Thread] = {}
+        self._job_processes: dict[str, subprocess.Popen[bytes]] = {}
+        self._sglang_process = subprocess.Popen(
+            [
+                "python",
+                "-m",
+                "sglang.launch_server",
+                "--model-path",
+                MODEL_NAME,
+                "--served-model-name",
+                MODEL_NAME,
+                "--host",
+                "0.0.0.0",
+                "--port",
+                str(SGLANG_PORT),
+                "--tp",
+                "1",
+                "--enable-metrics",
+            ]
+        )
+        self._wait_for_sglang_ready()
+        self._start_http_gateway()
+        self._wait_for_gateway_ready()
+
+    @modal.exit()
+    def shutdown(self) -> None:
+        gateway_server = getattr(self, "_gateway_server", None)
+        if gateway_server is not None:
+            gateway_server.should_exit = True
+        gateway_thread = getattr(self, "_gateway_thread", None)
+        if gateway_thread is not None and gateway_thread.is_alive():
+            gateway_thread.join(timeout=10)
+        if getattr(self, "_sglang_process", None) is not None:
+            self._sglang_process.terminate()
+
+    def _wait_for_sglang_ready(self, timeout_secs: int = 600) -> None:
+        import requests
+
+        deadline = time.time() + timeout_secs
+        while time.time() < deadline:
+            if self._sglang_process.poll() is not None:
+                raise RuntimeError("sglang process exited before becoming ready")
+            try:
+                response = requests.get(f"http://127.0.0.1:{SGLANG_PORT}/health", timeout=2)
+                if response.status_code == 200:
+                    return
+            except requests.RequestException:
+                pass
+            time.sleep(2)
+        raise TimeoutError("Timed out waiting for sglang to become ready")
+
+    def _start_http_gateway(self) -> None:
+        from fastapi import FastAPI, Header, HTTPException, Request, Response
+        from fastapi.responses import JSONResponse
+        import requests
+        import uvicorn
+
+        service = self
+        fastapi_app = FastAPI(title="Credit Assignment Modal SGLang Service")
+
+        def _job_dir(job_id: str) -> Path:
+            return JOBS_ROOT / job_id
+
+        def _job_meta_path(job_id: str) -> Path:
+            return _job_dir(job_id) / "job_meta.json"
+
+        def _read_job_meta(job_id: str) -> dict[str, Any]:
+            path = _job_meta_path(job_id)
+            if not path.exists():
+                raise HTTPException(status_code=404, detail=f"unknown job_id: {job_id}")
+            return json.loads(path.read_text(encoding="utf-8"))
+
+        def _write_job_meta(job_id: str, payload: dict[str, Any]) -> None:
+            _job_meta_path(job_id).write_text(
+                json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2),
+                encoding="utf-8",
+            )
+
+        def _status_response(meta: dict[str, Any]) -> dict[str, Any]:
+            response = {
+                "status": meta.get("status", "queued"),
+                "progress_message": meta.get("progress_message"),
+                "progress_fraction": meta.get("progress_fraction"),
+            }
+            if meta.get("error_code"):
+                response["error_code"] = meta["error_code"]
+            if meta.get("error_message"):
+                response["error_message"] = meta["error_message"]
+            return response
+
+        def _run_training_job(job_id: str) -> None:
+            with service._lock:
+                meta = _read_job_meta(job_id)
+                if meta.get("status") in {"running", "succeeded", "failed", "cancelled"}:
+                    return
+                meta["status"] = "starting"
+                meta["progress_message"] = "launching training subprocess"
+                meta["progress_fraction"] = 0.05
+                _write_job_meta(job_id, meta)
+
+            job_dir = _job_dir(job_id)
+            logs_dir = job_dir / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            train_log_path = logs_dir / "train.log"
+            cmd = [
+                "python",
+                "-m",
+                "src_py.train.main_from_config",
+                "--job-folder-path",
+                str(job_dir),
+            ]
+
+            with service._lock:
+                meta = _read_job_meta(job_id)
+                meta["status"] = "running"
+                meta["progress_message"] = "training in progress"
+                meta["progress_fraction"] = 0.2
+                _write_job_meta(job_id, meta)
+
+            with train_log_path.open("ab") as out:
+                process = subprocess.Popen(
+                    cmd,
+                    cwd="/root/credit_assignment",
+                    stdout=out,
+                    stderr=out,
+                    env=os.environ.copy(),
+                )
+                with service._lock:
+                    service._job_processes[job_id] = process
+                return_code = process.wait()
+            with service._lock:
+                service._job_processes.pop(job_id, None)
+
+            with service._lock:
+                meta = _read_job_meta(job_id)
+                if meta.get("status") == "cancelled":
+                    _write_job_meta(job_id, meta)
+                    return
+                if return_code == 0:
+                    meta["status"] = "succeeded"
+                    meta["progress_message"] = "training completed"
+                    meta["progress_fraction"] = 1.0
+                    meta["error_code"] = None
+                    meta["error_message"] = None
+                else:
+                    meta["status"] = "failed"
+                    meta["progress_message"] = "training failed"
+                    meta["error_code"] = "TRAIN_PROCESS_FAILED"
+                    meta["error_message"] = (
+                        f"training process exited with code {return_code}; log={train_log_path}"
+                    )
+                    meta["progress_fraction"] = meta.get("progress_fraction") or 0.2
+                _write_job_meta(job_id, meta)
+
+        @fastapi_app.get("/health")
+        def health() -> dict[str, str]:
+            return {"status": "ok"}
+
+        @fastapi_app.get("/healthz")
+        def healthz() -> dict[str, str]:
+            return {"status": "ok"}
+
+        @fastapi_app.post("/generate")
+        async def generate(request: Request) -> Response:
+            payload = await request.json()
+            upstream = requests.post(
+                f"http://127.0.0.1:{SGLANG_PORT}/generate",
+                json=payload,
+                timeout=600,
+            )
+            return Response(
+                content=upstream.content,
+                status_code=upstream.status_code,
+                media_type=upstream.headers.get("content-type", "application/json"),
+            )
+
+        @fastapi_app.post("/train/start")
+        async def train_start(
+            request: Request,
+            idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        ) -> dict[str, Any]:
+            if idempotency_key is None or not idempotency_key.strip():
+                raise HTTPException(status_code=400, detail="Idempotency-Key header is required")
+
+            payload = await request.json()
+            payload_hash = _payload_hash(payload)
+            key_path = IDEMPOTENCY_ROOT / _key_filename(idempotency_key.strip())
+            with service._lock:
+                if key_path.exists():
+                    existing = json.loads(key_path.read_text(encoding="utf-8"))
+                    if existing.get("payload_hash") != payload_hash:
+                        return JSONResponse(
+                            status_code=409,
+                            content={
+                                "error_code": "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD",
+                                "error_message": "payload hash mismatch for idempotency key",
+                            },
+                        )
+                    return {"job_id": existing["job_id"], "created": False}
+
+                job_id = str(uuid.uuid4())
+                job_dir = _job_dir(job_id)
+                (job_dir / "input").mkdir(parents=True, exist_ok=True)
+                (job_dir / "output").mkdir(parents=True, exist_ok=True)
+
+                training_config = payload.get("training_config")
+                if not isinstance(training_config, dict):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="training_config object is required",
+                    )
+                _write_flat_toml(job_dir / "train_request.toml", training_config)
+
+                meta = {
+                    "job_id": job_id,
+                    "status": "queued",
+                    "progress_message": "waiting for trajectory upload",
+                    "progress_fraction": 0.0,
+                    "error_code": None,
+                    "error_message": None,
+                    "created_at": time.time(),
+                    "uploaded": False,
+                }
+                _write_job_meta(job_id, meta)
+                key_path.write_text(
+                    json.dumps(
+                        {
+                            "idempotency_key": idempotency_key.strip(),
+                            "payload_hash": payload_hash,
+                            "job_id": job_id,
+                        },
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
+                )
+                return {"job_id": job_id, "created": True}
+
+        @fastapi_app.put("/train/upload_trajectory/{job_id}")
+        async def upload_trajectory(job_id: str, request: Request) -> dict[str, Any]:
+            content = await request.body()
+            if not content:
+                raise HTTPException(status_code=400, detail="trajectory upload body is empty")
+            with service._lock:
+                meta = _read_job_meta(job_id)
+                if meta.get("status") in {"succeeded", "failed", "cancelled"}:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"job {job_id} already terminal: {meta.get('status')}",
+                    )
+
+                trajectory_path = _job_dir(job_id) / "input" / "training_trajectories.sqlite"
+                if trajectory_path.exists():
+                    existing = trajectory_path.read_bytes()
+                    if hashlib.sha256(existing).hexdigest() == hashlib.sha256(content).hexdigest():
+                        return {"accepted": True, "replayed": True}
+                trajectory_path.write_bytes(content)
+
+                meta["uploaded"] = True
+                meta["status"] = "starting"
+                meta["progress_message"] = "trajectory uploaded; scheduling training"
+                meta["progress_fraction"] = 0.1
+                _write_job_meta(job_id, meta)
+
+                thread = service._job_threads.get(job_id)
+                if thread is None or not thread.is_alive():
+                    thread = threading.Thread(target=_run_training_job, args=(job_id,), daemon=True)
+                    service._job_threads[job_id] = thread
+                    thread.start()
+            return {"accepted": True, "replayed": False}
+
+        @fastapi_app.get("/train/status/{job_id}")
+        def train_status(job_id: str) -> dict[str, Any]:
+            with service._lock:
+                meta = _read_job_meta(job_id)
+                return _status_response(meta)
+
+        @fastapi_app.post("/train/cancel/{job_id}")
+        def train_cancel(job_id: str) -> dict[str, bool]:
+            with service._lock:
+                meta = _read_job_meta(job_id)
+                if meta.get("status") in {"succeeded", "failed", "cancelled"}:
+                    return {"cancelled": False}
+                process = service._job_processes.get(job_id)
+                if process is not None and process.poll() is None:
+                    process.terminate()
+                meta["status"] = "cancelled"
+                meta["progress_message"] = "cancelled by user"
+                meta["error_code"] = "CANCELLED_BY_USER"
+                meta["error_message"] = "job cancelled by user request"
+                _write_job_meta(job_id, meta)
+                return {"cancelled": True}
+
+        config = uvicorn.Config(
+            fastapi_app,
+            host="0.0.0.0",
+            port=PORT,
+            log_level="info",
+            timeout_keep_alive=60,
+        )
+        server = uvicorn.Server(config)
+        self._gateway_server = server
+        self._gateway_thread = threading.Thread(target=server.run, daemon=True)
+        self._gateway_thread.start()
+
+    def _wait_for_gateway_ready(self, timeout_secs: int = 60) -> None:
+        import requests
+
+        deadline = time.time() + timeout_secs
+        while time.time() < deadline:
+            try:
+                response = requests.get(f"http://127.0.0.1:{PORT}/health", timeout=2)
+                if response.status_code == 200:
+                    return
+            except requests.RequestException:
+                pass
+            time.sleep(1)
+        raise TimeoutError("Timed out waiting for gateway server to become ready")
+
+
+@app.local_entrypoint()
+def show_url() -> None:
+    print("Deploy with: modal deploy src_py/modal_sglang_service.py")

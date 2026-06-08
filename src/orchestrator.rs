@@ -1007,6 +1007,7 @@ impl Orchestrator {
             model_cli_name: M::CLI_NAME.to_string(),
             config_nickname: self.config_nickname.clone(),
             epoch,
+            idempotency_key: format!("{}/{}/epoch_{}", M::CLI_NAME, self.config_nickname, epoch),
             num_gpus: self.num_gpus,
             training_config: training_config.clone(),
         };
@@ -1017,8 +1018,14 @@ impl Orchestrator {
                     .as_deref()
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
+                    .or_else(|| {
+                        self.modal_sglang_base_url
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                    })
                     .ok_or_else(|| {
-                        "Modal backend requires --modal-training-base-url for training"
+                        "Modal backend requires --modal-sglang-base-url and optionally --modal-training-base-url"
                             .to_string()
                     })?;
                 let modal_client = ModalTrainingClient::new(

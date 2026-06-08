@@ -74,7 +74,7 @@ struct Args {
     compute_backend: ComputeBackend,
     #[arg(long)]
     modal_sglang_base_url: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional override; defaults to --modal-sglang-base-url")]
     modal_training_base_url: Option<String>,
     #[arg(long)]
     modal_auth_token_env_var: Option<String>,
@@ -145,10 +145,11 @@ async fn main() {
             .as_deref()
             .map(str::trim)
             .unwrap_or_default();
-        assert!(
-            !training_base_url.is_empty(),
-            "--modal-training-base-url must be provided when --compute-backend=modal"
-        );
+        if training_base_url.is_empty() {
+            log_info(
+                "--modal-training-base-url not provided; reusing --modal-sglang-base-url for training endpoints",
+            );
+        }
         assert!(
             modal_training_poll_interval_secs > 0,
             "--modal-training-poll-interval-secs must be positive"

@@ -18,6 +18,7 @@ pub struct ModalTrainStartRequest {
     pub model_cli_name: String,
     pub config_nickname: String,
     pub epoch: usize,
+    pub idempotency_key: String,
     pub num_gpus: usize,
     pub training_config: PythonTrainingConfig,
 }
@@ -25,6 +26,8 @@ pub struct ModalTrainStartRequest {
 #[derive(Clone, Debug, Deserialize)]
 pub struct ModalTrainStartResponse {
     pub job_id: String,
+    #[serde(default)]
+    pub created: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -72,12 +75,44 @@ impl ModalTrainingClient {
         &self,
         request: &ModalTrainStartRequest,
     ) -> Result<ModalTrainStartResponse, String> {
-        self.send_json(
-            reqwest::Method::POST,
-            &format!("{}/train/start", self.base_url),
-            Some(request),
-        )
-        .await
+        if request.idempotency_key.trim().is_empty() {
+            return Err("Modal training start request idempotency_key cannot be empty".to_string());
+        }
+        let url = format!("{}/train/start", self.base_url);
+        let mut http_request = self
+            .client
+            .post(url.clone())
+            .header("Idempotency-Key", request.idempotency_key.trim())
+            .json(request);
+        if let Some(token) = &self.bearer_token {
+            http_request = http_request.bearer_auth(token);
+        }
+        let response = http_request
+            .send()
+            .await
+            .map_err(|err| format!("Modal request failed to {}: {}", url, err))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body_text = response.text().await.unwrap_or_default();
+            if status == reqwest::StatusCode::CONFLICT {
+                let (error_code, error_message) = parse_error_body(&body_text);
+                return Err(format!(
+                    "Modal train start conflict for idempotency key {} (code={}, message={}): {}",
+                    request.idempotency_key,
+                    error_code.unwrap_or_else(|| "unknown".to_string()),
+                    error_message.unwrap_or_else(|| "unknown".to_string()),
+                    body_text
+                ));
+            }
+            return Err(format!(
+                "Modal request failed (status {}) for {}: {}",
+                status, url, body_text
+            ));
+        }
+        response
+            .json::<ModalTrainStartResponse>()
+            .await
+            .map_err(|err| format!("Modal response JSON parse failed for {}: {}", url, err))
     }
 
     pub async fn upload_trajectory_file(&self, job_id: &str, file_path: &str) -> Result<(), String> {
@@ -215,6 +250,22 @@ impl ModalTrainingClient {
     }
 }
 
+fn parse_error_body(body_text: &str) -> (Option<String>, Option<String>) {
+    let parsed = serde_json::from_str::<serde_json::Value>(body_text);
+    if let Ok(value) = parsed {
+        let error_code = value
+            .get("error_code")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let error_message = value
+            .get("error_message")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        return (error_code, error_message);
+    }
+    (None, None)
+}
+
 #[async_trait::async_trait]
 impl TrainingJobClient for ModalTrainingClient {
     fn backend_label(&self) -> &'static str {
@@ -250,6 +301,7 @@ mod tests {
         let start_response = serde_json::json!({"job_id": "job-123"});
         Mock::given(method("POST"))
             .and(path("/train/start"))
+            .and(header("idempotency-key", "qwen35_4b/test_run/epoch_1"))
             .respond_with(ResponseTemplate::new(200).set_body_json(start_response))
             .mount(&mock_server)
             .await;
@@ -277,6 +329,7 @@ mod tests {
             model_cli_name: "qwen35_4b".to_string(),
             config_nickname: "test_run".to_string(),
             epoch: 1,
+            idempotency_key: "qwen35_4b/test_run/epoch_1".to_string(),
             num_gpus: 1,
             training_config: PythonTrainingConfig {
                 common: crate::python_training_config::PythonTrainingConfigCommon {
@@ -308,6 +361,7 @@ mod tests {
             .await
             .expect("start should succeed");
         assert_eq!(started.job_id, "job-123");
+        assert_eq!(started.created, None);
 
         client
             .upload_trajectory_file(
@@ -321,5 +375,111 @@ mod tests {
             .wait_until_done(&started.job_id, Duration::from_millis(10))
             .await
             .expect("status polling should complete");
+    }
+
+    #[tokio::test]
+    async fn modal_client_start_parses_created_false() {
+        let mock_server = MockServer::start().await;
+        let start_response = serde_json::json!({"job_id": "job-123", "created": false});
+        Mock::given(method("POST"))
+            .and(path("/train/start"))
+            .and(header("idempotency-key", "qwen35_4b/test_run/epoch_1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(start_response))
+            .mount(&mock_server)
+            .await;
+
+        let client = ModalTrainingClient::new(reqwest::Client::new(), &mock_server.uri(), None)
+            .expect("build modal client");
+        let start_request = ModalTrainStartRequest {
+            model_cli_name: "qwen35_4b".to_string(),
+            config_nickname: "test_run".to_string(),
+            epoch: 1,
+            idempotency_key: "qwen35_4b/test_run/epoch_1".to_string(),
+            num_gpus: 1,
+            training_config: PythonTrainingConfig {
+                common: crate::python_training_config::PythonTrainingConfigCommon {
+                    training_plan: "lora".to_string(),
+                    advantage_clip: 3.0,
+                    learning_rate: 1e-5,
+                    weight_decay: 0.0,
+                    grad_accum_steps: 1,
+                    log_time_interval: 1.0,
+                    checkpoint_save_time_interval: 60.0,
+                    seed: 42,
+                    lora_rank: Some(64),
+                    lora_alpha: Some(128),
+                    lora_dropout: Some(0.05),
+                    lora_target_modules_csv: Some("q_proj,k_proj,v_proj,o_proj".to_string()),
+                    resume_checkpoint_tag: Some("auto".to_string()),
+                },
+                training_time: 10.0,
+                num_iterations_limit: 100,
+                artifact_root_dir: "/tmp/storage".to_string(),
+                hpc_training_root_dir: None,
+                model_cli_name: "qwen35_4b".to_string(),
+                config_nickname: "test_run".to_string(),
+                epoch: 1,
+            },
+        };
+        let started = client
+            .start_training(&start_request)
+            .await
+            .expect("start should succeed");
+        assert_eq!(started.job_id, "job-123");
+        assert_eq!(started.created, Some(false));
+    }
+
+    #[tokio::test]
+    async fn modal_client_start_conflict_includes_error_code() {
+        let mock_server = MockServer::start().await;
+        let body = serde_json::json!({
+            "error_code": "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD",
+            "error_message": "payload hash mismatch"
+        });
+        Mock::given(method("POST"))
+            .and(path("/train/start"))
+            .and(header("idempotency-key", "qwen35_4b/test_run/epoch_1"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(body))
+            .mount(&mock_server)
+            .await;
+
+        let client = ModalTrainingClient::new(reqwest::Client::new(), &mock_server.uri(), None)
+            .expect("build modal client");
+        let start_request = ModalTrainStartRequest {
+            model_cli_name: "qwen35_4b".to_string(),
+            config_nickname: "test_run".to_string(),
+            epoch: 1,
+            idempotency_key: "qwen35_4b/test_run/epoch_1".to_string(),
+            num_gpus: 1,
+            training_config: PythonTrainingConfig {
+                common: crate::python_training_config::PythonTrainingConfigCommon {
+                    training_plan: "lora".to_string(),
+                    advantage_clip: 3.0,
+                    learning_rate: 1e-5,
+                    weight_decay: 0.0,
+                    grad_accum_steps: 1,
+                    log_time_interval: 1.0,
+                    checkpoint_save_time_interval: 60.0,
+                    seed: 42,
+                    lora_rank: Some(64),
+                    lora_alpha: Some(128),
+                    lora_dropout: Some(0.05),
+                    lora_target_modules_csv: Some("q_proj,k_proj,v_proj,o_proj".to_string()),
+                    resume_checkpoint_tag: Some("auto".to_string()),
+                },
+                training_time: 10.0,
+                num_iterations_limit: 100,
+                artifact_root_dir: "/tmp/storage".to_string(),
+                hpc_training_root_dir: None,
+                model_cli_name: "qwen35_4b".to_string(),
+                config_nickname: "test_run".to_string(),
+                epoch: 1,
+            },
+        };
+        let err = client
+            .start_training(&start_request)
+            .await
+            .expect_err("conflict should error");
+        assert!(err.contains("IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD"));
     }
 }
