@@ -10,8 +10,8 @@ use crate::{atomic_count_guard::AtomicCountGuard, direct_tool::direct_trajectory
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
 const OPENROUTER_CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
+const JUDGE_DETERMINISTIC_SEED: i64 = 42;
 const OPENAI_GPT4O_MODEL: &str = "gpt-4o";
-const OPENROUTER_DEEPSEEK_V4_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
 const OPENROUTER_GEMINI_25_FLASH_LITE_MODEL: &str = "google/gemini-2.5-flash-lite";
 const OPENROUTER_GEMINI_25_FLASH_MODEL: &str = "google/gemini-2.5-flash";
 const OPENROUTER_GPT_41_MINI_MODEL: &str = "openai/gpt-4.1-mini";
@@ -19,7 +19,6 @@ const OPENROUTER_GPT_41_MINI_MODEL: &str = "openai/gpt-4.1-mini";
 #[derive(Clone, Copy)]
 pub enum JudgeAnswerModel {
     Gpt4o,
-    DeepseekV4Flash,
     Gemini25FlashLite,
     Gemini25Flash,
     Gpt41Mini,
@@ -29,7 +28,6 @@ impl JudgeAnswerModel {
     fn display_name(&self) -> &'static str {
         match self {
             JudgeAnswerModel::Gpt4o => OPENAI_GPT4O_MODEL,
-            JudgeAnswerModel::DeepseekV4Flash => OPENROUTER_DEEPSEEK_V4_FLASH_MODEL,
             JudgeAnswerModel::Gemini25FlashLite => OPENROUTER_GEMINI_25_FLASH_LITE_MODEL,
             JudgeAnswerModel::Gemini25Flash => OPENROUTER_GEMINI_25_FLASH_MODEL,
             JudgeAnswerModel::Gpt41Mini => OPENROUTER_GPT_41_MINI_MODEL,
@@ -49,7 +47,6 @@ async fn judge_answer_task(
     correct_answer: String,
     question: String,
     client: Client,
-    judge_model: JudgeAnswerModel,
 ) -> bool {
     let prompt = format!(
         "You are an answer checker that checks a model's answer against the reference answer. Judge if the model's answer is equivalent to the reference answer. \
@@ -60,14 +57,13 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
         question, model_answer, correct_answer
     );
     let mut last_error: Option<String> = None;
-    let attempts_per_model: usize = 5;
-    let mut model_sequence = vec![judge_model];
-    if !matches!(judge_model, JudgeAnswerModel::Gemini25Flash) {
-        model_sequence.push(JudgeAnswerModel::Gemini25Flash);
-    }
-    if !matches!(judge_model, JudgeAnswerModel::Gpt41Mini) {
-        model_sequence.push(JudgeAnswerModel::Gpt41Mini);
-    }
+    let attempts_per_model: usize = 1;
+    let model_sequence = vec![
+        JudgeAnswerModel::Gemini25FlashLite,
+        JudgeAnswerModel::Gemini25Flash,
+        JudgeAnswerModel::Gpt4o,
+        JudgeAnswerModel::Gpt41Mini,
+    ];
 
     let total_attempts = attempts_per_model * model_sequence.len();
     for (model_index, model_to_try) in model_sequence.into_iter().enumerate() {
@@ -125,12 +121,6 @@ async fn fetch_judge_evaluation(
             "OPENAI_API_KEY",
             true,
         ),
-        JudgeAnswerModel::DeepseekV4Flash => (
-            OPENROUTER_CHAT_COMPLETIONS_URL,
-            OPENROUTER_DEEPSEEK_V4_FLASH_MODEL,
-            "OPENROUTER_API_KEY",
-            true,
-        ),
         JudgeAnswerModel::Gemini25FlashLite => (
             OPENROUTER_CHAT_COMPLETIONS_URL,
             OPENROUTER_GEMINI_25_FLASH_LITE_MODEL,
@@ -153,17 +143,13 @@ async fn fetch_judge_evaluation(
 
     let api_key = std::env::var(api_key_env)
         .map_err(|_| format!("{api_key_env} environment variable not set"))?;
-    let mut body = serde_json::json!({
+    let body = serde_json::json!({
         "model": model_name,
         "messages": [{"role": "user", "content": prompt}],
         "max_completion_tokens": 32,
         "temperature": 0.0,
+        "seed": JUDGE_DETERMINISTIC_SEED,
     });
-    if matches!(judge_model, JudgeAnswerModel::DeepseekV4Flash) {
-        body["reasoning"] = serde_json::json!({
-            "enabled": false
-        });
-    }
 
     let mut request_builder = client.post(url).json(&body);
     if auth_is_bearer {
@@ -171,8 +157,7 @@ async fn fetch_judge_evaluation(
     }
     if matches!(
         judge_model,
-        JudgeAnswerModel::DeepseekV4Flash
-            | JudgeAnswerModel::Gemini25FlashLite
+        JudgeAnswerModel::Gemini25FlashLite
             | JudgeAnswerModel::Gemini25Flash
             | JudgeAnswerModel::Gpt41Mini
     ) {
@@ -222,7 +207,7 @@ pub async fn judge_final_answer(
     correct_answer: &str,
     question: &str,
     client: Client,
-    judge_model: JudgeAnswerModel,
+    _judge_model: JudgeAnswerModel,
     num_judge_waiting_workers: Arc<AtomicUsize>,
 ) -> CorrectnessJudgment {
     let is_correct = match final_answer {
@@ -236,7 +221,6 @@ pub async fn judge_final_answer(
                 correct_answer.to_string(),
                 question.to_string(),
                 client,
-                judge_model,
             )
             .await
         }
