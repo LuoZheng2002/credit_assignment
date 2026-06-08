@@ -74,7 +74,8 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
             ));
         }
         for attempt in 1..=attempts_per_model {
-            match fetch_judge_evaluation(&client, &prompt, model_to_try).await {
+            let fetch_result = fetch_judge_evaluation(&client, &prompt, model_to_try).await;
+            match fetch_result {
                 Ok(evaluation) => {
                     let evaluation = evaluation.trim().to_lowercase();
                     if evaluation.contains("incorrect") {
@@ -90,10 +91,13 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
                 }
             }
             log_warning(format!(
-                "Judger returned invalid response with model {}, attempt {}/{}",
+                "Judger returned invalid response with model {}, attempt {}/{}. Last error: {}",
                 model_to_try.display_name(),
                 attempt,
-                attempts_per_model
+                attempts_per_model,
+                last_error
+                    .as_deref()
+                    .unwrap_or("none (response did not include 'correct' or 'incorrect')")
             ));
 
             if attempt < attempts_per_model {
