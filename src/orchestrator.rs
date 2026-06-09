@@ -506,9 +506,6 @@ impl Orchestrator {
         let model_path = if self.compute_backend == ComputeBackend::Hpc {
             let model_parent_dir =
                 model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
-            if epoch == 0 {
-                crate::load_initial_model::load_initial_model(&model_parent_dir, M::API_NAME).await?;
-            }
             Some(format!("{}/model", model_parent_dir))
         } else {
             None
@@ -518,6 +515,10 @@ impl Orchestrator {
         let (sglang_port, process) = launch_inference_wrapper_process(
             self.compute_backend,
             model_path.as_deref(),
+            M::CLI_NAME,
+            &self.config_nickname,
+            epoch,
+            M::API_NAME,
             self.num_gpus,
             self.sglang_server_log_path.as_deref(),
         )
@@ -978,6 +979,7 @@ impl Orchestrator {
         run_training_wrapper_and_wait(
             self.compute_backend,
             self.num_gpus,
+            M::API_NAME,
             training_config_json,
             &training_trajectory_sqlite_path,
         )

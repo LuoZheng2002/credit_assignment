@@ -11,7 +11,9 @@ pub async fn load_initial_model(parent_dir: &str, hf_model_name: &str) -> Result
     ));
     let mut cmd = Command::new("uv");
     cmd.arg("run")
-        .arg("scripts/load_model_to_path.py")
+        .arg("python")
+        .arg("-m")
+        .arg("src_py.load_model_to_path")
         .arg("--output-parent-dir")
         .arg(parent_dir)
         .arg("--model")

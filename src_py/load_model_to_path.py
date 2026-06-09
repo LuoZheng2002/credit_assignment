@@ -1,15 +1,14 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
 import os
 from pathlib import Path
 
-from huggingface_hub import snapshot_download
-
 
 def _has_hf_model_weights(model_dir: Path) -> bool:
-    return (model_dir / "model.safetensors").is_file() or (model_dir / "model.safetensors.index.json").is_file()
+    return (model_dir / "model.safetensors").is_file() or (
+        model_dir / "model.safetensors.index.json"
+    ).is_file()
 
 
 def _remove_redundant_consolidated_weights(model_dir: Path) -> int:
@@ -25,51 +24,44 @@ def _remove_redundant_consolidated_weights(model_dir: Path) -> int:
     return removed
 
 
+def ensure_model_snapshot(output_parent_dir: Path, model_name: str) -> Path:
+    from huggingface_hub import snapshot_download
 
-def parse_args() -> argparse.Namespace:
+    output_path = output_parent_dir / "model"
+    output_path.mkdir(parents=True, exist_ok=True)
+    snapshot_download(
+        repo_id=model_name,
+        local_dir=output_path,
+        token=os.environ.get("HF_TOKEN") or None,
+    )
+    _remove_redundant_consolidated_weights(output_path)
+    return output_path
+
+
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=(
-            "Download a model snapshot from Hugging Face to a local folder."
-        )
+        description="Download a model snapshot from Hugging Face to a local folder"
     )
     parser.add_argument(
         "--output-parent-dir",
         type=Path,
         required=True,
-        help=(
-            "Parent directory where a 'model' subfolder will be created"
-        ),
+        help="Parent directory where a 'model' subfolder will be created",
     )
-    parser.add_argument(
-        "--model",
-        type=str,
-        help=f"Model to download",
-    )
-    return parser.parse_args()
+    parser.add_argument("--model", type=str, required=True, help="Model repo id to download")
+    return parser
 
 
 def main() -> None:
-    args = parse_args()
+    args = _build_parser().parse_args()
 
     if os.environ.get("HF_TOKEN") in {None, ""}:
         print(
             "Warning: HF_TOKEN is not set. Authenticated Hugging Face downloads are typically faster and less rate-limited."
         )
 
-    output_path = args.output_parent_dir / "model"
-    output_path.mkdir(parents=True, exist_ok=True)
-
     print(f"Downloading model snapshot: {args.model}")
-    snapshot_download(
-        repo_id=args.model,
-        local_dir=output_path,
-        token=os.environ.get("HF_TOKEN") or None,
-    )
-
-    removed = _remove_redundant_consolidated_weights(output_path)
-    if removed > 0:
-        print(f"Removed {removed} redundant consolidated safetensors files from: {output_path}")
-
+    output_path = ensure_model_snapshot(args.output_parent_dir, args.model)
     print(f"Done. Local model folder is ready at: {output_path}")
 
 

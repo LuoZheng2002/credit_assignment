@@ -63,6 +63,10 @@ enum WrapperEvent {
 pub async fn launch_inference_wrapper_process(
     compute_backend: ComputeBackend,
     model_path: Option<&str>,
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+    hf_model_name: &str,
     num_gpus: usize,
     log_path: Option<&str>,
 ) -> Result<(u16, Child), String> {
@@ -83,7 +87,15 @@ pub async fn launch_inference_wrapper_process(
         .arg("--listen-port")
         .arg(listen_port.to_string())
         .arg("--num-gpus")
-        .arg(num_gpus.to_string());
+        .arg(num_gpus.to_string())
+        .arg("--epoch")
+        .arg(epoch.to_string())
+        .arg("--model-cli-name")
+        .arg(model_cli_name)
+        .arg("--config-nickname")
+        .arg(config_nickname)
+        .arg("--hf-model-name")
+        .arg(hf_model_name);
 
     if compute_backend == ComputeBackend::Hpc {
         let model_path = model_path.ok_or_else(|| {
@@ -129,6 +141,7 @@ pub async fn launch_inference_wrapper_process(
 pub async fn run_training_wrapper_and_wait(
     compute_backend: ComputeBackend,
     num_gpus: usize,
+    hf_model_name: &str,
     training_config_json: String,
     trajectory_sqlite_path: &str,
 ) -> Result<(), String> {
@@ -164,6 +177,8 @@ pub async fn run_training_wrapper_and_wait(
         .arg(training_config_json)
         .arg("--trajectory-sqlite-path")
         .arg(trajectory_sqlite_path)
+        .arg("--hf-model-name")
+        .arg(hf_model_name)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 

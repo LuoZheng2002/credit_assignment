@@ -15,6 +15,10 @@ from typing import Any
 import modal
 import modal.experimental
 
+from src_py.experiment_identity import modal_function_name
+from src_py.load_model_to_path import ensure_model_snapshot
+from src_py.train.pathing import model_parent_dir, resolve_artifact_root_dir
+
 MINUTES = 60
 APP_NAME = "credit-assignment-sglang-service"
 PORT = 8000
@@ -22,6 +26,7 @@ SGLANG_PORT = 30000
 REGION = os.environ.get("MODAL_REGION", "us-east")
 GPU = "H100:1"
 MODEL_NAME = os.environ.get("SGLANG_MODEL_NAME", "Qwen/Qwen3.5-4B")
+EXPERIMENT_KEYS_RAW = os.environ.get("MODAL_EXPERIMENT_KEYS", "")
 
 HF_CACHE_PATH = "/root/.cache/huggingface"
 JOBS_ROOT = Path("/mnt/service-state/jobs")
@@ -33,7 +38,7 @@ service_state_volume = modal.Volume.from_name(
 )
 hf_cache_volume = modal.Volume.from_name("credit-assignment-hf-cache", create_if_missing=True)
 
-image = (
+base_image = (
     modal.Image.from_registry("lmsysorg/sglang:v0.5.10.post1-cu126")
     .entrypoint([])
     .pip_install("fastapi>=0.115.0", "uvicorn>=0.32.0", "requests>=2.32.0")
@@ -50,6 +55,23 @@ app = modal.App(name=APP_NAME)
 
 _MODAL_INFERENCE_LOCK = threading.Lock()
 _MODAL_INFERENCE_PROCESS: subprocess.Popen[bytes] | None = None
+_MODAL_INFERENCE_MODEL_NAME: str | None = None
+
+
+def _configured_experiment_keys() -> list[str]:
+    keys = [value.strip() for value in EXPERIMENT_KEYS_RAW.split(",") if value.strip()]
+    unique: list[str] = []
+    seen: set[str] = set()
+    for key in keys:
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(key)
+    return unique
+
+
+def _image_for_experiment(experiment_key: str) -> modal.Image:
+    return base_image.env({"EXPERIMENT_KEY": experiment_key})
 
 
 def _payload_hash(payload: dict[str, Any]) -> str:
@@ -112,20 +134,24 @@ def _wait_for_local_health(port: int, timeout_secs: int = 600) -> None:
     raise TimeoutError(f"timed out waiting for local server health on port {port}")
 
 
-def _ensure_modal_inference_sglang() -> None:
+def _ensure_modal_inference_sglang(model_name: str) -> None:
     global _MODAL_INFERENCE_PROCESS
+    global _MODAL_INFERENCE_MODEL_NAME
     with _MODAL_INFERENCE_LOCK:
         if _MODAL_INFERENCE_PROCESS is not None and _MODAL_INFERENCE_PROCESS.poll() is None:
-            return
+            if _MODAL_INFERENCE_MODEL_NAME == model_name:
+                return
+            _MODAL_INFERENCE_PROCESS.terminate()
+            _MODAL_INFERENCE_PROCESS.wait(timeout=30)
         _MODAL_INFERENCE_PROCESS = subprocess.Popen(
             [
                 "python",
                 "-m",
                 "sglang.launch_server",
                 "--model-path",
-                MODEL_NAME,
+                model_name,
                 "--served-model-name",
-                MODEL_NAME,
+                model_name,
                 "--host",
                 "127.0.0.1",
                 "--port",
@@ -134,6 +160,7 @@ def _ensure_modal_inference_sglang() -> None:
                 "1",
             ]
         )
+        _MODAL_INFERENCE_MODEL_NAME = model_name
     _wait_for_local_health(SGLANG_PORT)
 
 
@@ -141,6 +168,7 @@ def _run_training_subprocess(
     training_config: dict[str, Any],
     trajectory_bytes: bytes,
     num_gpus: int,
+    model_name: str,
 ) -> dict[str, Any]:
     if num_gpus != 1:
         return {
@@ -148,6 +176,15 @@ def _run_training_subprocess(
             "error_code": "MODAL_GPU_COUNT_UNSUPPORTED",
             "error": "modal_train currently supports num_gpus=1 only",
         }
+
+    epoch = int(training_config.get("epoch", 0))
+    if epoch == 0:
+        artifact_root_dir = resolve_artifact_root_dir(training_config)
+        model_cli_name = str(training_config["model_cli_name"])
+        config_nickname = str(training_config["config_nickname"])
+        parent_dir = model_parent_dir(artifact_root_dir, model_cli_name, config_nickname, epoch)
+        if not (parent_dir / "model").exists():
+            ensure_model_snapshot(parent_dir, model_name)
 
     with tempfile.TemporaryDirectory(prefix="modal_train_job_") as temp_dir:
         job_dir = Path(temp_dir)
@@ -211,7 +248,7 @@ def _run_training_subprocess(
 
 
 @app.function(
-    image=image,
+    image=base_image,
     gpu=GPU,
     region=REGION,
     min_containers=0,
@@ -219,10 +256,14 @@ def _run_training_subprocess(
     timeout=20 * MINUTES,
     volumes={HF_CACHE_PATH: hf_cache_volume},
 )
-def modal_generate(payload: dict[str, Any]) -> dict[str, Any]:
+def modal_generate(payload: dict[str, Any], model_name: str = MODEL_NAME) -> dict[str, Any]:
+    return _modal_generate_impl(payload, model_name)
+
+
+def _modal_generate_impl(payload: dict[str, Any], model_name: str) -> dict[str, Any]:
     import requests
 
-    _ensure_modal_inference_sglang()
+    _ensure_modal_inference_sglang(model_name)
     response = requests.post(
         f"http://127.0.0.1:{SGLANG_PORT}/generate",
         json=payload,
@@ -233,7 +274,7 @@ def modal_generate(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.function(
-    image=image,
+    image=base_image,
     gpu=GPU,
     region=REGION,
     min_containers=0,
@@ -245,12 +286,75 @@ def modal_train(
     training_config: dict[str, Any],
     trajectory_bytes: bytes,
     num_gpus: int,
+    model_name: str = MODEL_NAME,
 ) -> dict[str, Any]:
-    return _run_training_subprocess(training_config, trajectory_bytes, num_gpus)
+    return _modal_train_impl(training_config, trajectory_bytes, num_gpus, model_name)
+
+
+def _modal_train_impl(
+    training_config: dict[str, Any],
+    trajectory_bytes: bytes,
+    num_gpus: int,
+    model_name: str,
+) -> dict[str, Any]:
+    return _run_training_subprocess(training_config, trajectory_bytes, num_gpus, model_name)
+
+
+def _register_experiment_scoped_functions(experiment_key: str) -> None:
+    generate_name = f"modal_generate__{experiment_key}"
+    train_name = f"modal_train__{experiment_key}"
+    experiment_image = _image_for_experiment(experiment_key)
+
+    @app.function(
+        name=generate_name,
+        image=experiment_image,
+        gpu=GPU,
+        region=REGION,
+        min_containers=0,
+        max_containers=1,
+        timeout=20 * MINUTES,
+        volumes={HF_CACHE_PATH: hf_cache_volume},
+    )
+    def _modal_generate_experiment(payload: dict[str, Any], model_name: str) -> dict[str, Any]:
+        return _modal_generate_impl(payload, model_name)
+
+    @app.function(
+        name=train_name,
+        image=experiment_image,
+        gpu=GPU,
+        region=REGION,
+        min_containers=0,
+        max_containers=1,
+        timeout=8 * 60 * MINUTES,
+        volumes={HF_CACHE_PATH: hf_cache_volume, "/mnt/service-state": service_state_volume},
+    )
+    def _modal_train_experiment(
+        training_config: dict[str, Any],
+        trajectory_bytes: bytes,
+        num_gpus: int,
+        model_name: str,
+    ) -> dict[str, Any]:
+        expected = train_name
+        actual = modal_function_name(
+            "modal_train",
+            str(training_config["model_cli_name"]),
+            str(training_config["config_nickname"]),
+        )
+        if actual != expected:
+            return {
+                "ok": False,
+                "error_code": "EXPERIMENT_KEY_MISMATCH",
+                "error": f"expected {expected} but got {actual}",
+            }
+        return _modal_train_impl(training_config, trajectory_bytes, num_gpus, model_name)
+
+
+for experiment_key in _configured_experiment_keys():
+    _register_experiment_scoped_functions(experiment_key)
 
 
 @app.cls(
-    image=image,
+    image=base_image,
     gpu=GPU,
     region=REGION,
     startup_timeout=20 * MINUTES,

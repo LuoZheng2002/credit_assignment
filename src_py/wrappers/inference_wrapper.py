@@ -14,6 +14,9 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from src_py.experiment_identity import modal_function_name
+from src_py.load_model_to_path import ensure_model_snapshot
+
 
 def _emit_event(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=True), flush=True)
@@ -51,8 +54,16 @@ def _wait_health(url: str, timeout_secs: int) -> None:
 
 
 class HpcBackend:
-    def __init__(self, model_path: str, num_gpus: int, upstream_port: int) -> None:
-        if not Path(model_path).exists():
+    def __init__(self, model_path: str, num_gpus: int, upstream_port: int, epoch: int, hf_model_name: str) -> None:
+        model_path_obj = Path(model_path)
+        if not model_path_obj.exists() and epoch == 0:
+            _emit_status(
+                "hpc",
+                "starting",
+                f"initial model missing at {model_path_obj}; downloading {hf_model_name}",
+            )
+            ensure_model_snapshot(model_path_obj.parent, hf_model_name)
+        if not model_path_obj.exists():
             raise FileNotFoundError(f"model path does not exist: {model_path}")
         self._process = subprocess.Popen(
             [
@@ -91,14 +102,15 @@ class HpcBackend:
 
 
 class ModalBackend:
-    def __init__(self, app_name: str, function_name: str) -> None:
+    def __init__(self, app_name: str, function_name: str, hf_model_name: str) -> None:
         import modal
 
         self._function = modal.Function.from_name(app_name, function_name)
+        self._hf_model_name = hf_model_name
         _emit_status("modal", "ready", f"bound modal function {app_name}.{function_name}")
 
     def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._function.remote(payload)
+        return self._function.remote(payload, self._hf_model_name)
 
     def shutdown(self) -> None:
         return
@@ -114,8 +126,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--listen-port", type=int, required=True)
     parser.add_argument("--num-gpus", type=int, default=1)
     parser.add_argument("--model-path", type=str)
+    parser.add_argument("--epoch", type=int, required=True)
+    parser.add_argument("--model-cli-name", type=str, required=True)
+    parser.add_argument("--config-nickname", type=str, required=True)
+    parser.add_argument("--hf-model-name", type=str, required=True)
     parser.add_argument("--modal-app-name", type=str, default="credit-assignment-sglang-service")
-    parser.add_argument("--modal-function-name", type=str, default="modal_generate")
+    parser.add_argument("--modal-function-prefix", type=str, default="modal_generate")
     return parser
 
 
@@ -127,9 +143,20 @@ def main() -> int:
     if args.backend == "hpc":
         if not args.model_path:
             raise ValueError("--model-path is required for --backend=hpc")
-        backend = HpcBackend(args.model_path, args.num_gpus, args.listen_port + 1)
+        backend = HpcBackend(
+            args.model_path,
+            args.num_gpus,
+            args.listen_port + 1,
+            args.epoch,
+            args.hf_model_name,
+        )
     else:
-        backend = ModalBackend(args.modal_app_name, args.modal_function_name)
+        function_name = modal_function_name(
+            args.modal_function_prefix,
+            args.model_cli_name,
+            args.config_nickname,
+        )
+        backend = ModalBackend(args.modal_app_name, function_name, args.hf_model_name)
 
     _emit_status(args.backend, "starting", f"binding local wrapper server on port {args.listen_port}")
 

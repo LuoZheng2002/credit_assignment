@@ -12,6 +12,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from src_py.experiment_identity import modal_function_name
+from src_py.load_model_to_path import ensure_model_snapshot
+from src_py.train.pathing import model_parent_dir, resolve_artifact_root_dir
+
 
 def _emit_event(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=True), flush=True)
@@ -117,8 +121,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-gpus", type=int, required=True)
     parser.add_argument("--training-config-json", type=str, required=True)
     parser.add_argument("--trajectory-sqlite-path", type=str, required=True)
+    parser.add_argument("--hf-model-name", type=str, required=True)
     parser.add_argument("--modal-app-name", type=str, default="credit-assignment-sglang-service")
-    parser.add_argument("--modal-function-name", type=str, default="modal_train")
+    parser.add_argument("--modal-function-prefix", type=str, default="modal_train")
     parser.add_argument(
         "--test-sleep-secs",
         type=float,
@@ -128,15 +133,40 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _ensure_initial_model_if_missing(
+    backend: str,
+    training_config: dict[str, Any],
+    hf_model_name: str,
+) -> None:
+    epoch = int(training_config.get("epoch", 0))
+    if epoch != 0:
+        return
+    artifact_root_dir = resolve_artifact_root_dir(training_config)
+    model_cli_name = str(training_config["model_cli_name"])
+    config_nickname = str(training_config["config_nickname"])
+    parent_dir = model_parent_dir(artifact_root_dir, model_cli_name, config_nickname, epoch)
+    model_dir = parent_dir / "model"
+    if model_dir.exists():
+        return
+    _emit_status(
+        backend,
+        "starting",
+        f"initial model missing at {model_dir}; downloading {hf_model_name}",
+    )
+    ensure_model_snapshot(parent_dir, hf_model_name)
+
+
 def _run_hpc_training(
     num_gpus: int,
     training_config: dict[str, Any],
     trajectory_path: Path,
+    hf_model_name: str,
     test_sleep_secs: float,
 ) -> int:
     started_at = time.time()
     backend = "hpc"
     _emit_status(backend, "starting", "preparing HPC training job folder")
+    _ensure_initial_model_if_missing(backend, training_config, hf_model_name)
     with tempfile.TemporaryDirectory(prefix="training_wrapper_job_") as temp_dir:
         job_dir = Path(temp_dir)
         input_dir = job_dir / "input"
@@ -191,10 +221,11 @@ def _run_hpc_training(
 
 def _run_modal_training(
     app_name: str,
-    function_name: str,
+    function_prefix: str,
     num_gpus: int,
     training_config: dict[str, Any],
     trajectory_path: Path,
+    hf_model_name: str,
     test_sleep_secs: float,
 ) -> int:
     started_at = time.time()
@@ -208,7 +239,13 @@ def _run_modal_training(
         )
         return 2
 
-    _emit_status(backend, "starting", "submitting modal training function call")
+    _ensure_initial_model_if_missing(backend, training_config, hf_model_name)
+    function_name = modal_function_name(
+        function_prefix,
+        str(training_config["model_cli_name"]),
+        str(training_config["config_nickname"]),
+    )
+    _emit_status(backend, "starting", f"submitting modal training function call: {function_name}")
     import queue
 
     if test_sleep_secs > 0:
@@ -244,7 +281,7 @@ def _run_modal_training(
 
     def _invoke() -> None:
         try:
-            response = function.remote(training_config, trajectory_bytes, 1)
+            response = function.remote(training_config, trajectory_bytes, 1, hf_model_name)
             result_queue.put(("ok", response))
         except Exception as error:  # noqa: BLE001
             result_queue.put(("error", str(error)))
@@ -333,15 +370,17 @@ def main() -> int:
                 args.num_gpus,
                 training_config,
                 trajectory_path,
+                args.hf_model_name,
                 args.test_sleep_secs,
             )
 
         return _run_modal_training(
             args.modal_app_name,
-            args.modal_function_name,
+            args.modal_function_prefix,
             args.num_gpus,
             training_config,
             trajectory_path,
+            args.hf_model_name,
             args.test_sleep_secs,
         )
     except Exception as error:  # noqa: BLE001
