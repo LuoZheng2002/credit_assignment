@@ -1,4 +1,5 @@
 use std::{
+    net::SocketAddr,
     path::Path,
     process::Stdio,
     sync::{Arc, Mutex},
@@ -77,10 +78,13 @@ pub async fn launch_inference_wrapper_process(
     epoch: usize,
     hf_model_name: &str,
     artifact_root_dir: Option<&str>,
+    modal_base_url: Option<&str>,
+    modal_auth_token_env_var: Option<&str>,
     num_gpus: usize,
     log_path: Option<&str>,
 ) -> Result<(u16, Child), String> {
     let listen_port = resolve_sglang_port();
+    ensure_wrapper_port_available(listen_port).await?;
     let backend_flag = match compute_backend {
         ComputeBackend::Hpc => "hpc",
         ComputeBackend::Modal => "modal",
@@ -111,6 +115,16 @@ pub async fn launch_inference_wrapper_process(
         command
             .arg("--artifact-root-dir")
             .arg(artifact_root_dir);
+    }
+
+    if let Some(modal_base_url) = modal_base_url {
+        command.arg("--modal-base-url").arg(modal_base_url);
+    }
+
+    if let Some(modal_auth_token_env_var) = modal_auth_token_env_var {
+        command
+            .arg("--modal-auth-token-env-var")
+            .arg(modal_auth_token_env_var);
     }
 
     if compute_backend == ComputeBackend::Hpc {
@@ -150,14 +164,7 @@ pub async fn launch_inference_wrapper_process(
         }
     }
 
-    wait_for_wrapper_health(listen_port, &mut process).await?;
-    if let Err(err) = preflight_wrapper_generate(listen_port, &mut process).await {
-        let _ = process.start_kill();
-        return Err(format!(
-            "inference wrapper preflight generate failed on port {}: {}",
-            listen_port, err
-        ));
-    }
+    wait_for_wrapper_health(listen_port, &mut process, log_path).await?;
     Ok((listen_port, process))
 }
 
@@ -358,17 +365,29 @@ where
     }
 }
 
-async fn wait_for_wrapper_health(port: u16, process: &mut Child) -> Result<(), String> {
-    let timeout_duration = Duration::from_secs(180);
+async fn wait_for_wrapper_health(
+    port: u16,
+    process: &mut Child,
+    log_path: Option<&str>,
+) -> Result<(), String> {
+    let timeout_secs = std::env::var("INFERENCE_WRAPPER_HEALTH_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(900);
+    let timeout_duration = Duration::from_secs(timeout_secs);
     let sleep_interval = Duration::from_millis(500);
     let start = Instant::now();
     let url = format!("http://127.0.0.1:{}/health", port);
 
     loop {
         if let Ok(Some(status)) = process.try_wait() {
+            let hint = log_path
+                .map(|path| format!("; inspect wrapper log at {}", path))
+                .unwrap_or_default();
             return Err(format!(
-                "inference wrapper process exited before becoming healthy: {}",
-                status
+                "inference wrapper process exited before becoming healthy: {}{}",
+                status, hint
             ));
         }
 
@@ -398,94 +417,53 @@ async fn wait_for_wrapper_health(port: u16, process: &mut Child) -> Result<(), S
     }
 }
 
-fn is_retryable_preflight_failure(status: reqwest::StatusCode, body: &Value) -> bool {
-    if status.is_server_error() || status.as_u16() == 429 {
-        if let Some(message) = body
-            .get("error")
-            .and_then(|value| value.get("message"))
-            .and_then(Value::as_str)
-        {
-            let lower = message.to_ascii_lowercase();
-            return lower.contains("is stopped")
-                || lower.contains("temporarily unavailable")
-                || lower.contains("timeout")
-                || lower.contains("connection");
-        }
-        return true;
+async fn ensure_wrapper_port_available(port: u16) -> Result<(), String> {
+    if !is_port_listening(port).await {
+        return Ok(());
     }
-    false
+    log_warning(format!(
+        "Detected existing listener on wrapper port {}; attempting stale wrapper cleanup",
+        port
+    ));
+    let pattern = format!("src_py.wrappers.inference_wrapper.*--listen-port {}", port);
+    match Command::new("pkill").arg("-f").arg(&pattern).status().await {
+        Ok(status) => {
+            log_info(format!(
+                "Stale wrapper cleanup command completed (pattern='{}', status={})",
+                pattern, status
+            ));
+        }
+        Err(err) => {
+            return Err(format!(
+                "wrapper port {} is already in use and stale-wrapper cleanup failed to execute (pattern='{}'): {}",
+                port, pattern, err
+            ));
+        }
+    }
+    for _ in 0..20 {
+        if !is_port_listening(port).await {
+            log_info(format!(
+                "Stale wrapper cleanup succeeded; wrapper port {} is now free",
+                port
+            ));
+            return Ok(());
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+    Err(format!(
+        "wrapper port {} is already in use before launch (likely stale process). Please free the port or set SGLANG_PORT to an unused value",
+        port
+    ))
 }
 
-async fn preflight_wrapper_generate(port: u16, process: &mut Child) -> Result<(), String> {
-    let url = format!("http://127.0.0.1:{}/generate", port);
-    let payload = serde_json::json!({
-        "input_ids": [1],
-        "sampling_params": {
-            "temperature": 0.0,
-            "max_new_tokens": 1,
-            "no_stop_trim": true,
-        },
-        "return_logprob": true,
-        "logprob_start_len": -1,
-        "top_logprobs_num": 1,
-        "stream": false,
-    });
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|err| format!("failed to build preflight http client: {}", err))?;
-    let timeout_duration = Duration::from_secs(15 * 60);
-    let sleep_interval = Duration::from_secs(2);
-    let start = Instant::now();
-    let mut last_error: Option<String> = None;
-
-    loop {
-        if let Ok(Some(status)) = process.try_wait() {
-            return Err(format!(
-                "wrapper process exited during preflight before generate became ready: {}",
-                status
-            ));
-        }
-        if start.elapsed() >= timeout_duration {
-            return Err(format!(
-                "timed out waiting for preflight generate to succeed (last_error={})",
-                last_error.clone().unwrap_or_else(|| "unknown".to_string())
-            ));
-        }
-
-        match client.post(url.clone()).json(&payload).send().await {
-            Ok(response) => {
-                let status = response.status();
-                let body: Value = match response.json().await {
-                    Ok(value) => value,
-                    Err(err) => {
-                        last_error = Some(format!("invalid json response: {}", err));
-                        if start.elapsed() >= timeout_duration {
-                            return Err(last_error.unwrap_or_else(|| "invalid json response".to_string()));
-                        }
-                        sleep(sleep_interval).await;
-                        continue;
-                    }
-                };
-                if status.is_success() {
-                    log_info(format!(
-                        "Inference wrapper startup preflight generate response: {}",
-                        body
-                    ));
-                    return Ok(());
-                }
-                last_error = Some(format!("status={} body={}", status, body));
-                if !is_retryable_preflight_failure(status, &body) {
-                    return Err(last_error.unwrap_or_else(|| "non-retryable preflight failure".to_string()));
-                }
-            }
-            Err(err) => {
-                last_error = Some(format!("request failed: {}", err));
-            }
-        }
-
-        sleep(sleep_interval).await;
-    }
+async fn is_port_listening(port: u16) -> bool {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    timeout(
+        Duration::from_millis(250),
+        tokio::net::TcpStream::connect(address),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok())
 }
 
 #[cfg(test)]

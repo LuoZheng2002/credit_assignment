@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
+import os
 import signal
 import socketserver
 import subprocess
 import sys
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
@@ -15,6 +18,15 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from src_py.load_model_to_path import ensure_model_snapshot
+
+
+def _set_process_name(name: str) -> None:
+    try:
+        libc = ctypes.CDLL(None)
+        pr_set_name = 15
+        libc.prctl(pr_set_name, name.encode("utf-8")[:15], 0, 0, 0)
+    except Exception:
+        pass
 
 
 def _emit_event(payload: dict[str, Any]) -> None:
@@ -71,6 +83,12 @@ def _emit_status_with_metrics(
 
 
 def _collect_modal_activity_metrics(target: Any, phase: str) -> dict[str, Any]:
+    if target is None:
+        return {
+            "phase": phase,
+            "available": False,
+            "error": "modal target unavailable (running with explicit --modal-base-url)",
+        }
     stats_method_names = (
         "get_current_stats",
         "get_stats",
@@ -102,56 +120,103 @@ def _collect_modal_activity_metrics(target: Any, phase: str) -> dict[str, Any]:
     }
 
 
-def _post_json(url: str, payload: dict[str, Any], timeout: float = 600.0) -> dict[str, Any]:
+def _post_json(
+    url: str,
+    payload: dict[str, Any],
+    timeout: float = 600.0,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     body = json.dumps(payload).encode("utf-8")
     req = Request(url=url, method="POST", data=body)
     req.add_header("content-type", "application/json")
+    if headers:
+        for key, value in headers.items():
+            req.add_header(key, value)
     with urlopen(req, timeout=timeout) as response:  # noqa: S310
         return json.loads(response.read().decode("utf-8"))
 
 
-def _wait_health(url: str, timeout_secs: int) -> None:
+def _get_json(
+    url: str,
+    timeout: float = 10.0,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    req = Request(url=url, method="GET")
+    if headers:
+        for key, value in headers.items():
+            req.add_header(key, value)
+    with urlopen(req, timeout=timeout) as response:  # noqa: S310
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _wait_health(url: str, timeout_secs: int, headers: dict[str, str] | None = None) -> None:
     deadline = time.time() + timeout_secs
     while time.time() < deadline:
         try:
-            with urlopen(url, timeout=2):  # noqa: S310
-                return
+            _get_json(url, timeout=2, headers=headers)
+            return
         except (HTTPError, URLError):
             time.sleep(1)
     raise TimeoutError(f"timed out waiting for health endpoint: {url}")
 
 
-def _probe_health(url: str, timeout_secs: float = 2.0) -> dict[str, Any]:
-    with urlopen(url, timeout=timeout_secs) as response:  # noqa: S310
-        return json.loads(response.read().decode("utf-8"))
+def _probe_health(
+    url: str,
+    timeout_secs: float = 2.0,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    return _get_json(url, timeout=timeout_secs, headers=headers)
 
 
-def _readiness_generate_payload() -> dict[str, Any]:
-    return {
-        "input_ids": [1],
-        "sampling_params": {
-            "temperature": 0.0,
-            "max_new_tokens": 1,
-            "no_stop_trim": True,
-        },
-        "return_logprob": True,
-        "logprob_start_len": -1,
-        "top_logprobs_num": 1,
-        "stream": False,
-    }
+def _process_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
-def _startup_generate_preflight(backend_name: str, backend: Any) -> None:
-    _emit_status(backend_name, "starting", "running startup generate preflight")
-    payload = _readiness_generate_payload()
-    response = backend.generate(payload)
-    _emit_status_with_metrics(
-        backend_name,
-        "preflight_generate_ok",
-        "startup generate preflight succeeded",
-        {"preflight_response": response},
-    )
-    _emit_status(backend_name, "ready", "startup generate preflight passed")
+def _start_parent_watchdog(
+    backend_name: str,
+    backend: Any,
+    server: ThreadedHTTPServer,
+    shutdown_event: threading.Event,
+    poll_secs: float = 2.0,
+) -> threading.Thread:
+    parent_pid = os.getppid()
+
+    def _watch() -> None:
+        while not shutdown_event.is_set():
+            current_parent = os.getppid()
+            if current_parent != parent_pid or not _process_exists(parent_pid):
+                _emit_status(
+                    backend_name,
+                    "stopping",
+                    f"parent process exited (initial_ppid={parent_pid}, current_ppid={current_parent}); shutting down wrapper",
+                )
+                try:
+                    backend.shutdown()
+                except Exception as error:  # noqa: BLE001
+                    _emit_event(
+                        {
+                            "type": "error",
+                            "backend": backend_name,
+                            "error_code": "PARENT_WATCHDOG_SHUTDOWN_FAILED",
+                            "error_message": str(error),
+                            "timestamp": time.time(),
+                        }
+                    )
+                threading.Thread(target=server.shutdown, daemon=True).start()
+                return
+            shutdown_event.wait(timeout=poll_secs)
+
+    watchdog = threading.Thread(target=_watch, daemon=True)
+    watchdog.start()
+    return watchdog
 
 
 class HpcBackend:
@@ -215,6 +280,8 @@ class ModalBackend:
         epoch: int,
         hf_model_name: str,
         artifact_root_dir: str,
+        modal_base_url: str,
+        modal_auth_token_env_var: str,
     ) -> None:
         self._app_name = app_name
         self._class_name = class_name
@@ -223,14 +290,28 @@ class ModalBackend:
         self._epoch = epoch
         self._hf_model_name = hf_model_name
         self._artifact_root_dir = artifact_root_dir
-        self._instance = self._build_instance()
+        self._modal_base_url_override = modal_base_url.strip()
+        self._modal_auth_token_env_var = modal_auth_token_env_var.strip()
+        self._cls = None
+        self._instance = None
+        if not self._modal_base_url_override:
+            self._instance = self._build_instance()
+        self._modal_base_url = self._resolve_modal_base_url()
+        self._session_id = f"{model_cli_name}_{config_nickname}_{epoch}"
+        self._headers = {
+            "Modal-Session-ID": self._session_id,
+        }
+        if self._modal_auth_token_env_var:
+            token = os.environ.get(self._modal_auth_token_env_var, "").strip()
+            if token:
+                self._headers["authorization"] = f"Bearer {token}"
+                self._headers["modal-key"] = token
         self._wait_remote_ready()
-        self._wait_remote_generate_ready()
         _emit_status(
             "modal",
             "ready",
             (
-                f"bound modal class {app_name}.{class_name} "
+                f"bound modal HTTP endpoint {self._modal_base_url} "
                 f"for experiment {model_cli_name}_{config_nickname}"
             ),
         )
@@ -238,8 +319,8 @@ class ModalBackend:
     def _build_instance(self) -> Any:
         import modal
 
-        cls = modal.Cls.from_name(self._app_name, self._class_name)
-        return cls(
+        self._cls = modal.Cls.from_name(self._app_name, self._class_name)
+        return self._cls(
             model_cli_name=self._model_cli_name,
             config_nickname=self._config_nickname,
             epoch=self._epoch,
@@ -248,7 +329,10 @@ class ModalBackend:
         )
 
     def _rebind_instance(self) -> None:
+        if self._modal_base_url_override:
+            return
         self._instance = self._build_instance()
+        self._modal_base_url = self._resolve_modal_base_url()
 
     def _is_transient_modal_error(self, error: Exception) -> bool:
         message = str(error).lower()
@@ -262,55 +346,37 @@ class ModalBackend:
         )
         return any(fragment in message for fragment in transient_fragments)
 
-    def _preflight_payload(self) -> dict[str, Any]:
-        return {
-            "input_ids": [1],
-            "sampling_params": {
-                "temperature": 0.0,
-                "max_new_tokens": 1,
-                "no_stop_trim": True,
-            },
-            "return_logprob": True,
-            "logprob_start_len": -1,
-            "top_logprobs_num": 1,
-            "stream": False,
-        }
+    def _resolve_modal_base_url(self) -> str:
+        if self._modal_base_url_override:
+            return self._modal_base_url_override.rstrip("/")
+        for target in (self._cls, self._instance):
+            if target is None:
+                continue
+            getter = getattr(target, "_experimental_get_flash_urls", None)
+            if getter is None:
+                continue
+            if hasattr(getter, "aio"):
+                getter = getattr(target, "_experimental_get_flash_urls")
+            try:
+                urls = getter()
+            except TypeError:
+                continue
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(urls, (list, tuple)) and len(urls) > 0:
+                url = str(urls[0]).strip()
+                if url:
+                    return url.rstrip("/")
+        raise RuntimeError(
+            "failed to resolve Modal HTTP URL via _experimental_get_flash_urls; "
+            "deploy app with @modal.experimental.http_server and retry"
+        )
 
     def _wait_remote_ready(self, timeout_secs: int = 900) -> None:
-        deadline = time.time() + timeout_secs
-        last_error: Exception | None = None
-        while time.time() < deadline:
-            try:
-                result = self._instance.health.remote()
-                if isinstance(result, dict) and result.get("status") == "ok":
-                    return
-                last_error = RuntimeError(f"unexpected modal health response: {result}")
-            except Exception as error:  # noqa: BLE001
-                last_error = error
-            time.sleep(2)
-        raise TimeoutError(
-            f"timed out waiting for modal sglang readiness: {last_error}"
-        )
-
-    def _wait_remote_generate_ready(self, timeout_secs: int = 900) -> None:
-        deadline = time.time() + timeout_secs
-        last_error: Exception | None = None
-        payload = self._preflight_payload()
-        while time.time() < deadline:
-            try:
-                self._instance.generate.remote(payload)
-                return
-            except Exception as error:  # noqa: BLE001
-                last_error = error
-                if self._is_transient_modal_error(error):
-                    self._rebind_instance()
-            time.sleep(2)
-        raise TimeoutError(
-            f"timed out waiting for modal generate readiness: {last_error}"
-        )
+        _wait_health(f"{self._modal_base_url}/health", timeout_secs=timeout_secs, headers=self._headers)
 
     def health(self) -> dict[str, Any]:
-        result = self._instance.health.remote()
+        result = _probe_health(f"{self._modal_base_url}/health", headers=self._headers)
         if not isinstance(result, dict) or result.get("status") != "ok":
             raise RuntimeError(f"unexpected modal health response: {result}")
         return result
@@ -319,16 +385,19 @@ class ModalBackend:
         last_error: Exception | None = None
         for attempt in range(1, 4):
             try:
-                self.health()
-                before_metrics = _collect_modal_activity_metrics(self._instance.generate, "before_call")
+                before_metrics = _collect_modal_activity_metrics(self._instance, "before_call")
                 _emit_status_with_metrics(
                     "modal",
                     "modal_call_pre",
                     "collected modal activity metrics before generate call",
                     before_metrics,
                 )
-                result = self._instance.generate.remote(payload)
-                after_metrics = _collect_modal_activity_metrics(self._instance.generate, "after_call")
+                result = _post_json(
+                    f"{self._modal_base_url}/generate",
+                    payload,
+                    headers=self._headers,
+                )
+                after_metrics = _collect_modal_activity_metrics(self._instance, "after_call")
                 _emit_status_with_metrics(
                     "modal",
                     "modal_call_post",
@@ -350,7 +419,7 @@ class ModalBackend:
         raise RuntimeError(f"modal generate failed after retries: {last_error}")
 
     def shutdown(self) -> None:
-        metrics = _collect_modal_activity_metrics(self._instance.generate, "wrapper_exit")
+        metrics = _collect_modal_activity_metrics(self._instance, "wrapper_exit")
         _emit_status_with_metrics(
             "modal",
             "modal_wrapper_exit",
@@ -377,139 +446,159 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--artifact-root-dir", type=str, default="/mnt/service-state")
     parser.add_argument("--modal-app-name", type=str, default="credit-assignment-inference-service")
     parser.add_argument("--modal-class-name", type=str, default="ExperimentService")
+    parser.add_argument("--modal-base-url", type=str, default="")
+    parser.add_argument("--modal-auth-token-env-var", type=str, default="")
     return parser
 
 
 def main() -> int:
+    _set_process_name("inference_wrapper")
     args = _build_parser().parse_args()
-    if args.listen_port <= 0:
-        raise ValueError("--listen-port must be positive")
+    try:
+        if args.listen_port <= 0:
+            raise ValueError("--listen-port must be positive")
 
-    if args.backend == "hpc":
-        if not args.model_path:
-            raise ValueError("--model-path is required for --backend=hpc")
-        backend = HpcBackend(
-            args.model_path,
-            args.num_gpus,
-            args.listen_port + 1,
-            args.epoch,
+        if args.backend == "hpc":
+            if not args.model_path:
+                raise ValueError("--model-path is required for --backend=hpc")
+            backend = HpcBackend(
+                args.model_path,
+                args.num_gpus,
+                args.listen_port + 1,
+                args.epoch,
+                args.hf_model_name,
+            )
+        else:
+            backend = ModalBackend(
+                args.modal_app_name,
+                args.modal_class_name,
+                args.model_cli_name,
+                args.config_nickname,
+                args.epoch,
+                args.hf_model_name,
+                args.artifact_root_dir,
+                args.modal_base_url,
+                args.modal_auth_token_env_var,
+            )
+
+        _emit_inference_identity(
+            args.backend,
             args.hf_model_name,
-        )
-    else:
-        backend = ModalBackend(
-            args.modal_app_name,
-            args.modal_class_name,
-            args.model_cli_name,
             args.config_nickname,
             args.epoch,
-            args.hf_model_name,
-            args.artifact_root_dir,
         )
 
-    _startup_generate_preflight(args.backend, backend)
+        _emit_status(args.backend, "starting", f"binding local wrapper server on port {args.listen_port}")
 
-    _emit_inference_identity(
-        args.backend,
-        args.hf_model_name,
-        args.config_nickname,
-        args.epoch,
-    )
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                if self.path != "/health":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                try:
+                    result = backend.health()
+                    body = json.dumps(result).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except Exception as error:  # noqa: BLE001
+                    _emit_event(
+                        {
+                            "type": "error",
+                            "backend": args.backend,
+                            "error_code": "INFERENCE_HEALTH_FAILED",
+                            "error_message": str(error),
+                            "timestamp": time.time(),
+                        }
+                    )
+                    body = json.dumps({"status": "error", "message": str(error)}).encode("utf-8")
+                    self.send_response(503)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
 
-    _emit_status(args.backend, "starting", f"binding local wrapper server on port {args.listen_port}")
+            def do_POST(self) -> None:  # noqa: N802
+                if self.path != "/generate":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                content_len = int(self.headers.get("content-length", "0"))
+                raw = self.rfile.read(content_len)
+                try:
+                    payload = json.loads(raw.decode("utf-8"))
+                    result = backend.generate(payload)
+                    body = json.dumps(result).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except Exception as error:  # noqa: BLE001
+                    _emit_event(
+                        {
+                            "type": "error",
+                            "backend": args.backend,
+                            "error_code": "INFERENCE_GENERATE_FAILED",
+                            "error_message": str(error),
+                            "timestamp": time.time(),
+                        }
+                    )
+                    body = json.dumps({"error": {"message": str(error)}}).encode("utf-8")
+                    self.send_response(500)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
 
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
-            if self.path != "/health":
-                self.send_response(404)
-                self.end_headers()
-                return
-            try:
-                result = backend.health()
-                body = json.dumps(result).encode("utf-8")
-                self.send_response(200)
-                self.send_header("content-type", "application/json")
-                self.send_header("content-length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-            except Exception as error:  # noqa: BLE001
-                _emit_event(
-                    {
-                        "type": "error",
-                        "backend": args.backend,
-                        "error_code": "INFERENCE_HEALTH_FAILED",
-                        "error_message": str(error),
-                        "timestamp": time.time(),
-                    }
-                )
-                body = json.dumps({"status": "error", "message": str(error)}).encode("utf-8")
-                self.send_response(503)
-                self.send_header("content-type", "application/json")
-                self.send_header("content-length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+            def log_message(self, format: str, *args: Any) -> None:
+                sys.stdout.write(f"[INFERENCE_WRAPPER] {format % args}\n")
+                sys.stdout.flush()
 
-        def do_POST(self) -> None:  # noqa: N802
-            if self.path != "/generate":
-                self.send_response(404)
-                self.end_headers()
-                return
-            content_len = int(self.headers.get("content-length", "0"))
-            raw = self.rfile.read(content_len)
-            try:
-                payload = json.loads(raw.decode("utf-8"))
-                result = backend.generate(payload)
-                body = json.dumps(result).encode("utf-8")
-                self.send_response(200)
-                self.send_header("content-type", "application/json")
-                self.send_header("content-length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-            except Exception as error:  # noqa: BLE001
-                _emit_event(
-                    {
-                        "type": "error",
-                        "backend": args.backend,
-                        "error_code": "INFERENCE_GENERATE_FAILED",
-                        "error_message": str(error),
-                        "timestamp": time.time(),
-                    }
-                )
-                body = json.dumps({"error": {"message": str(error)}}).encode("utf-8")
-                self.send_response(500)
-                self.send_header("content-type", "application/json")
-                self.send_header("content-length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+        server = ThreadedHTTPServer(("127.0.0.1", args.listen_port), Handler)
+        shutdown_event = threading.Event()
+        _start_parent_watchdog(args.backend, backend, server, shutdown_event)
+        _emit_status(args.backend, "ready", "inference wrapper server is ready")
 
-        def log_message(self, format: str, *args: Any) -> None:
-            sys.stdout.write(f"[INFERENCE_WRAPPER] {format % args}\n")
-            sys.stdout.flush()
+        def _shutdown(*_: Any) -> None:
+            shutdown_event.set()
+            _emit_status(args.backend, "stopping", "received termination signal")
+            backend.shutdown()
+            threading.Thread(target=server.shutdown, daemon=True).start()
 
-    server = ThreadedHTTPServer(("127.0.0.1", args.listen_port), Handler)
-    _emit_status(args.backend, "ready", "inference wrapper server is ready")
-
-    def _shutdown(*_: Any) -> None:
-        _emit_status(args.backend, "stopping", "received termination signal")
-        backend.shutdown()
-        threading.Thread(target=server.shutdown, daemon=True).start()
-
-    signal.signal(signal.SIGTERM, _shutdown)
-    signal.signal(signal.SIGINT, _shutdown)
-    try:
-        server.serve_forever()
-    finally:
-        backend.shutdown()
-        server.server_close()
+        signal.signal(signal.SIGTERM, _shutdown)
+        signal.signal(signal.SIGINT, _shutdown)
+        try:
+            server.serve_forever()
+        finally:
+            shutdown_event.set()
+            backend.shutdown()
+            server.server_close()
+            _emit_event(
+                {
+                    "type": "result",
+                    "backend": args.backend,
+                    "ok": True,
+                    "message": "inference wrapper stopped",
+                    "timestamp": time.time(),
+                }
+            )
+        return 0
+    except Exception as error:  # noqa: BLE001
         _emit_event(
             {
-                "type": "result",
+                "type": "error",
                 "backend": args.backend,
-                "ok": True,
-                "message": "inference wrapper stopped",
+                "error_code": "INFERENCE_WRAPPER_INIT_FAILED",
+                "error_message": str(error),
                 "timestamp": time.time(),
             }
         )
-    return 0
+        traceback.print_exc()
+        return 1
 
 
 if __name__ == "__main__":

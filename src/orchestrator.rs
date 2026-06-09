@@ -525,6 +525,8 @@ impl Orchestrator {
             epoch,
             M::API_NAME,
             modal_artifact_root_dir.as_deref(),
+            self.modal_sglang_base_url.as_deref(),
+            self.modal_auth_token_env_var.as_deref(),
             self.num_gpus,
             self.sglang_server_log_path.as_deref(),
         )

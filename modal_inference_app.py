@@ -1,12 +1,11 @@
 import os
 import subprocess
-import threading
 import time
 from pathlib import Path
-from typing import Any
 
 from huggingface_hub import snapshot_download
 import modal
+import modal.experimental
 import requests
 
 MINUTES = 60
@@ -15,6 +14,7 @@ SGLANG_PORT = 30000
 REGION = "us-west"
 GPU = "H100:1"
 DEFAULT_ARTIFACT_ROOT_DIR = "/mnt/service-state"
+TARGET_INPUTS = 300
 
 HF_CACHE_PATH = "/mnt/hf-cache"
 
@@ -37,92 +37,35 @@ base_image = (
 
 app = modal.App(name=APP_NAME)
 
-_MODAL_INFERENCE_LOCK = threading.Lock()
-_MODAL_INFERENCE_PROCESS: subprocess.Popen[bytes] | None = None
-_MODAL_INFERENCE_MODEL_PATH: str | None = None
-_MODAL_INFERENCE_WARMED_MODEL_PATH: str | None = None
 
-
-def _generation_probe_specs(port: int) -> list[tuple[str, dict[str, Any]]]:
-    base = f"http://127.0.0.1:{port}"
-    return [
-        (
-            f"{base}/generate",
-            {
-                "text": "ready check",
-                "sampling_params": {
-                    "max_new_tokens": 1,
-                    "temperature": 0.0,
-                },
-            },
-        ),
-        (
-            f"{base}/v1/completions",
-            {
-                "model": "default",
-                "prompt": "ready check",
-                "max_tokens": 1,
-                "temperature": 0.0,
-            },
-        ),
-        (
-            f"{base}/v1/chat/completions",
-            {
-                "model": "default",
-                "messages": [{"role": "user", "content": "ready check"}],
-                "max_tokens": 1,
-                "temperature": 0.0,
-            },
-        ),
-    ]
-
-
-def _generation_endpoint_available(port: int, timeout_secs: float = 2.0) -> bool:
-    for url, payload in _generation_probe_specs(port):
-        try:
-            response = requests.post(url, json=payload, timeout=timeout_secs)
-            if response.status_code != 404:
-                return True
-        except requests.RequestException:
-            continue
-    return False
-
-
-def _wait_for_generation_endpoint(port: int, timeout_secs: int = 600) -> None:
+def _wait_for_local_health(port: int, timeout_secs: int = 20 * MINUTES) -> None:
     deadline = time.time() + timeout_secs
     while time.time() < deadline:
-        if _generation_endpoint_available(port, timeout_secs=2.0):
-            return
+        try:
+            response = requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
+            if response.status_code == 200:
+                return
+        except requests.RequestException:
+            pass
         time.sleep(1)
-    raise TimeoutError(f"timed out waiting for generation endpoint on port {port}")
+    raise TimeoutError(f"timed out waiting for local server health on port {port}")
 
 
-def _wait_for_first_generate(port: int, timeout_secs: int = 600) -> None:
-    deadline = time.time() + timeout_secs
-    payload: dict[str, Any] = {
+def _warmup(port: int) -> None:
+    payload = {
         "text": "ready check",
         "sampling_params": {
             "max_new_tokens": 1,
             "temperature": 0.0,
         },
     }
-    last_error: Exception | None = None
-    while time.time() < deadline:
-        try:
-            response = requests.post(
-                f"http://127.0.0.1:{port}/generate",
-                json=payload,
-                timeout=15,
-            )
-            if response.status_code == 200:
-                return
-            last_error = RuntimeError(
-                f"warmup generate returned status={response.status_code}: {response.text[:500]}"
-            )
-        except requests.RequestException as error:
-            last_error = error
-        time.sleep(2)
-    raise TimeoutError(f"timed out waiting for first successful generate call: {last_error}")
+    for _ in range(3):
+        response = requests.post(
+            f"http://127.0.0.1:{port}/generate",
+            json=payload,
+            timeout=20,
+        )
+        response.raise_for_status()
 
 
 def _model_parent_dir(
@@ -158,92 +101,6 @@ def _ensure_initial_model_if_needed(
     return str(model_dir)
 
 
-def _ensure_modal_inference_sglang(model_path: str) -> None:
-    global _MODAL_INFERENCE_PROCESS
-    global _MODAL_INFERENCE_MODEL_PATH
-    global _MODAL_INFERENCE_WARMED_MODEL_PATH
-    last_error: Exception | None = None
-    for attempt in range(1, 4):
-        with _MODAL_INFERENCE_LOCK:
-            if (
-                _MODAL_INFERENCE_PROCESS is not None
-                and _MODAL_INFERENCE_PROCESS.poll() is None
-                and _MODAL_INFERENCE_MODEL_PATH == model_path
-                and _generation_endpoint_available(SGLANG_PORT)
-            ):
-                return
-            if _MODAL_INFERENCE_PROCESS is not None and _MODAL_INFERENCE_PROCESS.poll() is None:
-                _MODAL_INFERENCE_PROCESS.terminate()
-                try:
-                    _MODAL_INFERENCE_PROCESS.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    _MODAL_INFERENCE_PROCESS.kill()
-                    _MODAL_INFERENCE_PROCESS.wait(timeout=10)
-                _MODAL_INFERENCE_WARMED_MODEL_PATH = None
-            _MODAL_INFERENCE_PROCESS = subprocess.Popen(
-                [
-                    "python",
-                    "-m",
-                    "sglang.launch_server",
-                    "--model-path",
-                    model_path,
-                    "--served-model-name",
-                    model_path,
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    str(SGLANG_PORT),
-                    "--tp",
-                    "1",
-                ]
-            )
-            _MODAL_INFERENCE_MODEL_PATH = model_path
-            _MODAL_INFERENCE_WARMED_MODEL_PATH = None
-            process = _MODAL_INFERENCE_PROCESS
-        try:
-            _wait_for_generation_endpoint(SGLANG_PORT, timeout_secs=120)
-            return
-        except Exception as error:  # noqa: BLE001
-            last_error = error
-            with _MODAL_INFERENCE_LOCK:
-                if _MODAL_INFERENCE_PROCESS is process and process is not None:
-                    if process.poll() is None:
-                        process.terminate()
-                        try:
-                            process.wait(timeout=10)
-                        except subprocess.TimeoutExpired:
-                            process.kill()
-                            process.wait(timeout=10)
-                    _MODAL_INFERENCE_PROCESS = None
-                    _MODAL_INFERENCE_MODEL_PATH = None
-                    _MODAL_INFERENCE_WARMED_MODEL_PATH = None
-        time.sleep(1)
-    raise RuntimeError(
-        f"failed to start healthy sglang server for model_path={model_path} after 3 attempts: {last_error}"
-    )
-
-
-def _ensure_modal_inference_ready(model_path: str) -> None:
-    global _MODAL_INFERENCE_WARMED_MODEL_PATH
-    _ensure_modal_inference_sglang(model_path)
-    with _MODAL_INFERENCE_LOCK:
-        process = _MODAL_INFERENCE_PROCESS
-        if (
-            process is not None
-            and process.poll() is None
-            and _MODAL_INFERENCE_WARMED_MODEL_PATH == model_path
-        ):
-            return
-    _wait_for_first_generate(SGLANG_PORT, timeout_secs=600)
-    with _MODAL_INFERENCE_LOCK:
-        process = _MODAL_INFERENCE_PROCESS
-        if process is None or process.poll() is not None:
-            raise RuntimeError("sglang process exited during warmup")
-        if _MODAL_INFERENCE_MODEL_PATH != model_path:
-            raise RuntimeError("sglang model path changed during warmup")
-        _MODAL_INFERENCE_WARMED_MODEL_PATH = model_path
-
-
 @app.cls(
     image=base_image,
     gpu=GPU,
@@ -257,6 +114,12 @@ def _ensure_modal_inference_ready(model_path: str) -> None:
         HF_CACHE_PATH: hf_cache_volume,
     },
 )
+@modal.experimental.http_server(
+    port=SGLANG_PORT,
+    proxy_regions=[REGION],
+    exit_grace_period=15,
+)
+@modal.concurrent(target_inputs=TARGET_INPUTS)
 class ExperimentService:
     model_cli_name: str = modal.parameter()
     config_nickname: str = modal.parameter()
@@ -264,30 +127,46 @@ class ExperimentService:
     epoch: int = modal.parameter(default=0)
     artifact_root_dir: str = modal.parameter(default=DEFAULT_ARTIFACT_ROOT_DIR)
 
-    def _resolve_model_path(self) -> str:
-        return _ensure_initial_model_if_needed(
+    @modal.enter()
+    def startup(self) -> None:
+        model_path = _ensure_initial_model_if_needed(
             artifact_root_dir=self.artifact_root_dir,
             model_cli_name=self.model_cli_name,
             config_nickname=self.config_nickname,
             epoch=int(self.epoch),
             hf_model_name=self.model_name,
         )
-
-    @modal.method()
-    def health(self) -> dict[str, str]:
-        _ensure_modal_inference_ready(self._resolve_model_path())
-        return {"status": "ok"}
-
-    @modal.method()
-    def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
-        _ensure_modal_inference_ready(self._resolve_model_path())
-        response = requests.post(
-            f"http://127.0.0.1:{SGLANG_PORT}/generate",
-            json=payload,
-            timeout=600,
+        self._process = subprocess.Popen(
+            [
+                "python",
+                "-m",
+                "sglang.launch_server",
+                "--model-path",
+                model_path,
+                "--served-model-name",
+                model_path,
+                "--host",
+                "0.0.0.0",
+                "--port",
+                str(SGLANG_PORT),
+                "--tp",
+                "1",
+            ]
         )
-        response.raise_for_status()
-        return response.json()
+        _wait_for_local_health(SGLANG_PORT)
+        _warmup(SGLANG_PORT)
+
+    @modal.exit()
+    def stop(self) -> None:
+        process = getattr(self, "_process", None)
+        if process is None:
+            return
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                process.kill()
 
 
 @app.local_entrypoint()

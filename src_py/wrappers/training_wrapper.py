@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
+import os
 import shutil
 import signal
 import subprocess
@@ -14,6 +16,15 @@ from typing import Any
 
 from src_py.load_model_to_path import ensure_model_snapshot
 from src_py.train.pathing import model_parent_dir, resolve_artifact_root_dir
+
+
+def _set_process_name(name: str) -> None:
+    try:
+        libc = ctypes.CDLL(None)
+        pr_set_name = 15
+        libc.prctl(pr_set_name, name.encode("utf-8")[:15], 0, 0, 0)
+    except Exception:
+        pass
 
 
 def _emit_event(payload: dict[str, Any]) -> None:
@@ -137,6 +148,46 @@ def _on_signal(signum: int, _: Any) -> None:
 def _install_signal_handlers() -> None:
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
+
+
+def _process_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _start_parent_watchdog(backend: str, poll_secs: float = 2.0) -> threading.Thread:
+    parent_pid = os.getppid()
+
+    def _watch() -> None:
+        while not _TERMINATION_REQUESTED.is_set():
+            current_parent = os.getppid()
+            if current_parent != parent_pid or not _process_exists(parent_pid):
+                _emit_status(
+                    backend,
+                    "cancelling",
+                    (
+                        "parent process exited "
+                        f"(initial_ppid={parent_pid}, current_ppid={current_parent}); cancelling training wrapper"
+                    ),
+                )
+                _TERMINATION_REQUESTED.set()
+                with _ACTIVE_PROCESS_LOCK:
+                    process = _ACTIVE_PROCESS
+                if process is not None and process.poll() is None:
+                    process.terminate()
+                return
+            _TERMINATION_REQUESTED.wait(timeout=poll_secs)
+
+    watchdog = threading.Thread(target=_watch, daemon=True)
+    watchdog.start()
+    return watchdog
 
 
 def _to_toml_scalar(value: Any) -> str:
@@ -446,9 +497,11 @@ def _run_modal_training(
 
 
 def main() -> int:
+    _set_process_name("training_wrapper")
     started_at = time.time()
     _install_signal_handlers()
     args = _build_parser().parse_args()
+    _start_parent_watchdog(args.backend)
     if args.num_gpus <= 0:
         _emit_result_error(
             args.backend,

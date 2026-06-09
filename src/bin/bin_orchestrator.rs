@@ -141,10 +141,11 @@ async fn main() {
             modal_training_poll_interval_secs > 0,
             "--modal-training-poll-interval-secs must be positive"
         );
-        if modal_sglang_base_url.is_some() || modal_training_base_url.is_some() {
-            log_info(
-                "Modal URLs are ignored when wrapper mode is enabled; wrappers call Modal SDK directly",
-            );
+        if modal_sglang_base_url.is_some() {
+            log_info("Using --modal-sglang-base-url for wrapper HTTP inference path");
+        }
+        if modal_training_base_url.is_some() {
+            log_info("--modal-training-base-url is ignored in current wrapper mode");
         }
     }
     if compute_backend == ComputeBackend::Hpc {
