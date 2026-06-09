@@ -16,6 +16,6 @@ cargo run --bin bin_orchestrator -- \
     --max-python-processes 1 \
     --sglang-server-log-path logs/sglang_server_qwen25.txt \
     --tui-log-path logs/qwen2.5-7b_notool.bin \
-    --num-gpus 1 \
+    --num-gpus 2 \
     --compute-backend modal \
     --ui true

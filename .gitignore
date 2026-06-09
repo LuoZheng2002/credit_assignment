@@ -22,3 +22,4 @@ plots
 
 /target
 src_py/modal/inference_deploy_config.json
+src_py/modal/training_deploy_config.json

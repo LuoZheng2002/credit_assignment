@@ -14,6 +14,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from src_py.modal.training_deployment_common import (
+    ensure_deployed,
+    ensure_undeployed,
+)
 from src_py.load_model_to_path import ensure_model_snapshot
 from src_py.train.pathing import model_parent_dir, resolve_artifact_root_dir
 
@@ -330,42 +334,109 @@ def _run_modal_training(
 ) -> int:
     started_at = time.time()
     backend = "modal"
-    if num_gpus != 1:
-        _emit_result_error(
-            backend,
-            "MODAL_GPU_COUNT_UNSUPPORTED",
-            f"modal backend requires --num-gpus=1, got {num_gpus}",
-            time.time() - started_at,
-        )
-        return 2
-
     _ensure_initial_model_if_missing(backend, training_config, hf_model_name)
     model_cli_name = str(training_config["model_cli_name"])
     config_nickname = str(training_config["config_nickname"])
-    _emit_status(
-        backend,
-        "starting",
-        (
-            f"submitting modal training class call: {class_name} "
-            f"for experiment {model_cli_name}_{config_nickname}"
-        ),
-    )
-    import queue
+    epoch = int(training_config["epoch"])
 
-    if test_sleep_secs > 0:
+    deployed_app_name: str | None = None
+    if test_sleep_secs <= 0:
+        app_name_result, deploy_code = ensure_deployed(
+            model_cli_name=model_cli_name,
+            model_api_name=hf_model_name,
+            config_nickname=config_nickname,
+            epoch=epoch,
+            num_gpus=num_gpus,
+        )
+        if deploy_code != 0:
+            _emit_result_error(
+                backend,
+                "MODAL_DEPLOY_FAILED",
+                f"failed to deploy modal training app {app_name_result}",
+                time.time() - started_at,
+            )
+            return deploy_code
+        deployed_app_name = app_name_result
+
+    if app_name and deployed_app_name and app_name != deployed_app_name:
+        _emit_status(
+            backend,
+            "starting",
+            (
+                f"ignoring --modal-app-name={app_name}; using wrapper-managed deployment "
+                f"name={deployed_app_name}"
+            ),
+        )
+    target_app_name = deployed_app_name or app_name
+
+    try:
+        _emit_status(
+            backend,
+            "starting",
+            (
+                f"submitting modal training class call: {class_name} "
+                f"for experiment {model_cli_name}_{config_nickname}_e{epoch} with num_gpus={num_gpus}"
+            ),
+        )
+        import queue
+
+        if test_sleep_secs > 0:
+            result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+            def _invoke_test() -> None:
+                try:
+                    time.sleep(test_sleep_secs)
+                    result_queue.put(("ok", {"ok": True}))
+                except Exception as error:  # noqa: BLE001
+                    result_queue.put(("error", str(error)))
+
+            worker = threading.Thread(target=_invoke_test, daemon=True)
+            worker.start()
+            while worker.is_alive():
+                if _TERMINATION_REQUESTED.is_set():
+                    _emit_result_error(
+                        backend,
+                        "CANCELLED_BY_SIGNAL",
+                        "training wrapper received SIGTERM/SIGINT",
+                        time.time() - started_at,
+                    )
+                    return 143
+                worker.join(timeout=0.5)
+            _emit_result_ok(backend, "modal training completed", time.time() - started_at)
+            return 0
+
+        import modal
+
+        cls = modal.Cls.from_name(target_app_name, class_name)
+        instance = cls()
+        trajectory_bytes = trajectory_path.read_bytes()
         result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
 
-        def _invoke_test() -> None:
+        def _invoke() -> None:
             try:
-                time.sleep(test_sleep_secs)
-                result_queue.put(("ok", {"ok": True}))
+                response = instance.train.remote(training_config, trajectory_bytes, num_gpus)
+                result_queue.put(("ok", response))
             except Exception as error:  # noqa: BLE001
                 result_queue.put(("error", str(error)))
 
-        worker = threading.Thread(target=_invoke_test, daemon=True)
+        worker = threading.Thread(target=_invoke, daemon=True)
+        before_metrics = _collect_modal_activity_metrics(instance.train, "before_call")
+        _emit_status_with_metrics(
+            backend,
+            "modal_call_pre",
+            "collected modal activity metrics before train call",
+            before_metrics,
+        )
         worker.start()
         while worker.is_alive():
             if _TERMINATION_REQUESTED.is_set():
+                exit_metrics = _collect_modal_activity_metrics(instance.train, "wrapper_exit")
+                _emit_status_with_metrics(
+                    backend,
+                    "modal_wrapper_exit",
+                    "collected modal activity metrics before training wrapper exit",
+                    exit_metrics,
+                )
                 _emit_result_error(
                     backend,
                     "CANCELLED_BY_SIGNAL",
@@ -374,38 +445,15 @@ def _run_modal_training(
                 )
                 return 143
             worker.join(timeout=0.5)
-        _emit_result_ok(backend, "modal training completed", time.time() - started_at)
-        return 0
 
-    import modal
-
-    cls = modal.Cls.from_name(app_name, class_name)
-    instance = cls(
-        model_cli_name=model_cli_name,
-        config_nickname=config_nickname,
-        model_name=hf_model_name,
-    )
-    trajectory_bytes = trajectory_path.read_bytes()
-    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
-
-    def _invoke() -> None:
-        try:
-            response = instance.train.remote(training_config, trajectory_bytes, 1)
-            result_queue.put(("ok", response))
-        except Exception as error:  # noqa: BLE001
-            result_queue.put(("error", str(error)))
-
-    worker = threading.Thread(target=_invoke, daemon=True)
-    before_metrics = _collect_modal_activity_metrics(instance.train, "before_call")
-    _emit_status_with_metrics(
-        backend,
-        "modal_call_pre",
-        "collected modal activity metrics before train call",
-        before_metrics,
-    )
-    worker.start()
-    while worker.is_alive():
-        if _TERMINATION_REQUESTED.is_set():
+        if result_queue.empty():
+            after_metrics = _collect_modal_activity_metrics(instance.train, "after_call")
+            _emit_status_with_metrics(
+                backend,
+                "modal_call_post",
+                "collected modal activity metrics after train call",
+                after_metrics,
+            )
             exit_metrics = _collect_modal_activity_metrics(instance.train, "wrapper_exit")
             _emit_status_with_metrics(
                 backend,
@@ -415,14 +463,36 @@ def _run_modal_training(
             )
             _emit_result_error(
                 backend,
-                "CANCELLED_BY_SIGNAL",
-                "training wrapper received SIGTERM/SIGINT",
+                "MODAL_TRAIN_NO_RESULT",
+                "modal function call finished without result",
                 time.time() - started_at,
             )
-            return 143
-        worker.join(timeout=0.5)
+            return 1
 
-    if result_queue.empty():
+        kind, payload = result_queue.get_nowait()
+        if kind == "error":
+            after_metrics = _collect_modal_activity_metrics(instance.train, "after_call")
+            _emit_status_with_metrics(
+                backend,
+                "modal_call_post",
+                "collected modal activity metrics after train call",
+                after_metrics,
+            )
+            exit_metrics = _collect_modal_activity_metrics(instance.train, "wrapper_exit")
+            _emit_status_with_metrics(
+                backend,
+                "modal_wrapper_exit",
+                "collected modal activity metrics before training wrapper exit",
+                exit_metrics,
+            )
+            _emit_result_error(
+                backend,
+                "MODAL_TRAIN_REMOTE_ERROR",
+                str(payload),
+                time.time() - started_at,
+            )
+            return 1
+        response = payload
         after_metrics = _collect_modal_activity_metrics(instance.train, "after_call")
         _emit_status_with_metrics(
             backend,
@@ -437,63 +507,31 @@ def _run_modal_training(
             "collected modal activity metrics before training wrapper exit",
             exit_metrics,
         )
+        duration_secs = time.time() - started_at
+        if response.get("ok", False):
+            _emit_result_ok(backend, "modal training completed", duration_secs)
+            return 0
         _emit_result_error(
             backend,
-            "MODAL_TRAIN_NO_RESULT",
-            "modal function call finished without result",
-            time.time() - started_at,
+            str(response.get("error_code") or "MODAL_TRAIN_FAILED"),
+            str(response.get("error") or response.get("error_message") or "modal training failed"),
+            duration_secs,
         )
         return 1
-
-    kind, payload = result_queue.get_nowait()
-    if kind == "error":
-        after_metrics = _collect_modal_activity_metrics(instance.train, "after_call")
-        _emit_status_with_metrics(
-            backend,
-            "modal_call_post",
-            "collected modal activity metrics after train call",
-            after_metrics,
-        )
-        exit_metrics = _collect_modal_activity_metrics(instance.train, "wrapper_exit")
-        _emit_status_with_metrics(
-            backend,
-            "modal_wrapper_exit",
-            "collected modal activity metrics before training wrapper exit",
-            exit_metrics,
-        )
-        _emit_result_error(
-            backend,
-            "MODAL_TRAIN_REMOTE_ERROR",
-            str(payload),
-            time.time() - started_at,
-        )
-        return 1
-    response = payload
-    after_metrics = _collect_modal_activity_metrics(instance.train, "after_call")
-    _emit_status_with_metrics(
-        backend,
-        "modal_call_post",
-        "collected modal activity metrics after train call",
-        after_metrics,
-    )
-    exit_metrics = _collect_modal_activity_metrics(instance.train, "wrapper_exit")
-    _emit_status_with_metrics(
-        backend,
-        "modal_wrapper_exit",
-        "collected modal activity metrics before training wrapper exit",
-        exit_metrics,
-    )
-    duration_secs = time.time() - started_at
-    if response.get("ok", False):
-        _emit_result_ok(backend, "modal training completed", duration_secs)
-        return 0
-    _emit_result_error(
-        backend,
-        str(response.get("error_code") or "MODAL_TRAIN_FAILED"),
-        str(response.get("error") or response.get("error_message") or "modal training failed"),
-        duration_secs,
-    )
-    return 1
+    finally:
+        if deployed_app_name is not None:
+            app_name_result, undeploy_code = ensure_undeployed(
+                model_cli_name=model_cli_name,
+                model_api_name=hf_model_name,
+                config_nickname=config_nickname,
+                epoch=epoch,
+            )
+            if undeploy_code != 0:
+                _emit_status(
+                    backend,
+                    "stopping",
+                    f"failed to undeploy modal training app {app_name_result}",
+                )
 
 
 def main() -> int:

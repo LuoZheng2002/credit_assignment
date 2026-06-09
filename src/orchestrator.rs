@@ -990,20 +990,9 @@ impl Orchestrator {
 
         let training_config_json = serde_json::to_string(&training_config)
             .map_err(|err| format!("failed to serialize training config for wrapper: {}", err))?;
-        let training_num_gpus = if self.compute_backend == ComputeBackend::Modal {
-            if self.num_gpus != 1 {
-                log_info(format!(
-                    "Modal training currently uses 1 GPU; keeping inference deployment at {} GPUs",
-                    self.num_gpus
-                ));
-            }
-            1
-        } else {
-            self.num_gpus
-        };
         run_training_wrapper_and_wait(
             self.compute_backend,
-            training_num_gpus,
+            self.num_gpus,
             M::API_NAME,
             training_config_json,
             &training_trajectory_sqlite_path,

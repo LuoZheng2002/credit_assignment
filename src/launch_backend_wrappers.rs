@@ -176,12 +176,6 @@ pub async fn run_training_wrapper_and_wait(
     trajectory_sqlite_path: &str,
 ) -> Result<(), String> {
     assert!(num_gpus > 0, "num_gpus must be positive");
-    if compute_backend == ComputeBackend::Modal && num_gpus != 1 {
-        return Err(format!(
-            "Modal backend requires num_gpus=1 (one H100 per experiment), got {}",
-            num_gpus
-        ));
-    }
     if !Path::new(trajectory_sqlite_path).is_file() {
         return Err(format!(
             "training trajectory sqlite path does not exist: {}",

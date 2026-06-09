@@ -158,7 +158,7 @@ class ExperimentService:
                 "0.0.0.0",
                 "--port",
                 str(SGLANG_PORT),
-                "--tp",
+                "--dp",
                 str(DEPLOY_NUM_GPUS),
             ]
         )

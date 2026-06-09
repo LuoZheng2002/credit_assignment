@@ -1,4 +1,3 @@
-import os
 import signal
 import subprocess
 import tempfile
@@ -9,17 +8,27 @@ from typing import Any
 
 import modal
 
+from src_py.modal.training_deployment_common import (
+    load_materialized_deploy_config,
+)
 from src_py.load_model_to_path import ensure_model_snapshot
-from src_py.train.pathing import model_parent_dir, resolve_artifact_root_dir
+from src_py.train.pathing import model_parent_dir
 
 MINUTES = 60
 APP_NAME = "credit-assignment-training-service"
 REGION = "us-west"
-GPU = "H100:1"
-MODEL_NAME = os.environ.get("SGLANG_MODEL_NAME", "Qwen/Qwen3.5-4B")
+_DEPLOY_CONFIG = load_materialized_deploy_config()
+DEPLOY_MODEL_CLI_NAME = str(_DEPLOY_CONFIG["DEPLOY_MODEL_CLI_NAME"])
+DEPLOY_MODEL_API_NAME = str(_DEPLOY_CONFIG["DEPLOY_MODEL_API_NAME"])
+DEPLOY_CONFIG_NICKNAME = str(_DEPLOY_CONFIG["DEPLOY_CONFIG_NICKNAME"])
+DEPLOY_EPOCH = int(_DEPLOY_CONFIG["DEPLOY_EPOCH"])
+DEPLOY_NUM_GPUS = int(_DEPLOY_CONFIG["DEPLOY_NUM_GPUS"])
+DEPLOY_ARTIFACT_ROOT_DIR = str(_DEPLOY_CONFIG["DEPLOY_ARTIFACT_ROOT_DIR"])
+if DEPLOY_NUM_GPUS <= 0:
+    raise RuntimeError(f"DEPLOY_NUM_GPUS must be positive, got {DEPLOY_NUM_GPUS}")
+GPU = f"H100:{DEPLOY_NUM_GPUS}"
 
 HF_CACHE_PATH = "/mnt/hf-cache"
-SERVICE_STATE_ROOT = Path("/mnt/service-state")
 
 service_state_volume = modal.Volume.from_name(
     "credit-assignment-modal-service-state", create_if_missing=True
@@ -78,23 +87,34 @@ def _run_training_subprocess(
     training_config: dict[str, Any],
     trajectory_bytes: bytes,
     num_gpus: int,
-    model_name: str,
 ) -> dict[str, Any]:
-    if num_gpus != 1:
+    if num_gpus <= 0:
         return {
             "ok": False,
-            "error_code": "MODAL_GPU_COUNT_UNSUPPORTED",
-            "error": "modal training currently supports num_gpus=1 only",
+            "error_code": "INVALID_NUM_GPUS",
+            "error": f"num_gpus must be positive, got {num_gpus}",
+        }
+    if num_gpus != DEPLOY_NUM_GPUS:
+        return {
+            "ok": False,
+            "error_code": "MODAL_GPU_COUNT_MISMATCH",
+            "error": (
+                f"requested num_gpus={num_gpus} but deployed container has "
+                f"DEPLOY_NUM_GPUS={DEPLOY_NUM_GPUS}; redeploy modal_training_app.py "
+                "with matching wrapper deploy config"
+            ),
         }
 
     epoch = int(training_config.get("epoch", 0))
     if epoch == 0:
-        artifact_root_dir = resolve_artifact_root_dir(training_config)
-        model_cli_name = str(training_config["model_cli_name"])
-        config_nickname = str(training_config["config_nickname"])
-        parent_dir = model_parent_dir(artifact_root_dir, model_cli_name, config_nickname, epoch)
+        parent_dir = model_parent_dir(
+            DEPLOY_ARTIFACT_ROOT_DIR,
+            DEPLOY_MODEL_CLI_NAME,
+            DEPLOY_CONFIG_NICKNAME,
+            epoch,
+        )
         if not (parent_dir / "model").exists():
-            ensure_model_snapshot(parent_dir, model_name)
+            ensure_model_snapshot(parent_dir, DEPLOY_MODEL_API_NAME)
 
     with tempfile.TemporaryDirectory(prefix="modal_train_job_") as temp_dir:
         job_dir = Path(temp_dir)
@@ -104,7 +124,11 @@ def _run_training_subprocess(
         (input_dir / "training_trajectories.sqlite").write_bytes(trajectory_bytes)
 
         cmd = [
-            "python",
+            "torchrun",
+            "--nproc_per_node",
+            str(num_gpus),
+            "--master_port",
+            "29500",
             "-m",
             "src_py.train.main_from_config",
             "--job-folder-path",
@@ -169,10 +193,6 @@ def _run_training_subprocess(
     },
 )
 class ExperimentService:
-    model_cli_name: str = modal.parameter()
-    config_nickname: str = modal.parameter()
-    model_name: str = modal.parameter(default=MODEL_NAME)
-
     @modal.method()
     def train(
         self,
@@ -182,17 +202,22 @@ class ExperimentService:
     ) -> dict[str, Any]:
         model_cli_name = str(training_config.get("model_cli_name") or "")
         config_nickname = str(training_config.get("config_nickname") or "")
-        if model_cli_name != self.model_cli_name or config_nickname != self.config_nickname:
+        epoch = int(training_config.get("epoch", 0))
+        if (
+            model_cli_name != DEPLOY_MODEL_CLI_NAME
+            or config_nickname != DEPLOY_CONFIG_NICKNAME
+            or epoch != DEPLOY_EPOCH
+        ):
             return {
                 "ok": False,
                 "error_code": "EXPERIMENT_KEY_MISMATCH",
                 "error": (
                     "training config does not match ExperimentService identity: "
-                    f"expected=({self.model_cli_name},{self.config_nickname}) "
-                    f"actual=({model_cli_name},{config_nickname})"
+                    f"expected=({DEPLOY_MODEL_CLI_NAME},{DEPLOY_CONFIG_NICKNAME},{DEPLOY_EPOCH}) "
+                    f"actual=({model_cli_name},{config_nickname},{epoch})"
                 ),
             }
-        return _run_training_subprocess(training_config, trajectory_bytes, num_gpus, self.model_name)
+        return _run_training_subprocess(training_config, trajectory_bytes, num_gpus)
 
 
 @app.local_entrypoint()
