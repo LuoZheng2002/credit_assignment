@@ -34,7 +34,6 @@ def _set_process_name(name: str) -> None:
 def _emit_event(payload: dict[str, Any]) -> None:
     line = json.dumps(payload, ensure_ascii=True)
     print(line, flush=True)
-    _append_wrapper_log_line(line)
 
 
 def _emit_status(backend: str, status: str, message: str) -> None:
@@ -135,7 +134,6 @@ _TERMINATION_REQUESTED = threading.Event()
 _ACTIVE_PROCESS_LOCK = threading.Lock()
 _ACTIVE_PROCESS: subprocess.Popen[Any] | None = None
 _TRAINING_WRAPPER_LOG_PATH: Path | None = None
-_TRAINING_WRAPPER_LOG_LOCK = threading.Lock()
 
 
 def _configure_wrapper_log_path(raw_path: str) -> None:
@@ -148,14 +146,6 @@ def _configure_wrapper_log_path(raw_path: str) -> None:
     if resolved.parent and not resolved.parent.exists():
         resolved.parent.mkdir(parents=True, exist_ok=True)
     _TRAINING_WRAPPER_LOG_PATH = resolved
-
-
-def _append_wrapper_log_line(line: str) -> None:
-    if _TRAINING_WRAPPER_LOG_PATH is None:
-        return
-    with _TRAINING_WRAPPER_LOG_LOCK:
-        with _TRAINING_WRAPPER_LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
 
 
 def _set_active_process(process: subprocess.Popen[Any] | None) -> None:

@@ -14,7 +14,8 @@ cargo run --bin bin_orchestrator -- \
     --training-rollout-time-limit-secs 600 \
     --validation-rollout-time-limit-secs 1200 \
     --max-python-processes 1 \
-    --inference-wrapper-log-path logs/sglang_server_qwen34_grpo_fsdp.txt \
+    --inference-wrapper-log-path logs/inference_wrapper_qwen34_grpo_fsdp.txt \
+    --training-wrapper-log-path logs/training_wrapper_qwen34_grpo_fsdp.txt \
     --tui-log-path logs/qwen3-4b_grpo_fsdp.bin \
     --num-gpus 4 \
     --ui true

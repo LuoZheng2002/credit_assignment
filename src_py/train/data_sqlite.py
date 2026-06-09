@@ -6,7 +6,7 @@ import os
 import sqlite3
 from typing import Iterator
 
-from research_utility import SqliteStore
+from src_py.research_utility import SqliteStore
 
 
 @dataclass(frozen=True)

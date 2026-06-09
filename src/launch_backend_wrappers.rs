@@ -187,6 +187,14 @@ pub async fn run_training_wrapper_and_wait(
         ComputeBackend::Hpc => "hpc",
         ComputeBackend::Modal => "modal",
     };
+    let active_log_path = training_wrapper_log_path.and_then(|path| {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
 
     let mut command = Command::new("uv");
     command
@@ -205,39 +213,74 @@ pub async fn run_training_wrapper_and_wait(
         .arg("--hf-model-name")
         .arg(hf_model_name)
         .arg("--training-wrapper-log-path")
-        .arg(training_wrapper_log_path.unwrap_or(""))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .arg(training_wrapper_log_path.unwrap_or(""));
+
+    if let Some(log_path) = active_log_path {
+        let log_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(log_path)
+            .map_err(|err| format!("failed to open training wrapper log path {}: {}", log_path, err))?;
+        let log_file_err = log_file
+            .try_clone()
+            .map_err(|err| format!("failed to clone log file handle for {}: {}", log_path, err))?;
+        command.stdout(Stdio::from(log_file));
+        command.stderr(Stdio::from(log_file_err));
+    } else {
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+    }
 
     let mut process = command
         .spawn()
         .map_err(|err| format!("failed to launch training wrapper process: {}", err))?;
 
-    let stdout = process
-        .stdout
-        .take()
-        .ok_or_else(|| "failed to capture training wrapper stdout".to_string())?;
-    let stderr = process
-        .stderr
-        .take()
-        .ok_or_else(|| "failed to capture training wrapper stderr".to_string())?;
-
     let wrapper_result = Arc::new(Mutex::new(None::<WrapperResultEvent>));
-
-    let stdout_listener = tokio::spawn(stream_output(
-        stdout,
-        false,
-        Some(wrapper_result.clone()),
-    ));
-    let stderr_listener = tokio::spawn(stream_output(stderr, true, None));
+    let mut stdout_listener = None;
+    let mut stderr_listener = None;
+    if active_log_path.is_none() {
+        let stdout = process
+            .stdout
+            .take()
+            .ok_or_else(|| "failed to capture training wrapper stdout".to_string())?;
+        let stderr = process
+            .stderr
+            .take()
+            .ok_or_else(|| "failed to capture training wrapper stderr".to_string())?;
+        stdout_listener = Some(tokio::spawn(stream_output(
+            stdout,
+            false,
+            Some(wrapper_result.clone()),
+        )));
+        stderr_listener = Some(tokio::spawn(stream_output(stderr, true, None)));
+    }
 
     let status = process
         .wait()
         .await
         .map_err(|err| format!("failed while waiting for training wrapper process: {}", err))?;
 
-    let _ = stdout_listener.await;
-    let _ = stderr_listener.await;
+    if let Some(listener) = stdout_listener {
+        let _ = listener.await;
+    }
+    if let Some(listener) = stderr_listener {
+        let _ = listener.await;
+    }
+
+    if let Some(log_path) = active_log_path {
+        if status.success() {
+            log_info(format!(
+                "Training wrapper completed successfully; details in {}",
+                log_path
+            ));
+            return Ok(());
+        }
+        return Err(format!(
+            "training wrapper process exited with status {}; inspect log at {}",
+            status, log_path
+        ));
+    }
 
     let result_event = wrapper_result
         .lock()

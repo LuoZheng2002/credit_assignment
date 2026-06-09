@@ -14,7 +14,8 @@ cargo run --bin bin_orchestrator -- \
     --training-rollout-time-limit-secs 600 \
     --validation-rollout-time-limit-secs 1200 \
     --max-python-processes 1 \
-    --inference-wrapper-log-path logs/sglang_server_gemma3_grpo_notool.txt \
+    --inference-wrapper-log-path logs/inference_wrapper_gemma3_grpo_notool.txt \
+    --training-wrapper-log-path logs/training_wrapper_gemma3_grpo_notool.txt \
     --tui-log-path logs/gemma-3-4b-it_grpo_notool.bin \
     --num-gpus 1 \
     --ui true
