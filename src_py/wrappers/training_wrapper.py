@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from src_py.experiment_identity import modal_function_name
 from src_py.load_model_to_path import ensure_model_snapshot
 from src_py.train.pathing import model_parent_dir, resolve_artifact_root_dir
 
@@ -31,6 +30,56 @@ def _emit_status(backend: str, status: str, message: str) -> None:
             "timestamp": time.time(),
         }
     )
+
+
+def _emit_status_with_metrics(
+    backend: str,
+    status: str,
+    message: str,
+    metrics: dict[str, Any],
+) -> None:
+    _emit_event(
+        {
+            "type": "status",
+            "backend": backend,
+            "status": status,
+            "message": message,
+            "metrics": metrics,
+            "timestamp": time.time(),
+        }
+    )
+
+
+def _collect_modal_activity_metrics(target: Any, phase: str) -> dict[str, Any]:
+    stats_method_names = (
+        "get_current_stats",
+        "get_stats",
+        "stats",
+        "current_stats",
+    )
+    for name in stats_method_names:
+        method = getattr(target, name, None)
+        if callable(method):
+            try:
+                value = method()
+                if isinstance(value, dict):
+                    return {"phase": phase, "available": True, "raw": value}
+                return {
+                    "phase": phase,
+                    "available": True,
+                    "raw": str(value),
+                }
+            except Exception as error:  # noqa: BLE001
+                return {
+                    "phase": phase,
+                    "available": False,
+                    "error": f"stats method {name} failed: {error}",
+                }
+    return {
+        "phase": phase,
+        "available": False,
+        "error": "no supported stats method on modal target",
+    }
 
 
 def _emit_result_ok(backend: str, message: str, duration_secs: float) -> None:
@@ -122,8 +171,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--training-config-json", type=str, required=True)
     parser.add_argument("--trajectory-sqlite-path", type=str, required=True)
     parser.add_argument("--hf-model-name", type=str, required=True)
-    parser.add_argument("--modal-app-name", type=str, default="credit-assignment-sglang-service")
-    parser.add_argument("--modal-function-prefix", type=str, default="modal_train")
+    parser.add_argument("--modal-app-name", type=str, default="credit-assignment-training-service")
+    parser.add_argument("--modal-class-name", type=str, default="ExperimentService")
     parser.add_argument(
         "--test-sleep-secs",
         type=float,
@@ -221,7 +270,7 @@ def _run_hpc_training(
 
 def _run_modal_training(
     app_name: str,
-    function_prefix: str,
+    class_name: str,
     num_gpus: int,
     training_config: dict[str, Any],
     trajectory_path: Path,
@@ -240,12 +289,16 @@ def _run_modal_training(
         return 2
 
     _ensure_initial_model_if_missing(backend, training_config, hf_model_name)
-    function_name = modal_function_name(
-        function_prefix,
-        str(training_config["model_cli_name"]),
-        str(training_config["config_nickname"]),
+    model_cli_name = str(training_config["model_cli_name"])
+    config_nickname = str(training_config["config_nickname"])
+    _emit_status(
+        backend,
+        "starting",
+        (
+            f"submitting modal training class call: {class_name} "
+            f"for experiment {model_cli_name}_{config_nickname}"
+        ),
     )
-    _emit_status(backend, "starting", f"submitting modal training function call: {function_name}")
     import queue
 
     if test_sleep_secs > 0:
@@ -275,21 +328,40 @@ def _run_modal_training(
 
     import modal
 
-    function = modal.Function.from_name(app_name, function_name)
+    cls = modal.Cls.from_name(app_name, class_name)
+    instance = cls(
+        model_cli_name=model_cli_name,
+        config_nickname=config_nickname,
+        model_name=hf_model_name,
+    )
     trajectory_bytes = trajectory_path.read_bytes()
     result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
 
     def _invoke() -> None:
         try:
-            response = function.remote(training_config, trajectory_bytes, 1, hf_model_name)
+            response = instance.train.remote(training_config, trajectory_bytes, 1)
             result_queue.put(("ok", response))
         except Exception as error:  # noqa: BLE001
             result_queue.put(("error", str(error)))
 
     worker = threading.Thread(target=_invoke, daemon=True)
+    before_metrics = _collect_modal_activity_metrics(instance.train, "before_call")
+    _emit_status_with_metrics(
+        backend,
+        "modal_call_pre",
+        "collected modal activity metrics before train call",
+        before_metrics,
+    )
     worker.start()
     while worker.is_alive():
         if _TERMINATION_REQUESTED.is_set():
+            exit_metrics = _collect_modal_activity_metrics(instance.train, "wrapper_exit")
+            _emit_status_with_metrics(
+                backend,
+                "modal_wrapper_exit",
+                "collected modal activity metrics before training wrapper exit",
+                exit_metrics,
+            )
             _emit_result_error(
                 backend,
                 "CANCELLED_BY_SIGNAL",
@@ -300,6 +372,20 @@ def _run_modal_training(
         worker.join(timeout=0.5)
 
     if result_queue.empty():
+        after_metrics = _collect_modal_activity_metrics(instance.train, "after_call")
+        _emit_status_with_metrics(
+            backend,
+            "modal_call_post",
+            "collected modal activity metrics after train call",
+            after_metrics,
+        )
+        exit_metrics = _collect_modal_activity_metrics(instance.train, "wrapper_exit")
+        _emit_status_with_metrics(
+            backend,
+            "modal_wrapper_exit",
+            "collected modal activity metrics before training wrapper exit",
+            exit_metrics,
+        )
         _emit_result_error(
             backend,
             "MODAL_TRAIN_NO_RESULT",
@@ -310,6 +396,20 @@ def _run_modal_training(
 
     kind, payload = result_queue.get_nowait()
     if kind == "error":
+        after_metrics = _collect_modal_activity_metrics(instance.train, "after_call")
+        _emit_status_with_metrics(
+            backend,
+            "modal_call_post",
+            "collected modal activity metrics after train call",
+            after_metrics,
+        )
+        exit_metrics = _collect_modal_activity_metrics(instance.train, "wrapper_exit")
+        _emit_status_with_metrics(
+            backend,
+            "modal_wrapper_exit",
+            "collected modal activity metrics before training wrapper exit",
+            exit_metrics,
+        )
         _emit_result_error(
             backend,
             "MODAL_TRAIN_REMOTE_ERROR",
@@ -318,6 +418,20 @@ def _run_modal_training(
         )
         return 1
     response = payload
+    after_metrics = _collect_modal_activity_metrics(instance.train, "after_call")
+    _emit_status_with_metrics(
+        backend,
+        "modal_call_post",
+        "collected modal activity metrics after train call",
+        after_metrics,
+    )
+    exit_metrics = _collect_modal_activity_metrics(instance.train, "wrapper_exit")
+    _emit_status_with_metrics(
+        backend,
+        "modal_wrapper_exit",
+        "collected modal activity metrics before training wrapper exit",
+        exit_metrics,
+    )
     duration_secs = time.time() - started_at
     if response.get("ok", False):
         _emit_result_ok(backend, "modal training completed", duration_secs)
@@ -376,7 +490,7 @@ def main() -> int:
 
         return _run_modal_training(
             args.modal_app_name,
-            args.modal_function_prefix,
+            args.modal_class_name,
             args.num_gpus,
             training_config,
             trajectory_path,

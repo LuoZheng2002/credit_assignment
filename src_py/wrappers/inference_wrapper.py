@@ -14,7 +14,6 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from src_py.experiment_identity import modal_function_name
 from src_py.load_model_to_path import ensure_model_snapshot
 
 
@@ -32,6 +31,55 @@ def _emit_status(backend: str, status: str, message: str) -> None:
             "timestamp": time.time(),
         }
     )
+
+
+def _emit_status_with_metrics(
+    backend: str,
+    status: str,
+    message: str,
+    metrics: dict[str, Any],
+) -> None:
+    payload = {
+        "type": "status",
+        "backend": backend,
+        "status": status,
+        "message": message,
+        "metrics": metrics,
+        "timestamp": time.time(),
+    }
+    _emit_event(payload)
+
+
+def _collect_modal_activity_metrics(target: Any, phase: str) -> dict[str, Any]:
+    stats_method_names = (
+        "get_current_stats",
+        "get_stats",
+        "stats",
+        "current_stats",
+    )
+    for name in stats_method_names:
+        method = getattr(target, name, None)
+        if callable(method):
+            try:
+                value = method()
+                if isinstance(value, dict):
+                    return {"phase": phase, "available": True, "raw": value}
+                return {
+                    "phase": phase,
+                    "available": True,
+                    "raw": str(value),
+                }
+            except Exception as error:  # noqa: BLE001
+                return {
+                    "phase": phase,
+                    "available": False,
+                    "error": f"stats method {name} failed: {error}",
+                }
+    return {
+        "phase": phase,
+        "available": False,
+        "error": "no supported stats method on modal target",
+    }
 
 
 def _post_json(url: str, payload: dict[str, Any], timeout: float = 600.0) -> dict[str, Any]:
@@ -102,17 +150,57 @@ class HpcBackend:
 
 
 class ModalBackend:
-    def __init__(self, app_name: str, function_name: str, hf_model_name: str) -> None:
+    def __init__(
+        self,
+        app_name: str,
+        class_name: str,
+        model_cli_name: str,
+        config_nickname: str,
+        hf_model_name: str,
+    ) -> None:
         import modal
 
-        self._function = modal.Function.from_name(app_name, function_name)
-        self._hf_model_name = hf_model_name
-        _emit_status("modal", "ready", f"bound modal function {app_name}.{function_name}")
+        cls = modal.Cls.from_name(app_name, class_name)
+        self._instance = cls(
+            model_cli_name=model_cli_name,
+            config_nickname=config_nickname,
+            model_name=hf_model_name,
+        )
+        _emit_status(
+            "modal",
+            "ready",
+            (
+                f"bound modal class {app_name}.{class_name} "
+                f"for experiment {model_cli_name}_{config_nickname}"
+            ),
+        )
 
     def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._function.remote(payload, self._hf_model_name)
+        before_metrics = _collect_modal_activity_metrics(self._instance.generate, "before_call")
+        _emit_status_with_metrics(
+            "modal",
+            "modal_call_pre",
+            "collected modal activity metrics before generate call",
+            before_metrics,
+        )
+        result = self._instance.generate.remote(payload)
+        after_metrics = _collect_modal_activity_metrics(self._instance.generate, "after_call")
+        _emit_status_with_metrics(
+            "modal",
+            "modal_call_post",
+            "collected modal activity metrics after generate call",
+            after_metrics,
+        )
+        return result
 
     def shutdown(self) -> None:
+        metrics = _collect_modal_activity_metrics(self._instance.generate, "wrapper_exit")
+        _emit_status_with_metrics(
+            "modal",
+            "modal_wrapper_exit",
+            "collected modal activity metrics before inference wrapper exit",
+            metrics,
+        )
         return
 
 
@@ -130,8 +218,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-cli-name", type=str, required=True)
     parser.add_argument("--config-nickname", type=str, required=True)
     parser.add_argument("--hf-model-name", type=str, required=True)
-    parser.add_argument("--modal-app-name", type=str, default="credit-assignment-sglang-service")
-    parser.add_argument("--modal-function-prefix", type=str, default="modal_generate")
+    parser.add_argument("--modal-app-name", type=str, default="credit-assignment-inference-service")
+    parser.add_argument("--modal-class-name", type=str, default="ExperimentService")
     return parser
 
 
@@ -151,12 +239,13 @@ def main() -> int:
             args.hf_model_name,
         )
     else:
-        function_name = modal_function_name(
-            args.modal_function_prefix,
+        backend = ModalBackend(
+            args.modal_app_name,
+            args.modal_class_name,
             args.model_cli_name,
             args.config_nickname,
+            args.hf_model_name,
         )
-        backend = ModalBackend(args.modal_app_name, function_name, args.hf_model_name)
 
     _emit_status(args.backend, "starting", f"binding local wrapper server on port {args.listen_port}")
 

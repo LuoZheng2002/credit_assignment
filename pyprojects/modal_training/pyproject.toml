@@ -1,0 +1,23 @@
+[project]
+name = "credit-assignment-modal-training"
+version = "0.1.0"
+description = "Dependencies for Modal training app"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "accelerate",
+    "datasets>=4.8.5",
+    "flash-linear-attention",
+    "matplotlib>=3.10.9",
+    "numexpr>=2.14.1",
+    "numpy>=2.4.6",
+    "peft",
+    "python-dotenv>=1.0.0",
+    "scipy>=1.17.1",
+    "sympy>=1.14.0",
+    "torch",
+    "transformers",
+]
+
+[tool.uv]
+environments = ["sys_platform == 'linux'"]
+prerelease = "allow"

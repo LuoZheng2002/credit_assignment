@@ -7,6 +7,7 @@ use std::{
 
 use research_utility::progress_tui_logger::{log_info, log_warning};
 use serde::Deserialize;
+use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep, timeout};
@@ -36,6 +37,8 @@ enum WrapperEvent {
         backend: Option<String>,
         #[serde(default)]
         message: Option<String>,
+        #[serde(default)]
+        metrics: Option<Value>,
     },
     #[serde(rename = "result")]
     Result {
@@ -264,12 +267,17 @@ where
                         status,
                         backend,
                         message,
+                        metrics,
                     } => {
+                        let metrics_text = metrics
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "none".to_string());
                         log_info(format!(
-                            "[WRAPPER][status] backend={} status={} message={}",
+                            "[WRAPPER][status] backend={} status={} message={} metrics={}",
                             backend.unwrap_or_else(|| "unknown".to_string()),
                             status,
-                            message.unwrap_or_default()
+                            message.unwrap_or_default(),
+                            metrics_text,
                         ));
                     }
                     WrapperEvent::Result {
@@ -353,17 +361,19 @@ mod tests {
 
     #[test]
     fn wrapper_event_status_parses() {
-        let json = r#"{"type":"status","backend":"modal","status":"running","message":"training"}"#;
+        let json = r#"{"type":"status","backend":"modal","status":"running","message":"training","metrics":{"containers_running":1}}"#;
         let parsed = serde_json::from_str::<WrapperEvent>(json).expect("status event should parse");
         match parsed {
             WrapperEvent::Status {
                 status,
                 backend,
                 message,
+                metrics,
             } => {
                 assert_eq!(status, "running");
                 assert_eq!(backend.as_deref(), Some("modal"));
                 assert_eq!(message.as_deref(), Some("training"));
+                assert!(metrics.is_some());
             }
             _ => panic!("expected status event"),
         }
