@@ -1,0 +1,214 @@
+from __future__ import annotations
+
+import argparse
+import json
+import signal
+import socketserver
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+
+def _emit_event(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, ensure_ascii=True), flush=True)
+
+
+def _emit_status(backend: str, status: str, message: str) -> None:
+    _emit_event(
+        {
+            "type": "status",
+            "backend": backend,
+            "status": status,
+            "message": message,
+            "timestamp": time.time(),
+        }
+    )
+
+
+def _post_json(url: str, payload: dict[str, Any], timeout: float = 600.0) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+    req = Request(url=url, method="POST", data=body)
+    req.add_header("content-type", "application/json")
+    with urlopen(req, timeout=timeout) as response:  # noqa: S310
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _wait_health(url: str, timeout_secs: int) -> None:
+    deadline = time.time() + timeout_secs
+    while time.time() < deadline:
+        try:
+            with urlopen(url, timeout=2):  # noqa: S310
+                return
+        except (HTTPError, URLError):
+            time.sleep(1)
+    raise TimeoutError(f"timed out waiting for health endpoint: {url}")
+
+
+class HpcBackend:
+    def __init__(self, model_path: str, num_gpus: int, upstream_port: int) -> None:
+        if not Path(model_path).exists():
+            raise FileNotFoundError(f"model path does not exist: {model_path}")
+        self._process = subprocess.Popen(
+            [
+                "uv",
+                "run",
+                "--project",
+                "pyprojects/sglang",
+                "python",
+                "-m",
+                "sglang.launch_server",
+                "--model-path",
+                model_path,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(upstream_port),
+                "--dp",
+                str(num_gpus),
+            ]
+        )
+        self._upstream_url = f"http://127.0.0.1:{upstream_port}"
+        _emit_status("hpc", "starting", f"launching local sglang on port {upstream_port}")
+        _wait_health(f"{self._upstream_url}/health", timeout_secs=300)
+        _emit_status("hpc", "ready", "local sglang health check passed")
+
+    def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return _post_json(f"{self._upstream_url}/generate", payload)
+
+    def shutdown(self) -> None:
+        if self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+
+
+class ModalBackend:
+    def __init__(self, app_name: str, function_name: str) -> None:
+        import modal
+
+        self._function = modal.Function.from_name(app_name, function_name)
+        _emit_status("modal", "ready", f"bound modal function {app_name}.{function_name}")
+
+    def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._function.remote(payload)
+
+    def shutdown(self) -> None:
+        return
+
+
+class ThreadedHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Inference wrapper for HPC and Modal backends")
+    parser.add_argument("--backend", choices=["hpc", "modal"], required=True)
+    parser.add_argument("--listen-port", type=int, required=True)
+    parser.add_argument("--num-gpus", type=int, default=1)
+    parser.add_argument("--model-path", type=str)
+    parser.add_argument("--modal-app-name", type=str, default="credit-assignment-sglang-service")
+    parser.add_argument("--modal-function-name", type=str, default="modal_generate")
+    return parser
+
+
+def main() -> int:
+    args = _build_parser().parse_args()
+    if args.listen_port <= 0:
+        raise ValueError("--listen-port must be positive")
+
+    if args.backend == "hpc":
+        if not args.model_path:
+            raise ValueError("--model-path is required for --backend=hpc")
+        backend = HpcBackend(args.model_path, args.num_gpus, args.listen_port + 1)
+    else:
+        backend = ModalBackend(args.modal_app_name, args.modal_function_name)
+
+    _emit_status(args.backend, "starting", f"binding local wrapper server on port {args.listen_port}")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path != "/health":
+                self.send_response(404)
+                self.end_headers()
+                return
+            body = json.dumps({"status": "ok"}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self) -> None:  # noqa: N802
+            if self.path != "/generate":
+                self.send_response(404)
+                self.end_headers()
+                return
+            content_len = int(self.headers.get("content-length", "0"))
+            raw = self.rfile.read(content_len)
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+                result = backend.generate(payload)
+                body = json.dumps(result).encode("utf-8")
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as error:  # noqa: BLE001
+                _emit_event(
+                    {
+                        "type": "error",
+                        "backend": args.backend,
+                        "error_code": "INFERENCE_GENERATE_FAILED",
+                        "error_message": str(error),
+                        "timestamp": time.time(),
+                    }
+                )
+                body = json.dumps({"error": {"message": str(error)}}).encode("utf-8")
+                self.send_response(500)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        def log_message(self, format: str, *args: Any) -> None:
+            sys.stdout.write(f"[INFERENCE_WRAPPER] {format % args}\n")
+            sys.stdout.flush()
+
+    server = ThreadedHTTPServer(("127.0.0.1", args.listen_port), Handler)
+    _emit_status(args.backend, "ready", "inference wrapper server is ready")
+
+    def _shutdown(*_: Any) -> None:
+        _emit_status(args.backend, "stopping", "received termination signal")
+        backend.shutdown()
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+    try:
+        server.serve_forever()
+    finally:
+        backend.shutdown()
+        server.server_close()
+        _emit_event(
+            {
+                "type": "result",
+                "backend": args.backend,
+                "ok": True,
+                "message": "inference wrapper stopped",
+                "timestamp": time.time(),
+            }
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

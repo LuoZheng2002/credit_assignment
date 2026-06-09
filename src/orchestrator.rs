@@ -19,16 +19,11 @@ use crate::{
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     get_accuracy::get_accuracy,
-    hpc_training_client::HpcTrainingClient,
     json_line_util::write_json,
-    launch_sglang_server::{
-        best_effort_shutdown_stale_sglang_server, launch_sglang_server_process, model_uses_sglang,
-        shut_down_sglang_server_process,
-    },
+    launch_backend_wrappers::{launch_inference_wrapper_process, run_training_wrapper_and_wait},
+    launch_sglang_server::{best_effort_shutdown_stale_sglang_server, model_uses_sglang, shut_down_sglang_server_process},
     llm_model::{LlmCliArgs, LlmModelMarker},
-    modal_training_client::{ModalTrainStartRequest, ModalTrainingClient},
     python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
-    training_job_client::TrainingJobClient,
     util::{hpc_training_root_dir_from_env, storage_dir_from_env},
 };
 
@@ -508,52 +503,27 @@ impl Orchestrator {
             ));
             return Ok(());
         }
-        if self.compute_backend == ComputeBackend::Modal {
-            let sglang_base_url = self
-                .modal_sglang_base_url
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| {
-                    "Modal backend requires a non-empty modal sglang base URL".to_string()
-                })?
-                .to_string();
-            log_info(format!(
-                "Using Modal inference endpoint for model {}: {}",
-                M::CLI_NAME,
-                sglang_base_url
-            ));
-            self.inference_server_handle = Some(InferenceServerHandle {
-                epoch,
-                use_tool,
-                sglang_port: None,
-                sglang_base_url: Some(sglang_base_url),
-                process: None,
-            });
-            return Ok(());
-        }
-        let model_parent_dir =
-            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
-        if epoch == 0 {
-            crate::load_initial_model::load_initial_model(&model_parent_dir, M::API_NAME).await?;
-        }
+        let model_path = if self.compute_backend == ComputeBackend::Hpc {
+            let model_parent_dir =
+                model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+            if epoch == 0 {
+                crate::load_initial_model::load_initial_model(&model_parent_dir, M::API_NAME).await?;
+            }
+            Some(format!("{}/model", model_parent_dir))
+        } else {
+            None
+        };
 
-        log_info(format!(
-            "Launching inference server for model {}",
-            M::CLI_NAME,
-        ));
-        // let mut model_path = model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
-        let model_path = format!("{}/model", model_parent_dir);
-        log_info(format!("Using model folder path: {}", model_path));
-        let (sglang_port, process) = launch_sglang_server_process::<M>(
-            &model_path,
+        log_info(format!("Launching inference wrapper for model {}", M::CLI_NAME));
+        let (sglang_port, process) = launch_inference_wrapper_process(
+            self.compute_backend,
+            model_path.as_deref(),
             self.num_gpus,
-            use_tool,
             self.sglang_server_log_path.as_deref(),
         )
         .await?;
         log_info(format!(
-            "SGLang server is listening on port {}",
+            "Inference wrapper is listening on port {}",
             sglang_port
         ));
 
@@ -564,7 +534,7 @@ impl Orchestrator {
             sglang_base_url: None,
             process: Some(process),
         });
-        log_info("Inference server launched");
+        log_info("Inference wrapper launched");
         Ok(())
     }
 
@@ -1003,89 +973,16 @@ impl Orchestrator {
             epoch,
         };
 
-        let request = ModalTrainStartRequest {
-            model_cli_name: M::CLI_NAME.to_string(),
-            config_nickname: self.config_nickname.clone(),
-            epoch,
-            idempotency_key: format!("{}/{}/epoch_{}", M::CLI_NAME, self.config_nickname, epoch),
-            num_gpus: self.num_gpus,
-            training_config: training_config.clone(),
-        };
-        match self.compute_backend {
-            ComputeBackend::Modal => {
-                let base_url = self
-                    .modal_training_base_url
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .or_else(|| {
-                        self.modal_sglang_base_url
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|value| !value.is_empty())
-                    })
-                    .ok_or_else(|| {
-                        "Modal backend requires --modal-sglang-base-url and optionally --modal-training-base-url"
-                            .to_string()
-                    })?;
-                let modal_client = ModalTrainingClient::new(
-                    self.client.clone(),
-                    base_url,
-                    self.modal_auth_token_env_var.as_deref(),
-                )?;
-                self.run_training_job(&modal_client, &request, &training_trajectory_sqlite_path)
-                    .await?;
-            }
-            ComputeBackend::Hpc => {
-                let base_url = self
-                    .hpc_training_base_url
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| {
-                        "HPC backend requires --hpc-training-base-url for training".to_string()
-                    })?;
-                let hpc_client = HpcTrainingClient::new(
-                    self.client.clone(),
-                    base_url,
-                    self.modal_auth_token_env_var.as_deref(),
-                )?;
-                self.run_training_job(&hpc_client, &request, &training_trajectory_sqlite_path)
-                    .await?;
-            }
-        }
+        let training_config_json = serde_json::to_string(&training_config)
+            .map_err(|err| format!("failed to serialize training config for wrapper: {}", err))?;
+        run_training_wrapper_and_wait(
+            self.compute_backend,
+            self.num_gpus,
+            training_config_json,
+            &training_trajectory_sqlite_path,
+        )
+        .await?;
         log_info("Finished training model.");
-        Ok(())
-    }
-
-    async fn run_training_job<C: TrainingJobClient>(
-        &self,
-        training_client: &C,
-        request: &ModalTrainStartRequest,
-        training_trajectory_sqlite_path: &str,
-    ) -> Result<(), String> {
-        let started = training_client.start_training(request).await?;
-        log_info(format!(
-            "{} training job started: {}. Uploading trajectories from {}",
-            training_client.backend_label(),
-            started.job_id,
-            training_trajectory_sqlite_path,
-        ));
-        training_client
-            .upload_trajectory_file(&started.job_id, training_trajectory_sqlite_path)
-            .await?;
-        let poll_interval = std::time::Duration::from_secs(
-            u64::try_from(self.modal_training_poll_interval_secs)
-                .map_err(|_| "training poll interval secs overflowed u64".to_string())?,
-        );
-        training_client
-            .wait_until_done(&started.job_id, poll_interval)
-            .await?;
-        log_info(format!(
-            "{} training job {} completed successfully",
-            training_client.backend_label(),
-            started.job_id
-        ));
         Ok(())
     }
 }

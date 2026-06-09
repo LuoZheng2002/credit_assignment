@@ -133,41 +133,30 @@ async fn main() {
         "max_python_processes must be positive"
     );
     if compute_backend == ComputeBackend::Modal {
-        let sglang_base_url = modal_sglang_base_url
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or_default();
         assert!(
-            !sglang_base_url.is_empty(),
-            "--modal-sglang-base-url must be provided when --compute-backend=modal"
+            num_gpus == 1,
+            "Modal backend requires --num-gpus=1 (one H100 per experiment)"
         );
-        let training_base_url = modal_training_base_url
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or_default();
-        if training_base_url.is_empty() {
+        assert!(
+            modal_training_poll_interval_secs > 0,
+            "--modal-training-poll-interval-secs must be positive"
+        );
+        if modal_sglang_base_url.is_some() || modal_training_base_url.is_some() {
             log_info(
-                "--modal-training-base-url not provided; reusing --modal-sglang-base-url for training endpoints",
+                "Modal URLs are ignored when wrapper mode is enabled; wrappers call Modal SDK directly",
             );
         }
-        assert!(
-            modal_training_poll_interval_secs > 0,
-            "--modal-training-poll-interval-secs must be positive"
-        );
     }
     if compute_backend == ComputeBackend::Hpc {
-        let training_base_url = hpc_training_base_url
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or_default();
-        assert!(
-            !training_base_url.is_empty(),
-            "--hpc-training-base-url must be provided when --compute-backend=hpc"
-        );
         assert!(
             modal_training_poll_interval_secs > 0,
             "--modal-training-poll-interval-secs must be positive"
         );
+        if hpc_training_base_url.is_some() {
+            log_info(
+                "--hpc-training-base-url is ignored when wrapper mode is enabled",
+            );
+        }
         hpc_training_root_dir_from_env().unwrap_or_else(|err| {
             panic!(
                 "HPC backend requires HPC_TRAINING_ROOT_DIR to be set for training artifacts: {}",

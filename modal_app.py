@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -18,7 +20,7 @@ APP_NAME = "credit-assignment-sglang-service"
 PORT = 8000
 SGLANG_PORT = 30000
 REGION = os.environ.get("MODAL_REGION", "us-east")
-GPU = os.environ.get("MODAL_GPU", "H100:1")
+GPU = "H100:1"
 MODEL_NAME = os.environ.get("SGLANG_MODEL_NAME", "Qwen/Qwen3.5-4B")
 
 HF_CACHE_PATH = "/root/.cache/huggingface"
@@ -45,6 +47,9 @@ image = (
 )
 
 app = modal.App(name=APP_NAME)
+
+_MODAL_INFERENCE_LOCK = threading.Lock()
+_MODAL_INFERENCE_PROCESS: subprocess.Popen[bytes] | None = None
 
 
 def _payload_hash(payload: dict[str, Any]) -> str:
@@ -92,12 +97,165 @@ def _write_flat_toml(path: Path, payload: dict[str, Any]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _wait_for_local_health(port: int, timeout_secs: int = 600) -> None:
+    import requests
+
+    deadline = time.time() + timeout_secs
+    while time.time() < deadline:
+        try:
+            response = requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
+            if response.status_code == 200:
+                return
+        except requests.RequestException:
+            pass
+        time.sleep(1)
+    raise TimeoutError(f"timed out waiting for local server health on port {port}")
+
+
+def _ensure_modal_inference_sglang() -> None:
+    global _MODAL_INFERENCE_PROCESS
+    with _MODAL_INFERENCE_LOCK:
+        if _MODAL_INFERENCE_PROCESS is not None and _MODAL_INFERENCE_PROCESS.poll() is None:
+            return
+        _MODAL_INFERENCE_PROCESS = subprocess.Popen(
+            [
+                "python",
+                "-m",
+                "sglang.launch_server",
+                "--model-path",
+                MODEL_NAME,
+                "--served-model-name",
+                MODEL_NAME,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(SGLANG_PORT),
+                "--tp",
+                "1",
+            ]
+        )
+    _wait_for_local_health(SGLANG_PORT)
+
+
+def _run_training_subprocess(
+    training_config: dict[str, Any],
+    trajectory_bytes: bytes,
+    num_gpus: int,
+) -> dict[str, Any]:
+    if num_gpus != 1:
+        return {
+            "ok": False,
+            "error_code": "MODAL_GPU_COUNT_UNSUPPORTED",
+            "error": "modal_train currently supports num_gpus=1 only",
+        }
+
+    with tempfile.TemporaryDirectory(prefix="modal_train_job_") as temp_dir:
+        job_dir = Path(temp_dir)
+        input_dir = job_dir / "input"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        _write_flat_toml(job_dir / "train_request.toml", training_config)
+        (input_dir / "training_trajectories.sqlite").write_bytes(trajectory_bytes)
+
+        cmd = [
+            "python",
+            "-m",
+            "src_py.train.main_from_config",
+            "--job-folder-path",
+            str(job_dir),
+        ]
+        termination_requested = threading.Event()
+        child: subprocess.Popen[str] | None = None
+
+        def _on_term(_: int, __: Any) -> None:
+            termination_requested.set()
+            nonlocal child
+            if child is not None and child.poll() is None:
+                child.terminate()
+
+        previous_sigterm = signal.signal(signal.SIGTERM, _on_term)
+        previous_sigint = signal.signal(signal.SIGINT, _on_term)
+        try:
+            child = subprocess.Popen(
+                cmd,
+                cwd="/root/credit_assignment",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            while child.poll() is None:
+                if termination_requested.is_set():
+                    break
+                time.sleep(0.5)
+            _stdout_text, stderr_text = child.communicate(timeout=30)
+            return_code = child.returncode
+        finally:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+            signal.signal(signal.SIGINT, previous_sigint)
+
+        if termination_requested.is_set():
+            return {
+                "ok": False,
+                "error_code": "CANCELLED_BY_SIGNAL",
+                "error": "modal training subprocess received SIGTERM/SIGINT",
+            }
+
+        if return_code == 0:
+            return {"ok": True, "message": "training completed"}
+        return {
+            "ok": False,
+            "error_code": "TRAIN_PROCESS_FAILED",
+            "error": (
+                f"training subprocess failed rc={return_code}; stderr={stderr_text[-1000:]}"
+            ),
+        }
+
+
+@app.function(
+    image=image,
+    gpu=GPU,
+    region=REGION,
+    min_containers=0,
+    max_containers=1,
+    timeout=20 * MINUTES,
+    volumes={HF_CACHE_PATH: hf_cache_volume},
+)
+def modal_generate(payload: dict[str, Any]) -> dict[str, Any]:
+    import requests
+
+    _ensure_modal_inference_sglang()
+    response = requests.post(
+        f"http://127.0.0.1:{SGLANG_PORT}/generate",
+        json=payload,
+        timeout=600,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+@app.function(
+    image=image,
+    gpu=GPU,
+    region=REGION,
+    min_containers=0,
+    max_containers=1,
+    timeout=8 * 60 * MINUTES,
+    volumes={HF_CACHE_PATH: hf_cache_volume, "/mnt/service-state": service_state_volume},
+)
+def modal_train(
+    training_config: dict[str, Any],
+    trajectory_bytes: bytes,
+    num_gpus: int,
+) -> dict[str, Any]:
+    return _run_training_subprocess(training_config, trajectory_bytes, num_gpus)
+
+
 @app.cls(
     image=image,
     gpu=GPU,
     region=REGION,
     startup_timeout=20 * MINUTES,
-    min_containers=1,
+    min_containers=0,
+    max_containers=1,
     volumes={
         "/mnt/service-state": service_state_volume,
         HF_CACHE_PATH: hf_cache_volume,
@@ -407,6 +565,15 @@ class SglangTrainingService:
                 _write_job_meta(job_id, meta)
                 return {"cancelled": True}
 
+        @fastapi_app.post("/admin/shutdown")
+        def admin_shutdown() -> dict[str, bool]:
+            def _delayed_exit() -> None:
+                time.sleep(0.5)
+                os._exit(0)
+
+            threading.Thread(target=_delayed_exit, daemon=True).start()
+            return {"shutting_down": True}
+
         config = uvicorn.Config(
             fastapi_app,
             host="0.0.0.0",
@@ -436,4 +603,4 @@ class SglangTrainingService:
 
 @app.local_entrypoint()
 def show_url() -> None:
-    print("Deploy with: modal deploy src_py/modal_sglang_service.py")
+    print("Deploy with: modal deploy modal_app.py")
