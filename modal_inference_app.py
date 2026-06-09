@@ -15,6 +15,7 @@ REGION = "us-west"
 GPU = "H100:1"
 DEFAULT_ARTIFACT_ROOT_DIR = "/mnt/service-state"
 TARGET_INPUTS = 300
+MIN_CONTAINERS = 0
 
 HF_CACHE_PATH = "/mnt/hf-cache"
 
@@ -106,7 +107,7 @@ def _ensure_initial_model_if_needed(
     gpu=GPU,
     region=REGION,
     startup_timeout=20 * MINUTES,
-    min_containers=0,
+    min_containers=MIN_CONTAINERS,
     max_containers=1,
     timeout=20 * MINUTES,
     volumes={
@@ -121,9 +122,9 @@ def _ensure_initial_model_if_needed(
 )
 @modal.concurrent(target_inputs=TARGET_INPUTS)
 class ExperimentService:
-    model_cli_name: str = modal.parameter()
-    config_nickname: str = modal.parameter()
-    model_name: str = modal.parameter()
+    model_cli_name: str = modal.parameter(default="qwen25_7b")
+    config_nickname: str = modal.parameter(default="default")
+    model_name: str = modal.parameter(default="Qwen/Qwen2.5-7B-Instruct")
     epoch: int = modal.parameter(default=0)
     artifact_root_dir: str = modal.parameter(default=DEFAULT_ARTIFACT_ROOT_DIR)
 
@@ -167,7 +168,6 @@ class ExperimentService:
                 process.wait(timeout=15)
             except subprocess.TimeoutExpired:
                 process.kill()
-
 
 @app.local_entrypoint()
 def show_url() -> None:

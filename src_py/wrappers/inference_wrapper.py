@@ -146,7 +146,16 @@ def _get_json(
         for key, value in headers.items():
             req.add_header(key, value)
     with urlopen(req, timeout=timeout) as response:  # noqa: S310
-        return json.loads(response.read().decode("utf-8"))
+        raw = response.read().decode("utf-8").strip()
+        if raw == "":
+            return {"status": "ok"}
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+            return {"status": "ok", "value": parsed}
+        except json.JSONDecodeError:
+            return {"status": "ok", "raw": raw[:200]}
 
 
 def _wait_health(url: str, timeout_secs: int, headers: dict[str, str] | None = None) -> None:
@@ -156,7 +165,7 @@ def _wait_health(url: str, timeout_secs: int, headers: dict[str, str] | None = N
             _get_json(url, timeout=2, headers=headers)
             return
         except (HTTPError, URLError):
-            time.sleep(1)
+            time.sleep(5)
     raise TimeoutError(f"timed out waiting for health endpoint: {url}")
 
 
@@ -293,6 +302,7 @@ class ModalBackend:
         self._modal_base_url_override = modal_base_url.strip()
         self._modal_auth_token_env_var = modal_auth_token_env_var.strip()
         self._cls = None
+        self._control_identity_mode = "unknown"
         self._instance = None
         if not self._modal_base_url_override:
             self._instance = self._build_instance()
@@ -306,6 +316,16 @@ class ModalBackend:
             if token:
                 self._headers["authorization"] = f"Bearer {token}"
                 self._headers["modal-key"] = token
+        self._update_autoscaler(min_containers=1, max_containers=1)
+        _emit_status(
+            "modal",
+            "identity_mode",
+            (
+                "modal control identity mode "
+                f"{self._control_identity_mode} "
+                f"(model_cli_name={self._model_cli_name}, config_nickname={self._config_nickname}, epoch={self._epoch})"
+            ),
+        )
         self._wait_remote_ready()
         _emit_status(
             "modal",
@@ -319,20 +339,77 @@ class ModalBackend:
     def _build_instance(self) -> Any:
         import modal
 
-        self._cls = modal.Cls.from_name(self._app_name, self._class_name)
-        return self._cls(
-            model_cli_name=self._model_cli_name,
-            config_nickname=self._config_nickname,
-            epoch=self._epoch,
-            model_name=self._hf_model_name,
-            artifact_root_dir=self._artifact_root_dir,
+        self._cls = modal.Cls.from_name(
+            self._app_name,
+            self._class_name,
         )
+        try:
+            # Keep control-plane interactions (autoscaler updates) on the same
+            # class-parameter identity used by the HTTP server entrypoint.
+            self._control_identity_mode = "default_parameters"
+            return self._cls()
+        except TypeError:
+            self._control_identity_mode = "explicit_parameters_fallback"
+            return self._cls(
+                model_cli_name=self._model_cli_name,
+                config_nickname=self._config_nickname,
+                epoch=self._epoch,
+                model_name=self._hf_model_name,
+                artifact_root_dir=self._artifact_root_dir,
+            )
 
     def _rebind_instance(self) -> None:
         if self._modal_base_url_override:
             return
         self._instance = self._build_instance()
         self._modal_base_url = self._resolve_modal_base_url()
+
+    def _ensure_control_instance(self) -> Any | None:
+        if self._instance is not None:
+            return self._instance
+        try:
+            self._instance = self._build_instance()
+            return self._instance
+        except Exception as error:  # noqa: BLE001
+            _emit_status(
+                "modal",
+                "warning",
+                f"failed to build modal control instance for autoscaler update: {error}",
+            )
+            return None
+
+    def _update_autoscaler(self, min_containers: int, max_containers: int = 1) -> None:
+        instance = self._ensure_control_instance()
+        if instance is None:
+            return
+        updater = getattr(instance, "update_autoscaler", None)
+        if updater is None:
+            _emit_status(
+                "modal",
+                "warning",
+                "modal instance has no update_autoscaler; skipping autoscaler update",
+            )
+            return
+        try:
+            updater(min_containers=min_containers, max_containers=max_containers)
+            _emit_status(
+                "modal",
+                "autoscaler_updated",
+                (
+                    "set modal autoscaler "
+                    f"min_containers={min_containers}, max_containers={max_containers} "
+                    f"for session {self._session_id}"
+                ),
+            )
+        except Exception as error:  # noqa: BLE001
+            _emit_status(
+                "modal",
+                "warning",
+                (
+                    "failed to set modal autoscaler "
+                    f"min_containers={min_containers}, max_containers={max_containers}: {error}"
+                ),
+            )
 
     def _is_transient_modal_error(self, error: Exception) -> bool:
         message = str(error).lower()
@@ -349,31 +426,68 @@ class ModalBackend:
     def _resolve_modal_base_url(self) -> str:
         if self._modal_base_url_override:
             return self._modal_base_url_override.rstrip("/")
-        for target in (self._cls, self._instance):
-            if target is None:
-                continue
-            getter = getattr(target, "_experimental_get_flash_urls", None)
-            if getter is None:
-                continue
-            if hasattr(getter, "aio"):
-                getter = getattr(target, "_experimental_get_flash_urls")
+        getter = getattr(self._cls, "_experimental_get_flash_urls", None)
+        if getter is not None:
             try:
                 urls = getter()
-            except TypeError:
-                continue
+                if isinstance(urls, (list, tuple)) and len(urls) > 0:
+                    url = str(urls[0]).strip()
+                    if url:
+                        return url.rstrip("/")
             except Exception:  # noqa: BLE001
-                continue
-            if isinstance(urls, (list, tuple)) and len(urls) > 0:
-                url = str(urls[0]).strip()
-                if url:
-                    return url.rstrip("/")
+                pass
         raise RuntimeError(
             "failed to resolve Modal HTTP URL via _experimental_get_flash_urls; "
             "deploy app with @modal.experimental.http_server and retry"
         )
 
     def _wait_remote_ready(self, timeout_secs: int = 900) -> None:
+        # Temporary toggle: rely on warmup-only readiness to avoid repeated /health polling
+        # during container cold start. Set to "0" to restore health polling immediately.
+        if os.environ.get("INFERENCE_WRAPPER_SKIP_MODAL_HEALTH_POLL", "1").strip() not in (
+            "0",
+            "false",
+            "False",
+        ):
+            self._warmup_remote(timeout_secs=timeout_secs)
+            return
         _wait_health(f"{self._modal_base_url}/health", timeout_secs=timeout_secs, headers=self._headers)
+        self._warmup_remote(timeout_secs=timeout_secs)
+
+    def _warmup_remote(self, timeout_secs: int = 900) -> None:
+        warmup_payload = {
+            "text": "ready check",
+            "sampling_params": {
+                "max_new_tokens": 1,
+                "temperature": 0.0,
+            },
+        }
+        deadline = time.time() + timeout_secs
+        attempt = 0
+        last_error: Exception | None = None
+        while time.time() < deadline:
+            attempt += 1
+            try:
+                _post_json(
+                    f"{self._modal_base_url}/generate",
+                    warmup_payload,
+                    timeout=60,
+                    headers=self._headers,
+                )
+                return
+            except Exception as error:  # noqa: BLE001
+                last_error = error
+                is_503 = isinstance(error, HTTPError) and error.code == 503
+                if not self._is_transient_modal_error(error) and not is_503:
+                    raise
+                _emit_status(
+                    "modal",
+                    "retrying",
+                    f"modal warmup /generate attempt {attempt} failed transiently: {error}",
+                )
+                self._rebind_instance()
+                time.sleep(5)
+        raise TimeoutError(f"modal warmup /generate timed out after {timeout_secs}s: {last_error}")
 
     def health(self) -> dict[str, Any]:
         result = _probe_health(f"{self._modal_base_url}/health", headers=self._headers)
@@ -385,24 +499,10 @@ class ModalBackend:
         last_error: Exception | None = None
         for attempt in range(1, 4):
             try:
-                before_metrics = _collect_modal_activity_metrics(self._instance, "before_call")
-                _emit_status_with_metrics(
-                    "modal",
-                    "modal_call_pre",
-                    "collected modal activity metrics before generate call",
-                    before_metrics,
-                )
                 result = _post_json(
                     f"{self._modal_base_url}/generate",
                     payload,
                     headers=self._headers,
-                )
-                after_metrics = _collect_modal_activity_metrics(self._instance, "after_call")
-                _emit_status_with_metrics(
-                    "modal",
-                    "modal_call_post",
-                    "collected modal activity metrics after generate call",
-                    after_metrics,
                 )
                 return result
             except Exception as error:  # noqa: BLE001
@@ -419,13 +519,7 @@ class ModalBackend:
         raise RuntimeError(f"modal generate failed after retries: {last_error}")
 
     def shutdown(self) -> None:
-        metrics = _collect_modal_activity_metrics(self._instance, "wrapper_exit")
-        _emit_status_with_metrics(
-            "modal",
-            "modal_wrapper_exit",
-            "collected modal activity metrics before inference wrapper exit",
-            metrics,
-        )
+        self._update_autoscaler(min_containers=0, max_containers=1)
         return
 
 
@@ -476,10 +570,10 @@ def main() -> int:
                 args.config_nickname,
                 args.epoch,
                 args.hf_model_name,
-                args.artifact_root_dir,
-                args.modal_base_url,
-                args.modal_auth_token_env_var,
-            )
+            args.artifact_root_dir,
+            args.modal_base_url,
+            args.modal_auth_token_env_var,
+        )
 
         _emit_inference_identity(
             args.backend,
