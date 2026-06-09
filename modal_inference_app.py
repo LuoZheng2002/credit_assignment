@@ -18,7 +18,6 @@ SGLANG_PORT = 30000
 REGION = "us-west"
 DEFAULT_ARTIFACT_ROOT_DIR = "/mnt/service-state"
 TARGET_INPUTS = 300
-MIN_CONTAINERS = 1
 
 HF_CACHE_PATH = "/mnt/hf-cache"
 
@@ -50,7 +49,8 @@ DEPLOY_NUM_GPUS = int(_DEPLOY_CONFIG["DEPLOY_NUM_GPUS"])
 DEPLOY_ARTIFACT_ROOT_DIR = str(_DEPLOY_CONFIG["DEPLOY_ARTIFACT_ROOT_DIR"])
 if DEPLOY_NUM_GPUS <= 0:
     raise RuntimeError(f"DEPLOY_NUM_GPUS must be positive, got {DEPLOY_NUM_GPUS}")
-GPU = f"H100:{DEPLOY_NUM_GPUS}"
+GPU = "H100:1"
+CONTAINERS = DEPLOY_NUM_GPUS
 
 
 def _wait_for_local_health(port: int, timeout_secs: int = 20 * MINUTES) -> None:
@@ -121,8 +121,8 @@ def _ensure_initial_model_if_needed(
     gpu=GPU,
     region=REGION,
     startup_timeout=20 * MINUTES,
-    min_containers=MIN_CONTAINERS,
-    max_containers=1,
+    min_containers=CONTAINERS,
+    max_containers=CONTAINERS,
     timeout=20 * MINUTES,
     volumes={
         "/mnt/service-state": service_state_volume,
@@ -159,7 +159,7 @@ class ExperimentService:
                 "--port",
                 str(SGLANG_PORT),
                 "--dp",
-                str(DEPLOY_NUM_GPUS),
+                "1",
             ]
         )
         _wait_for_local_health(SGLANG_PORT)

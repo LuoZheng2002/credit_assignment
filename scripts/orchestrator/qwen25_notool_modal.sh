@@ -9,13 +9,13 @@ cargo run --bin bin_orchestrator -- \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
     --num-iterations-limit 5 \
     --advantage-calculation-policy tree-mappo-posterior \
-    --training-config-common-path config/training/common.toml \
-    --training-time 600 \
-    --training-rollout-time-limit-secs 600 \
-    --validation-rollout-time-limit-secs 1200 \
+    --training-config-common-path config/training/common_fsdp.toml \
+    --training-time 60 \
+    --training-rollout-time-limit-secs 60 \
+    --validation-rollout-time-limit-secs 60 \
     --max-python-processes 1 \
     --sglang-server-log-path logs/sglang_server_qwen25.txt \
     --tui-log-path logs/qwen2.5-7b_notool.bin \
-    --num-gpus 2 \
+    --num-gpus 4 \
     --compute-backend modal \
     --ui true

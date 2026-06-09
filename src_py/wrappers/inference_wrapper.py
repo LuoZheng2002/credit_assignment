@@ -437,7 +437,10 @@ class ModalBackend:
         _emit_status(
             "modal",
             "container_policy",
-            "modal deployment container policy fixed at min_containers=1, max_containers=1",
+            (
+                "modal deployment container policy fixed at "
+                f"min_containers=max_containers={self._num_gpus}, gpu_per_container=H100:1"
+            ),
         )
         self._wait_remote_ready()
         _emit_status(
