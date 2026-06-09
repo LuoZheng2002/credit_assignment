@@ -43,25 +43,58 @@ _MODAL_INFERENCE_MODEL_PATH: str | None = None
 _MODAL_INFERENCE_WARMED_MODEL_PATH: str | None = None
 
 
-def _wait_for_local_health(port: int, timeout_secs: int = 600) -> None:
+def _generation_probe_specs(port: int) -> list[tuple[str, dict[str, Any]]]:
+    base = f"http://127.0.0.1:{port}"
+    return [
+        (
+            f"{base}/generate",
+            {
+                "text": "ready check",
+                "sampling_params": {
+                    "max_new_tokens": 1,
+                    "temperature": 0.0,
+                },
+            },
+        ),
+        (
+            f"{base}/v1/completions",
+            {
+                "model": "default",
+                "prompt": "ready check",
+                "max_tokens": 1,
+                "temperature": 0.0,
+            },
+        ),
+        (
+            f"{base}/v1/chat/completions",
+            {
+                "model": "default",
+                "messages": [{"role": "user", "content": "ready check"}],
+                "max_tokens": 1,
+                "temperature": 0.0,
+            },
+        ),
+    ]
+
+
+def _generation_endpoint_available(port: int, timeout_secs: float = 2.0) -> bool:
+    for url, payload in _generation_probe_specs(port):
+        try:
+            response = requests.post(url, json=payload, timeout=timeout_secs)
+            if response.status_code != 404:
+                return True
+        except requests.RequestException:
+            continue
+    return False
+
+
+def _wait_for_generation_endpoint(port: int, timeout_secs: int = 600) -> None:
     deadline = time.time() + timeout_secs
     while time.time() < deadline:
-        try:
-            response = requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
-            if response.status_code == 200:
-                return
-        except requests.RequestException:
-            pass
+        if _generation_endpoint_available(port, timeout_secs=2.0):
+            return
         time.sleep(1)
-    raise TimeoutError(f"timed out waiting for local server health on port {port}")
-
-
-def _local_health_ok(port: int, timeout_secs: float = 2.0) -> bool:
-    try:
-        response = requests.get(f"http://127.0.0.1:{port}/health", timeout=timeout_secs)
-        return response.status_code == 200
-    except requests.RequestException:
-        return False
+    raise TimeoutError(f"timed out waiting for generation endpoint on port {port}")
 
 
 def _wait_for_first_generate(port: int, timeout_secs: int = 600) -> None:
@@ -136,7 +169,7 @@ def _ensure_modal_inference_sglang(model_path: str) -> None:
                 _MODAL_INFERENCE_PROCESS is not None
                 and _MODAL_INFERENCE_PROCESS.poll() is None
                 and _MODAL_INFERENCE_MODEL_PATH == model_path
-                and _local_health_ok(SGLANG_PORT)
+                and _generation_endpoint_available(SGLANG_PORT)
             ):
                 return
             if _MODAL_INFERENCE_PROCESS is not None and _MODAL_INFERENCE_PROCESS.poll() is None:
@@ -168,7 +201,7 @@ def _ensure_modal_inference_sglang(model_path: str) -> None:
             _MODAL_INFERENCE_WARMED_MODEL_PATH = None
             process = _MODAL_INFERENCE_PROCESS
         try:
-            _wait_for_local_health(SGLANG_PORT, timeout_secs=120)
+            _wait_for_generation_endpoint(SGLANG_PORT, timeout_secs=120)
             return
         except Exception as error:  # noqa: BLE001
             last_error = error

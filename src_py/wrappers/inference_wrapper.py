@@ -126,6 +126,34 @@ def _probe_health(url: str, timeout_secs: float = 2.0) -> dict[str, Any]:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _readiness_generate_payload() -> dict[str, Any]:
+    return {
+        "input_ids": [1],
+        "sampling_params": {
+            "temperature": 0.0,
+            "max_new_tokens": 1,
+            "no_stop_trim": True,
+        },
+        "return_logprob": True,
+        "logprob_start_len": -1,
+        "top_logprobs_num": 1,
+        "stream": False,
+    }
+
+
+def _startup_generate_preflight(backend_name: str, backend: Any) -> None:
+    _emit_status(backend_name, "starting", "running startup generate preflight")
+    payload = _readiness_generate_payload()
+    response = backend.generate(payload)
+    _emit_status_with_metrics(
+        backend_name,
+        "preflight_generate_ok",
+        "startup generate preflight succeeded",
+        {"preflight_response": response},
+    )
+    _emit_status(backend_name, "ready", "startup generate preflight passed")
+
+
 class HpcBackend:
     def __init__(self, model_path: str, num_gpus: int, upstream_port: int, epoch: int, hf_model_name: str) -> None:
         model_path_obj = Path(model_path)
@@ -188,17 +216,16 @@ class ModalBackend:
         hf_model_name: str,
         artifact_root_dir: str,
     ) -> None:
-        import modal
-
-        cls = modal.Cls.from_name(app_name, class_name)
-        self._instance = cls(
-            model_cli_name=model_cli_name,
-            config_nickname=config_nickname,
-            epoch=epoch,
-            model_name=hf_model_name,
-            artifact_root_dir=artifact_root_dir,
-        )
+        self._app_name = app_name
+        self._class_name = class_name
+        self._model_cli_name = model_cli_name
+        self._config_nickname = config_nickname
+        self._epoch = epoch
+        self._hf_model_name = hf_model_name
+        self._artifact_root_dir = artifact_root_dir
+        self._instance = self._build_instance()
         self._wait_remote_ready()
+        self._wait_remote_generate_ready()
         _emit_status(
             "modal",
             "ready",
@@ -207,6 +234,47 @@ class ModalBackend:
                 f"for experiment {model_cli_name}_{config_nickname}"
             ),
         )
+
+    def _build_instance(self) -> Any:
+        import modal
+
+        cls = modal.Cls.from_name(self._app_name, self._class_name)
+        return cls(
+            model_cli_name=self._model_cli_name,
+            config_nickname=self._config_nickname,
+            epoch=self._epoch,
+            model_name=self._hf_model_name,
+            artifact_root_dir=self._artifact_root_dir,
+        )
+
+    def _rebind_instance(self) -> None:
+        self._instance = self._build_instance()
+
+    def _is_transient_modal_error(self, error: Exception) -> bool:
+        message = str(error).lower()
+        transient_fragments = (
+            "is stopped",
+            "cancelled",
+            "connection",
+            "unavailable",
+            "deadline exceeded",
+            "temporarily unavailable",
+        )
+        return any(fragment in message for fragment in transient_fragments)
+
+    def _preflight_payload(self) -> dict[str, Any]:
+        return {
+            "input_ids": [1],
+            "sampling_params": {
+                "temperature": 0.0,
+                "max_new_tokens": 1,
+                "no_stop_trim": True,
+            },
+            "return_logprob": True,
+            "logprob_start_len": -1,
+            "top_logprobs_num": 1,
+            "stream": False,
+        }
 
     def _wait_remote_ready(self, timeout_secs: int = 900) -> None:
         deadline = time.time() + timeout_secs
@@ -224,6 +292,23 @@ class ModalBackend:
             f"timed out waiting for modal sglang readiness: {last_error}"
         )
 
+    def _wait_remote_generate_ready(self, timeout_secs: int = 900) -> None:
+        deadline = time.time() + timeout_secs
+        last_error: Exception | None = None
+        payload = self._preflight_payload()
+        while time.time() < deadline:
+            try:
+                self._instance.generate.remote(payload)
+                return
+            except Exception as error:  # noqa: BLE001
+                last_error = error
+                if self._is_transient_modal_error(error):
+                    self._rebind_instance()
+            time.sleep(2)
+        raise TimeoutError(
+            f"timed out waiting for modal generate readiness: {last_error}"
+        )
+
     def health(self) -> dict[str, Any]:
         result = self._instance.health.remote()
         if not isinstance(result, dict) or result.get("status") != "ok":
@@ -231,23 +316,38 @@ class ModalBackend:
         return result
 
     def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.health()
-        before_metrics = _collect_modal_activity_metrics(self._instance.generate, "before_call")
-        _emit_status_with_metrics(
-            "modal",
-            "modal_call_pre",
-            "collected modal activity metrics before generate call",
-            before_metrics,
-        )
-        result = self._instance.generate.remote(payload)
-        after_metrics = _collect_modal_activity_metrics(self._instance.generate, "after_call")
-        _emit_status_with_metrics(
-            "modal",
-            "modal_call_post",
-            "collected modal activity metrics after generate call",
-            after_metrics,
-        )
-        return result
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                self.health()
+                before_metrics = _collect_modal_activity_metrics(self._instance.generate, "before_call")
+                _emit_status_with_metrics(
+                    "modal",
+                    "modal_call_pre",
+                    "collected modal activity metrics before generate call",
+                    before_metrics,
+                )
+                result = self._instance.generate.remote(payload)
+                after_metrics = _collect_modal_activity_metrics(self._instance.generate, "after_call")
+                _emit_status_with_metrics(
+                    "modal",
+                    "modal_call_post",
+                    "collected modal activity metrics after generate call",
+                    after_metrics,
+                )
+                return result
+            except Exception as error:  # noqa: BLE001
+                last_error = error
+                if attempt >= 3 or not self._is_transient_modal_error(error):
+                    raise
+                _emit_status(
+                    "modal",
+                    "retrying",
+                    f"modal generate attempt {attempt}/3 failed transiently: {error}",
+                )
+                self._rebind_instance()
+                self._wait_remote_ready(timeout_secs=300)
+        raise RuntimeError(f"modal generate failed after retries: {last_error}")
 
     def shutdown(self) -> None:
         metrics = _collect_modal_activity_metrics(self._instance.generate, "wrapper_exit")
@@ -305,6 +405,8 @@ def main() -> int:
             args.hf_model_name,
             args.artifact_root_dir,
         )
+
+    _startup_generate_preflight(args.backend, backend)
 
     _emit_inference_identity(
         args.backend,

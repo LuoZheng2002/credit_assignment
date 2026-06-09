@@ -151,6 +151,13 @@ pub async fn launch_inference_wrapper_process(
     }
 
     wait_for_wrapper_health(listen_port, &mut process).await?;
+    if let Err(err) = preflight_wrapper_generate(listen_port, &mut process).await {
+        let _ = process.start_kill();
+        return Err(format!(
+            "inference wrapper preflight generate failed on port {}: {}",
+            listen_port, err
+        ));
+    }
     Ok((listen_port, process))
 }
 
@@ -387,6 +394,96 @@ async fn wait_for_wrapper_health(port: u16, process: &mut Child) -> Result<(), S
                 url
             ));
         }
+        sleep(sleep_interval).await;
+    }
+}
+
+fn is_retryable_preflight_failure(status: reqwest::StatusCode, body: &Value) -> bool {
+    if status.is_server_error() || status.as_u16() == 429 {
+        if let Some(message) = body
+            .get("error")
+            .and_then(|value| value.get("message"))
+            .and_then(Value::as_str)
+        {
+            let lower = message.to_ascii_lowercase();
+            return lower.contains("is stopped")
+                || lower.contains("temporarily unavailable")
+                || lower.contains("timeout")
+                || lower.contains("connection");
+        }
+        return true;
+    }
+    false
+}
+
+async fn preflight_wrapper_generate(port: u16, process: &mut Child) -> Result<(), String> {
+    let url = format!("http://127.0.0.1:{}/generate", port);
+    let payload = serde_json::json!({
+        "input_ids": [1],
+        "sampling_params": {
+            "temperature": 0.0,
+            "max_new_tokens": 1,
+            "no_stop_trim": true,
+        },
+        "return_logprob": true,
+        "logprob_start_len": -1,
+        "top_logprobs_num": 1,
+        "stream": false,
+    });
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|err| format!("failed to build preflight http client: {}", err))?;
+    let timeout_duration = Duration::from_secs(15 * 60);
+    let sleep_interval = Duration::from_secs(2);
+    let start = Instant::now();
+    let mut last_error: Option<String> = None;
+
+    loop {
+        if let Ok(Some(status)) = process.try_wait() {
+            return Err(format!(
+                "wrapper process exited during preflight before generate became ready: {}",
+                status
+            ));
+        }
+        if start.elapsed() >= timeout_duration {
+            return Err(format!(
+                "timed out waiting for preflight generate to succeed (last_error={})",
+                last_error.clone().unwrap_or_else(|| "unknown".to_string())
+            ));
+        }
+
+        match client.post(url.clone()).json(&payload).send().await {
+            Ok(response) => {
+                let status = response.status();
+                let body: Value = match response.json().await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        last_error = Some(format!("invalid json response: {}", err));
+                        if start.elapsed() >= timeout_duration {
+                            return Err(last_error.unwrap_or_else(|| "invalid json response".to_string()));
+                        }
+                        sleep(sleep_interval).await;
+                        continue;
+                    }
+                };
+                if status.is_success() {
+                    log_info(format!(
+                        "Inference wrapper startup preflight generate response: {}",
+                        body
+                    ));
+                    return Ok(());
+                }
+                last_error = Some(format!("status={} body={}", status, body));
+                if !is_retryable_preflight_failure(status, &body) {
+                    return Err(last_error.unwrap_or_else(|| "non-retryable preflight failure".to_string()));
+                }
+            }
+            Err(err) => {
+                last_error = Some(format!("request failed: {}", err));
+            }
+        }
+
         sleep(sleep_interval).await;
     }
 }
