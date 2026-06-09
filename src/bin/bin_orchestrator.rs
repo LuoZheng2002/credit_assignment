@@ -1,8 +1,9 @@
 use std::backtrace::Backtrace;
 
 use clap::{ArgAction, Parser, ValueEnum};
+use minijinja::context;
 use proctitle::set_title;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
 use credit_assignment::{
     check_python_env::check_sympy_availability,
@@ -19,13 +20,20 @@ use credit_assignment::{
     },
     orchestrator::{OrchestrationProgress, OrchestrationStatus, Orchestrator},
     python_training_config::PythonTrainingConfigCommon,
-    util::{configure_storage_dirs, hpc_training_root_dir_from_env},
+    util::{
+        configure_storage_dirs, hpc_training_root_dir_from_env, storage_large_files_dir,
+        storage_small_files_dir,
+    },
 };
 use research_utility::progress_tui_logger::{
     ProgressTuiLogger, log_exit_hint, log_info, log_warning, log_window_name,
 };
 
-const DEFAULT_PROGRESS_TUI_LOG_PATH: &str = "progress_tui_log.bin";
+const INFERENCE_WRAPPER_LOG_PATH_TEMPLATE_PATH: &str =
+    "config/directories/inference_wrapper_log_path.jinja";
+const TRAINING_WRAPPER_LOG_PATH_TEMPLATE_PATH: &str =
+    "config/directories/training_wrapper_log_path.jinja";
+const TUI_LOG_PATH_TEMPLATE_PATH: &str = "config/directories/tui_log_path.jinja";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -65,12 +73,6 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     max_python_processes: usize,
     #[arg(long)]
-    inference_wrapper_log_path: Option<String>,
-    #[arg(long)]
-    training_wrapper_log_path: Option<String>,
-    #[arg(long)]
-    tui_log_path: Option<String>,
-    #[arg(long)]
     num_gpus: usize,
     #[arg(long)]
     storage_large_files_dir: String,
@@ -90,6 +92,46 @@ struct Args {
     hpc_training_base_url: Option<String>,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
+}
+
+fn render_log_path_template(
+    template_path: &str,
+    template_name: &'static str,
+    model_cli_name: &str,
+    config_nickname: &str,
+) -> Result<String, String> {
+    let template_source = std::fs::read_to_string(template_path)
+        .map_err(|err| format!("Failed to read {}: {}", template_path, err))?;
+    let mut env = minijinja::Environment::new();
+    env.add_template_owned(template_name, template_source)
+        .map_err(|err| format!("Failed to parse {} template: {}", template_name, err))?;
+    let template = env
+        .get_template(template_name)
+        .map_err(|err| format!("Failed to load {} template: {}", template_name, err))?;
+    let rendered = template
+        .render(context! {
+            storage_large_files_dir => storage_large_files_dir()?,
+            storage_small_files_dir => storage_small_files_dir()?,
+            model_cli_name => model_cli_name,
+            config_nickname => config_nickname,
+        })
+        .map_err(|err| format!("Failed to render {} template: {}", template_name, err))?;
+    let rendered = rendered.trim().to_string();
+    if rendered.is_empty() {
+        return Err(format!("Rendered {} template is empty", template_name));
+    }
+    Ok(rendered)
+}
+
+fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
+    let Some(parent) = Path::new(file_path).parent() else {
+        return Ok(());
+    };
+    if parent.as_os_str().is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(parent)
+        .map_err(|err| format!("Failed to create parent directory {}: {}", parent.display(), err))
 }
 
 #[tokio::main]
@@ -116,9 +158,6 @@ async fn main() {
         training_rollout_time_limit_secs,
         validation_rollout_time_limit_secs,
         max_python_processes,
-        inference_wrapper_log_path,
-        training_wrapper_log_path,
-        tui_log_path,
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         training_config_common_path,
@@ -143,6 +182,33 @@ async fn main() {
     );
     configure_storage_dirs(&storage_large_files_dir, &storage_small_files_dir)
         .unwrap_or_else(|err| panic!("failed to configure storage directories: {}", err));
+    let inference_wrapper_log_path = render_log_path_template(
+        INFERENCE_WRAPPER_LOG_PATH_TEMPLATE_PATH,
+        "inference_wrapper_log_path",
+        &model_cli_name,
+        &config_nickname,
+    )
+    .unwrap_or_else(|err| panic!("failed to render inference wrapper log path: {}", err));
+    let training_wrapper_log_path = render_log_path_template(
+        TRAINING_WRAPPER_LOG_PATH_TEMPLATE_PATH,
+        "training_wrapper_log_path",
+        &model_cli_name,
+        &config_nickname,
+    )
+    .unwrap_or_else(|err| panic!("failed to render training wrapper log path: {}", err));
+    let tui_log_path = render_log_path_template(
+        TUI_LOG_PATH_TEMPLATE_PATH,
+        "tui_log_path",
+        &model_cli_name,
+        &config_nickname,
+    )
+    .unwrap_or_else(|err| panic!("failed to render tui log path: {}", err));
+    ensure_parent_dir_exists(&inference_wrapper_log_path)
+        .unwrap_or_else(|err| panic!("failed to prepare inference wrapper log directory: {}", err));
+    ensure_parent_dir_exists(&training_wrapper_log_path)
+        .unwrap_or_else(|err| panic!("failed to prepare training wrapper log directory: {}", err));
+    ensure_parent_dir_exists(&tui_log_path)
+        .unwrap_or_else(|err| panic!("failed to prepare tui log directory: {}", err));
     if compute_backend == ComputeBackend::Modal {
         assert!(num_gpus > 0, "--num-gpus must be positive");
         log_info(format!(
@@ -179,11 +245,9 @@ async fn main() {
     }
 
     if ui {
-        ProgressTuiLogger::initialize(
-            tui_log_path.unwrap_or_else(|| DEFAULT_PROGRESS_TUI_LOG_PATH.to_string()),
-        )
-        .await
-        .unwrap();
+        ProgressTuiLogger::initialize(tui_log_path.clone())
+            .await
+            .unwrap();
         log_window_name(format!(
             "Orchestrator Program. model: {}, config_nickname: {}",
             model_cli_name, config_nickname
@@ -238,8 +302,8 @@ async fn main() {
         client,
         max_rollout_concurrency,
         inference_server_handle: None,
-        inference_wrapper_log_path,
-        training_wrapper_log_path,
+        inference_wrapper_log_path: Some(inference_wrapper_log_path),
+        training_wrapper_log_path: Some(training_wrapper_log_path),
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         training_config_common,

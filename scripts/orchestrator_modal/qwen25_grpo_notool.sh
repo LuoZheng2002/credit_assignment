@@ -1,0 +1,20 @@
+uv run python scripts/launch_modal_orchestration.py \
+    --model-cli-name qwen2.5-7b \
+    --max-rollout-concurrency 300 \
+    --config-nickname grpo_notool \
+    --validation-rollout-config-path config/rollout_config_validation_notool.json \
+    --training-rollout-config-path config/rollout_config_training_grpo_notool.json \
+    --posterior-hyperparameters-path config/posterior_hyperparameters.json \
+    --num-total-epochs 100 \
+    --cumulative-avg-abs-advantage-cutoff 0.5 \
+    --num-iterations-limit 5 \
+    --advantage-calculation-policy tree-mappo-posterior \
+    --training-config-common-path config/training/common.toml \
+    --training-time 600 \
+    --training-rollout-time-limit-secs 600 \
+    --validation-rollout-time-limit-secs 1200 \
+    --max-python-processes 1 \
+    --num-gpus 1 \
+    --storage-large-files-dir "$PWD" \
+    --storage-small-files-dir "$PWD" \
+    --ui true

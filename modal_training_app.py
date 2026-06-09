@@ -35,17 +35,16 @@ service_state_volume = modal.Volume.from_name(
 hf_cache_volume = modal.Volume.from_name("credit-assignment-hf-cache", create_if_missing=True)
 
 training_image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .uv_pip_install("torch", "transformers", "accelerate", "datasets>=4.8.5")
-    .uv_pip_install("peft", "flash-linear-attention")
-    .uv_pip_install("numpy>=2.4.6", "scipy>=1.17.1", "numexpr>=2.14.1")
-    .uv_pip_install("python-dotenv>=1.0.0", "matplotlib>=3.10.9", "sympy>=1.14.0")
-    .uv_pip_install("huggingface_hub", "msgpack")
-    .add_local_dir("src_py", remote_path="/root/credit_assignment/src_py", copy=True)
+    modal.Image.from_dockerfile(
+        "Dockerfile.modal-mirror",
+        ignore=modal.FilePatternMatcher.from_file(
+            str(Path(__file__).with_name(".dockerignore"))
+        ),
+    )
     .env(
         {
             "HF_HUB_CACHE": HF_CACHE_PATH,
-            "PYTHONPATH": "/root/credit_assignment",
+            "PYTHONPATH": "/workspace",
         }
     )
 )
@@ -178,7 +177,7 @@ def _run_training_subprocess(
         try:
             child = subprocess.Popen(
                 cmd,
-                cwd="/root/credit_assignment",
+                cwd="/workspace",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,

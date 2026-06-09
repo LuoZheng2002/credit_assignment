@@ -14,9 +14,6 @@ cargo run --bin bin_orchestrator -- \
     --training-rollout-time-limit-secs 600 \
     --validation-rollout-time-limit-secs 1200 \
     --max-python-processes 1 \
-    --inference-wrapper-log-path logs/inference_wrapper_qwen25_tempo.txt \
-    --training-wrapper-log-path logs/training_wrapper_qwen25_tempo.txt \
-    --tui-log-path logs/qwen2.5-7b_tempo.bin \
     --num-gpus 1 \
     --storage-large-files-dir "$PWD" \
     --storage-small-files-dir "$PWD" \
