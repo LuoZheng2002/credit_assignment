@@ -33,6 +33,26 @@ def _emit_status(backend: str, status: str, message: str) -> None:
     )
 
 
+def _emit_inference_identity(
+    backend: str,
+    model_official_name: str,
+    config_nickname: str,
+    epoch: int,
+) -> None:
+    _emit_event(
+        {
+            "type": "status",
+            "backend": backend,
+            "status": "identity",
+            "message": "inference service identity",
+            "model_official_name": model_official_name,
+            "config_nickname": config_nickname,
+            "epoch": epoch,
+            "timestamp": time.time(),
+        }
+    )
+
+
 def _emit_status_with_metrics(
     backend: str,
     status: str,
@@ -156,7 +176,9 @@ class ModalBackend:
         class_name: str,
         model_cli_name: str,
         config_nickname: str,
+        epoch: int,
         hf_model_name: str,
+        artifact_root_dir: str,
     ) -> None:
         import modal
 
@@ -164,8 +186,11 @@ class ModalBackend:
         self._instance = cls(
             model_cli_name=model_cli_name,
             config_nickname=config_nickname,
+            epoch=epoch,
             model_name=hf_model_name,
+            artifact_root_dir=artifact_root_dir,
         )
+        self._wait_remote_ready()
         _emit_status(
             "modal",
             "ready",
@@ -173,6 +198,22 @@ class ModalBackend:
                 f"bound modal class {app_name}.{class_name} "
                 f"for experiment {model_cli_name}_{config_nickname}"
             ),
+        )
+
+    def _wait_remote_ready(self, timeout_secs: int = 900) -> None:
+        deadline = time.time() + timeout_secs
+        last_error: Exception | None = None
+        while time.time() < deadline:
+            try:
+                result = self._instance.health.remote()
+                if isinstance(result, dict) and result.get("status") == "ok":
+                    return
+                last_error = RuntimeError(f"unexpected modal health response: {result}")
+            except Exception as error:  # noqa: BLE001
+                last_error = error
+            time.sleep(2)
+        raise TimeoutError(
+            f"timed out waiting for modal sglang readiness: {last_error}"
         )
 
     def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -218,6 +259,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-cli-name", type=str, required=True)
     parser.add_argument("--config-nickname", type=str, required=True)
     parser.add_argument("--hf-model-name", type=str, required=True)
+    parser.add_argument("--artifact-root-dir", type=str, default="/mnt/service-state")
     parser.add_argument("--modal-app-name", type=str, default="credit-assignment-inference-service")
     parser.add_argument("--modal-class-name", type=str, default="ExperimentService")
     return parser
@@ -244,8 +286,17 @@ def main() -> int:
             args.modal_class_name,
             args.model_cli_name,
             args.config_nickname,
+            args.epoch,
             args.hf_model_name,
+            args.artifact_root_dir,
         )
+
+    _emit_inference_identity(
+        args.backend,
+        args.hf_model_name,
+        args.config_nickname,
+        args.epoch,
+    )
 
     _emit_status(args.backend, "starting", f"binding local wrapper server on port {args.listen_port}")
 

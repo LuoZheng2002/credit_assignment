@@ -14,11 +14,11 @@ from src_py.train.pathing import model_parent_dir, resolve_artifact_root_dir
 
 MINUTES = 60
 APP_NAME = "credit-assignment-training-service"
-REGION = os.environ.get("MODAL_REGION", "us-east")
+REGION = "us-west"
 GPU = "H100:1"
 MODEL_NAME = os.environ.get("SGLANG_MODEL_NAME", "Qwen/Qwen3.5-4B")
 
-HF_CACHE_PATH = "/root/.cache/huggingface"
+HF_CACHE_PATH = "/mnt/hf-cache"
 SERVICE_STATE_ROOT = Path("/mnt/service-state")
 
 service_state_volume = modal.Volume.from_name(
@@ -28,16 +28,17 @@ hf_cache_volume = modal.Volume.from_name("credit-assignment-hf-cache", create_if
 
 training_image = (
     modal.Image.debian_slim(python_version="3.12")
-    .pip_install("uv>=0.8.0")
-    .add_local_dir(".", remote_path="/root/credit_assignment")
+    .uv_pip_install("torch", "transformers", "accelerate", "datasets>=4.8.5")
+    .uv_pip_install("peft", "flash-linear-attention")
+    .uv_pip_install("numpy>=2.4.6", "scipy>=1.17.1", "numexpr>=2.14.1")
+    .uv_pip_install("python-dotenv>=1.0.0", "matplotlib>=3.10.9", "sympy>=1.14.0")
+    .uv_pip_install("huggingface_hub")
+    .add_local_dir("src_py", remote_path="/root/credit_assignment/src_py", copy=True)
     .env(
         {
             "HF_HUB_CACHE": HF_CACHE_PATH,
             "PYTHONPATH": "/root/credit_assignment",
         }
-    )
-    .run_commands(
-        "uv sync --project /root/credit_assignment/pyprojects/modal_training"
     )
 )
 
@@ -103,10 +104,6 @@ def _run_training_subprocess(
         (input_dir / "training_trajectories.sqlite").write_bytes(trajectory_bytes)
 
         cmd = [
-            "uv",
-            "run",
-            "--project",
-            "/root/credit_assignment/pyprojects/modal_training",
             "python",
             "-m",
             "src_py.train.main_from_config",

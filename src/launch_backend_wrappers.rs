@@ -39,6 +39,12 @@ enum WrapperEvent {
         message: Option<String>,
         #[serde(default)]
         metrics: Option<Value>,
+        #[serde(default)]
+        model_official_name: Option<String>,
+        #[serde(default)]
+        config_nickname: Option<String>,
+        #[serde(default)]
+        epoch: Option<usize>,
     },
     #[serde(rename = "result")]
     Result {
@@ -70,6 +76,7 @@ pub async fn launch_inference_wrapper_process(
     config_nickname: &str,
     epoch: usize,
     hf_model_name: &str,
+    artifact_root_dir: Option<&str>,
     num_gpus: usize,
     log_path: Option<&str>,
 ) -> Result<(u16, Child), String> {
@@ -99,6 +106,12 @@ pub async fn launch_inference_wrapper_process(
         .arg(config_nickname)
         .arg("--hf-model-name")
         .arg(hf_model_name);
+
+    if let Some(artifact_root_dir) = artifact_root_dir {
+        command
+            .arg("--artifact-root-dir")
+            .arg(artifact_root_dir);
+    }
 
     if compute_backend == ComputeBackend::Hpc {
         let model_path = model_path.ok_or_else(|| {
@@ -268,16 +281,28 @@ where
                         backend,
                         message,
                         metrics,
+                        model_official_name,
+                        config_nickname,
+                        epoch,
                     } => {
                         let metrics_text = metrics
                             .map(|value| value.to_string())
                             .unwrap_or_else(|| "none".to_string());
+                        let identity_text = format!(
+                            "model_official_name={} config_nickname={} epoch={}",
+                            model_official_name.unwrap_or_else(|| "none".to_string()),
+                            config_nickname.unwrap_or_else(|| "none".to_string()),
+                            epoch
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "none".to_string()),
+                        );
                         log_info(format!(
-                            "[WRAPPER][status] backend={} status={} message={} metrics={}",
+                            "[WRAPPER][status] backend={} status={} message={} metrics={} {}",
                             backend.unwrap_or_else(|| "unknown".to_string()),
                             status,
                             message.unwrap_or_default(),
                             metrics_text,
+                            identity_text,
                         ));
                     }
                     WrapperEvent::Result {
@@ -361,7 +386,7 @@ mod tests {
 
     #[test]
     fn wrapper_event_status_parses() {
-        let json = r#"{"type":"status","backend":"modal","status":"running","message":"training","metrics":{"containers_running":1}}"#;
+        let json = r#"{"type":"status","backend":"modal","status":"running","message":"training","metrics":{"containers_running":1},"model_official_name":"Qwen/Qwen2.5-7B-Instruct","config_nickname":"notool","epoch":0}"#;
         let parsed = serde_json::from_str::<WrapperEvent>(json).expect("status event should parse");
         match parsed {
             WrapperEvent::Status {
@@ -369,11 +394,17 @@ mod tests {
                 backend,
                 message,
                 metrics,
+                model_official_name,
+                config_nickname,
+                epoch,
             } => {
                 assert_eq!(status, "running");
                 assert_eq!(backend.as_deref(), Some("modal"));
                 assert_eq!(message.as_deref(), Some("training"));
                 assert!(metrics.is_some());
+                assert_eq!(model_official_name.as_deref(), Some("Qwen/Qwen2.5-7B-Instruct"));
+                assert_eq!(config_nickname.as_deref(), Some("notool"));
+                assert_eq!(epoch, Some(0));
             }
             _ => panic!("expected status event"),
         }

@@ -510,6 +510,11 @@ impl Orchestrator {
         } else {
             None
         };
+        let modal_artifact_root_dir = if self.compute_backend == ComputeBackend::Modal {
+            Some(storage_dir_from_env()?)
+        } else {
+            None
+        };
 
         log_info(format!("Launching inference wrapper for model {}", M::CLI_NAME));
         let (sglang_port, process) = launch_inference_wrapper_process(
@@ -519,6 +524,7 @@ impl Orchestrator {
             &self.config_nickname,
             epoch,
             M::API_NAME,
+            modal_artifact_root_dir.as_deref(),
             self.num_gpus,
             self.sglang_server_log_path.as_deref(),
         )

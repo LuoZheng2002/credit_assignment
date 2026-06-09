@@ -1,0 +1,24 @@
+# Keep Modal uploads small; exclude local artifacts and caches.
+.git/
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+
+# Build outputs
+target/
+
+# Runtime artifacts
+logs/
+results/
+results_version_tracking/
+
+# Local/editor/env files
+.env
+.python-version
+.vscode/
+.codex/
+.opencode/
+
+# Large local data folders not needed by Modal app code
+datasets/
