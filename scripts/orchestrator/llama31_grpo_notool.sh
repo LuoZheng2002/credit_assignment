@@ -18,4 +18,6 @@ cargo run --bin bin_orchestrator -- \
     --training-wrapper-log-path logs/training_wrapper_llama31_grpo_notool.txt \
     --tui-log-path logs/llama-3.1-8b-instruct_grpo_notool.bin \
     --num-gpus 1 \
+    --storage-large-files-dir "$PWD" \
+    --storage-small-files-dir "$PWD" \
     --ui true

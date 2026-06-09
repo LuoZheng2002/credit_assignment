@@ -19,7 +19,7 @@ use credit_assignment::{
     },
     orchestrator::{OrchestrationProgress, OrchestrationStatus, Orchestrator},
     python_training_config::PythonTrainingConfigCommon,
-    util::hpc_training_root_dir_from_env,
+    util::{configure_storage_dirs, hpc_training_root_dir_from_env},
 };
 use research_utility::progress_tui_logger::{
     ProgressTuiLogger, log_exit_hint, log_info, log_warning, log_window_name,
@@ -72,6 +72,10 @@ struct Args {
     tui_log_path: Option<String>,
     #[arg(long)]
     num_gpus: usize,
+    #[arg(long)]
+    storage_large_files_dir: String,
+    #[arg(long)]
+    storage_small_files_dir: String,
     #[arg(long, value_enum)]
     compute_backend: ComputeBackend,
     #[arg(long)]
@@ -121,6 +125,8 @@ async fn main() {
         training_time,
         num_iterations_limit,
         num_gpus,
+        storage_large_files_dir,
+        storage_small_files_dir,
         compute_backend,
         modal_sglang_base_url,
         modal_training_base_url,
@@ -135,6 +141,8 @@ async fn main() {
         max_python_processes > 0,
         "max_python_processes must be positive"
     );
+    configure_storage_dirs(&storage_large_files_dir, &storage_small_files_dir)
+        .unwrap_or_else(|err| panic!("failed to configure storage directories: {}", err));
     if compute_backend == ComputeBackend::Modal {
         assert!(num_gpus > 0, "--num-gpus must be positive");
         log_info(format!(

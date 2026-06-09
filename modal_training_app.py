@@ -25,7 +25,7 @@ DEPLOY_NUM_GPUS = int(_DEPLOY_CONFIG["DEPLOY_NUM_GPUS"])
 DEPLOY_ARTIFACT_ROOT_DIR = Path(str(_DEPLOY_CONFIG["DEPLOY_ARTIFACT_ROOT_DIR"]))
 if DEPLOY_NUM_GPUS <= 0:
     raise RuntimeError(f"DEPLOY_NUM_GPUS must be positive, got {DEPLOY_NUM_GPUS}")
-GPU = f"H100:{DEPLOY_NUM_GPUS}"
+GPU = f"A100:{DEPLOY_NUM_GPUS}"
 
 HF_CACHE_PATH = "/mnt/hf-cache"
 
@@ -40,7 +40,7 @@ training_image = (
     .uv_pip_install("peft", "flash-linear-attention")
     .uv_pip_install("numpy>=2.4.6", "scipy>=1.17.1", "numexpr>=2.14.1")
     .uv_pip_install("python-dotenv>=1.0.0", "matplotlib>=3.10.9", "sympy>=1.14.0")
-    .uv_pip_install("huggingface_hub")
+    .uv_pip_install("huggingface_hub", "msgpack")
     .add_local_dir("src_py", remote_path="/root/credit_assignment/src_py", copy=True)
     .env(
         {

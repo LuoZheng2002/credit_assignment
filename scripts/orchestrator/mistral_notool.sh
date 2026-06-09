@@ -18,4 +18,6 @@ cargo run --bin bin_orchestrator -- \
     --training-wrapper-log-path logs/training_wrapper_mistral_notool.txt \
     --tui-log-path logs/mistral-7b-instruct-v0.3_notool.bin \
     --num-gpus 1 \
+    --storage-large-files-dir "$PWD" \
+    --storage-small-files-dir "$PWD" \
     --ui true

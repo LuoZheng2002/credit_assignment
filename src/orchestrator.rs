@@ -24,14 +24,16 @@ use crate::{
     launch_sglang_server::{best_effort_shutdown_stale_sglang_server, model_uses_sglang, shut_down_sglang_server_process},
     llm_model::{LlmCliArgs, LlmModelMarker},
     python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
-    util::{hpc_training_root_dir_from_env, storage_dir_from_env},
+    util::{
+        hpc_training_root_dir_from_env, storage_large_files_dir, storage_small_files_dir,
+    },
 };
 
-pub const MODEL_PARENT_DIR_TEMPLATE_PATH: &str = "config/training/model_parent_dir.jinja";
-pub const MODEL_CHECKPOINT_DIR_TEMPLATE_PATH: &str = "config/training/model_checkpoint_dir.jinja";
-pub const MODEL_METRICS_PATH_TEMPLATE_PATH: &str = "config/training/model_metrics_path.jinja";
+pub const MODEL_PARENT_DIR_TEMPLATE_PATH: &str = "config/directories/model_parent_dir.jinja";
+pub const MODEL_CHECKPOINT_DIR_TEMPLATE_PATH: &str = "config/directories/model_checkpoint_dir.jinja";
+pub const MODEL_METRICS_PATH_TEMPLATE_PATH: &str = "config/directories/model_metrics_path.jinja";
 pub const TRAINING_SUMMARY_PARENT_DIR_TEMPLATE_PATH: &str =
-    "config/training/training_summary_parent_dir.jinja";
+    "config/directories/training_summary_parent_dir.jinja";
 
 fn load_template_environment(
     template_path: &str,
@@ -52,14 +54,16 @@ fn render_template_for_epoch(
     config_nickname: &str,
     epoch: usize,
 ) -> Result<String, String> {
-    let storage_dir = storage_dir_from_env()?;
+    let storage_large_files_dir = storage_large_files_dir()?;
+    let storage_small_files_dir = storage_small_files_dir()?;
     let env = template_env.as_ref().map_err(|err| err.clone())?;
     let template = env
         .get_template(template_name)
         .map_err(|err| format!("Failed to load {} template: {}", template_name, err))?;
     let rendered = template
         .render(context! {
-            storage_dir => storage_dir,
+            storage_large_files_dir => storage_large_files_dir,
+            storage_small_files_dir => storage_small_files_dir,
             model_cli_name => model_cli_name,
             config_nickname => config_nickname,
             epoch => epoch,
@@ -971,7 +975,7 @@ impl Orchestrator {
         };
         let training_trajectory_sqlite_path = asset_file_training_trajectories.file_path();
         let artifact_root_dir = match self.compute_backend {
-            ComputeBackend::Modal => storage_dir_from_env()?,
+            ComputeBackend::Modal => storage_large_files_dir()?,
             ComputeBackend::Hpc => hpc_training_root_dir_from_env()?,
         };
         let training_config = PythonTrainingConfig {

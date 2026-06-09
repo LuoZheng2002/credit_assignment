@@ -18,4 +18,6 @@ cargo run --bin bin_orchestrator -- \
     --training-wrapper-log-path logs/training_wrapper_qwen34_fsdp.txt \
     --tui-log-path logs/qwen3-4b_std_fsdp.bin \
     --num-gpus 4 \
+    --storage-large-files-dir "$PWD" \
+    --storage-small-files-dir "$PWD" \
     --ui true

@@ -18,4 +18,6 @@ cargo run --bin bin_orchestrator -- \
     --training-wrapper-log-path logs/training_wrapper_qwen25_std.txt \
     --tui-log-path logs/qwen2.5-7b_std.bin \
     --num-gpus 1 \
+    --storage-large-files-dir "$PWD" \
+    --storage-small-files-dir "$PWD" \
     --ui true

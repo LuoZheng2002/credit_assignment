@@ -1,4 +1,4 @@
-use std::{future::Future, sync::LazyLock};
+use std::{future::Future, sync::{LazyLock, OnceLock}};
 
 pub fn block_on_async<F: Future>(future: F) -> F::Output {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -69,6 +69,72 @@ pub fn storage_dir_from_env() -> Result<String, String> {
         .as_ref()
         .map(|storage_dir| storage_dir.clone())
         .map_err(|err| err.clone())
+}
+
+static STORAGE_LARGE_FILES_DIR_ARG: OnceLock<String> = OnceLock::new();
+static STORAGE_SMALL_FILES_DIR_ARG: OnceLock<String> = OnceLock::new();
+
+fn _normalize_non_empty_dir(raw: &str, arg_name: &str) -> Result<String, String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err(format!("{} must be non-empty", arg_name));
+    }
+    Ok(value.to_string())
+}
+
+fn _set_once_dir(slot: &OnceLock<String>, value: String, arg_name: &str) -> Result<(), String> {
+    if let Some(existing) = slot.get() {
+        if existing == &value {
+            return Ok(());
+        }
+        return Err(format!(
+            "{} is already configured as '{}', cannot reconfigure to '{}'",
+            arg_name, existing, value
+        ));
+    }
+    let _ = slot.set(value);
+    Ok(())
+}
+
+pub fn configure_storage_dirs(
+    storage_large_files_dir: &str,
+    storage_small_files_dir: &str,
+) -> Result<(), String> {
+    let large = _normalize_non_empty_dir(storage_large_files_dir, "--storage-large-files-dir")?;
+    let small = _normalize_non_empty_dir(storage_small_files_dir, "--storage-small-files-dir")?;
+    _set_once_dir(
+        &STORAGE_LARGE_FILES_DIR_ARG,
+        large,
+        "--storage-large-files-dir",
+    )?;
+    _set_once_dir(
+        &STORAGE_SMALL_FILES_DIR_ARG,
+        small,
+        "--storage-small-files-dir",
+    )?;
+    Ok(())
+}
+
+pub fn storage_large_files_dir() -> Result<String, String> {
+    if let Some(configured) = STORAGE_LARGE_FILES_DIR_ARG.get() {
+        return Ok(configured.clone());
+    }
+    dotenvy::dotenv().ok();
+    if let Ok(value) = std::env::var("STORAGE_LARGE_FILES_DIR") {
+        return _normalize_non_empty_dir(&value, "STORAGE_LARGE_FILES_DIR");
+    }
+    storage_dir_from_env()
+}
+
+pub fn storage_small_files_dir() -> Result<String, String> {
+    if let Some(configured) = STORAGE_SMALL_FILES_DIR_ARG.get() {
+        return Ok(configured.clone());
+    }
+    dotenvy::dotenv().ok();
+    if let Ok(value) = std::env::var("STORAGE_SMALL_FILES_DIR") {
+        return _normalize_non_empty_dir(&value, "STORAGE_SMALL_FILES_DIR");
+    }
+    storage_dir_from_env()
 }
 
 pub fn hpc_training_root_dir_from_env() -> Result<String, String> {

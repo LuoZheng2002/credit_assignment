@@ -25,7 +25,7 @@ The backend switch should change only _where_ inference/training run, not the or
   - `src/launch_python_training.rs`
   - called from `src/orchestrator.rs::train_model`
 - Model/checkpoint path rendering today is local filesystem templates:
-  - `config/training/*.jinja`
+- `config/directories/*.jinja`
   - helpers in `src/orchestrator.rs`
 
 These are the integration points; most rollout and filtering code should stay untouched.
