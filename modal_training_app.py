@@ -12,7 +12,6 @@ from src_py.modal.training_deployment_common import (
     load_materialized_deploy_config,
 )
 from src_py.load_model_to_path import ensure_model_snapshot
-from src_py.train.pathing import model_parent_dir
 
 MINUTES = 60
 APP_NAME = "credit-assignment-training-service"
@@ -83,6 +82,37 @@ def _write_flat_toml(path: Path, payload: dict[str, Any]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _model_parent_dir(
+    artifact_root_dir: Path,
+    model_cli_name: str,
+    config_nickname: str,
+    epoch: int,
+) -> Path:
+    if epoch == 0:
+        return artifact_root_dir / "results" / model_cli_name
+    return artifact_root_dir / "results" / model_cli_name / config_nickname / f"epoch_{epoch}"
+
+
+def _ensure_initial_model_if_needed(
+    artifact_root_dir: Path,
+    model_cli_name: str,
+    config_nickname: str,
+    epoch: int,
+    hf_model_name: str,
+) -> Path:
+    parent_dir = _model_parent_dir(artifact_root_dir, model_cli_name, config_nickname, epoch)
+    model_dir = parent_dir / "model"
+    config_path = model_dir / "config.json"
+    if model_dir.exists() and config_path.is_file():
+        return model_dir
+    if epoch != 0:
+        raise FileNotFoundError(
+            f"model directory missing for non-initial epoch at {model_dir}; expected trained model"
+        )
+    ensure_model_snapshot(parent_dir, hf_model_name)
+    return model_dir
+
+
 def _run_training_subprocess(
     training_config: dict[str, Any],
     trajectory_bytes: bytes,
@@ -105,22 +135,22 @@ def _run_training_subprocess(
             ),
         }
 
-    epoch = int(training_config.get("epoch", 0))
-    if epoch == 0:
-        parent_dir = model_parent_dir(
-            DEPLOY_ARTIFACT_ROOT_DIR,
-            DEPLOY_MODEL_CLI_NAME,
-            DEPLOY_CONFIG_NICKNAME,
-            epoch,
-        )
-        if not (parent_dir / "model").exists():
-            ensure_model_snapshot(parent_dir, DEPLOY_MODEL_API_NAME)
+    _ensure_initial_model_if_needed(
+        artifact_root_dir=DEPLOY_ARTIFACT_ROOT_DIR,
+        model_cli_name=DEPLOY_MODEL_CLI_NAME,
+        config_nickname=DEPLOY_CONFIG_NICKNAME,
+        epoch=DEPLOY_EPOCH,
+        hf_model_name=DEPLOY_MODEL_API_NAME,
+    )
 
     with tempfile.TemporaryDirectory(prefix="modal_train_job_") as temp_dir:
         job_dir = Path(temp_dir)
         input_dir = job_dir / "input"
         input_dir.mkdir(parents=True, exist_ok=True)
-        _write_flat_toml(job_dir / "train_request.toml", training_config)
+        materialized_training_config = dict(training_config)
+        materialized_training_config["artifact_root_dir"] = str(DEPLOY_ARTIFACT_ROOT_DIR)
+        materialized_training_config.pop("hpc_training_root_dir", None)
+        _write_flat_toml(job_dir / "train_request.toml", materialized_training_config)
         (input_dir / "training_trajectories.sqlite").write_bytes(trajectory_bytes)
 
         cmd = [
@@ -157,7 +187,7 @@ def _run_training_subprocess(
                 if termination_requested.is_set():
                     break
                 time.sleep(0.5)
-            _stdout_text, stderr_text = child.communicate(timeout=30)
+            stdout_text, stderr_text = child.communicate(timeout=30)
             return_code = child.returncode
         finally:
             signal.signal(signal.SIGTERM, previous_sigterm)
@@ -175,7 +205,10 @@ def _run_training_subprocess(
         return {
             "ok": False,
             "error_code": "TRAIN_PROCESS_FAILED",
-            "error": f"training subprocess failed rc={return_code}; stderr={stderr_text[-1000:]}",
+            "error": (
+                f"training subprocess failed rc={return_code}; "
+                f"stdout_tail={stdout_text[-1000:]}; stderr_tail={stderr_text[-1000:]}"
+            ),
         }
 
 

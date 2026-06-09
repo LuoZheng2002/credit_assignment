@@ -5,6 +5,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from torch.distributed.elastic.multiprocessing.errors import record
+
 from .engine import TrainConfig, train
 from .pathing import (
     checkpoint_parent_dir,
@@ -82,6 +84,7 @@ def _load_train_config_from_job_folder(job_folder_path: str) -> TrainConfig:
     )
 
 
+@record
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
