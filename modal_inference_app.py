@@ -1,3 +1,4 @@
+import os
 import subprocess
 import threading
 import time
@@ -39,6 +40,7 @@ app = modal.App(name=APP_NAME)
 _MODAL_INFERENCE_LOCK = threading.Lock()
 _MODAL_INFERENCE_PROCESS: subprocess.Popen[bytes] | None = None
 _MODAL_INFERENCE_MODEL_PATH: str | None = None
+_MODAL_INFERENCE_WARMED_MODEL_PATH: str | None = None
 
 
 def _wait_for_local_health(port: int, timeout_secs: int = 600) -> None:
@@ -52,6 +54,42 @@ def _wait_for_local_health(port: int, timeout_secs: int = 600) -> None:
             pass
         time.sleep(1)
     raise TimeoutError(f"timed out waiting for local server health on port {port}")
+
+
+def _local_health_ok(port: int, timeout_secs: float = 2.0) -> bool:
+    try:
+        response = requests.get(f"http://127.0.0.1:{port}/health", timeout=timeout_secs)
+        return response.status_code == 200
+    except requests.RequestException:
+        return False
+
+
+def _wait_for_first_generate(port: int, timeout_secs: int = 600) -> None:
+    deadline = time.time() + timeout_secs
+    payload: dict[str, Any] = {
+        "text": "ready check",
+        "sampling_params": {
+            "max_new_tokens": 1,
+            "temperature": 0.0,
+        },
+    }
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            response = requests.post(
+                f"http://127.0.0.1:{port}/generate",
+                json=payload,
+                timeout=15,
+            )
+            if response.status_code == 200:
+                return
+            last_error = RuntimeError(
+                f"warmup generate returned status={response.status_code}: {response.text[:500]}"
+            )
+        except requests.RequestException as error:
+            last_error = error
+        time.sleep(2)
+    raise TimeoutError(f"timed out waiting for first successful generate call: {last_error}")
 
 
 def _model_parent_dir(
@@ -75,7 +113,8 @@ def _ensure_initial_model_if_needed(
 ) -> str:
     parent_dir = _model_parent_dir(artifact_root_dir, model_cli_name, config_nickname, epoch)
     model_dir = parent_dir / "model"
-    if model_dir.exists():
+    config_path = model_dir / "config.json"
+    if model_dir.exists() and config_path.is_file():
         return str(model_dir)
     if epoch != 0:
         raise FileNotFoundError(
@@ -89,31 +128,87 @@ def _ensure_initial_model_if_needed(
 def _ensure_modal_inference_sglang(model_path: str) -> None:
     global _MODAL_INFERENCE_PROCESS
     global _MODAL_INFERENCE_MODEL_PATH
-    with _MODAL_INFERENCE_LOCK:
-        if _MODAL_INFERENCE_PROCESS is not None and _MODAL_INFERENCE_PROCESS.poll() is None:
-            if _MODAL_INFERENCE_MODEL_PATH == model_path:
+    global _MODAL_INFERENCE_WARMED_MODEL_PATH
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        with _MODAL_INFERENCE_LOCK:
+            if (
+                _MODAL_INFERENCE_PROCESS is not None
+                and _MODAL_INFERENCE_PROCESS.poll() is None
+                and _MODAL_INFERENCE_MODEL_PATH == model_path
+                and _local_health_ok(SGLANG_PORT)
+            ):
                 return
-            _MODAL_INFERENCE_PROCESS.terminate()
-            _MODAL_INFERENCE_PROCESS.wait(timeout=30)
-        _MODAL_INFERENCE_PROCESS = subprocess.Popen(
-            [
-                "python",
-                "-m",
-                "sglang.launch_server",
-                "--model-path",
-                model_path,
-                "--served-model-name",
-                model_path,
-                "--host",
-                "127.0.0.1",
-                "--port",
-                str(SGLANG_PORT),
-                "--tp",
-                "1",
-            ]
-        )
-        _MODAL_INFERENCE_MODEL_PATH = model_path
-    _wait_for_local_health(SGLANG_PORT)
+            if _MODAL_INFERENCE_PROCESS is not None and _MODAL_INFERENCE_PROCESS.poll() is None:
+                _MODAL_INFERENCE_PROCESS.terminate()
+                try:
+                    _MODAL_INFERENCE_PROCESS.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    _MODAL_INFERENCE_PROCESS.kill()
+                    _MODAL_INFERENCE_PROCESS.wait(timeout=10)
+                _MODAL_INFERENCE_WARMED_MODEL_PATH = None
+            _MODAL_INFERENCE_PROCESS = subprocess.Popen(
+                [
+                    "python",
+                    "-m",
+                    "sglang.launch_server",
+                    "--model-path",
+                    model_path,
+                    "--served-model-name",
+                    model_path,
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(SGLANG_PORT),
+                    "--tp",
+                    "1",
+                ]
+            )
+            _MODAL_INFERENCE_MODEL_PATH = model_path
+            _MODAL_INFERENCE_WARMED_MODEL_PATH = None
+            process = _MODAL_INFERENCE_PROCESS
+        try:
+            _wait_for_local_health(SGLANG_PORT, timeout_secs=120)
+            return
+        except Exception as error:  # noqa: BLE001
+            last_error = error
+            with _MODAL_INFERENCE_LOCK:
+                if _MODAL_INFERENCE_PROCESS is process and process is not None:
+                    if process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=10)
+                    _MODAL_INFERENCE_PROCESS = None
+                    _MODAL_INFERENCE_MODEL_PATH = None
+                    _MODAL_INFERENCE_WARMED_MODEL_PATH = None
+        time.sleep(1)
+    raise RuntimeError(
+        f"failed to start healthy sglang server for model_path={model_path} after 3 attempts: {last_error}"
+    )
+
+
+def _ensure_modal_inference_ready(model_path: str) -> None:
+    global _MODAL_INFERENCE_WARMED_MODEL_PATH
+    _ensure_modal_inference_sglang(model_path)
+    with _MODAL_INFERENCE_LOCK:
+        process = _MODAL_INFERENCE_PROCESS
+        if (
+            process is not None
+            and process.poll() is None
+            and _MODAL_INFERENCE_WARMED_MODEL_PATH == model_path
+        ):
+            return
+    _wait_for_first_generate(SGLANG_PORT, timeout_secs=600)
+    with _MODAL_INFERENCE_LOCK:
+        process = _MODAL_INFERENCE_PROCESS
+        if process is None or process.poll() is not None:
+            raise RuntimeError("sglang process exited during warmup")
+        if _MODAL_INFERENCE_MODEL_PATH != model_path:
+            raise RuntimeError("sglang model path changed during warmup")
+        _MODAL_INFERENCE_WARMED_MODEL_PATH = model_path
 
 
 @app.cls(
@@ -147,12 +242,12 @@ class ExperimentService:
 
     @modal.method()
     def health(self) -> dict[str, str]:
-        _ensure_modal_inference_sglang(self._resolve_model_path())
+        _ensure_modal_inference_ready(self._resolve_model_path())
         return {"status": "ok"}
 
     @modal.method()
     def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
-        _ensure_modal_inference_sglang(self._resolve_model_path())
+        _ensure_modal_inference_ready(self._resolve_model_path())
         response = requests.post(
             f"http://127.0.0.1:{SGLANG_PORT}/generate",
             json=payload,

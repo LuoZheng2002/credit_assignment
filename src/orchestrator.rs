@@ -511,7 +511,7 @@ impl Orchestrator {
             None
         };
         let modal_artifact_root_dir = if self.compute_backend == ComputeBackend::Modal {
-            Some(storage_dir_from_env()?)
+            Some("/mnt/service-state".to_string())
         } else {
             None
         };

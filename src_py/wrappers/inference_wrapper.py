@@ -121,6 +121,11 @@ def _wait_health(url: str, timeout_secs: int) -> None:
     raise TimeoutError(f"timed out waiting for health endpoint: {url}")
 
 
+def _probe_health(url: str, timeout_secs: float = 2.0) -> dict[str, Any]:
+    with urlopen(url, timeout=timeout_secs) as response:  # noqa: S310
+        return json.loads(response.read().decode("utf-8"))
+
+
 class HpcBackend:
     def __init__(self, model_path: str, num_gpus: int, upstream_port: int, epoch: int, hf_model_name: str) -> None:
         model_path_obj = Path(model_path)
@@ -156,6 +161,9 @@ class HpcBackend:
         _emit_status("hpc", "starting", f"launching local sglang on port {upstream_port}")
         _wait_health(f"{self._upstream_url}/health", timeout_secs=300)
         _emit_status("hpc", "ready", "local sglang health check passed")
+
+    def health(self) -> dict[str, Any]:
+        return _probe_health(f"{self._upstream_url}/health")
 
     def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
         return _post_json(f"{self._upstream_url}/generate", payload)
@@ -216,7 +224,14 @@ class ModalBackend:
             f"timed out waiting for modal sglang readiness: {last_error}"
         )
 
+    def health(self) -> dict[str, Any]:
+        result = self._instance.health.remote()
+        if not isinstance(result, dict) or result.get("status") != "ok":
+            raise RuntimeError(f"unexpected modal health response: {result}")
+        return result
+
     def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.health()
         before_metrics = _collect_modal_activity_metrics(self._instance.generate, "before_call")
         _emit_status_with_metrics(
             "modal",
@@ -306,12 +321,30 @@ def main() -> int:
                 self.send_response(404)
                 self.end_headers()
                 return
-            body = json.dumps({"status": "ok"}).encode("utf-8")
-            self.send_response(200)
-            self.send_header("content-type", "application/json")
-            self.send_header("content-length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                result = backend.health()
+                body = json.dumps(result).encode("utf-8")
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as error:  # noqa: BLE001
+                _emit_event(
+                    {
+                        "type": "error",
+                        "backend": args.backend,
+                        "error_code": "INFERENCE_HEALTH_FAILED",
+                        "error_message": str(error),
+                        "timestamp": time.time(),
+                    }
+                )
+                body = json.dumps({"status": "error", "message": str(error)}).encode("utf-8")
+                self.send_response(503)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
 
         def do_POST(self) -> None:  # noqa: N802
             if self.path != "/generate":

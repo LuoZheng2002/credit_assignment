@@ -366,7 +366,18 @@ async fn wait_for_wrapper_health(port: u16, process: &mut Child) -> Result<(), S
         }
 
         match timeout(Duration::from_secs(2), reqwest::get(url.clone())).await {
-            Ok(Ok(response)) if response.status().is_success() => return Ok(()),
+            Ok(Ok(response)) if response.status().is_success() => {
+                if let Ok(body) = response.json::<Value>().await {
+                    if body
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .map(|s| s == "ok")
+                        .unwrap_or(false)
+                    {
+                        return Ok(());
+                    }
+                }
+            }
             _ => {}
         }
 
