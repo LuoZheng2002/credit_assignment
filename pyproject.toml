@@ -23,14 +23,14 @@ dependencies = [
     "modal>=1.4.4.dev21",
 ]
 
-[[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
-explicit = true
+# [[tool.uv.index]]
+# name = "pytorch-cu126"
+# url = "https://download.pytorch.org/whl/cu126"
+# explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu126" }
-research-utility = { path = "../research-utility", editable = true }
+# torch = { index = "pytorch-cu126" }
+research-utility = { path = "research-utility", editable = true }
 
 [tool.uv]
 environments = ["sys_platform == 'linux'"]

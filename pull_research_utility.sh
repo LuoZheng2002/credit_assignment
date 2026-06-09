@@ -1,5 +1,4 @@
 set -euo pipefail
 
-cd ../research-utility
-git pull
-cd ../credit_assignment
+git submodule update --init --recursive research-utility
+git submodule update --remote --merge research-utility
