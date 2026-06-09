@@ -14,7 +14,7 @@ cargo run --bin bin_orchestrator -- \
     --training-rollout-time-limit-secs 600 \
     --validation-rollout-time-limit-secs 1200 \
     --max-python-processes 1 \
-    --sglang-server-log-path logs/sglang_server_llama31_grpo_notool.txt \
+    --inference-wrapper-log-path logs/sglang_server_llama31_grpo_notool.txt \
     --tui-log-path logs/llama-3.1-8b-instruct_grpo_notool.bin \
     --num-gpus 1 \
     --ui true

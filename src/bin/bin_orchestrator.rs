@@ -65,7 +65,9 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     max_python_processes: usize,
     #[arg(long)]
-    sglang_server_log_path: Option<String>,
+    inference_wrapper_log_path: Option<String>,
+    #[arg(long)]
+    training_wrapper_log_path: Option<String>,
     #[arg(long)]
     tui_log_path: Option<String>,
     #[arg(long)]
@@ -110,7 +112,8 @@ async fn main() {
         training_rollout_time_limit_secs,
         validation_rollout_time_limit_secs,
         max_python_processes,
-        sglang_server_log_path,
+        inference_wrapper_log_path,
+        training_wrapper_log_path,
         tui_log_path,
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
@@ -227,7 +230,8 @@ async fn main() {
         client,
         max_rollout_concurrency,
         inference_server_handle: None,
-        sglang_server_log_path,
+        inference_wrapper_log_path,
+        training_wrapper_log_path,
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         training_config_common,

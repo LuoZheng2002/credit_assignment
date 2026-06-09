@@ -32,7 +32,9 @@ def _set_process_name(name: str) -> None:
 
 
 def _emit_event(payload: dict[str, Any]) -> None:
-    print(json.dumps(payload, ensure_ascii=True), flush=True)
+    line = json.dumps(payload, ensure_ascii=True)
+    print(line, flush=True)
+    _append_wrapper_log_line(line)
 
 
 def _emit_status(backend: str, status: str, message: str) -> None:
@@ -132,6 +134,28 @@ def _emit_result_error(
 _TERMINATION_REQUESTED = threading.Event()
 _ACTIVE_PROCESS_LOCK = threading.Lock()
 _ACTIVE_PROCESS: subprocess.Popen[Any] | None = None
+_TRAINING_WRAPPER_LOG_PATH: Path | None = None
+_TRAINING_WRAPPER_LOG_LOCK = threading.Lock()
+
+
+def _configure_wrapper_log_path(raw_path: str) -> None:
+    global _TRAINING_WRAPPER_LOG_PATH
+    path = raw_path.strip()
+    if not path:
+        _TRAINING_WRAPPER_LOG_PATH = None
+        return
+    resolved = Path(path)
+    if resolved.parent and not resolved.parent.exists():
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+    _TRAINING_WRAPPER_LOG_PATH = resolved
+
+
+def _append_wrapper_log_line(line: str) -> None:
+    if _TRAINING_WRAPPER_LOG_PATH is None:
+        return
+    with _TRAINING_WRAPPER_LOG_LOCK:
+        with _TRAINING_WRAPPER_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
 
 
 def _set_active_process(process: subprocess.Popen[Any] | None) -> None:
@@ -228,6 +252,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hf-model-name", type=str, required=True)
     parser.add_argument("--modal-app-name", type=str, default="credit-assignment-training-service")
     parser.add_argument("--modal-class-name", type=str, default="ExperimentService")
+    parser.add_argument("--training-wrapper-log-path", type=str, default="")
     parser.add_argument(
         "--test-sleep-secs",
         type=float,
@@ -297,10 +322,24 @@ def _run_hpc_training(
                 "--job-folder-path",
                 str(job_dir),
             ]
-        process = subprocess.Popen(cmd)
-        _set_active_process(process)
-        _emit_status(backend, "running", f"started torchrun with pid={process.pid}")
-        return_code = process.wait()
+        if _TRAINING_WRAPPER_LOG_PATH is None:
+            process = subprocess.Popen(cmd)
+            _set_active_process(process)
+            _emit_status(backend, "running", f"started torchrun with pid={process.pid}")
+            return_code = process.wait()
+        else:
+            with _TRAINING_WRAPPER_LOG_PATH.open("a", encoding="utf-8") as log_handle:
+                process = subprocess.Popen(cmd, stdout=log_handle, stderr=log_handle)
+                _set_active_process(process)
+                _emit_status(
+                    backend,
+                    "running",
+                    (
+                        f"started torchrun with pid={process.pid}; "
+                        f"subprocess output redirected to {_TRAINING_WRAPPER_LOG_PATH}"
+                    ),
+                )
+                return_code = process.wait()
         _set_active_process(None)
         duration_secs = time.time() - started_at
         if _TERMINATION_REQUESTED.is_set():
@@ -539,6 +578,7 @@ def main() -> int:
     started_at = time.time()
     _install_signal_handlers()
     args = _build_parser().parse_args()
+    _configure_wrapper_log_path(args.training_wrapper_log_path)
     _start_parent_watchdog(args.backend)
     if args.num_gpus <= 0:
         _emit_result_error(

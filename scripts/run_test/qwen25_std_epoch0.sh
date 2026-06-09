@@ -8,6 +8,6 @@ cargo run --bin bin_run_test -- \
     --total-epochs 20 \
     --rollout-time-limit-secs 7200 \
     --max-python-processes 1 \
-    --sglang-server-log-path logs/sglang_server_test_qwen25_std.txt \
+    --inference-wrapper-log-path logs/sglang_server_test_qwen25_std.txt \
     --tui-server-port 7879 \
     --ui true

@@ -174,6 +174,7 @@ pub async fn run_training_wrapper_and_wait(
     hf_model_name: &str,
     training_config_json: String,
     trajectory_sqlite_path: &str,
+    training_wrapper_log_path: Option<&str>,
 ) -> Result<(), String> {
     assert!(num_gpus > 0, "num_gpus must be positive");
     if !Path::new(trajectory_sqlite_path).is_file() {
@@ -203,6 +204,8 @@ pub async fn run_training_wrapper_and_wait(
         .arg(trajectory_sqlite_path)
         .arg("--hf-model-name")
         .arg(hf_model_name)
+        .arg("--training-wrapper-log-path")
+        .arg(training_wrapper_log_path.unwrap_or(""))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 

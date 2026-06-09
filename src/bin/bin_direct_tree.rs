@@ -52,7 +52,7 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     max_python_processes: usize,
     #[arg(long)]
-    sglang_server_log_path: Option<String>,
+    inference_wrapper_log_path: Option<String>,
     #[arg(long, default_value = DEFAULT_PROGRESS_TUI_LOG_PATH)]
     progress_tui_log_path: String,
 }

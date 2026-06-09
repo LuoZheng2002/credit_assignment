@@ -60,7 +60,7 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     num_gpus: usize,
     #[arg(long)]
-    sglang_server_log_path: Option<String>,
+    inference_wrapper_log_path: Option<String>,
     #[arg(long, default_value = DEFAULT_PROGRESS_TUI_LOG_PATH)]
     progress_tui_log_path: String,
 }
@@ -144,7 +144,7 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
         &model_path,
         args.num_gpus,
         rollout_config.use_tool,
-        args.sglang_server_log_path.as_deref(),
+        args.inference_wrapper_log_path.as_deref(),
     )
     .await?;
 

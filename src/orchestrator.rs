@@ -163,7 +163,8 @@ pub struct Orchestrator {
     pub validation_rollout_time_limit_secs: usize,
     pub max_python_processes: usize,
     pub inference_server_handle: Option<InferenceServerHandle>,
-    pub sglang_server_log_path: Option<String>,
+    pub inference_wrapper_log_path: Option<String>,
+    pub training_wrapper_log_path: Option<String>,
     // for training set generation
     pub cumulative_avg_abs_advantage_cutoff: f32,
     pub advantage_calculation_policy: AdvantageCalculationPolicy,
@@ -534,7 +535,7 @@ impl Orchestrator {
             self.modal_sglang_base_url.as_deref(),
             self.modal_auth_token_env_var.as_deref(),
             self.num_gpus,
-            self.sglang_server_log_path.as_deref(),
+            self.inference_wrapper_log_path.as_deref(),
         )
         .await?;
         log_info(format!(
@@ -996,6 +997,7 @@ impl Orchestrator {
             M::API_NAME,
             training_config_json,
             &training_trajectory_sqlite_path,
+            self.training_wrapper_log_path.as_deref(),
         )
         .await?;
         log_info("Finished training model.");
