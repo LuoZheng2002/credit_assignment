@@ -5,6 +5,7 @@ import json
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -118,10 +119,21 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trajectory-sqlite-path", type=str, required=True)
     parser.add_argument("--modal-app-name", type=str, default="credit-assignment-sglang-service")
     parser.add_argument("--modal-function-name", type=str, default="modal_train")
+    parser.add_argument(
+        "--test-sleep-secs",
+        type=float,
+        default=0.0,
+        help="Test-only: run a dummy sleep process instead of real training",
+    )
     return parser
 
 
-def _run_hpc_training(num_gpus: int, training_config: dict[str, Any], trajectory_path: Path) -> int:
+def _run_hpc_training(
+    num_gpus: int,
+    training_config: dict[str, Any],
+    trajectory_path: Path,
+    test_sleep_secs: float,
+) -> int:
     started_at = time.time()
     backend = "hpc"
     _emit_status(backend, "starting", "preparing HPC training job folder")
@@ -133,17 +145,24 @@ def _run_hpc_training(num_gpus: int, training_config: dict[str, Any], trajectory
         shutil.copy2(trajectory_path, dst_trajectory)
         _write_flat_toml(job_dir / "train_request.toml", training_config)
 
-        cmd = [
-            "uv",
-            "run",
-            "torchrun",
-            "--nproc_per_node",
-            str(num_gpus),
-            "-m",
-            "src_py.train.main_from_config",
-            "--job-folder-path",
-            str(job_dir),
-        ]
+        if test_sleep_secs > 0:
+            cmd = [
+                sys.executable,
+                "-c",
+                f"import time; time.sleep({test_sleep_secs})",
+            ]
+        else:
+            cmd = [
+                "uv",
+                "run",
+                "torchrun",
+                "--nproc_per_node",
+                str(num_gpus),
+                "-m",
+                "src_py.train.main_from_config",
+                "--job-folder-path",
+                str(job_dir),
+            ]
         process = subprocess.Popen(cmd)
         _set_active_process(process)
         _emit_status(backend, "running", f"started torchrun with pid={process.pid}")
@@ -176,6 +195,7 @@ def _run_modal_training(
     num_gpus: int,
     training_config: dict[str, Any],
     trajectory_path: Path,
+    test_sleep_secs: float,
 ) -> int:
     started_at = time.time()
     backend = "modal"
@@ -189,8 +209,34 @@ def _run_modal_training(
         return 2
 
     _emit_status(backend, "starting", "submitting modal training function call")
-    import modal
     import queue
+
+    if test_sleep_secs > 0:
+        result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+        def _invoke_test() -> None:
+            try:
+                time.sleep(test_sleep_secs)
+                result_queue.put(("ok", {"ok": True}))
+            except Exception as error:  # noqa: BLE001
+                result_queue.put(("error", str(error)))
+
+        worker = threading.Thread(target=_invoke_test, daemon=True)
+        worker.start()
+        while worker.is_alive():
+            if _TERMINATION_REQUESTED.is_set():
+                _emit_result_error(
+                    backend,
+                    "CANCELLED_BY_SIGNAL",
+                    "training wrapper received SIGTERM/SIGINT",
+                    time.time() - started_at,
+                )
+                return 143
+            worker.join(timeout=0.5)
+        _emit_result_ok(backend, "modal training completed", time.time() - started_at)
+        return 0
+
+    import modal
 
     function = modal.Function.from_name(app_name, function_name)
     trajectory_bytes = trajectory_path.read_bytes()
@@ -283,7 +329,12 @@ def main() -> int:
 
     try:
         if args.backend == "hpc":
-            return _run_hpc_training(args.num_gpus, training_config, trajectory_path)
+            return _run_hpc_training(
+                args.num_gpus,
+                training_config,
+                trajectory_path,
+                args.test_sleep_secs,
+            )
 
         return _run_modal_training(
             args.modal_app_name,
@@ -291,6 +342,7 @@ def main() -> int:
             args.num_gpus,
             training_config,
             trajectory_path,
+            args.test_sleep_secs,
         )
     except Exception as error:  # noqa: BLE001
         _emit_result_error(
