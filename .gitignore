@@ -21,4 +21,4 @@ plots
 # Added by cargo
 
 /target
-
+src_py/modal/inference_deploy_config.json

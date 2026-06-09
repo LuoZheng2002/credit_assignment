@@ -8,14 +8,17 @@ import modal
 import modal.experimental
 import requests
 
+from src_py.modal.inference_deployment_common import (
+    load_materialized_deploy_config,
+)
+
 MINUTES = 60
 APP_NAME = "credit-assignment-inference-service"
 SGLANG_PORT = 30000
 REGION = "us-west"
-GPU = "H100:1"
 DEFAULT_ARTIFACT_ROOT_DIR = "/mnt/service-state"
 TARGET_INPUTS = 300
-MIN_CONTAINERS = 0
+MIN_CONTAINERS = 1
 
 HF_CACHE_PATH = "/mnt/hf-cache"
 
@@ -28,6 +31,7 @@ base_image = (
     modal.Image.from_registry("lmsysorg/sglang:latest")
     .entrypoint([])
     .pip_install("requests>=2.32.0", "huggingface_hub>=0.35.0")
+    .add_local_dir("src_py", remote_path="/root/credit_assignment/src_py", copy=True)
     .env(
         {
             "HF_HUB_CACHE": HF_CACHE_PATH,
@@ -37,6 +41,16 @@ base_image = (
 )
 
 app = modal.App(name=APP_NAME)
+_DEPLOY_CONFIG = load_materialized_deploy_config()
+DEPLOY_MODEL_CLI_NAME = str(_DEPLOY_CONFIG["DEPLOY_MODEL_CLI_NAME"])
+DEPLOY_MODEL_API_NAME = str(_DEPLOY_CONFIG["DEPLOY_MODEL_API_NAME"])
+DEPLOY_CONFIG_NICKNAME = str(_DEPLOY_CONFIG["DEPLOY_CONFIG_NICKNAME"])
+DEPLOY_EPOCH = int(_DEPLOY_CONFIG["DEPLOY_EPOCH"])
+DEPLOY_NUM_GPUS = int(_DEPLOY_CONFIG["DEPLOY_NUM_GPUS"])
+DEPLOY_ARTIFACT_ROOT_DIR = str(_DEPLOY_CONFIG["DEPLOY_ARTIFACT_ROOT_DIR"])
+if DEPLOY_NUM_GPUS <= 0:
+    raise RuntimeError(f"DEPLOY_NUM_GPUS must be positive, got {DEPLOY_NUM_GPUS}")
+GPU = f"H100:{DEPLOY_NUM_GPUS}"
 
 
 def _wait_for_local_health(port: int, timeout_secs: int = 20 * MINUTES) -> None:
@@ -122,20 +136,14 @@ def _ensure_initial_model_if_needed(
 )
 @modal.concurrent(target_inputs=TARGET_INPUTS)
 class ExperimentService:
-    model_cli_name: str = modal.parameter(default="qwen25_7b")
-    config_nickname: str = modal.parameter(default="default")
-    model_name: str = modal.parameter(default="Qwen/Qwen2.5-7B-Instruct")
-    epoch: int = modal.parameter(default=0)
-    artifact_root_dir: str = modal.parameter(default=DEFAULT_ARTIFACT_ROOT_DIR)
-
     @modal.enter()
     def startup(self) -> None:
         model_path = _ensure_initial_model_if_needed(
-            artifact_root_dir=self.artifact_root_dir,
-            model_cli_name=self.model_cli_name,
-            config_nickname=self.config_nickname,
-            epoch=int(self.epoch),
-            hf_model_name=self.model_name,
+            artifact_root_dir=DEPLOY_ARTIFACT_ROOT_DIR,
+            model_cli_name=DEPLOY_MODEL_CLI_NAME,
+            config_nickname=DEPLOY_CONFIG_NICKNAME,
+            epoch=DEPLOY_EPOCH,
+            hf_model_name=DEPLOY_MODEL_API_NAME,
         )
         self._process = subprocess.Popen(
             [
@@ -151,7 +159,7 @@ class ExperimentService:
                 "--port",
                 str(SGLANG_PORT),
                 "--tp",
-                "1",
+                str(DEPLOY_NUM_GPUS),
             ]
         )
         _wait_for_local_health(SGLANG_PORT)

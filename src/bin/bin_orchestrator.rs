@@ -133,10 +133,11 @@ async fn main() {
         "max_python_processes must be positive"
     );
     if compute_backend == ComputeBackend::Modal {
-        assert!(
-            num_gpus == 1,
-            "Modal backend requires --num-gpus=1 (one H100 per experiment)"
-        );
+        assert!(num_gpus > 0, "--num-gpus must be positive");
+        log_info(format!(
+            "Modal inference deployment will request H100:{}",
+            num_gpus
+        ));
         assert!(
             modal_training_poll_interval_secs > 0,
             "--modal-training-poll-interval-secs must be positive"

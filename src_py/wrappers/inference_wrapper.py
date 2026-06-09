@@ -18,6 +18,11 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from src_py.load_model_to_path import ensure_model_snapshot
+from src_py.modal.inference_deployment_common import (
+    deployment_name,
+    ensure_deployed,
+    ensure_undeployed,
+)
 
 
 def _set_process_name(name: str) -> None:
@@ -228,9 +233,59 @@ def _start_parent_watchdog(
     return watchdog
 
 
+def _hpc_server_state_path(upstream_port: int) -> Path:
+    return Path(f"/tmp/credit_assignment_hpc_server_{upstream_port}.json")
+
+
+def _read_hpc_server_state(upstream_port: int) -> dict[str, Any] | None:
+    path = _hpc_server_state_path(upstream_port)
+    if not path.is_file():
+        return None
+    try:
+        raw = path.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        return None
+    return None
+
+
+def _write_hpc_server_state(
+    upstream_port: int,
+    model_cli_name: str,
+    config_nickname: str,
+    epoch: int,
+    model_path: str,
+    pid: int,
+) -> None:
+    payload = {
+        "model_cli_name": model_cli_name,
+        "config_nickname": config_nickname,
+        "epoch": epoch,
+        "model_path": model_path,
+        "pid": pid,
+    }
+    _hpc_server_state_path(upstream_port).write_text(
+        json.dumps(payload, ensure_ascii=True),
+        encoding="utf-8",
+    )
+
+
 class HpcBackend:
-    def __init__(self, model_path: str, num_gpus: int, upstream_port: int, epoch: int, hf_model_name: str) -> None:
+    def __init__(
+        self,
+        model_path: str,
+        num_gpus: int,
+        upstream_port: int,
+        epoch: int,
+        hf_model_name: str,
+        model_cli_name: str,
+        config_nickname: str,
+    ) -> None:
         model_path_obj = Path(model_path)
+        self._process: subprocess.Popen[bytes] | None = None
+        self._upstream_url = f"http://127.0.0.1:{upstream_port}"
         if not model_path_obj.exists() and epoch == 0:
             _emit_status(
                 "hpc",
@@ -240,6 +295,38 @@ class HpcBackend:
             ensure_model_snapshot(model_path_obj.parent, hf_model_name)
         if not model_path_obj.exists():
             raise FileNotFoundError(f"model path does not exist: {model_path}")
+        try:
+            _probe_health(f"{self._upstream_url}/health")
+            existing_state = _read_hpc_server_state(upstream_port)
+            if existing_state is None:
+                raise RuntimeError(
+                    "existing local sglang server detected but config state file is missing; "
+                    "cannot validate config match"
+                )
+            expected = {
+                "model_cli_name": model_cli_name,
+                "config_nickname": config_nickname,
+                "epoch": epoch,
+            }
+            observed = {
+                "model_cli_name": str(existing_state.get("model_cli_name", "")),
+                "config_nickname": str(existing_state.get("config_nickname", "")),
+                "epoch": int(existing_state.get("epoch", -1)),
+            }
+            if observed != expected:
+                raise RuntimeError(
+                    "existing local sglang server config mismatch; "
+                    f"expected={expected}, observed={observed}"
+                )
+            _emit_status(
+                "hpc",
+                "ready",
+                f"reusing existing local sglang on port {upstream_port} for matching config",
+            )
+            return
+        except Exception as error:  # noqa: BLE001
+            if "mismatch" in str(error) or "cannot validate" in str(error):
+                raise
         self._process = subprocess.Popen(
             [
                 "uv",
@@ -259,9 +346,16 @@ class HpcBackend:
                 str(num_gpus),
             ]
         )
-        self._upstream_url = f"http://127.0.0.1:{upstream_port}"
         _emit_status("hpc", "starting", f"launching local sglang on port {upstream_port}")
         _wait_health(f"{self._upstream_url}/health", timeout_secs=300)
+        _write_hpc_server_state(
+            upstream_port=upstream_port,
+            model_cli_name=model_cli_name,
+            config_nickname=config_nickname,
+            epoch=epoch,
+            model_path=model_path,
+            pid=self._process.pid,
+        )
         _emit_status("hpc", "ready", "local sglang health check passed")
 
     def health(self) -> dict[str, Any]:
@@ -271,6 +365,8 @@ class HpcBackend:
         return _post_json(f"{self._upstream_url}/generate", payload)
 
     def shutdown(self) -> None:
+        if self._process is None:
+            return
         if self._process.poll() is None:
             self._process.terminate()
             try:
@@ -287,6 +383,7 @@ class ModalBackend:
         model_cli_name: str,
         config_nickname: str,
         epoch: int,
+        num_gpus: int,
         hf_model_name: str,
         artifact_root_dir: str,
         modal_base_url: str,
@@ -297,12 +394,33 @@ class ModalBackend:
         self._model_cli_name = model_cli_name
         self._config_nickname = config_nickname
         self._epoch = epoch
+        self._num_gpus = num_gpus
         self._hf_model_name = hf_model_name
         self._artifact_root_dir = artifact_root_dir
         self._modal_base_url_override = modal_base_url.strip()
         self._modal_auth_token_env_var = modal_auth_token_env_var.strip()
+        self._managed_deployment_name: str | None = None
+        if self._modal_base_url_override:
+            self._app_name = app_name
+        else:
+            self._app_name = deployment_name(
+                model_cli_name=self._model_cli_name,
+                model_api_name=self._hf_model_name,
+                config_nickname=self._config_nickname,
+                epoch=self._epoch,
+            )
+            _emit_status("modal", "starting", f"ensuring modal deployment {self._app_name}")
+            app_name_result, code = ensure_deployed(
+                model_cli_name=self._model_cli_name,
+                model_api_name=self._hf_model_name,
+                config_nickname=self._config_nickname,
+                epoch=self._epoch,
+                num_gpus=self._num_gpus,
+            )
+            if code != 0:
+                raise RuntimeError(f"failed to deploy modal inference app {app_name_result}")
+            self._managed_deployment_name = app_name_result
         self._cls = None
-        self._control_identity_mode = "unknown"
         self._instance = None
         if not self._modal_base_url_override:
             self._instance = self._build_instance()
@@ -316,15 +434,10 @@ class ModalBackend:
             if token:
                 self._headers["authorization"] = f"Bearer {token}"
                 self._headers["modal-key"] = token
-        self._update_autoscaler(min_containers=1, max_containers=1)
         _emit_status(
             "modal",
-            "identity_mode",
-            (
-                "modal control identity mode "
-                f"{self._control_identity_mode} "
-                f"(model_cli_name={self._model_cli_name}, config_nickname={self._config_nickname}, epoch={self._epoch})"
-            ),
+            "container_policy",
+            "modal deployment container policy fixed at min_containers=1, max_containers=1",
         )
         self._wait_remote_ready()
         _emit_status(
@@ -343,73 +456,13 @@ class ModalBackend:
             self._app_name,
             self._class_name,
         )
-        try:
-            # Keep control-plane interactions (autoscaler updates) on the same
-            # class-parameter identity used by the HTTP server entrypoint.
-            self._control_identity_mode = "default_parameters"
-            return self._cls()
-        except TypeError:
-            self._control_identity_mode = "explicit_parameters_fallback"
-            return self._cls(
-                model_cli_name=self._model_cli_name,
-                config_nickname=self._config_nickname,
-                epoch=self._epoch,
-                model_name=self._hf_model_name,
-                artifact_root_dir=self._artifact_root_dir,
-            )
+        return self._cls()
 
     def _rebind_instance(self) -> None:
         if self._modal_base_url_override:
             return
         self._instance = self._build_instance()
         self._modal_base_url = self._resolve_modal_base_url()
-
-    def _ensure_control_instance(self) -> Any | None:
-        if self._instance is not None:
-            return self._instance
-        try:
-            self._instance = self._build_instance()
-            return self._instance
-        except Exception as error:  # noqa: BLE001
-            _emit_status(
-                "modal",
-                "warning",
-                f"failed to build modal control instance for autoscaler update: {error}",
-            )
-            return None
-
-    def _update_autoscaler(self, min_containers: int, max_containers: int = 1) -> None:
-        instance = self._ensure_control_instance()
-        if instance is None:
-            return
-        updater = getattr(instance, "update_autoscaler", None)
-        if updater is None:
-            _emit_status(
-                "modal",
-                "warning",
-                "modal instance has no update_autoscaler; skipping autoscaler update",
-            )
-            return
-        try:
-            updater(min_containers=min_containers, max_containers=max_containers)
-            _emit_status(
-                "modal",
-                "autoscaler_updated",
-                (
-                    "set modal autoscaler "
-                    f"min_containers={min_containers}, max_containers={max_containers} "
-                    f"for session {self._session_id}"
-                ),
-            )
-        except Exception as error:  # noqa: BLE001
-            _emit_status(
-                "modal",
-                "warning",
-                (
-                    "failed to set modal autoscaler "
-                    f"min_containers={min_containers}, max_containers={max_containers}: {error}"
-                ),
-            )
 
     def _is_transient_modal_error(self, error: Exception) -> bool:
         message = str(error).lower()
@@ -519,7 +572,20 @@ class ModalBackend:
         raise RuntimeError(f"modal generate failed after retries: {last_error}")
 
     def shutdown(self) -> None:
-        self._update_autoscaler(min_containers=0, max_containers=1)
+        _emit_status("modal", "stopping", "wrapper shutdown requested")
+        if self._managed_deployment_name is not None:
+            app_name, code = ensure_undeployed(
+                model_cli_name=self._model_cli_name,
+                model_api_name=self._hf_model_name,
+                config_nickname=self._config_nickname,
+                epoch=self._epoch,
+            )
+            if code != 0:
+                _emit_status(
+                    "modal",
+                    "warning",
+                    f"failed to undeploy modal inference app {app_name}",
+                )
         return
 
 
@@ -561,6 +627,8 @@ def main() -> int:
                 args.listen_port + 1,
                 args.epoch,
                 args.hf_model_name,
+                args.model_cli_name,
+                args.config_nickname,
             )
         else:
             backend = ModalBackend(
@@ -569,11 +637,12 @@ def main() -> int:
                 args.model_cli_name,
                 args.config_nickname,
                 args.epoch,
+                args.num_gpus,
                 args.hf_model_name,
-            args.artifact_root_dir,
-            args.modal_base_url,
-            args.modal_auth_token_env_var,
-        )
+                args.artifact_root_dir,
+                args.modal_base_url,
+                args.modal_auth_token_env_var,
+            )
 
         _emit_inference_identity(
             args.backend,

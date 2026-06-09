@@ -451,6 +451,12 @@ impl Orchestrator {
                 epoch,
                 use_tool,
             ));
+            assert!(
+                handle.use_tool == use_tool,
+                "inference server handle use_tool mismatch: existing={} requested={}",
+                handle.use_tool,
+                use_tool
+            );
             if handle.epoch == epoch && handle.use_tool == use_tool {
                 // already launched for this epoch
                 log_info(format!(
@@ -984,9 +990,20 @@ impl Orchestrator {
 
         let training_config_json = serde_json::to_string(&training_config)
             .map_err(|err| format!("failed to serialize training config for wrapper: {}", err))?;
+        let training_num_gpus = if self.compute_backend == ComputeBackend::Modal {
+            if self.num_gpus != 1 {
+                log_info(format!(
+                    "Modal training currently uses 1 GPU; keeping inference deployment at {} GPUs",
+                    self.num_gpus
+                ));
+            }
+            1
+        } else {
+            self.num_gpus
+        };
         run_training_wrapper_and_wait(
             self.compute_backend,
-            self.num_gpus,
+            training_num_gpus,
             M::API_NAME,
             training_config_json,
             &training_trajectory_sqlite_path,
