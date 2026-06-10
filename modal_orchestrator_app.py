@@ -49,7 +49,9 @@ def _load_orchestrator_cli_args() -> list[str]:
     elif isinstance(payload, dict):
         args = payload.get("args")
     else:
-        raise RuntimeError("orchestrator config must be a JSON array or object with 'args'")
+        raise RuntimeError(
+            "orchestrator config must be a JSON array or object with 'args'"
+        )
 
     if not isinstance(args, list):
         raise RuntimeError("orchestrator config field 'args' must be a JSON array")
@@ -108,6 +110,14 @@ DEPLOY_NUM_GPUS = _extract_num_gpus(DEPLOY_ORCHESTRATOR_CLI_ARGS)
 GPU = f"H100:{DEPLOY_NUM_GPUS}"
 
 
+def _print_workspace_env_file_status() -> None:
+    env_path = Path("/workspace/.env")
+    if env_path.is_file():
+        print(f"[orchestrate] found workspace env file at {env_path}")
+    else:
+        print(f"[orchestrate] workspace env file missing at {env_path}")
+
+
 def _print_sglang_env_package_versions() -> None:
     sglang_python = Path("/workspace/pyprojects/sglang/.venv/bin/python")
     if not sglang_python.is_file():
@@ -123,7 +133,14 @@ def _print_sglang_env_package_versions() -> None:
         check=False,
     )
     if result.returncode != 0:
-        install_pip_cmd = ["uv", "pip", "install", "--python", str(sglang_python), "pip"]
+        install_pip_cmd = [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(sglang_python),
+            "pip",
+        ]
         install_pip = subprocess.run(
             install_pip_cmd,
             cwd="/workspace",
@@ -185,7 +202,9 @@ def _run_orchestrator_subprocess(cli_args: list[str]) -> dict[str, Any]:
         signal.signal(signal.SIGINT, previous_sigint)
 
     if termination_requested.is_set():
-        raise RuntimeError("CANCELLED_BY_SIGNAL: modal orchestrator subprocess received SIGTERM/SIGINT")
+        raise RuntimeError(
+            "CANCELLED_BY_SIGNAL: modal orchestrator subprocess received SIGTERM/SIGINT"
+        )
 
     if return_code == 0:
         return {"ok": True, "message": "orchestrator completed"}
@@ -198,7 +217,9 @@ def _run_orchestrator_subprocess(cli_args: list[str]) -> dict[str, Any]:
 
 orchestrator_image = modal.Image.from_dockerfile(
     "Dockerfile.modal-mirror",
-    ignore=modal.FilePatternMatcher.from_file(str(Path(__file__).with_name(".dockerignore"))),
+    ignore=modal.FilePatternMatcher.from_file(
+        str(Path(__file__).with_name(".dockerignore"))
+    ),
 ).env(
     {
         "PYTHONPATH": "/workspace",
@@ -223,6 +244,7 @@ app = modal.App(name=APP_NAME)
 class OrchestratorService:
     @modal.method()
     def orchestrate(self) -> dict[str, Any]:
+        _print_workspace_env_file_status()
         _print_sglang_env_package_versions()
         cli_args = _load_orchestrator_cli_args()
         requested_num_gpus = _extract_num_gpus(cli_args)
