@@ -1,5 +1,5 @@
 {% if epoch == 0 %}
 {{ storage_large_files_dir }}/results/{{ model_cli_name }}
 {% else %}
-{{ storage_small_files_dir }}/results/{{ model_cli_name }}/{{ config_nickname }}/epoch_{{ epoch }}
+{{ storage_large_files_dir }}/results/{{ model_cli_name }}/{{ config_nickname }}/epoch_{{ epoch }}
 {% endif %}

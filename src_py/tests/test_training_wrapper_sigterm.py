@@ -9,6 +9,13 @@ import time
 import unittest
 from pathlib import Path
 
+from src_py.train.cli_args import (
+    TrainingRequestArgs,
+    TrainingWrapperLaunchArgs,
+    model_to_cli_args,
+    model_to_json_bytes,
+)
+
 
 class TestTrainingWrapperSigterm(unittest.TestCase):
     def _run_wrapper_and_collect_events(
@@ -18,33 +25,50 @@ class TestTrainingWrapperSigterm(unittest.TestCase):
         trajectory_path.write_bytes(b"sqlite")
         wrapper_log_path = Path(temp_dir) / "training_wrapper.log"
 
+        launch_args = TrainingWrapperLaunchArgs(
+            num_gpus=1,
+            trajectory_sqlite_path=str(trajectory_path),
+            hf_model_name="Qwen/Qwen3.5-4B",
+            wrapper_log_path=str(wrapper_log_path),
+            test_sleep_secs=30,
+        )
+        training_request = TrainingRequestArgs(
+            training_plan="lora",
+            advantage_clip=1.0,
+            learning_rate=1e-4,
+            weight_decay=0.01,
+            grad_accum_steps=1,
+            log_time_interval=5.0,
+            checkpoint_save_time_interval=60.0,
+            seed=7,
+            training_time=60.0,
+            num_iterations_limit=10,
+            artifact_root_dir="/tmp",
+            model_cli_name="qwen35_4b",
+            config_nickname="sigterm_test",
+            epoch=1,
+        )
         command = [
             sys.executable,
             "-m",
             "src_py.wrappers.training_wrapper",
-            "--num-gpus",
-            "1",
-            "--training-config-json",
-            '{"model_cli_name":"qwen35_4b","config_nickname":"sigterm_test","epoch":1,"artifact_root_dir":"/tmp"}',
-            "--trajectory-sqlite-path",
-            str(trajectory_path),
-            "--hf-model-name",
-            "Qwen/Qwen3.5-4B",
-            "--wrapper-log-path",
-            str(wrapper_log_path),
-            "--test-sleep-secs",
-            "30",
+            *model_to_cli_args(launch_args),
         ]
         process = subprocess.Popen(
             command,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
         )
+        assert process.stdin is not None
+        process.stdin.write(model_to_json_bytes(training_request))
+        process.stdin.close()
+        process.stdin = None
 
         time.sleep(1.5)
         process.send_signal(signal.SIGTERM)
-        _stdout_text, stderr_text = process.communicate(timeout=20)
+        _stdout_bytes, stderr_bytes = process.communicate(timeout=20)
+        stderr_text = stderr_bytes.decode("utf-8", errors="replace")
 
         log_text = wrapper_log_path.read_text(encoding="utf-8")
         parsed_events: list[dict[str, object]] = []

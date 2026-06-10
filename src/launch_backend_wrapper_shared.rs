@@ -1,5 +1,4 @@
 use std::{
-    net::SocketAddr,
     path::{Path, PathBuf},
     process::Stdio,
     sync::atomic::{AtomicU64, Ordering},
@@ -8,153 +7,21 @@ use std::{
 
 use research_utility::{
     message::TuiMessage,
-    progress_tui_logger::{log_info, log_message, log_warning},
+    progress_tui_logger::{log_message, log_warning},
 };
-use tokio::io::{AsyncBufReadExt, BufReader};
+use serde::Serialize;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{Child, Command};
-use tokio::time::{Instant, sleep, timeout};
-
-use crate::launch_sglang_server::resolve_sglang_port;
+use tokio::time::timeout;
 
 static WRAPPER_TUI_SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
 const WRAPPER_TUI_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const WRAPPER_TUI_ADDITIONAL_CONNECT_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub async fn launch_inference_wrapper_process(
-    model_path: &str,
-    model_cli_name: &str,
-    config_nickname: &str,
-    epoch: usize,
-    hf_model_name: &str,
-    num_gpus: usize,
-    wrapper_log_path: &str,
-) -> Result<(u16, Child), String> {
-    let listen_port = resolve_sglang_port();
-    ensure_wrapper_port_available(listen_port).await?;
-    let (socket_path, listener) = bind_wrapper_tui_listener("inference")?;
-    let socket_path_arg = socket_path_to_arg(&socket_path)?;
-
-    let mut command = Command::new("uv");
-    command
-        .arg("run")
-        .arg("python")
-        .arg("-m")
-        .arg("src_py.wrappers.inference_wrapper")
-        .arg("--listen-port")
-        .arg(listen_port.to_string())
-        .arg("--num-gpus")
-        .arg(num_gpus.to_string())
-        .arg("--epoch")
-        .arg(epoch.to_string())
-        .arg("--model-cli-name")
-        .arg(model_cli_name)
-        .arg("--config-nickname")
-        .arg(config_nickname)
-        .arg("--wrapper-log-path")
-        .arg(wrapper_log_path)
-        .arg("--orchestrator-socket-path")
-        .arg(&socket_path_arg)
-        .arg("--hf-model-name")
-        .arg(hf_model_name)
-        .arg("--model-path")
-        .arg(model_path);
-
-    #[cfg(unix)]
-    command.process_group(0);
-
-    command.stdout(Stdio::null());
-    command.stderr(Stdio::null());
-
-    let mut process = match command.spawn() {
-        Ok(process) => process,
-        Err(err) => {
-            cleanup_socket_path(&socket_path);
-            return Err(format!(
-                "failed to launch inference wrapper process: {}",
-                err
-            ));
-        }
-    };
-
-    spawn_wrapper_tui_listener(listener, socket_path, "inference wrapper", false);
-
-    wait_for_wrapper_health(listen_port, &mut process, wrapper_log_path).await?;
-    Ok((listen_port, process))
-}
-
-pub async fn run_training_wrapper_and_wait(
-    num_gpus: usize,
-    hf_model_name: &str,
-    training_config_json: String,
-    trajectory_sqlite_path: &str,
-    wrapper_log_path: &str,
-) -> Result<(), String> {
-    assert!(num_gpus > 0, "num_gpus must be positive");
-    if !Path::new(trajectory_sqlite_path).is_file() {
-        return Err(format!(
-            "training trajectory sqlite path does not exist: {}",
-            trajectory_sqlite_path
-        ));
-    }
-    let (socket_path, listener) = bind_wrapper_tui_listener("training")?;
-    let socket_path_arg = socket_path_to_arg(&socket_path)?;
-
-    let mut command = Command::new("uv");
-    command
-        .arg("run")
-        .arg("python")
-        .arg("-m")
-        .arg("src_py.wrappers.training_wrapper")
-        .arg("--num-gpus")
-        .arg(num_gpus.to_string())
-        .arg("--training-config-json")
-        .arg(training_config_json)
-        .arg("--trajectory-sqlite-path")
-        .arg(trajectory_sqlite_path)
-        .arg("--hf-model-name")
-        .arg(hf_model_name)
-        .arg("--wrapper-log-path")
-        .arg(wrapper_log_path)
-        .arg("--orchestrator-socket-path")
-        .arg(&socket_path_arg);
-
-    command.stdout(Stdio::null());
-    command.stderr(Stdio::null());
-
-    let mut process = match command.spawn() {
-        Ok(process) => process,
-        Err(err) => {
-            cleanup_socket_path(&socket_path);
-            return Err(format!(
-                "failed to launch training wrapper process: {}",
-                err
-            ));
-        }
-    };
-
-    spawn_wrapper_tui_listener(listener, socket_path, "training wrapper", true);
-
-    let status = process
-        .wait()
-        .await
-        .map_err(|err| format!("failed while waiting for training wrapper process: {}", err))?;
-
-    if status.success() {
-        log_info(format!(
-            "Training wrapper completed successfully; details in {}",
-            wrapper_log_path
-        ));
-        Ok(())
-    } else {
-        Err(format!(
-            "training wrapper process exited with status {}; inspect log at {}",
-            status, wrapper_log_path
-        ))
-    }
-}
-
-fn bind_wrapper_tui_listener(wrapper_kind: &str) -> Result<(PathBuf, UnixListener), String> {
+pub(crate) fn bind_wrapper_tui_listener(
+    wrapper_kind: &str,
+) -> Result<(PathBuf, UnixListener), String> {
     let socket_path = wrapper_tui_socket_path(wrapper_kind);
     cleanup_socket_path(&socket_path);
     let listener = UnixListener::bind(&socket_path).map_err(|err| {
@@ -168,7 +35,58 @@ fn bind_wrapper_tui_listener(wrapper_kind: &str) -> Result<(PathBuf, UnixListene
     Ok((socket_path, listener))
 }
 
-fn spawn_wrapper_tui_listener(
+pub(crate) fn socket_path_to_arg(socket_path: &Path) -> Result<String, String> {
+    socket_path
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("socket path is not valid UTF-8: {}", socket_path.display()))
+}
+
+pub(crate) fn spawn_wrapper_command(
+    command: &mut Command,
+    socket_path: &Path,
+    wrapper_name: &str,
+) -> Result<Child, String> {
+    command.stdout(Stdio::null());
+    command.stderr(Stdio::null());
+    command.spawn().map_err(|err| {
+        cleanup_socket_path(socket_path);
+        format!("failed to launch {} process: {}", wrapper_name, err)
+    })
+}
+
+pub(crate) async fn write_json_payload_to_child_stdin<T: Serialize>(
+    child: &mut Child,
+    payload: &T,
+    process_name: &str,
+) -> Result<(), String> {
+    let stdin_payload = serde_json::to_vec(payload).map_err(|err| {
+        format!(
+            "failed to serialize {} stdin payload as JSON: {}",
+            process_name, err
+        )
+    })?;
+    let mut stdin = child.stdin.take().ok_or_else(|| {
+        format!(
+            "{} stdin is unavailable; expected a piped stdin handle",
+            process_name
+        )
+    })?;
+    stdin.write_all(&stdin_payload).await.map_err(|err| {
+        format!(
+            "failed to write JSON stdin payload to {}: {}",
+            process_name, err
+        )
+    })?;
+    stdin.shutdown().await.map_err(|err| {
+        format!(
+            "failed to close {} stdin after writing JSON payload: {}",
+            process_name, err
+        )
+    })
+}
+
+pub(crate) fn spawn_wrapper_tui_listener(
     listener: UnixListener,
     socket_path: PathBuf,
     wrapper_name: &'static str,
@@ -290,13 +208,6 @@ async fn read_tui_stream(stream: UnixStream, wrapper_name: String) -> Result<(),
     }
 }
 
-fn socket_path_to_arg(socket_path: &Path) -> Result<String, String> {
-    socket_path
-        .to_str()
-        .map(str::to_owned)
-        .ok_or_else(|| format!("socket path is not valid UTF-8: {}", socket_path.display()))
-}
-
 fn wrapper_tui_socket_path(wrapper_kind: &str) -> PathBuf {
     let id = WRAPPER_TUI_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
@@ -317,105 +228,6 @@ fn cleanup_socket_path(socket_path: &Path) {
             ));
         }
     }
-}
-
-async fn wait_for_wrapper_health(
-    port: u16,
-    process: &mut Child,
-    log_path: &str,
-) -> Result<(), String> {
-    let timeout_secs = std::env::var("INFERENCE_WRAPPER_HEALTH_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(900);
-    let timeout_duration = Duration::from_secs(timeout_secs);
-    let sleep_interval = Duration::from_millis(500);
-    let start = Instant::now();
-    let url = format!("http://127.0.0.1:{}/health", port);
-
-    loop {
-        if let Ok(Some(status)) = process.try_wait() {
-            let hint = format!("; inspect wrapper log at {}", log_path);
-            return Err(format!(
-                "inference wrapper process exited before becoming healthy: {}{}",
-                status, hint
-            ));
-        }
-
-        match timeout(Duration::from_secs(2), reqwest::get(url.clone())).await {
-            Ok(Ok(response)) if response.status().is_success() => {
-                if let Ok(body) = response.json::<serde_json::Value>().await {
-                    if body
-                        .get("status")
-                        .and_then(serde_json::Value::as_str)
-                        .map(|s| s == "ok")
-                        .unwrap_or(false)
-                    {
-                        return Ok(());
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        if start.elapsed() >= timeout_duration {
-            return Err(format!(
-                "timed out waiting for inference wrapper health endpoint ({})",
-                url
-            ));
-        }
-        sleep(sleep_interval).await;
-    }
-}
-
-async fn ensure_wrapper_port_available(port: u16) -> Result<(), String> {
-    if !is_port_listening(port).await {
-        return Ok(());
-    }
-    log_warning(format!(
-        "Detected existing listener on wrapper port {}; attempting stale wrapper cleanup",
-        port
-    ));
-    let pattern = format!("src_py.wrappers.inference_wrapper.*--listen-port {}", port);
-    match Command::new("pkill").arg("-f").arg(&pattern).status().await {
-        Ok(status) => {
-            log_info(format!(
-                "Stale wrapper cleanup command completed (pattern='{}', status={})",
-                pattern, status
-            ));
-        }
-        Err(err) => {
-            return Err(format!(
-                "wrapper port {} is already in use and stale-wrapper cleanup failed to execute (pattern='{}'): {}",
-                port, pattern, err
-            ));
-        }
-    }
-    for _ in 0..20 {
-        if !is_port_listening(port).await {
-            log_info(format!(
-                "Stale wrapper cleanup succeeded; wrapper port {} is now free",
-                port
-            ));
-            return Ok(());
-        }
-        sleep(Duration::from_millis(250)).await;
-    }
-    Err(format!(
-        "wrapper port {} is already in use before launch (likely stale process). Please free the port or set SGLANG_PORT to an unused value",
-        port
-    ))
-}
-
-async fn is_port_listening(port: u16) -> bool {
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
-    timeout(
-        Duration::from_millis(250),
-        tokio::net::TcpStream::connect(address),
-    )
-    .await
-    .is_ok_and(|result| result.is_ok())
 }
 
 #[cfg(test)]

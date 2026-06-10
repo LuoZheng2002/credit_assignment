@@ -21,11 +21,12 @@ use crate::{
         model_parent_dir_from_template,
     },
     json_line_util::write_json,
-    launch_backend_wrappers::{launch_inference_wrapper_process, run_training_wrapper_and_wait},
+    launch_inference_wrapper::launch_inference_wrapper_process,
     launch_sglang_server::{
         best_effort_shutdown_stale_sglang_server, model_uses_sglang,
         shut_down_sglang_server_process,
     },
+    launch_training_wrapper::run_training_wrapper_and_wait,
     llm_model::{LlmCliArgs, LlmModelMarker},
     python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
     util::storage_large_files_dir,
@@ -894,12 +895,10 @@ impl Orchestrator {
             epoch,
         };
 
-        let training_config_json = serde_json::to_string(&training_config)
-            .map_err(|err| format!("failed to serialize training config for wrapper: {}", err))?;
         run_training_wrapper_and_wait(
             self.num_gpus,
             M::API_NAME,
-            training_config_json,
+            &training_config,
             &training_trajectory_sqlite_path,
             self.training_wrapper_log_path.as_ref(),
         )

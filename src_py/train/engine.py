@@ -1,25 +1,25 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import atexit
 import gc
 import json
 import os
 import random
 import shutil
-import sys
+from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import torch
 
+from ..tui_logging import _tui_error, _tui_info, _tui_warning
 from .batch_dataset import LazyResolvedBatchLoader
+from .train_loop import run_training_loop
 from .training_plan import (
     TRAINING_PLAN_FSDP,
     TRAINING_PLAN_LORA,
     assert_supported_training_plan,
 )
-from .train_loop import run_training_loop
 
 
 @dataclass(frozen=True)
@@ -116,9 +116,11 @@ def _load_dotenv_if_present(dotenv_path: str = ".env") -> int:
 
 
 def _is_primary_rank() -> bool:
-    return (not torch.distributed.is_available()) or (
-        not torch.distributed.is_initialized()
-    ) or torch.distributed.get_rank() == 0
+    return (
+        (not torch.distributed.is_available())
+        or (not torch.distributed.is_initialized())
+        or torch.distributed.get_rank() == 0
+    )
 
 
 def _log_json_line(log_path: Path, payload: dict[str, float | int]) -> None:
@@ -127,31 +129,21 @@ def _log_json_line(log_path: Path, payload: dict[str, float | int]) -> None:
         handle.write(json.dumps(payload) + "\n")
 
 
-def _json_key_value(key: str, value: object) -> str:
-    return json.dumps({"KeyValuePair": {"key": key, "value": str(value)}})
-
-
-def _json_master_progress(progress: float, label: str) -> str:
-    return json.dumps({"MasterProgress": {"progress": progress, "label": label}})
-
-
-def _json_worker_progress(worker_name: str, progress: float, label: str) -> str:
-    return json.dumps({"WorkerProgress": {"worker_name": worker_name, "progress": progress, "label": label}})
-
-
-def _json_delete_worker_bar(worker_name: str) -> str:
-    return json.dumps({"DeleteWorkerBar": {"worker_name": worker_name}})
-
-
-def _forward_logits(model_engine: torch.nn.Module, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-    outputs = model_engine(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
+def _forward_logits(
+    model_engine: torch.nn.Module, input_ids: torch.Tensor, attention_mask: torch.Tensor
+) -> torch.Tensor:
+    outputs = model_engine(
+        input_ids=input_ids, attention_mask=attention_mask, use_cache=False
+    )
     assert hasattr(outputs, "logits"), "model forward output must contain logits"
     logits = outputs.logits
     assert isinstance(logits, torch.Tensor), "logits must be a tensor"
     return logits
 
 
-def _load_causal_lm_with_attention(model_path: str, device: torch.device) -> tuple[torch.nn.Module, str]:
+def _load_causal_lm_with_attention(
+    model_path: str, device: torch.device
+) -> tuple[torch.nn.Module, str]:
     from transformers import AutoModelForCausalLM
 
     load_kwargs = {
@@ -168,9 +160,9 @@ def _load_causal_lm_with_attention(model_path: str, device: torch.device) -> tup
     except Exception as exc:
         _release_step_memory(device)
         if _is_primary_rank():
-            print(
-                "[status] "
-                f"attention_backend_request_failed=1 requested_backend={backend} "
+            _tui_warning(
+                "attention_backend_request_failed=1 "
+                f"requested_backend={backend} "
                 f"error_type={type(exc).__name__}"
             )
 
@@ -223,16 +215,15 @@ def _print_cuda_oom_stderr(
     assert batch_token_length > 0, "batch_token_length must be positive"
     extra = ""
     if next_trajectory_length_cap is not None:
-        assert next_trajectory_length_cap > 0, "next_trajectory_length_cap must be positive"
+        assert next_trajectory_length_cap > 0, (
+            "next_trajectory_length_cap must be positive"
+        )
         extra = f" next_trajectory_length_cap={next_trajectory_length_cap}"
-    print(
-        "[error] "
+    _tui_error(
         f"cuda_oom=1 rank={rank} iteration={iteration_index} "
         f"batch_index={batch_index} batch_token_length={batch_token_length} "
         f"next_batch_size={next_batch_size} "
-        f"will_retry={1 if will_retry else 0}{extra}",
-        file=sys.stderr,
-        flush=True,
+        f"will_retry={1 if will_retry else 0}{extra}"
     )
 
 
@@ -244,12 +235,9 @@ def _print_cuda_oom_diagnostics_stderr(
     device: torch.device,
 ) -> None:
     if not torch.cuda.is_available() or device.type != "cuda":
-        print(
-            "[error] "
+        _tui_error(
             f"cuda_oom_diagnostics=1 rank={rank} iteration={iteration_index} "
-            f"batch_index={batch_index} cuda_available=0",
-            file=sys.stderr,
-            flush=True,
+            f"batch_index={batch_index} cuda_available=0"
         )
         return
 
@@ -260,15 +248,12 @@ def _print_cuda_oom_diagnostics_stderr(
     max_reserved_bytes = torch.cuda.max_memory_reserved(device=device)
 
     mib = float(1024 * 1024)
-    print(
-        "[error] "
+    _tui_error(
         f"cuda_oom_diagnostics=1 rank={rank} iteration={iteration_index} "
         f"batch_index={batch_index} "
         f"free_mib={free_bytes / mib:.1f} total_mib={total_bytes / mib:.1f} "
         f"allocated_mib={allocated_bytes / mib:.1f} reserved_mib={reserved_bytes / mib:.1f} "
-        f"max_allocated_mib={max_allocated_bytes / mib:.1f} max_reserved_mib={max_reserved_bytes / mib:.1f}",
-        file=sys.stderr,
-        flush=True,
+        f"max_allocated_mib={max_allocated_bytes / mib:.1f} max_reserved_mib={max_reserved_bytes / mib:.1f}"
     )
 
 
@@ -295,7 +280,9 @@ def _resolve_reset_batch_size_on_wrap_from_env() -> bool:
         return True
     if normalized in {"0", "false", "no", "n", "off"}:
         return False
-    raise AssertionError("TRAIN_RESET_BATCH_SIZE_ON_WRAP must be a boolean-like value when set")
+    raise AssertionError(
+        "TRAIN_RESET_BATCH_SIZE_ON_WRAP must be a boolean-like value when set"
+    )
 
 
 def _resolve_max_grad_norm_from_env() -> float:
@@ -330,7 +317,9 @@ def _resolve_lr_min_scale_from_env() -> float:
     if len(normalized) == 0:
         return 0.1
     parsed = float(normalized)
-    assert parsed > 0.0 and parsed <= 1.0, "TRAIN_LR_MIN_SCALE must be in (0, 1] when set"
+    assert parsed > 0.0 and parsed <= 1.0, (
+        "TRAIN_LR_MIN_SCALE must be in (0, 1] when set"
+    )
     return parsed
 
 
@@ -429,16 +418,28 @@ def _save_checkpoint(
     assert global_step >= 0, "global_step must be non-negative"
     assert next_iteration_index >= 0, "next_iteration_index must be non-negative"
     assert next_batch_cursor >= 0, "next_batch_cursor must be non-negative"
-    assert accumulation_step == 0, "checkpointing with partial gradient accumulation is not supported"
+    assert accumulation_step == 0, (
+        "checkpointing with partial gradient accumulation is not supported"
+    )
     assert next_sample_index >= 0, "next_sample_index must be non-negative"
     assert next_batch_size >= 0, "next_batch_size must be non-negative"
-    assert elapsed_training_time_sec >= 0.0, "elapsed_training_time_sec must be non-negative"
-    assert np.isfinite(elapsed_training_time_sec), "elapsed_training_time_sec must be finite"
+    assert elapsed_training_time_sec >= 0.0, (
+        "elapsed_training_time_sec must be non-negative"
+    )
+    assert np.isfinite(elapsed_training_time_sec), (
+        "elapsed_training_time_sec must be finite"
+    )
     assert samples_trained >= 0, "samples_trained must be non-negative"
     assert samples_available >= 0, "samples_available must be non-negative"
-    assert np.isfinite(max_average_absolute_advantage), "max_average_absolute_advantage must be finite"
-    assert np.isfinite(min_average_absolute_advantage), "min_average_absolute_advantage must be finite"
-    assert np.isfinite(median_average_absolute_advantage), "median_average_absolute_advantage must be finite"
+    assert np.isfinite(max_average_absolute_advantage), (
+        "max_average_absolute_advantage must be finite"
+    )
+    assert np.isfinite(min_average_absolute_advantage), (
+        "min_average_absolute_advantage must be finite"
+    )
+    assert np.isfinite(median_average_absolute_advantage), (
+        "median_average_absolute_advantage must be finite"
+    )
 
     rank, _ = _get_rank_world_size()
     checkpoint_dir = output_dir / "checkpoints"
@@ -467,21 +468,32 @@ def _save_checkpoint(
         "checkpoint_tag": checkpoint_tag,
     }
     torch.save(metadata_payload, checkpoint_dir / f"training_state.rank{rank}.pt")
-    torch.save(optimizer.state_dict(), checkpoint_dir / f"optimizer_state.rank{rank}.pt")
+    torch.save(
+        optimizer.state_dict(), checkpoint_dir / f"optimizer_state.rank{rank}.pt"
+    )
 
     if training_plan == TRAINING_PLAN_LORA:
         if rank == 0:
             unwrapped = model.module if hasattr(model, "module") else model
-            torch.save(_extract_lora_checkpoint_state_dict(unwrapped), checkpoint_dir / "model_state.pt")
-            _write_latest_checkpoint_pointer(output_dir=output_dir, checkpoint_tag=checkpoint_tag)
+            torch.save(
+                _extract_lora_checkpoint_state_dict(unwrapped),
+                checkpoint_dir / "model_state.pt",
+            )
+            _write_latest_checkpoint_pointer(
+                output_dir=output_dir, checkpoint_tag=checkpoint_tag
+            )
         _distributed_barrier()
         return
 
-    assert training_plan == TRAINING_PLAN_FSDP, "unknown training plan for checkpointing"
+    assert training_plan == TRAINING_PLAN_FSDP, (
+        "unknown training plan for checkpointing"
+    )
     from torch.distributed.fsdp import (
-        FullyShardedDataParallel as FSDP,
         FullStateDictConfig,
         StateDictType,
+    )
+    from torch.distributed.fsdp import (
+        FullyShardedDataParallel as FSDP,
     )
 
     assert isinstance(model, FSDP), "fsdp checkpoint expects FSDP model"
@@ -490,7 +502,9 @@ def _save_checkpoint(
         state_dict = model.state_dict()
     if rank == 0:
         torch.save(state_dict, checkpoint_dir / "model_state.pt")
-        _write_latest_checkpoint_pointer(output_dir=output_dir, checkpoint_tag=checkpoint_tag)
+        _write_latest_checkpoint_pointer(
+            output_dir=output_dir, checkpoint_tag=checkpoint_tag
+        )
     _distributed_barrier()
 
 
@@ -522,20 +536,30 @@ def _save_final_model_folder(
         ]
         for weight_path in weight_paths:
             if weight_path.exists():
-                assert weight_path.is_file(), f"weight artifact must be a file: {weight_path}"
+                assert weight_path.is_file(), (
+                    f"weight artifact must be a file: {weight_path}"
+                )
                 weight_path.unlink()
 
         shard_patterns = ["model-*.safetensors", "pytorch_model-*.bin"]
         for pattern in shard_patterns:
             for shard_path in model_dir.glob(pattern):
                 if shard_path.exists():
-                    assert shard_path.is_file(), f"weight shard must be a file: {shard_path}"
+                    assert shard_path.is_file(), (
+                        f"weight shard must be a file: {shard_path}"
+                    )
                     shard_path.unlink()
 
     if rank == 0:
-        print(f"[status] preparing_final_output_model=1 output_parent_dir={final_model_output_parent_dir}")
-        assert source_model_folder.exists(), f"source model folder does not exist: {source_model_folder}"
-        assert source_model_folder.is_dir(), f"source model folder must be a directory: {source_model_folder}"
+        _tui_info(
+            f"preparing_final_output_model=1 output_parent_dir={final_model_output_parent_dir}"
+        )
+        assert source_model_folder.exists(), (
+            f"source model folder does not exist: {source_model_folder}"
+        )
+        assert source_model_folder.is_dir(), (
+            f"source model folder must be a directory: {source_model_folder}"
+        )
         if final_model_output_parent_dir.exists():
             assert final_model_output_parent_dir.is_dir(), (
                 "final_model_output_parent_dir must be a directory when it exists: "
@@ -547,7 +571,7 @@ def _save_final_model_folder(
                 f"final_model_output_path must be a directory when it exists: {final_model_output_path}"
             )
             shutil.rmtree(final_model_output_path)
-        print(f"[status] writing_final_output_model=1 output_dir={final_model_output_path}")
+        _tui_info(f"writing_final_output_model=1 output_dir={final_model_output_path}")
         shutil.copytree(source_model_folder, final_model_output_path)
         _remove_existing_weight_files(final_model_output_path)
 
@@ -556,21 +580,31 @@ def _save_final_model_folder(
     if training_plan == TRAINING_PLAN_LORA:
         if rank == 0:
             unwrapped = model.module if hasattr(model, "module") else model
-            export_model = unwrapped.merge_and_unload() if hasattr(unwrapped, "merge_and_unload") else unwrapped
+            export_model = (
+                unwrapped.merge_and_unload()
+                if hasattr(unwrapped, "merge_and_unload")
+                else unwrapped
+            )
             export_model.save_pretrained(
                 final_model_output_path,
                 safe_serialization=True,
                 save_config=False,
             )
-            print(f"[status] written_final_output_model=1 output_dir={final_model_output_path}")
+            _tui_info(
+                f"written_final_output_model=1 output_dir={final_model_output_path}"
+            )
         _distributed_barrier()
         return
 
-    assert training_plan == TRAINING_PLAN_FSDP, "unknown training plan for final model export"
+    assert training_plan == TRAINING_PLAN_FSDP, (
+        "unknown training plan for final model export"
+    )
     from torch.distributed.fsdp import (
-        FullyShardedDataParallel as FSDP,
         FullStateDictConfig,
         StateDictType,
+    )
+    from torch.distributed.fsdp import (
+        FullyShardedDataParallel as FSDP,
     )
 
     assert isinstance(model, FSDP), "fsdp final export expects FSDP model"
@@ -580,16 +614,22 @@ def _save_final_model_folder(
     if rank == 0:
         from transformers import AutoModelForCausalLM
 
-        export_model = AutoModelForCausalLM.from_pretrained(source_model_path, dtype=torch.bfloat16)
+        export_model = AutoModelForCausalLM.from_pretrained(
+            source_model_path, dtype=torch.bfloat16
+        )
         incompatible = export_model.load_state_dict(state_dict, strict=True)
-        assert len(incompatible.missing_keys) == 0, "final export state_dict is missing keys"
-        assert len(incompatible.unexpected_keys) == 0, "final export state_dict has unexpected keys"
+        assert len(incompatible.missing_keys) == 0, (
+            "final export state_dict is missing keys"
+        )
+        assert len(incompatible.unexpected_keys) == 0, (
+            "final export state_dict has unexpected keys"
+        )
         export_model.save_pretrained(
             final_model_output_path,
             safe_serialization=True,
             save_config=False,
         )
-        print(f"[status] written_final_output_model=1 output_dir={final_model_output_path}")
+        _tui_info(f"written_final_output_model=1 output_dir={final_model_output_path}")
     _distributed_barrier()
 
 
@@ -611,7 +651,9 @@ def _resolve_resume_checkpoint_tag(output_dir: Path, resume_checkpoint_tag: str)
         if not latest_path.exists():
             if normalized_tag == "auto":
                 return ""
-            assert latest_path.exists(), f"latest checkpoint pointer not found: {latest_path}"
+            assert latest_path.exists(), (
+                f"latest checkpoint pointer not found: {latest_path}"
+            )
         return _read_latest_checkpoint_pointer(output_dir=output_dir)
     assert normalized_tag == "checkpoints", (
         "explicit resume_checkpoint_tag must be 'checkpoints' for single-epoch run layout"
@@ -619,7 +661,9 @@ def _resolve_resume_checkpoint_tag(output_dir: Path, resume_checkpoint_tag: str)
     return normalized_tag
 
 
-def _extract_lora_checkpoint_state_dict(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+def _extract_lora_checkpoint_state_dict(
+    model: torch.nn.Module,
+) -> dict[str, torch.Tensor]:
     if hasattr(model, "peft_config"):
         try:
             from peft import get_peft_model_state_dict
@@ -630,7 +674,9 @@ def _extract_lora_checkpoint_state_dict(model: torch.nn.Module) -> dict[str, tor
     return model.state_dict()
 
 
-def _load_lora_checkpoint_state_dict(model: torch.nn.Module, state_dict: dict[str, torch.Tensor]) -> None:
+def _load_lora_checkpoint_state_dict(
+    model: torch.nn.Module, state_dict: dict[str, torch.Tensor]
+) -> None:
     if hasattr(model, "peft_config"):
         try:
             from peft import set_peft_model_state_dict
@@ -642,7 +688,9 @@ def _load_lora_checkpoint_state_dict(model: torch.nn.Module, state_dict: dict[st
 
     incompatible = model.load_state_dict(state_dict, strict=True)
     assert len(incompatible.missing_keys) == 0, "checkpoint model state is missing keys"
-    assert len(incompatible.unexpected_keys) == 0, "checkpoint model state has unexpected keys"
+    assert len(incompatible.unexpected_keys) == 0, (
+        "checkpoint model state has unexpected keys"
+    )
 
 
 def _load_checkpoint(
@@ -657,8 +705,7 @@ def _load_checkpoint(
 
     rank, _ = _get_rank_world_size()
     checkpoint_dir = output_dir / "checkpoints"
-    print(
-        "[status] "
+    _tui_info(
         f"rank={rank} "
         f"loading_checkpoint=1 "
         f"checkpoint_tag={checkpoint_tag} "
@@ -670,20 +717,30 @@ def _load_checkpoint(
     training_state_path = checkpoint_dir / f"training_state.rank{rank}.pt"
 
     assert model_state_path.exists(), f"missing model state: {model_state_path}"
-    assert optimizer_state_path.exists(), f"missing optimizer state: {optimizer_state_path}"
-    assert training_state_path.exists(), f"missing training state: {training_state_path}"
+    assert optimizer_state_path.exists(), (
+        f"missing optimizer state: {optimizer_state_path}"
+    )
+    assert training_state_path.exists(), (
+        f"missing training state: {training_state_path}"
+    )
 
     model_state_dict = torch.load(model_state_path, map_location="cpu")
     if training_plan == TRAINING_PLAN_LORA:
         unwrapped = model.module if hasattr(model, "module") else model
-        assert isinstance(model_state_dict, dict), "checkpoint model state must be a state_dict"
+        assert isinstance(model_state_dict, dict), (
+            "checkpoint model state must be a state_dict"
+        )
         _load_lora_checkpoint_state_dict(unwrapped, model_state_dict)
     else:
-        assert training_plan == TRAINING_PLAN_FSDP, "unknown training plan for checkpoint loading"
+        assert training_plan == TRAINING_PLAN_FSDP, (
+            "unknown training plan for checkpoint loading"
+        )
         from torch.distributed.fsdp import (
-            FullyShardedDataParallel as FSDP,
             FullStateDictConfig,
             StateDictType,
+        )
+        from torch.distributed.fsdp import (
+            FullyShardedDataParallel as FSDP,
         )
 
         assert isinstance(model, FSDP), "fsdp loading expects FSDP model"
@@ -692,19 +749,29 @@ def _load_checkpoint(
             incompatible = model.load_state_dict(model_state_dict, strict=True)
 
     if training_plan != TRAINING_PLAN_LORA:
-        assert len(incompatible.missing_keys) == 0, "checkpoint model state is missing keys"
-        assert len(incompatible.unexpected_keys) == 0, "checkpoint model state has unexpected keys"
+        assert len(incompatible.missing_keys) == 0, (
+            "checkpoint model state is missing keys"
+        )
+        assert len(incompatible.unexpected_keys) == 0, (
+            "checkpoint model state has unexpected keys"
+        )
 
     optimizer_state = torch.load(optimizer_state_path, map_location="cpu")
     optimizer.load_state_dict(optimizer_state)
 
     training_state = torch.load(training_state_path, map_location="cpu")
-    checkpoint_training_plan = assert_supported_training_plan(str(training_state["training_plan"]))
-    assert checkpoint_training_plan == training_plan, "checkpoint training plan mismatch"
+    checkpoint_training_plan = assert_supported_training_plan(
+        str(training_state["training_plan"])
+    )
+    assert checkpoint_training_plan == training_plan, (
+        "checkpoint training plan mismatch"
+    )
     next_iteration_index_obj = training_state.get("next_iteration_index")
     if next_iteration_index_obj is None:
         next_iteration_index_obj = training_state.get("next_epoch_index")
-    assert next_iteration_index_obj is not None, "checkpoint missing next_iteration_index"
+    assert next_iteration_index_obj is not None, (
+        "checkpoint missing next_iteration_index"
+    )
     resume_state = ResumeState(
         global_step=int(training_state["global_step"]),
         next_iteration_index=int(next_iteration_index_obj),
@@ -713,60 +780,95 @@ def _load_checkpoint(
         next_sample_index=int(training_state.get("next_sample_index", 0)),
         next_batch_size=int(training_state.get("next_batch_size", 0)),
         adaptive_velocity=float(training_state.get("adaptive_velocity", 0.0)),
-        adaptive_throughput_ema=float(training_state.get("adaptive_throughput_ema", 0.0)),
-        adaptive_best_throughput_ema=float(training_state.get("adaptive_best_throughput_ema", 0.0)),
-        adaptive_memory_utilization_ema=float(training_state.get("adaptive_memory_utilization_ema", 0.0)),
-        adaptive_previous_tokens_per_sample=float(training_state.get("adaptive_previous_tokens_per_sample", 0.0)),
+        adaptive_throughput_ema=float(
+            training_state.get("adaptive_throughput_ema", 0.0)
+        ),
+        adaptive_best_throughput_ema=float(
+            training_state.get("adaptive_best_throughput_ema", 0.0)
+        ),
+        adaptive_memory_utilization_ema=float(
+            training_state.get("adaptive_memory_utilization_ema", 0.0)
+        ),
+        adaptive_previous_tokens_per_sample=float(
+            training_state.get("adaptive_previous_tokens_per_sample", 0.0)
+        ),
         adaptive_next_batch_size_float=float(
             training_state.get(
                 "adaptive_next_batch_size_float",
                 float(training_state.get("next_batch_size", 0)),
             )
         ),
-        elapsed_training_time_sec=float(training_state.get("elapsed_training_time_sec", 0.0)),
+        elapsed_training_time_sec=float(
+            training_state.get("elapsed_training_time_sec", 0.0)
+        ),
         samples_trained=int(training_state.get("samples_trained", 0)),
         samples_available=int(training_state.get("samples_available", 0)),
-        max_average_absolute_advantage=float(training_state.get("max_average_absolute_advantage", -1.0)),
-        min_average_absolute_advantage=float(training_state.get("min_average_absolute_advantage", -1.0)),
-        median_average_absolute_advantage=float(training_state.get("median_average_absolute_advantage", -1.0)),
+        max_average_absolute_advantage=float(
+            training_state.get("max_average_absolute_advantage", -1.0)
+        ),
+        min_average_absolute_advantage=float(
+            training_state.get("min_average_absolute_advantage", -1.0)
+        ),
+        median_average_absolute_advantage=float(
+            training_state.get("median_average_absolute_advantage", -1.0)
+        ),
     )
     assert resume_state.global_step >= 0, "resume global_step must be non-negative"
-    assert resume_state.next_iteration_index >= 0, "resume iteration index must be non-negative"
-    assert resume_state.next_batch_cursor >= 0, "resume batch cursor must be non-negative"
-    assert resume_state.next_sample_index >= 0, "resume sample index must be non-negative"
-    assert resume_state.next_batch_size >= 0, "resume next_batch_size must be non-negative"
-    assert np.isfinite(resume_state.adaptive_velocity), "resume adaptive_velocity must be finite"
-    assert np.isfinite(resume_state.adaptive_throughput_ema), "resume adaptive_throughput_ema must be finite"
-    assert np.isfinite(
-        resume_state.adaptive_best_throughput_ema
-    ), "resume adaptive_best_throughput_ema must be finite"
-    assert np.isfinite(
-        resume_state.adaptive_memory_utilization_ema
-    ), "resume adaptive_memory_utilization_ema must be finite"
-    assert np.isfinite(
-        resume_state.adaptive_previous_tokens_per_sample
-    ), "resume adaptive_previous_tokens_per_sample must be finite"
-    assert np.isfinite(
-        resume_state.adaptive_next_batch_size_float
-    ), "resume adaptive_next_batch_size_float must be finite"
-    assert np.isfinite(resume_state.elapsed_training_time_sec), "resume elapsed_training_time_sec must be finite"
-    assert resume_state.elapsed_training_time_sec >= 0.0, "resume elapsed_training_time_sec must be non-negative"
-    assert resume_state.samples_trained >= 0, "resume samples_trained must be non-negative"
-    assert resume_state.samples_available >= 0, "resume samples_available must be non-negative"
-    assert np.isfinite(
-        resume_state.max_average_absolute_advantage
-    ), "resume max_average_absolute_advantage must be finite"
-    assert np.isfinite(
-        resume_state.min_average_absolute_advantage
-    ), "resume min_average_absolute_advantage must be finite"
-    assert np.isfinite(
-        resume_state.median_average_absolute_advantage
-    ), "resume median_average_absolute_advantage must be finite"
-    assert (
-        resume_state.accumulation_step == 0
-    ), "resuming from partial gradient accumulation is not supported"
-    print(
-        "[status] "
+    assert resume_state.next_iteration_index >= 0, (
+        "resume iteration index must be non-negative"
+    )
+    assert resume_state.next_batch_cursor >= 0, (
+        "resume batch cursor must be non-negative"
+    )
+    assert resume_state.next_sample_index >= 0, (
+        "resume sample index must be non-negative"
+    )
+    assert resume_state.next_batch_size >= 0, (
+        "resume next_batch_size must be non-negative"
+    )
+    assert np.isfinite(resume_state.adaptive_velocity), (
+        "resume adaptive_velocity must be finite"
+    )
+    assert np.isfinite(resume_state.adaptive_throughput_ema), (
+        "resume adaptive_throughput_ema must be finite"
+    )
+    assert np.isfinite(resume_state.adaptive_best_throughput_ema), (
+        "resume adaptive_best_throughput_ema must be finite"
+    )
+    assert np.isfinite(resume_state.adaptive_memory_utilization_ema), (
+        "resume adaptive_memory_utilization_ema must be finite"
+    )
+    assert np.isfinite(resume_state.adaptive_previous_tokens_per_sample), (
+        "resume adaptive_previous_tokens_per_sample must be finite"
+    )
+    assert np.isfinite(resume_state.adaptive_next_batch_size_float), (
+        "resume adaptive_next_batch_size_float must be finite"
+    )
+    assert np.isfinite(resume_state.elapsed_training_time_sec), (
+        "resume elapsed_training_time_sec must be finite"
+    )
+    assert resume_state.elapsed_training_time_sec >= 0.0, (
+        "resume elapsed_training_time_sec must be non-negative"
+    )
+    assert resume_state.samples_trained >= 0, (
+        "resume samples_trained must be non-negative"
+    )
+    assert resume_state.samples_available >= 0, (
+        "resume samples_available must be non-negative"
+    )
+    assert np.isfinite(resume_state.max_average_absolute_advantage), (
+        "resume max_average_absolute_advantage must be finite"
+    )
+    assert np.isfinite(resume_state.min_average_absolute_advantage), (
+        "resume min_average_absolute_advantage must be finite"
+    )
+    assert np.isfinite(resume_state.median_average_absolute_advantage), (
+        "resume median_average_absolute_advantage must be finite"
+    )
+    assert resume_state.accumulation_step == 0, (
+        "resuming from partial gradient accumulation is not supported"
+    )
+    _tui_info(
         f"rank={rank} "
         f"loaded_checkpoint=1 "
         f"global_step={resume_state.global_step} "
@@ -806,9 +908,15 @@ def _update_adaptive_batch_state(
     max_batch_size: int,
 ) -> AdaptiveBatchState:
     assert measured_throughput > 0.0, "measured_throughput must be positive"
-    assert measured_memory_utilization >= 0.0, "measured_memory_utilization must be non-negative"
-    assert measured_tokens_per_sample > 0.0, "measured_tokens_per_sample must be positive"
-    assert 0.0 < target_memory_utilization < 1.0, "target_memory_utilization must be in (0, 1)"
+    assert measured_memory_utilization >= 0.0, (
+        "measured_memory_utilization must be non-negative"
+    )
+    assert measured_tokens_per_sample > 0.0, (
+        "measured_tokens_per_sample must be positive"
+    )
+    assert 0.0 < target_memory_utilization < 1.0, (
+        "target_memory_utilization must be in (0, 1)"
+    )
     assert min_batch_size > 0, "min_batch_size must be positive"
     assert max_batch_size >= min_batch_size, "max_batch_size must be >= min_batch_size"
 
@@ -823,13 +931,17 @@ def _update_adaptive_batch_state(
     current_batch_size_float = adaptive_state.next_batch_size_float
     if current_batch_size_float <= 0.0:
         current_batch_size_float = float(adaptive_state.next_batch_size)
-    current_batch_size_float = max(float(min_batch_size), min(float(max_batch_size), current_batch_size_float))
+    current_batch_size_float = max(
+        float(min_batch_size), min(float(max_batch_size), current_batch_size_float)
+    )
 
     updated_ema = adaptive_state.throughput_ema
     if updated_ema <= 0.0:
         updated_ema = measured_throughput
     else:
-        updated_ema = (1.0 - ema_alpha) * adaptive_state.throughput_ema + ema_alpha * measured_throughput
+        updated_ema = (
+            1.0 - ema_alpha
+        ) * adaptive_state.throughput_ema + ema_alpha * measured_throughput
 
     previous_best_ema = adaptive_state.best_throughput_ema
     best_ema = max(previous_best_ema, updated_ema)
@@ -850,9 +962,15 @@ def _update_adaptive_batch_state(
         min(float(max_batch_size), throughput_candidate_batch_size_float),
     )
 
-    if throughput_candidate_batch_size_float >= float(max_batch_size) and velocity > 0.0:
+    if (
+        throughput_candidate_batch_size_float >= float(max_batch_size)
+        and velocity > 0.0
+    ):
         velocity = 0.0
-    if throughput_candidate_batch_size_float <= float(min_batch_size) and velocity < 0.0:
+    if (
+        throughput_candidate_batch_size_float <= float(min_batch_size)
+        and velocity < 0.0
+    ):
         velocity = 0.0
 
     updated_memory_utilization_ema = adaptive_state.memory_utilization_ema
@@ -874,14 +992,19 @@ def _update_adaptive_batch_state(
             memory_target_batch_size_float -= 1.0
 
     previous_tokens_per_sample = max(adaptive_state.previous_tokens_per_sample, 1.0)
-    token_growth_ratio = max(1.0, measured_tokens_per_sample / previous_tokens_per_sample)
+    token_growth_ratio = max(
+        1.0, measured_tokens_per_sample / previous_tokens_per_sample
+    )
     memory_target_batch_size_float = memory_target_batch_size_float / token_growth_ratio
 
     candidate_batch_size_float = (
-        0.2 * throughput_candidate_batch_size_float + 0.8 * memory_target_batch_size_float
+        0.2 * throughput_candidate_batch_size_float
+        + 0.8 * memory_target_batch_size_float
     )
     if updated_memory_utilization_ema > target_memory_utilization:
-        candidate_batch_size_float = min(candidate_batch_size_float, memory_target_batch_size_float)
+        candidate_batch_size_float = min(
+            candidate_batch_size_float, memory_target_batch_size_float
+        )
 
     max_allowed_next_float = current_batch_size_float * max_growth_ratio
     candidate_batch_size_float = min(candidate_batch_size_float, max_allowed_next_float)
@@ -891,7 +1014,9 @@ def _update_adaptive_batch_state(
     )
 
     candidate_batch_size = int(round(candidate_batch_size_float))
-    candidate_batch_size = max(min_batch_size, min(max_batch_size, candidate_batch_size))
+    candidate_batch_size = max(
+        min_batch_size, min(max_batch_size, candidate_batch_size)
+    )
 
     updated_previous_tokens_per_sample = max(
         adaptive_state.previous_tokens_per_sample,
@@ -909,13 +1034,19 @@ def _update_adaptive_batch_state(
     )
 
 
-def _resolve_pad_token_id(tokenizer_pad_token_id: int | None, tokenizer_eos_token_id: int | None) -> int:
+def _resolve_pad_token_id(
+    tokenizer_pad_token_id: int | None, tokenizer_eos_token_id: int | None
+) -> int:
     if tokenizer_pad_token_id is not None:
-        assert tokenizer_pad_token_id >= 0, "tokenizer.pad_token_id must be non-negative"
+        assert tokenizer_pad_token_id >= 0, (
+            "tokenizer.pad_token_id must be non-negative"
+        )
         return int(tokenizer_pad_token_id)
 
     if tokenizer_eos_token_id is not None:
-        assert tokenizer_eos_token_id >= 0, "tokenizer.eos_token_id must be non-negative"
+        assert tokenizer_eos_token_id >= 0, (
+            "tokenizer.eos_token_id must be non-negative"
+        )
         return int(tokenizer_eos_token_id)
 
     raise AssertionError(
@@ -933,8 +1064,12 @@ def _normalize_optional_token_id(token_id: int | None) -> int:
 
 def _resolve_local_model_path(model_parent_dir: str) -> str:
     normalized_parent = Path(model_parent_dir).expanduser().resolve()
-    assert normalized_parent.exists(), f"model_parent_dir does not exist: {normalized_parent}"
-    assert normalized_parent.is_dir(), f"model_parent_dir must be a directory: {normalized_parent}"
+    assert normalized_parent.exists(), (
+        f"model_parent_dir does not exist: {normalized_parent}"
+    )
+    assert normalized_parent.is_dir(), (
+        f"model_parent_dir must be a directory: {normalized_parent}"
+    )
 
     normalized = normalized_parent / "model"
     assert normalized.exists(), (
@@ -970,11 +1105,16 @@ def _build_lora_model(
     assert lora_rank > 0, "lora_rank must be positive"
     assert lora_alpha > 0, "lora_alpha must be positive"
     assert lora_dropout >= 0.0 and lora_dropout < 1.0, "lora_dropout must be in [0, 1)"
-    targets = [value.strip() for value in lora_target_modules_csv.split(",") if value.strip()]
+    targets = [
+        value.strip() for value in lora_target_modules_csv.split(",") if value.strip()
+    ]
     assert len(targets) > 0, "lora_target_modules_csv must contain at least one module"
 
     from peft import LoraConfig, get_peft_model
-    base_model, attention_backend = _load_causal_lm_with_attention(model_path=model_path, device=device)
+
+    base_model, attention_backend = _load_causal_lm_with_attention(
+        model_path=model_path, device=device
+    )
     base_model.gradient_checkpointing_enable()
 
     lora_config = LoraConfig(
@@ -986,16 +1126,22 @@ def _build_lora_model(
         task_type="CAUSAL_LM",
     )
     model = get_peft_model(base_model, lora_config)
-    trainable_count = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    trainable_count = sum(
+        parameter.numel() for parameter in model.parameters() if parameter.requires_grad
+    )
     assert trainable_count > 0, "LoRA model must expose trainable parameters"
     return model, attention_backend
 
 
-def _build_fsdp_model(model_path: str, device: torch.device) -> tuple[torch.nn.Module, str]:
+def _build_fsdp_model(
+    model_path: str, device: torch.device
+) -> tuple[torch.nn.Module, str]:
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
     from torch.distributed.fsdp import MixedPrecision
 
-    base_model, attention_backend = _load_causal_lm_with_attention(model_path=model_path, device=device)
+    base_model, attention_backend = _load_causal_lm_with_attention(
+        model_path=model_path, device=device
+    )
     base_model.gradient_checkpointing_enable()
 
     mixed_precision = MixedPrecision(
@@ -1003,7 +1149,9 @@ def _build_fsdp_model(model_path: str, device: torch.device) -> tuple[torch.nn.M
         reduce_dtype=torch.bfloat16,
         buffer_dtype=torch.bfloat16,
     )
-    return FSDP(base_model, device_id=device, mixed_precision=mixed_precision), attention_backend
+    return FSDP(
+        base_model, device_id=device, mixed_precision=mixed_precision
+    ), attention_backend
 
 
 def train(config: TrainConfig) -> None:
@@ -1015,17 +1163,27 @@ def train(config: TrainConfig) -> None:
     assert config.num_iterations_limit > 0, "num_iterations_limit must be positive"
     assert config.grad_accum_steps > 0, "grad_accum_steps must be positive"
     assert config.log_time_interval > 0.0, "log_time_interval must be positive"
-    assert config.checkpoint_save_time_interval > 0.0, "checkpoint_save_time_interval must be positive"
-    assert len(config.resume_checkpoint_tag.strip()) > 0, "resume_checkpoint_tag cannot be empty"
-    assert len(config.checkpoints_parent_dir.strip()) > 0, "checkpoints_parent_dir cannot be empty"
-    assert len(config.final_model_output_parent_dir.strip()) > 0, "final_model_output_parent_dir cannot be empty"
-    assert len(config.training_summary_parent_dir.strip()) > 0, "training_summary_parent_dir cannot be empty"
+    assert config.checkpoint_save_time_interval > 0.0, (
+        "checkpoint_save_time_interval must be positive"
+    )
+    assert len(config.resume_checkpoint_tag.strip()) > 0, (
+        "resume_checkpoint_tag cannot be empty"
+    )
+    assert len(config.checkpoints_parent_dir.strip()) > 0, (
+        "checkpoints_parent_dir cannot be empty"
+    )
+    assert len(config.final_model_output_parent_dir.strip()) > 0, (
+        "final_model_output_parent_dir cannot be empty"
+    )
+    assert len(config.training_summary_parent_dir.strip()) > 0, (
+        "training_summary_parent_dir cannot be empty"
+    )
 
     from transformers import AutoTokenizer
 
     loaded_env_count = _load_dotenv_if_present()
     if loaded_env_count > 0 and _is_primary_rank():
-        print(f"[status] dotenv_loaded=1 dotenv_path=.env keys_loaded={loaded_env_count}")
+        _tui_info(f"dotenv_loaded=1 dotenv_path=.env keys_loaded={loaded_env_count}")
 
     _set_seed(config.seed)
     device = _init_distributed_device()
@@ -1043,27 +1201,23 @@ def train(config: TrainConfig) -> None:
     lr_min_scale = _resolve_lr_min_scale_from_env()
 
     if _is_primary_rank():
-        print(f"[status] loading_model=1 model_parent_dir={config.model_parent_dir}")
+        _tui_info(f"loading_model=1 model_parent_dir={config.model_parent_dir}")
     resolved_model_path = _resolve_local_model_path(config.model_parent_dir)
     if _is_primary_rank():
-        print(
-            "[status] "
+        _tui_info(
             f"start_training=1 training_plan={training_plan} "
             f"world_size={world_size} training_time={config.training_time:.1f}s "
             f"model_path={resolved_model_path}"
         )
-        print(
-            "[status] "
+        _tui_info(
             "adaptive_batch_cap=1 "
             f"train_max_batch_size_env={max_batch_size_cap if max_batch_size_cap is not None else 'unset'}"
         )
-        print(
-            "[status] "
+        _tui_info(
             "adaptive_batch_wrap_reset=1 "
             f"train_reset_batch_size_on_wrap={1 if reset_batch_size_on_wrap else 0}"
         )
-        print(
-            "[status] "
+        _tui_info(
             "optimization_stability=1 "
             f"max_grad_norm={max_grad_norm:.4f} "
             f"lr_warmup_micro_batches={lr_warmup_micro_batches} "
@@ -1078,9 +1232,9 @@ def train(config: TrainConfig) -> None:
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         tokenizer.pad_token_id = int(tokenizer.eos_token_id)
         if _is_primary_rank():
-            print(
-                "[status] "
-                f"tokenizer_pad_token_fallback=1 fallback_source=eos_token_id pad_token_id={tokenizer.pad_token_id}"
+            _tui_info(
+                "tokenizer_pad_token_fallback=1 "
+                f"fallback_source=eos_token_id pad_token_id={tokenizer.pad_token_id}"
             )
 
     if training_plan == TRAINING_PLAN_LORA:
@@ -1093,9 +1247,11 @@ def train(config: TrainConfig) -> None:
             device=device,
         )
     else:
-        model, attention_backend = _build_fsdp_model(model_path=resolved_model_path, device=device)
+        model, attention_backend = _build_fsdp_model(
+            model_path=resolved_model_path, device=device
+        )
 
-    print(f"[startup] rank={rank} attention_backend={attention_backend}")
+    _tui_info(f"rank={rank} attention_backend={attention_backend}")
 
     input_embeddings = model.get_input_embeddings()
     assert input_embeddings is not None, "model must expose input embeddings"
@@ -1125,7 +1281,9 @@ def train(config: TrainConfig) -> None:
     tokenizer_name = tokenizer.name_or_path.strip()
     assert len(expected_model_name) > 0, "model_path cannot be empty"
     assert len(tokenizer_name) > 0, "tokenizer_name_or_path cannot be empty"
-    assert tokenizer_name == expected_model_name, "tokenizer name_or_path must exactly match model_path"
+    assert tokenizer_name == expected_model_name, (
+        "tokenizer name_or_path must exactly match model_path"
+    )
 
     resolved_resume_tag = _resolve_resume_checkpoint_tag(
         output_dir=checkpoints_parent_dir,
@@ -1145,7 +1303,9 @@ def train(config: TrainConfig) -> None:
     )
     if len(resolved_resume_tag) > 0:
         if _is_primary_rank():
-            print(f"[status] loading_resume_checkpoint=1 checkpoint_tag={resolved_resume_tag}")
+            _tui_info(
+                f"loading_resume_checkpoint=1 checkpoint_tag={resolved_resume_tag}"
+            )
         resume_state = _load_checkpoint(
             model=model,
             optimizer=optimizer,
@@ -1175,7 +1335,7 @@ def train(config: TrainConfig) -> None:
                 median_average_absolute_advantage=resume_state.median_average_absolute_advantage,
             )
     elif _is_primary_rank():
-        print("[status] loading_resume_checkpoint=0 starting_fresh=1")
+        _tui_info("loading_resume_checkpoint=0 starting_fresh=1")
 
     lazy_loader = LazyResolvedBatchLoader(
         training_trajectory_sqlite_path=config.training_trajectory_sqlite_path,

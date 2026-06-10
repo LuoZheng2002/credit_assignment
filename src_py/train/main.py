@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import argparse
-import tomllib
 from pathlib import Path
-from typing import Any
 
 from torch.distributed.elastic.multiprocessing.errors import record
 
+from .cli_args import (
+    TrainProcessLaunchArgs,
+    TrainingRequestArgs,
+    add_model_arguments,
+    parse_model_args,
+    parse_model_stdin,
+)
 from .engine import TrainConfig, train
 from .pathing import (
     checkpoint_parent_dir,
@@ -21,85 +26,71 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Primary training entrypoint for isolated job folders"
     )
-    parser.add_argument("--job-folder-path", type=str, required=True)
-    parser.add_argument("--orchestrator-socket-path", type=str, default="")
+    add_model_arguments(parser, TrainProcessLaunchArgs)
     return parser
 
 
-def _load_train_config(job_folder_path: str) -> TrainConfig:
-    job_folder = Path(job_folder_path)
+def _load_train_config(
+    launch_args: TrainProcessLaunchArgs, request: TrainingRequestArgs
+) -> TrainConfig:
+    job_folder = Path(launch_args.job_folder_path)
     assert job_folder.exists(), f"job folder not found: {job_folder}"
     assert job_folder.is_dir(), f"job folder must be a directory: {job_folder}"
 
-    config_path = job_folder / "train_request.toml"
-    assert config_path.exists(), f"train request file not found: {config_path}"
-
-    payload: Any
-    with config_path.open("rb") as handle:
-        payload = tomllib.load(handle)
-    assert isinstance(payload, dict), "config toml root must be a table"
-
-    artifact_root_dir = resolve_artifact_root_dir(payload)
-    model_cli_name = str(payload["model_cli_name"])
-    config_nickname = str(payload["config_nickname"])
-    epoch = int(payload["epoch"])
-    training_trajectory_sqlite_path = (
-        job_folder / "input" / "training_trajectories.sqlite"
-    )
-
+    training_trajectory_sqlite_path = Path(launch_args.training_trajectory_sqlite_path)
     assert training_trajectory_sqlite_path.exists(), (
         "training trajectory sqlite was not uploaded to job folder: "
         f"{training_trajectory_sqlite_path}"
     )
 
+    artifact_root_dir = resolve_artifact_root_dir(request)
     model_parent_dir_path = model_parent_dir(
-        artifact_root_dir, model_cli_name, config_nickname, epoch
+        artifact_root_dir, request.model_cli_name, request.config_nickname, request.epoch
     )
     checkpoints_parent_dir_path = checkpoint_parent_dir(
-        artifact_root_dir, model_cli_name, config_nickname, epoch
+        artifact_root_dir, request.model_cli_name, request.config_nickname, request.epoch
     )
     final_model_output_parent_dir_path = final_model_output_parent_dir(
         artifact_root_dir,
-        model_cli_name,
-        config_nickname,
-        epoch,
+        request.model_cli_name,
+        request.config_nickname,
+        request.epoch,
     )
 
     training_summary_parent_dir = checkpoints_parent_dir_path
 
     return TrainConfig(
-        training_plan=str(payload["training_plan"]),
+        training_plan=request.training_plan,
         model_parent_dir=str(model_parent_dir_path),
         training_trajectory_sqlite_path=str(training_trajectory_sqlite_path),
         checkpoints_parent_dir=str(checkpoints_parent_dir_path),
         final_model_output_parent_dir=str(final_model_output_parent_dir_path),
         training_summary_parent_dir=str(training_summary_parent_dir),
-        advantage_clip=float(payload["advantage_clip"]),
-        learning_rate=float(payload["learning_rate"]),
-        weight_decay=float(payload["weight_decay"]),
-        training_time=float(payload["training_time"]),
-        num_iterations_limit=int(payload["num_iterations_limit"]),
-        grad_accum_steps=int(payload["grad_accum_steps"]),
-        log_time_interval=float(payload["log_time_interval"]),
-        checkpoint_save_time_interval=float(payload["checkpoint_save_time_interval"]),
-        lora_rank=int(payload.get("lora_rank") or 64),
-        lora_alpha=int(payload.get("lora_alpha") or 128),
-        lora_dropout=float(payload.get("lora_dropout") or 0.05),
-        lora_target_modules_csv=str(
-            payload.get("lora_target_modules_csv") or "q_proj,k_proj,v_proj,o_proj"
-        ),
-        resume_checkpoint_tag=str(payload.get("resume_checkpoint_tag") or "auto"),
-        seed=int(payload["seed"]),
+        advantage_clip=request.advantage_clip,
+        learning_rate=request.learning_rate,
+        weight_decay=request.weight_decay,
+        training_time=request.training_time,
+        num_iterations_limit=request.num_iterations_limit,
+        grad_accum_steps=request.grad_accum_steps,
+        log_time_interval=request.log_time_interval,
+        checkpoint_save_time_interval=request.checkpoint_save_time_interval,
+        lora_rank=request.lora_rank or 64,
+        lora_alpha=request.lora_alpha or 128,
+        lora_dropout=request.lora_dropout or 0.05,
+        lora_target_modules_csv=request.lora_target_modules_csv or "q_proj,k_proj,v_proj,o_proj",
+        resume_checkpoint_tag=request.resume_checkpoint_tag or "auto",
+        seed=request.seed,
     )
 
 
 @record
 def main() -> None:
-    parser = _build_parser()
-    args = parser.parse_args()
-
-    install_status_log_buffer(args.job_folder_path, args.orchestrator_socket_path)
-    config = _load_train_config(job_folder_path=args.job_folder_path)
+    launch_args = parse_model_args(_build_parser(), TrainProcessLaunchArgs)
+    install_status_log_buffer(
+        launch_args.job_folder_path, launch_args.orchestrator_socket_path
+    )
+    request = parse_model_stdin(TrainingRequestArgs)
+    config = _load_train_config(launch_args, request)
     try:
         train(config)
     finally:

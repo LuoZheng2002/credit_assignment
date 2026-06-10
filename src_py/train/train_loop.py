@@ -1,16 +1,24 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
-from dataclasses import dataclass
 import json
 import math
-from pathlib import Path
 import statistics
 import time
+from contextlib import nullcontext
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
 
+from ..tui_logging import (
+    _tui_delete_worker_bar,
+    _tui_info,
+    _tui_key_value,
+    _tui_master_progress,
+    _tui_warning,
+    _tui_worker_progress,
+)
 from .batch_dataset import LazyResolvedBatchLoader, ResolvedTrainingBatch
 from .collator import collate_training_samples
 from .data_sqlite import TrainingSampleTokenized
@@ -44,16 +52,24 @@ DEFAULT_TRAJECTORY_LENGTH_CAP = 4096
 MIN_TRAJECTORY_LENGTH_CAP = 2
 
 
-def _truncate_sample_to_cap(sample: TrainingSampleTokenized, trajectory_length_cap: int) -> TrainingSampleTokenized:
-    assert trajectory_length_cap >= MIN_TRAJECTORY_LENGTH_CAP, "trajectory_length_cap too small"
+def _truncate_sample_to_cap(
+    sample: TrainingSampleTokenized, trajectory_length_cap: int
+) -> TrainingSampleTokenized:
+    assert trajectory_length_cap >= MIN_TRAJECTORY_LENGTH_CAP, (
+        "trajectory_length_cap too small"
+    )
     if sample.input_length <= trajectory_length_cap:
         return sample
 
     start = sample.input_length - trajectory_length_cap
     truncated_input_ids = sample.input_ids[start:]
     truncated_labels = sample.labels[start:]
-    assert len(truncated_input_ids) == len(truncated_labels), "truncated token arrays must align"
-    assert len(truncated_input_ids) >= MIN_TRAJECTORY_LENGTH_CAP, "truncated sample is too short"
+    assert len(truncated_input_ids) == len(truncated_labels), (
+        "truncated token arrays must align"
+    )
+    assert len(truncated_input_ids) >= MIN_TRAJECTORY_LENGTH_CAP, (
+        "truncated sample is too short"
+    )
     return TrainingSampleTokenized(
         id=sample.id,
         input_ids=truncated_input_ids,
@@ -65,57 +81,77 @@ def _truncate_sample_to_cap(sample: TrainingSampleTokenized, trajectory_length_c
     )
 
 
-def _truncate_samples_to_cap(samples: list[TrainingSampleTokenized], trajectory_length_cap: int) -> list[TrainingSampleTokenized]:
+def _truncate_samples_to_cap(
+    samples: list[TrainingSampleTokenized], trajectory_length_cap: int
+) -> list[TrainingSampleTokenized]:
     assert len(samples) > 0, "samples cannot be empty"
-    return [_truncate_sample_to_cap(sample, trajectory_length_cap) for sample in samples]
+    return [
+        _truncate_sample_to_cap(sample, trajectory_length_cap) for sample in samples
+    ]
 
 
-def _emit_trajectory_length_cap(*, cap: int, eng: Any) -> None:
-    print(eng._json_key_value("trajectory_length_cap", str(cap)))
+def _emit_trajectory_length_cap(*, cap: int) -> None:
+    _tui_key_value("trajectory_length_cap", str(cap))
 
 
 def _is_primary_rank() -> bool:
-    return (not torch.distributed.is_available()) or (
-        not torch.distributed.is_initialized()
-    ) or torch.distributed.get_rank() == 0
+    return (
+        (not torch.distributed.is_available())
+        or (not torch.distributed.is_initialized())
+        or torch.distributed.get_rank() == 0
+    )
 
 
-def _init_training_loop_clock(*, training_time: float, resumed_elapsed_training_time_sec: float) -> TrainingLoopClock:
+def _init_training_loop_clock(
+    *, training_time: float, resumed_elapsed_training_time_sec: float
+) -> TrainingLoopClock:
     run_start_time = time.monotonic()
     return TrainingLoopClock(
         training_time=training_time,
         resumed_elapsed_training_time_sec=resumed_elapsed_training_time_sec,
         run_start_time=run_start_time,
-        training_end_time=run_start_time + max(0.0, training_time - resumed_elapsed_training_time_sec),
+        training_end_time=run_start_time
+        + max(0.0, training_time - resumed_elapsed_training_time_sec),
         last_checkpoint_save_time=run_start_time,
         last_log_time=run_start_time,
         last_master_progress_time=run_start_time - 1.0,
     )
 
 
-def _should_continue_training(*, clock: TrainingLoopClock, iteration_index: int, num_iterations_limit: int) -> bool:
-    return time.monotonic() < clock.training_end_time and iteration_index < num_iterations_limit
+def _should_continue_training(
+    *, clock: TrainingLoopClock, iteration_index: int, num_iterations_limit: int
+) -> bool:
+    return (
+        time.monotonic() < clock.training_end_time
+        and iteration_index < num_iterations_limit
+    )
 
 
-def _elapsed_training_time_sec(*, clock: TrainingLoopClock, now: float | None = None) -> float:
+def _elapsed_training_time_sec(
+    *, clock: TrainingLoopClock, now: float | None = None
+) -> float:
     if now is None:
         now = time.monotonic()
     elapsed = clock.resumed_elapsed_training_time_sec + (now - clock.run_start_time)
     return min(clock.training_time, elapsed)
 
 
-def _maybe_emit_master_progress(*, clock: TrainingLoopClock, samples_trained: int, eng: Any) -> None:
+def _maybe_emit_master_progress(
+    *, clock: TrainingLoopClock, samples_trained: int
+) -> None:
     now = time.monotonic()
     if (not _is_primary_rank()) or (now - clock.last_master_progress_time < 1.0):
         return
     elapsed = _elapsed_training_time_sec(clock=clock, now=now)
     progress = min(1.0, elapsed / clock.training_time)
     label = f"Training: {samples_trained} samples trained ({elapsed:.1f}s/{clock.training_time:.1f}s)"
-    print(eng._json_master_progress(progress, label))
+    _tui_master_progress(progress, label)
     clock.last_master_progress_time = now
 
 
-def _compute_lr_multiplier(*, step_index: int, warmup_steps: int, min_lr_scale: float) -> float:
+def _compute_lr_multiplier(
+    *, step_index: int, warmup_steps: int, min_lr_scale: float
+) -> float:
     assert step_index >= 0, "step_index must be non-negative"
     assert warmup_steps >= 0, "warmup_steps must be non-negative"
     assert min_lr_scale > 0.0 and min_lr_scale <= 1.0, "min_lr_scale must be in (0, 1]"
@@ -150,7 +186,9 @@ def _set_optimizer_learning_rate(
     return current_learning_rate
 
 
-def _maybe_clip_gradients(*, model: torch.nn.Module, max_grad_norm: float) -> float | None:
+def _maybe_clip_gradients(
+    *, model: torch.nn.Module, max_grad_norm: float
+) -> float | None:
     if max_grad_norm <= 0.0:
         return None
     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
@@ -187,12 +225,18 @@ def _flush_partial_gradients(
     return 0, next_global_step, clipped_grad_norm, current_lr
 
 
-def _finalize_training_run(*, rank: int, global_step: int, training_time: float, final_model_output_parent_dir: Path, eng: Any) -> None:
+def _finalize_training_run(
+    *,
+    rank: int,
+    global_step: int,
+    training_time: float,
+    final_model_output_parent_dir: Path,
+    eng: Any,
+) -> None:
     eng._distributed_barrier()
-    print(eng._json_delete_worker_bar(f"rank{rank}"))
+    _tui_delete_worker_bar(f"rank{rank}")
     if _is_primary_rank():
-        print(
-            "[status] "
+        _tui_info(
             f"finished_training=1 global_step={global_step} "
             f"training_time={training_time:.1f}s "
             f"final_model_output_parent_dir={final_model_output_parent_dir}"
@@ -200,7 +244,9 @@ def _finalize_training_run(*, rank: int, global_step: int, training_time: float,
     eng._shutdown_distributed_process_group()
 
 
-def _broadcast_adaptive_state_distributed(*, adaptive_state: AdaptiveBatchState) -> AdaptiveBatchState:
+def _broadcast_adaptive_state_distributed(
+    *, adaptive_state: AdaptiveBatchState
+) -> AdaptiveBatchState:
     payload_box: list[dict[str, float | int]] = [{}]
     if _is_primary_rank():
         payload_box[0] = {
@@ -210,7 +256,9 @@ def _broadcast_adaptive_state_distributed(*, adaptive_state: AdaptiveBatchState)
             "throughput_ema": float(adaptive_state.throughput_ema),
             "best_throughput_ema": float(adaptive_state.best_throughput_ema),
             "memory_utilization_ema": float(adaptive_state.memory_utilization_ema),
-            "previous_tokens_per_sample": float(adaptive_state.previous_tokens_per_sample),
+            "previous_tokens_per_sample": float(
+                adaptive_state.previous_tokens_per_sample
+            ),
         }
     torch.distributed.broadcast_object_list(payload_box, src=0)
     payload = payload_box[0]
@@ -250,10 +298,14 @@ def _write_training_summary(
     median_average_absolute_advantage: float,
     total_training_time_sec: float,
 ) -> None:
-    assert len(training_summary_parent_dir.strip()) > 0, "training_summary_parent_dir cannot be empty"
+    assert len(training_summary_parent_dir.strip()) > 0, (
+        "training_summary_parent_dir cannot be empty"
+    )
     assert samples_available > 0, "samples_available must be positive"
     assert samples_trained >= 0, "samples_trained must be non-negative"
-    assert total_training_time_sec >= 0.0, "total_training_time_sec must be non-negative"
+    assert total_training_time_sec >= 0.0, (
+        "total_training_time_sec must be non-negative"
+    )
     iterations = float(samples_trained) / float(samples_available)
     payload = {
         "samples_available": int(samples_available),
@@ -305,7 +357,9 @@ def _run_unified_loop(
     training_plan = assert_supported_training_plan(config.training_plan)
     is_distributed = world_size > 1
     if is_distributed:
-        assert lazy_loader.sample_count >= world_size, "sample_count must be >= world_size for distributed training"
+        assert lazy_loader.sample_count >= world_size, (
+            "sample_count must be >= world_size for distributed training"
+        )
 
     trajectory_length_cap = DEFAULT_TRAJECTORY_LENGTH_CAP
 
@@ -317,9 +371,15 @@ def _run_unified_loop(
         and resume_state.min_average_absolute_advantage >= 0.0
         and resume_state.median_average_absolute_advantage >= 0.0
     ):
-        max_average_absolute_advantage = float(resume_state.max_average_absolute_advantage)
-        min_average_absolute_advantage = float(resume_state.min_average_absolute_advantage)
-        median_average_absolute_advantage = float(resume_state.median_average_absolute_advantage)
+        max_average_absolute_advantage = float(
+            resume_state.max_average_absolute_advantage
+        )
+        min_average_absolute_advantage = float(
+            resume_state.min_average_absolute_advantage
+        )
+        median_average_absolute_advantage = float(
+            resume_state.median_average_absolute_advantage
+        )
     else:
         (
             max_average_absolute_advantage,
@@ -328,7 +388,9 @@ def _run_unified_loop(
         ) = _compute_abs_advantage_stats_for_available_samples(lazy_loader=lazy_loader)
 
     distributed_batch_limit = (sample_count // world_size) if is_distributed else -1
-    fallback_sample_index = max(0, resume_state.next_batch_cursor) * max(1, initial_batch_size)
+    fallback_sample_index = max(0, resume_state.next_batch_cursor) * max(
+        1, initial_batch_size
+    )
     global_sample_cursor = resume_state.next_sample_index
     if global_sample_cursor == 0 and resume_state.next_batch_cursor > 0:
         global_sample_cursor = fallback_sample_index
@@ -338,7 +400,10 @@ def _run_unified_loop(
     adaptive_state = AdaptiveBatchState(
         next_batch_size=max(
             1,
-            min(distributed_batch_limit if is_distributed else sample_count, resume_state.next_batch_size),
+            min(
+                distributed_batch_limit if is_distributed else sample_count,
+                resume_state.next_batch_size,
+            ),
         ),
         next_batch_size_float=max(
             1.0,
@@ -349,12 +414,19 @@ def _run_unified_loop(
                 else float(
                     max(
                         1,
-                        min(distributed_batch_limit if is_distributed else sample_count, resume_state.next_batch_size),
+                        min(
+                            distributed_batch_limit if is_distributed else sample_count,
+                            resume_state.next_batch_size,
+                        ),
                     )
                 ),
             ),
         ),
-        velocity=(resume_state.adaptive_velocity if resume_state.adaptive_velocity > 0.0 else initial_adaptive_velocity),
+        velocity=(
+            resume_state.adaptive_velocity
+            if resume_state.adaptive_velocity > 0.0
+            else initial_adaptive_velocity
+        ),
         throughput_ema=resume_state.adaptive_throughput_ema,
         best_throughput_ema=resume_state.adaptive_best_throughput_ema,
         memory_utilization_ema=resume_state.adaptive_memory_utilization_ema,
@@ -362,11 +434,16 @@ def _run_unified_loop(
     )
 
     if max_batch_size_cap is None:
-        max_allowed_batch_size = distributed_batch_limit if is_distributed else sample_count
+        max_allowed_batch_size = (
+            distributed_batch_limit if is_distributed else sample_count
+        )
     else:
         max_allowed_batch_size = max(
             1,
-            min(distributed_batch_limit if is_distributed else sample_count, max_batch_size_cap),
+            min(
+                distributed_batch_limit if is_distributed else sample_count,
+                max_batch_size_cap,
+            ),
         )
     if adaptive_state.next_batch_size > max_allowed_batch_size:
         adaptive_state = AdaptiveBatchState(
@@ -380,8 +457,7 @@ def _run_unified_loop(
         )
 
     if _is_primary_rank() and max_batch_size_cap is not None:
-        print(
-            "[status] "
+        _tui_info(
             f"adaptive_batch_cap_active=1 max_batch_size={max_allowed_batch_size} "
             f"sample_count={sample_count}"
         )
@@ -390,18 +466,17 @@ def _run_unified_loop(
     max_label_token_id = -1
     data_model_name = expected_model_name
 
-    _emit_trajectory_length_cap(cap=trajectory_length_cap, eng=eng)
+    _emit_trajectory_length_cap(cap=trajectory_length_cap)
     if _is_primary_rank():
-        print(
-            "[status] "
+        _tui_info(
             "training_set_advantage_stats=1 "
             f"samples_available={samples_available} "
             f"max_average_absolute_advantage={max_average_absolute_advantage:.6f} "
             f"min_average_absolute_advantage={min_average_absolute_advantage:.6f} "
             f"median_average_absolute_advantage={median_average_absolute_advantage:.6f}"
         )
-        print(
-            "[startup] tokenizer special tokens "
+        _tui_info(
+            "tokenizer special tokens "
             f"pad_token_id={pad_token_id} eos_token_id={eos_token_id} bos_token_id={bos_token_id}"
         )
         eng._log_json_line(
@@ -434,7 +509,9 @@ def _run_unified_loop(
         warmup_steps=lr_warmup_steps,
         min_lr_scale=lr_min_scale,
     )
-    resumed_elapsed_training_time_sec = min(config.training_time, max(0.0, resume_state.elapsed_training_time_sec))
+    resumed_elapsed_training_time_sec = min(
+        config.training_time, max(0.0, resume_state.elapsed_training_time_sec)
+    )
     clock = _init_training_loop_clock(
         training_time=config.training_time,
         resumed_elapsed_training_time_sec=resumed_elapsed_training_time_sec,
@@ -444,8 +521,15 @@ def _run_unified_loop(
 
     iteration_index = max(0, resume_state.next_iteration_index)
 
-    while _should_continue_training(clock=clock, iteration_index=iteration_index, num_iterations_limit=config.num_iterations_limit):
-        _maybe_emit_master_progress(clock=clock, samples_trained=samples_trained, eng=eng)
+    while _should_continue_training(
+        clock=clock,
+        iteration_index=iteration_index,
+        num_iterations_limit=config.num_iterations_limit,
+    ):
+        _maybe_emit_master_progress(
+            clock=clock, samples_trained=samples_trained
+        ), eng=eng
+        )
 
         if is_distributed:
             control_tensor = torch.zeros(4, dtype=torch.int64, device=device)
@@ -465,15 +549,16 @@ def _run_unified_loop(
                             memory_utilization_ema=adaptive_state.memory_utilization_ema,
                             previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
                         )
-                        print(
-                            "[status] "
+                        _tui_info(
                             "adaptive_batch_wrap_reset_applied=1 "
                             f"iteration={iteration_index} next_batch_size={adaptive_state.next_batch_size}"
                         )
                     control_tensor[0] = 0
                 else:
                     control_tensor[0] = 1
-                    control_tensor[1] = max(1, min(adaptive_state.next_batch_size, max_feasible_batch_size))
+                    control_tensor[1] = max(
+                        1, min(adaptive_state.next_batch_size, max_feasible_batch_size)
+                    )
                 control_tensor[2] = global_sample_cursor
                 control_tensor[3] = iteration_index
 
@@ -487,9 +572,15 @@ def _run_unified_loop(
 
             rank_sample_start = global_sample_cursor + (rank * requested_batch_size)
             rank_sample_end = rank_sample_start + requested_batch_size
-            assert rank_sample_end <= sample_count, "rank interval must be within sample range"
+            assert rank_sample_end <= sample_count, (
+                "rank interval must be within sample range"
+            )
             worker_progress = float(rank_sample_start) / sample_count
-            print(eng._json_worker_progress(f"rank{rank}", worker_progress, f"Sample {rank_sample_start}/{sample_count}"))
+            _tui_worker_progress(
+                f"rank{rank}",
+                worker_progress,
+                f"Sample {rank_sample_start}/{sample_count}",
+            )
 
             window = lazy_loader.resolve_batch(
                 sample_index=rank_sample_start,
@@ -497,14 +588,20 @@ def _run_unified_loop(
                 batch_index=rank_sample_start,
             )
         else:
-            requested_batch_size = min(adaptive_state.next_batch_size, sample_count - global_sample_cursor)
+            requested_batch_size = min(
+                adaptive_state.next_batch_size, sample_count - global_sample_cursor
+            )
             if requested_batch_size <= 0:
                 global_sample_cursor = 0
                 iteration_index += 1
                 continue
 
             worker_progress = float(global_sample_cursor) / sample_count
-            print(eng._json_worker_progress(f"rank{rank}", worker_progress, f"Sample {global_sample_cursor}/{sample_count}"))
+            _tui_worker_progress(
+                f"rank{rank}",
+                worker_progress,
+                f"Sample {global_sample_cursor}/{sample_count}",
+            )
             window = lazy_loader.resolve_batch(
                 sample_index=global_sample_cursor,
                 batch_size=requested_batch_size,
@@ -512,7 +609,9 @@ def _run_unified_loop(
             )
 
         resolved_batch = window.resolved_batch
-        step_samples = _truncate_samples_to_cap(resolved_batch.samples, trajectory_length_cap)
+        step_samples = _truncate_samples_to_cap(
+            resolved_batch.samples, trajectory_length_cap
+        )
         step_batch = ResolvedTrainingBatch(
             batch_index=resolved_batch.batch_index,
             ids=resolved_batch.ids,
@@ -534,9 +633,15 @@ def _run_unified_loop(
                 if token_id > max_label_token_id:
                     max_label_token_id = token_id
 
-        assert data_model_name == expected_model_name, "training data model_official_name must match model_path"
-        assert max_input_token_id < model_vocab_size, "input_ids contain token id out of model vocab range"
-        assert max_label_token_id < model_vocab_size, "labels contain token id out of model vocab range"
+        assert data_model_name == expected_model_name, (
+            "training data model_official_name must match model_path"
+        )
+        assert max_input_token_id < model_vocab_size, (
+            "input_ids contain token id out of model vocab range"
+        )
+        assert max_label_token_id < model_vocab_size, (
+            "labels contain token id out of model vocab range"
+        )
 
         if torch.cuda.is_available() and device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device=device)
@@ -554,14 +659,20 @@ def _run_unified_loop(
         loss_output = None
         loss = None
         try:
-            collated = collate_training_samples(samples=step_batch.samples, pad_token_id=pad_token_id)
+            collated = collate_training_samples(
+                samples=step_batch.samples, pad_token_id=pad_token_id
+            )
             input_ids = collated.input_ids.to(device=device, non_blocking=True)
             labels = collated.labels.to(device=device, non_blocking=True)
-            attention_mask = collated.attention_mask.to(device=device, non_blocking=True)
+            attention_mask = collated.attention_mask.to(
+                device=device, non_blocking=True
+            )
             advantages = collated.advantages.to(device=device, non_blocking=True)
 
             with sync_context:
-                logits = eng._forward_logits(model, input_ids=input_ids, attention_mask=attention_mask)
+                logits = eng._forward_logits(
+                    model, input_ids=input_ids, attention_mask=attention_mask
+                )
                 loss_output = compute_advantage_weighted_causal_lm_loss(
                     logits=logits,
                     labels=labels,
@@ -593,16 +704,25 @@ def _run_unified_loop(
                 rank=rank,
                 iteration_index=iteration_index,
                 batch_index=step_batch.batch_index,
-                batch_token_length=max(sample.input_length for sample in step_batch.samples),
-                next_batch_size=(adaptive_state.next_batch_size if requested_batch_size <= 1 else reduced_batch_size),
+                batch_token_length=max(
+                    sample.input_length for sample in step_batch.samples
+                ),
+                next_batch_size=(
+                    adaptive_state.next_batch_size
+                    if requested_batch_size <= 1
+                    else reduced_batch_size
+                ),
                 will_retry=requested_batch_size > 1,
             )
             should_skip_sample = requested_batch_size <= 1
             if should_skip_sample:
-                skipped_samples = requested_batch_size * world_size if is_distributed else requested_batch_size
+                skipped_samples = (
+                    requested_batch_size * world_size
+                    if is_distributed
+                    else requested_batch_size
+                )
                 if _is_primary_rank():
-                    print(
-                        "[warning] "
+                    _tui_warning(
                         "oom_at_batch_size_1=1 "
                         f"skipped_samples={skipped_samples} "
                         f"sample_index={global_sample_cursor}"
@@ -632,7 +752,9 @@ def _run_unified_loop(
                     previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
                 )
             if is_distributed:
-                adaptive_state = _broadcast_adaptive_state_distributed(adaptive_state=adaptive_state)
+                adaptive_state = _broadcast_adaptive_state_distributed(
+                    adaptive_state=adaptive_state
+                )
             if _is_primary_rank():
                 eng._log_json_line(
                     logs_path,
@@ -652,33 +774,39 @@ def _run_unified_loop(
 
         step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
         throughput_samples_per_sec = float(len(step_batch.samples)) / step_elapsed_sec
-        measured_tokens_per_sample = float(collated.attention_mask.sum(dim=1).float().mean().item())
+        measured_tokens_per_sample = float(
+            collated.attention_mask.sum(dim=1).float().mean().item()
+        )
         gpu_memory_usage_pct = 100.0 * eng._gpu_memory_utilization(device)
         if torch.cuda.is_available() and device.type == "cuda":
             torch.cuda.synchronize(device=device)
         gpu_memory_allocated_pct = 100.0 * eng._gpu_memory_peak_allocated_ratio(device)
         gpu_memory_reserved_pct = 100.0 * eng._gpu_memory_reserved_ratio(device)
-        print(eng._json_key_value("throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"))
-        print(eng._json_key_value("batch_size", str(len(step_batch.samples))))
-        print(eng._json_key_value("batch_token_length", str(int(input_ids.shape[1]))))
-        print(eng._json_key_value("requested_batch_size", str(requested_batch_size)))
-        print(eng._json_key_value("next_batch_size", str(adaptive_state.next_batch_size)))
-        print(eng._json_key_value("next_batch_size_int", str(adaptive_state.next_batch_size)))
-        print(eng._json_key_value("next_batch_size_float", f"{adaptive_state.next_batch_size_float:.2f}"))
-        print(eng._json_key_value("trajectory_length_cap", str(trajectory_length_cap)))
-        print(eng._json_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}"))
-        print(f"gpu_memory_usage_pct: {gpu_memory_usage_pct:.2f}%")
-        print(eng._json_key_value("gpu_memory_allocated_pct", f"{gpu_memory_allocated_pct:.2f}"))
-        print(f"gpu_memory_allocated_pct: {gpu_memory_allocated_pct:.2f}%")
-        print(eng._json_key_value("gpu_memory_reserved_pct", f"{gpu_memory_reserved_pct:.2f}"))
-        print(f"gpu_memory_reserved_pct: {gpu_memory_reserved_pct:.2f}%")
+        _tui_key_value(
+            "throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"
+        )
+        _tui_key_value("batch_size", str(len(step_batch.samples)))
+        _tui_key_value("batch_token_length", str(int(input_ids.shape[1])))
+        _tui_key_value("requested_batch_size", str(requested_batch_size))
+        _tui_key_value("next_batch_size", str(adaptive_state.next_batch_size))
+        _tui_key_value("next_batch_size_int", str(adaptive_state.next_batch_size))
+        _tui_key_value(
+            "next_batch_size_float", f"{adaptive_state.next_batch_size_float:.2f}"
+        )
+        _tui_key_value("trajectory_length_cap", str(trajectory_length_cap))
+        _tui_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}")
+        _tui_info(f"gpu_memory_usage_pct: {gpu_memory_usage_pct:.2f}%")
+        _tui_key_value("gpu_memory_allocated_pct", f"{gpu_memory_allocated_pct:.2f}")
+        _tui_info(f"gpu_memory_allocated_pct: {gpu_memory_allocated_pct:.2f}%")
+        _tui_key_value("gpu_memory_reserved_pct", f"{gpu_memory_reserved_pct:.2f}")
+        _tui_info(f"gpu_memory_reserved_pct: {gpu_memory_reserved_pct:.2f}%")
         if _is_primary_rank():
-            print(eng._json_key_value("global_step", str(global_step)))
-            print(eng._json_key_value("iteration", str(iteration_index)))
-            print(eng._json_key_value("batch_index", str(step_batch.batch_index)))
-            print(eng._json_key_value("learning_rate", f"{current_learning_rate:.10f}"))
+            _tui_key_value("global_step", str(global_step))
+            _tui_key_value("iteration", str(iteration_index))
+            _tui_key_value("batch_index", str(step_batch.batch_index))
+            _tui_key_value("learning_rate", f"{current_learning_rate:.10f}")
             for stat_key, stat_value in loss_output.stats.items():
-                print(eng._json_key_value(stat_key, f"{stat_value:.6f}"))
+                _tui_key_value(stat_key, f"{stat_value:.6f}")
 
         accumulation_step += 1
         if is_distributed:
@@ -700,13 +828,14 @@ def _run_unified_loop(
                         memory_utilization_ema=adaptive_state.memory_utilization_ema,
                         previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
                     )
-                    print(
-                        "[status] "
+                    _tui_info(
                         "adaptive_batch_wrap_reset_applied=1 "
                         f"iteration={iteration_index} next_batch_size={adaptive_state.next_batch_size}"
                     )
                 if reset_batch_size_on_wrap:
-                    adaptive_state = _broadcast_adaptive_state_distributed(adaptive_state=adaptive_state)
+                    adaptive_state = _broadcast_adaptive_state_distributed(
+                        adaptive_state=adaptive_state
+                    )
         else:
             global_sample_cursor = window.next_sample_index
             if global_sample_cursor >= sample_count:
@@ -723,14 +852,15 @@ def _run_unified_loop(
                         previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
                     )
                     if _is_primary_rank():
-                        print(
-                            "[status] "
+                        _tui_info(
                             "adaptive_batch_wrap_reset_applied=1 "
                             f"iteration={iteration_index} next_batch_size={adaptive_state.next_batch_size}"
                         )
 
         if accumulation_step == config.grad_accum_steps:
-            clipped_grad_norm = _maybe_clip_gradients(model=model, max_grad_norm=max_grad_norm)
+            clipped_grad_norm = _maybe_clip_gradients(
+                model=model, max_grad_norm=max_grad_norm
+            )
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             accumulation_step = 0
@@ -754,11 +884,16 @@ def _run_unified_loop(
                     max_batch_size=max_allowed_batch_size,
                 )
             if is_distributed:
-                adaptive_state = _broadcast_adaptive_state_distributed(adaptive_state=adaptive_state)
+                adaptive_state = _broadcast_adaptive_state_distributed(
+                    adaptive_state=adaptive_state
+                )
 
             now = time.monotonic()
             elapsed_since_last_log_sec = now - clock.last_log_time
-            if _is_primary_rank() and elapsed_since_last_log_sec >= config.log_time_interval:
+            if (
+                _is_primary_rank()
+                and elapsed_since_last_log_sec >= config.log_time_interval
+            ):
                 log_payload: dict[str, float | int] = {
                     "step": global_step,
                     "iteration": iteration_index,
@@ -780,11 +915,13 @@ def _run_unified_loop(
                 clock.last_log_time = now
 
             elapsed_since_last_checkpoint_sec = now - clock.last_checkpoint_save_time
-            if elapsed_since_last_checkpoint_sec >= config.checkpoint_save_time_interval:
+            if (
+                elapsed_since_last_checkpoint_sec
+                >= config.checkpoint_save_time_interval
+            ):
                 checkpoint_tag = "checkpoints"
                 if _is_primary_rank():
-                    print(
-                        "[status] "
+                    _tui_info(
                         f"saving_periodic_checkpoint=1 elapsed_sec={elapsed_since_last_checkpoint_sec:.2f} "
                         f"global_step={global_step} iteration={iteration_index} "
                         f"batch_index={step_batch.batch_index} next_sample_index={global_sample_cursor}"
@@ -807,7 +944,9 @@ def _run_unified_loop(
                     adaptive_memory_utilization_ema=adaptive_state.memory_utilization_ema,
                     adaptive_previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
                     adaptive_next_batch_size_float=adaptive_state.next_batch_size_float,
-                    elapsed_training_time_sec=_elapsed_training_time_sec(clock=clock, now=now),
+                    elapsed_training_time_sec=_elapsed_training_time_sec(
+                        clock=clock, now=now
+                    ),
                     samples_trained=samples_trained,
                     samples_available=samples_available,
                     max_average_absolute_advantage=max_average_absolute_advantage,
@@ -816,20 +955,22 @@ def _run_unified_loop(
                 )
                 clock.last_checkpoint_save_time = now
 
-    accumulation_step, global_step, clipped_grad_norm, current_learning_rate = _flush_partial_gradients(
-        model=model,
-        optimizer=optimizer,
-        accumulation_step=accumulation_step,
-        global_step=global_step,
-        max_grad_norm=max_grad_norm,
-        base_learning_rate=config.learning_rate,
-        lr_warmup_steps=lr_warmup_steps,
-        lr_min_scale=lr_min_scale,
+    accumulation_step, global_step, clipped_grad_norm, current_learning_rate = (
+        _flush_partial_gradients(
+            model=model,
+            optimizer=optimizer,
+            accumulation_step=accumulation_step,
+            global_step=global_step,
+            max_grad_norm=max_grad_norm,
+            base_learning_rate=config.learning_rate,
+            lr_warmup_steps=lr_warmup_steps,
+            lr_min_scale=lr_min_scale,
+        )
     )
     if _is_primary_rank() and clipped_grad_norm is not None:
-        print(eng._json_key_value("flush_grad_norm", f"{clipped_grad_norm:.6f}"))
+        _tui_key_value("flush_grad_norm", f"{clipped_grad_norm:.6f}")
     if _is_primary_rank():
-        print(eng._json_key_value("learning_rate", f"{current_learning_rate:.10f}"))
+        _tui_key_value("learning_rate", f"{current_learning_rate:.10f}")
 
     total_training_time_sec = _elapsed_training_time_sec(clock=clock)
     eng._save_checkpoint(
@@ -874,8 +1015,7 @@ def _run_unified_loop(
             median_average_absolute_advantage=median_average_absolute_advantage,
             total_training_time_sec=total_training_time_sec,
         )
-        print(
-            "[status] "
+        _tui_info(
             "training_summary_written=1 "
             f"training_summary_parent_dir={training_summary_parent_dir}"
         )

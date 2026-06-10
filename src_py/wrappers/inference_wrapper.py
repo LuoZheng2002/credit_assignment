@@ -17,17 +17,20 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from research_utility.tui_message import UnixTuiForwarder
-
 from src_py.load_model_to_path import ensure_model_snapshot
 from src_py.modal.inference_deployment_common import (
     deployment_name,
     ensure_deployed,
     ensure_undeployed,
 )
+from src_py.tui_logging import (
+    _tui_error,
+    _tui_info,
+    _tui_state,
+    configure_tui_forwarder,
+)
 
 _WRAPPER_LOG_FILE_HANDLE: Any | None = None
-_TUI_FORWARDER: UnixTuiForwarder | None = None
 
 
 def _set_process_name(name: str) -> None:
@@ -67,26 +70,6 @@ def _configure_wrapper_log_file(log_path: str) -> None:
     os.dup2(_WRAPPER_LOG_FILE_HANDLE.fileno(), 2)
     sys.stdout = os.fdopen(1, "w", buffering=1, encoding="utf-8", closefd=False)
     sys.stderr = os.fdopen(2, "w", buffering=1, encoding="utf-8", closefd=False)
-
-
-def _configure_tui_forwarder(socket_path: str | None) -> None:
-    global _TUI_FORWARDER
-    _TUI_FORWARDER = UnixTuiForwarder(socket_path)
-
-
-def _tui_state(state: str) -> None:
-    if _TUI_FORWARDER is not None:
-        _TUI_FORWARDER.send_state(state)
-
-
-def _tui_info(message: str) -> None:
-    if _TUI_FORWARDER is not None:
-        _TUI_FORWARDER.send_info(message)
-
-
-def _tui_error(message: str) -> None:
-    if _TUI_FORWARDER is not None:
-        _TUI_FORWARDER.send_error(message)
 
 
 def _emit_inference_tui_identity(
@@ -767,7 +750,7 @@ def main() -> int:
     backend_name = "hpc"
     try:
         _configure_wrapper_log_file(args.wrapper_log_path)
-        _configure_tui_forwarder(args.orchestrator_socket_path)
+        configure_tui_forwarder(args.orchestrator_socket_path)
         _tui_state("Inference wrapper started")
         _tui_info("Inference wrapper started")
         _emit_inference_tui_identity(
