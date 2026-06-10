@@ -1,11 +1,10 @@
-use minijinja::context;
 use research_utility::{
     asset_file::{AssetFile, Base64Hash, hash_file},
     progress_tui_logger::log_warning,
     sqlite_table_array_store::SqliteTableArrayStore,
 };
 use serde::{Deserialize, Serialize};
-use std::{marker::PhantomData, sync::LazyLock};
+use std::marker::PhantomData;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
@@ -17,63 +16,12 @@ use crate::{
         },
         posterior_calculation_config::PosteriorCalculationConfig,
     },
+    jinja_directories::action_logs_parent_dir_from_template,
     json_line_util::{read_json, write_json},
     llm_model::LlmModelMarker,
-    util::{storage_large_files_dir, storage_small_files_dir},
 };
 
 const ACTION_LOG_SCHEMA_VERSION: usize = 3;
-const ACTION_LOGS_PARENT_DIR_TEMPLATE_PATH: &str = "config/directories/action_logs_parent_dir.jinja";
-
-fn load_template_environment(
-    template_path: &str,
-    template_name: &'static str,
-) -> Result<minijinja::Environment<'static>, String> {
-    let template_source = std::fs::read_to_string(template_path)
-        .map_err(|err| format!("Failed to read {}: {}", template_path, err))?;
-    let mut env = minijinja::Environment::new();
-    env.add_template_owned(template_name, template_source)
-        .map_err(|err| format!("Failed to parse {} template: {}", template_name, err))?;
-    Ok(env)
-}
-
-fn action_logs_parent_dir_from_template(
-    model_cli_name: &str,
-    config_nickname: &str,
-    epoch: usize,
-) -> Result<String, String> {
-    let storage_large_files_dir = storage_large_files_dir()?;
-    let storage_small_files_dir = storage_small_files_dir()?;
-    static ACTION_LOGS_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
-        Result<minijinja::Environment<'static>, String>,
-    > = LazyLock::new(|| {
-        load_template_environment(
-            ACTION_LOGS_PARENT_DIR_TEMPLATE_PATH,
-            "action_logs_parent_dir",
-        )
-    });
-
-    let env = ACTION_LOGS_PARENT_DIR_TEMPLATE_ENVIRONMENT
-        .as_ref()
-        .map_err(|err| err.clone())?;
-    let template = env
-        .get_template("action_logs_parent_dir")
-        .map_err(|err| format!("Failed to load action_logs_parent_dir template: {}", err))?;
-    let rendered = template
-        .render(context! {
-            storage_large_files_dir => storage_large_files_dir,
-            storage_small_files_dir => storage_small_files_dir,
-            model_cli_name => model_cli_name,
-            config_nickname => config_nickname,
-            epoch => epoch,
-        })
-        .map_err(|err| format!("Failed to render action_logs_parent_dir template: {}", err))?;
-    let rendered = rendered.trim().to_string();
-    if rendered.is_empty() {
-        return Err("Rendered action_logs_parent_dir template is empty".to_string());
-    }
-    Ok(rendered)
-}
 
 #[derive(Clone)]
 pub struct DirectTreeActionLog<M: LlmModelMarker, S: DatasetSplit> {

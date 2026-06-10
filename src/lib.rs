@@ -4,6 +4,7 @@ pub mod compute_backend;
 pub mod constants;
 pub mod direct_tool;
 pub mod get_accuracy;
+pub mod jinja_directories;
 pub mod json_line_util;
 pub mod judge_correctness;
 pub mod launch_backend_wrappers;

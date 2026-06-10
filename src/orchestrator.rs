@@ -1,11 +1,9 @@
-use std::{collections::BTreeMap, path::Path, sync::LazyLock};
-
-use minijinja::context;
 use research_utility::{
     asset_file::AssetFile,
     progress_tui_logger::{log_info, log_key_value_pair, log_state},
 };
 use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, path::Path};
 use tokio::process::Child;
 
 use crate::{
@@ -19,143 +17,20 @@ use crate::{
         posterior_calculation_config::PosteriorCalculationConfig,
     },
     get_accuracy::get_accuracy,
+    jinja_directories::{
+        model_checkpoint_dir_from_template, model_metrics_path_from_template,
+        model_parent_dir_from_template,
+    },
     json_line_util::write_json,
     launch_backend_wrappers::{launch_inference_wrapper_process, run_training_wrapper_and_wait},
-    launch_sglang_server::{best_effort_shutdown_stale_sglang_server, model_uses_sglang, shut_down_sglang_server_process},
+    launch_sglang_server::{
+        best_effort_shutdown_stale_sglang_server, model_uses_sglang,
+        shut_down_sglang_server_process,
+    },
     llm_model::{LlmCliArgs, LlmModelMarker},
     python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
-    util::{
-        hpc_training_root_dir_from_env, storage_large_files_dir, storage_small_files_dir,
-    },
+    util::{hpc_training_root_dir_from_env, storage_large_files_dir},
 };
-
-pub const MODEL_PARENT_DIR_TEMPLATE_PATH: &str = "config/directories/model_parent_dir.jinja";
-pub const MODEL_CHECKPOINT_DIR_TEMPLATE_PATH: &str = "config/directories/model_checkpoint_dir.jinja";
-pub const MODEL_METRICS_PATH_TEMPLATE_PATH: &str = "config/directories/model_metrics_path.jinja";
-pub const TRAINING_SUMMARY_PARENT_DIR_TEMPLATE_PATH: &str =
-    "config/directories/training_summary_parent_dir.jinja";
-
-fn load_template_environment(
-    template_path: &str,
-    template_name: &'static str,
-) -> Result<minijinja::Environment<'static>, String> {
-    let template_source = std::fs::read_to_string(template_path)
-        .map_err(|err| format!("Failed to read {}: {}", template_path, err))?;
-    let mut env = minijinja::Environment::new();
-    env.add_template_owned(template_name, template_source)
-        .map_err(|err| format!("Failed to parse {} template: {}", template_name, err))?;
-    Ok(env)
-}
-
-fn render_template_for_epoch(
-    template_env: &LazyLock<Result<minijinja::Environment<'static>, String>>,
-    template_name: &'static str,
-    model_cli_name: &str,
-    config_nickname: &str,
-    epoch: usize,
-) -> Result<String, String> {
-    let storage_large_files_dir = storage_large_files_dir()?;
-    let storage_small_files_dir = storage_small_files_dir()?;
-    let env = template_env.as_ref().map_err(|err| err.clone())?;
-    let template = env
-        .get_template(template_name)
-        .map_err(|err| format!("Failed to load {} template: {}", template_name, err))?;
-    let rendered = template
-        .render(context! {
-            storage_large_files_dir => storage_large_files_dir,
-            storage_small_files_dir => storage_small_files_dir,
-            model_cli_name => model_cli_name,
-            config_nickname => config_nickname,
-            epoch => epoch,
-        })
-        .map_err(|err| format!("Failed to render {} template: {}", template_name, err))?;
-    let rendered = rendered.trim().to_string();
-    if rendered.is_empty() {
-        return Err(format!("Rendered {} template is empty", template_name));
-    }
-    Ok(rendered)
-}
-
-pub static MODEL_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
-    Result<minijinja::Environment<'static>, String>,
-> = LazyLock::new(|| load_template_environment(MODEL_PARENT_DIR_TEMPLATE_PATH, "model_parent_dir"));
-
-pub static MODEL_CHECKPOINT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
-    Result<minijinja::Environment<'static>, String>,
-> = LazyLock::new(|| {
-    load_template_environment(MODEL_CHECKPOINT_DIR_TEMPLATE_PATH, "model_checkpoint_dir")
-});
-
-pub static MODEL_METRICS_PATH_TEMPLATE_ENVIRONMENT: LazyLock<
-    Result<minijinja::Environment<'static>, String>,
-> = LazyLock::new(|| {
-    load_template_environment(MODEL_METRICS_PATH_TEMPLATE_PATH, "model_metrics_path")
-});
-
-pub static TRAINING_SUMMARY_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
-    Result<minijinja::Environment<'static>, String>,
-> = LazyLock::new(|| {
-    load_template_environment(
-        TRAINING_SUMMARY_PARENT_DIR_TEMPLATE_PATH,
-        "training_summary_parent_dir",
-    )
-});
-
-pub fn model_parent_dir_from_template(
-    model_cli_name: &str,
-    config_nickname: &str,
-    epoch: usize,
-) -> Result<String, String> {
-    render_template_for_epoch(
-        &MODEL_PARENT_DIR_TEMPLATE_ENVIRONMENT,
-        "model_parent_dir",
-        model_cli_name,
-        config_nickname,
-        epoch,
-    )
-}
-
-pub fn model_checkpoint_dir_from_template(
-    model_cli_name: &str,
-    config_nickname: &str,
-    epoch: usize,
-) -> Result<String, String> {
-    render_template_for_epoch(
-        &MODEL_CHECKPOINT_DIR_TEMPLATE_ENVIRONMENT,
-        "model_checkpoint_dir",
-        model_cli_name,
-        config_nickname,
-        epoch,
-    )
-}
-
-pub fn model_metrics_path_from_template(
-    model_cli_name: &str,
-    config_nickname: &str,
-    epoch: usize,
-) -> Result<String, String> {
-    render_template_for_epoch(
-        &MODEL_METRICS_PATH_TEMPLATE_ENVIRONMENT,
-        "model_metrics_path",
-        model_cli_name,
-        config_nickname,
-        epoch,
-    )
-}
-
-pub fn training_summary_parent_dir_from_template(
-    model_cli_name: &str,
-    config_nickname: &str,
-    epoch: usize,
-) -> Result<String, String> {
-    render_template_for_epoch(
-        &TRAINING_SUMMARY_PARENT_DIR_TEMPLATE_ENVIRONMENT,
-        "training_summary_parent_dir",
-        model_cli_name,
-        config_nickname,
-        epoch,
-    )
-}
 
 pub struct Orchestrator {
     // for rollout
@@ -231,8 +106,14 @@ impl Orchestrator {
     fn ensure_inference_server_process_alive(&mut self, context: &str) -> Result<(), String> {
         enum Probe {
             Alive,
-            Exited { pid: Option<u32>, status: std::process::ExitStatus },
-            ProbeError { pid: Option<u32>, message: String },
+            Exited {
+                pid: Option<u32>,
+                status: std::process::ExitStatus,
+            },
+            ProbeError {
+                pid: Option<u32>,
+                message: String,
+            },
         }
 
         let probe = {
@@ -569,7 +450,10 @@ impl Orchestrator {
             None
         };
 
-        log_info(format!("Launching inference wrapper for model {}", M::CLI_NAME));
+        log_info(format!(
+            "Launching inference wrapper for model {}",
+            M::CLI_NAME
+        ));
         let (sglang_port, process) = launch_inference_wrapper_process(
             self.compute_backend,
             model_path.as_deref(),

@@ -5,6 +5,8 @@ use serde::Serialize;
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
+use crate::util::load_jinja_template_environment;
+
 use super::sglang_model_shared::{
     SharedSglangLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
     wrap_python_response_xml,
@@ -17,13 +19,10 @@ use super::{
 static LLAMA31_8B_INSTRUCT_TOKENIZER: LazyLock<Tokenizer> =
     LazyLock::new(|| Tokenizer::from_pretrained(Llama31_8BInstruct::API_NAME, None).unwrap());
 
-static LLAMA31_8B_INSTRUCT_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment> =
+static LLAMA31_8B_INSTRUCT_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment<'static>> =
     LazyLock::new(|| {
-        let mut env = minijinja::Environment::new();
-        let template_src =
-            std::fs::read_to_string("tokenizers/llama31/chat_template.jinja").unwrap();
-        env.add_template_owned("chat", template_src).unwrap();
-        env
+        load_jinja_template_environment("tokenizers/llama31/chat_template.jinja", "chat")
+            .unwrap()
     });
 
 #[derive(Serialize)]

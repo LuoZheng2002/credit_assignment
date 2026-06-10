@@ -5,7 +5,7 @@ use serde::Serialize;
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
-use crate::token_array::TokenArray;
+use crate::{token_array::TokenArray, util::load_jinja_template_environment};
 
 use super::sglang_model_shared::{
     SharedSglangLlmCallable, build_qwen25_python_response_turn_disable_thinking,
@@ -20,12 +20,10 @@ use super::{
 static QWEN25_TOKENIZER: LazyLock<Tokenizer> =
     LazyLock::new(|| Tokenizer::from_pretrained(Qwen25_7B::API_NAME, None).unwrap());
 
-static QWEN25_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment> = LazyLock::new(|| {
-    let mut env = minijinja::Environment::new();
-    let template_src = std::fs::read_to_string("tokenizers/qwen25/chat_template.jinja").unwrap();
-    env.add_template_owned("chat", template_src).unwrap();
-    env
-});
+static QWEN25_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment<'static>> =
+    LazyLock::new(|| {
+        load_jinja_template_environment("tokenizers/qwen25/chat_template.jinja", "chat").unwrap()
+    });
 
 #[derive(Serialize)]
 struct ChatMessage {

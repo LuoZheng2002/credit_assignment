@@ -5,6 +5,8 @@ use serde::Serialize;
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
+use crate::util::load_jinja_template_environment;
+
 use super::sglang_model_shared::{
     SharedSglangLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
     wrap_python_response_xml,
@@ -17,12 +19,11 @@ use super::{
 static GEMMA3_4B_IT_TOKENIZER: LazyLock<Tokenizer> =
     LazyLock::new(|| Tokenizer::from_pretrained(Gemma3_4BIt::API_NAME, None).unwrap());
 
-static GEMMA3_4B_IT_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment> = LazyLock::new(|| {
-    let mut env = minijinja::Environment::new();
-    let template_src = std::fs::read_to_string("tokenizers/gemma3/chat_template.jinja").unwrap();
-    env.add_template_owned("chat", template_src).unwrap();
-    env
-});
+static GEMMA3_4B_IT_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment<'static>> =
+    LazyLock::new(|| {
+        load_jinja_template_environment("tokenizers/gemma3/chat_template.jinja", "chat")
+            .unwrap()
+    });
 
 #[derive(Serialize)]
 struct ChatMessage {

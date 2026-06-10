@@ -1,7 +1,6 @@
 use std::backtrace::Backtrace;
 
 use clap::{ArgAction, Parser, ValueEnum};
-use minijinja::context;
 use proctitle::set_title;
 use std::{collections::BTreeMap, path::Path};
 
@@ -13,6 +12,10 @@ use credit_assignment::{
         hybrid_dataset::{Training, Validation},
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
+    jinja_directories::{
+        inference_wrapper_log_path_from_template, training_wrapper_log_path_from_template,
+        tui_log_path_from_template,
+    },
     json_line_util::{read_json, read_toml},
     llm_model::{
         Gemma3_4BIt, Gpt4o, Llama31_8BInstruct, LlmModelName, Mistral7BInstructV03, Qwen3_4B,
@@ -20,20 +23,11 @@ use credit_assignment::{
     },
     orchestrator::{OrchestrationProgress, OrchestrationStatus, Orchestrator},
     python_training_config::PythonTrainingConfigCommon,
-    util::{
-        configure_storage_dirs, hpc_training_root_dir_from_env, storage_large_files_dir,
-        storage_small_files_dir,
-    },
+    util::{configure_storage_dirs, hpc_training_root_dir_from_env},
 };
 use research_utility::progress_tui_logger::{
     ProgressTuiLogger, log_exit_hint, log_info, log_warning, log_window_name,
 };
-
-const INFERENCE_WRAPPER_LOG_PATH_TEMPLATE_PATH: &str =
-    "config/directories/inference_wrapper_log_path.jinja";
-const TRAINING_WRAPPER_LOG_PATH_TEMPLATE_PATH: &str =
-    "config/directories/training_wrapper_log_path.jinja";
-const TUI_LOG_PATH_TEMPLATE_PATH: &str = "config/directories/tui_log_path.jinja";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -94,35 +88,6 @@ struct Args {
     ui: bool,
 }
 
-fn render_log_path_template(
-    template_path: &str,
-    template_name: &'static str,
-    model_cli_name: &str,
-    config_nickname: &str,
-) -> Result<String, String> {
-    let template_source = std::fs::read_to_string(template_path)
-        .map_err(|err| format!("Failed to read {}: {}", template_path, err))?;
-    let mut env = minijinja::Environment::new();
-    env.add_template_owned(template_name, template_source)
-        .map_err(|err| format!("Failed to parse {} template: {}", template_name, err))?;
-    let template = env
-        .get_template(template_name)
-        .map_err(|err| format!("Failed to load {} template: {}", template_name, err))?;
-    let rendered = template
-        .render(context! {
-            storage_large_files_dir => storage_large_files_dir()?,
-            storage_small_files_dir => storage_small_files_dir()?,
-            model_cli_name => model_cli_name,
-            config_nickname => config_nickname,
-        })
-        .map_err(|err| format!("Failed to render {} template: {}", template_name, err))?;
-    let rendered = rendered.trim().to_string();
-    if rendered.is_empty() {
-        return Err(format!("Rendered {} template is empty", template_name));
-    }
-    Ok(rendered)
-}
-
 fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
     let Some(parent) = Path::new(file_path).parent() else {
         return Ok(());
@@ -130,8 +95,13 @@ fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
     if parent.as_os_str().is_empty() {
         return Ok(());
     }
-    std::fs::create_dir_all(parent)
-        .map_err(|err| format!("Failed to create parent directory {}: {}", parent.display(), err))
+    std::fs::create_dir_all(parent).map_err(|err| {
+        format!(
+            "Failed to create parent directory {}: {}",
+            parent.display(),
+            err
+        )
+    })
 }
 
 #[tokio::main]
@@ -182,27 +152,14 @@ async fn main() {
     );
     configure_storage_dirs(&storage_large_files_dir, &storage_small_files_dir)
         .unwrap_or_else(|err| panic!("failed to configure storage directories: {}", err));
-    let inference_wrapper_log_path = render_log_path_template(
-        INFERENCE_WRAPPER_LOG_PATH_TEMPLATE_PATH,
-        "inference_wrapper_log_path",
-        &model_cli_name,
-        &config_nickname,
-    )
-    .unwrap_or_else(|err| panic!("failed to render inference wrapper log path: {}", err));
-    let training_wrapper_log_path = render_log_path_template(
-        TRAINING_WRAPPER_LOG_PATH_TEMPLATE_PATH,
-        "training_wrapper_log_path",
-        &model_cli_name,
-        &config_nickname,
-    )
-    .unwrap_or_else(|err| panic!("failed to render training wrapper log path: {}", err));
-    let tui_log_path = render_log_path_template(
-        TUI_LOG_PATH_TEMPLATE_PATH,
-        "tui_log_path",
-        &model_cli_name,
-        &config_nickname,
-    )
-    .unwrap_or_else(|err| panic!("failed to render tui log path: {}", err));
+    let inference_wrapper_log_path =
+        inference_wrapper_log_path_from_template(&model_cli_name, &config_nickname)
+            .unwrap_or_else(|err| panic!("failed to render inference wrapper log path: {}", err));
+    let training_wrapper_log_path =
+        training_wrapper_log_path_from_template(&model_cli_name, &config_nickname)
+            .unwrap_or_else(|err| panic!("failed to render training wrapper log path: {}", err));
+    let tui_log_path = tui_log_path_from_template(&model_cli_name, &config_nickname)
+        .unwrap_or_else(|err| panic!("failed to render tui log path: {}", err));
     ensure_parent_dir_exists(&inference_wrapper_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare inference wrapper log directory: {}", err));
     ensure_parent_dir_exists(&training_wrapper_log_path)
@@ -232,9 +189,7 @@ async fn main() {
             "--modal-training-poll-interval-secs must be positive"
         );
         if hpc_training_base_url.is_some() {
-            log_info(
-                "--hpc-training-base-url is ignored when wrapper mode is enabled",
-            );
+            log_info("--hpc-training-base-url is ignored when wrapper mode is enabled");
         }
         hpc_training_root_dir_from_env().unwrap_or_else(|err| {
             panic!(

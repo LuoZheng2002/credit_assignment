@@ -13,7 +13,7 @@ dependencies = [
     # "pybase64",
     "transformers==v5.6.0",
     "kernels>=0.12.0,<0.13",
-    # "flashinfer-python",
+    "flashinfer-python",
     "sglang==v0.5.12.post1",
     # "sglang-kernel",
     "sglang-kernel @ https://github.com/sgl-project/whl/releases/download/v0.4.2.post2/sglang_kernel-0.4.2.post2+cu130-cp310-abi3-manylinux2014_x86_64.whl#sha256=4e7ce619274234d182b20da883fcf1d20e7e55cbea90d62244e2b6a3d6c0fc85",

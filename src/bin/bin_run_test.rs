@@ -11,6 +11,7 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     get_accuracy::{TestAccuracyResult, get_test_accuracies},
+    jinja_directories::model_parent_dir_from_template,
     json_line_util::{read_json, write_json},
     launch_sglang_server::{
         best_effort_shutdown_stale_sglang_server, launch_sglang_server_process, model_uses_sglang,
@@ -21,7 +22,6 @@ use credit_assignment::{
         Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
     load_initial_model::load_initial_model,
-    orchestrator::model_parent_dir_from_template,
 };
 use reqwest::Client;
 use research_utility::progress_tui_logger::ProgressTuiLogger;

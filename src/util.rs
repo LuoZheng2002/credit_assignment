@@ -1,4 +1,7 @@
-use std::{future::Future, sync::{LazyLock, OnceLock}};
+use std::{
+    future::Future,
+    sync::{LazyLock, OnceLock},
+};
 
 pub fn block_on_async<F: Future>(future: F) -> F::Output {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -7,6 +10,18 @@ pub fn block_on_async<F: Future>(future: F) -> F::Output {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(future)
     }
+}
+
+pub fn load_jinja_template_environment(
+    template_path: &str,
+    template_name: &'static str,
+) -> Result<minijinja::Environment<'static>, String> {
+    let template_source = std::fs::read_to_string(template_path)
+        .map_err(|err| format!("Failed to read {}: {}", template_path, err))?;
+    let mut env = minijinja::Environment::new();
+    env.add_template_owned(template_name, template_source)
+        .map_err(|err| format!("Failed to parse {} template: {}", template_name, err))?;
+    Ok(env)
 }
 
 pub fn extract_boxed_content(text: &str) -> Option<String> {
