@@ -127,39 +127,27 @@ pub async fn launch_inference_wrapper_process(
             .arg(modal_auth_token_env_var);
     }
 
+    if let Some(log_path) = log_path {
+        command.arg("--wrapper-log-path").arg(log_path);
+    }
+
     let model_path = model_path.ok_or_else(|| {
         "Inference wrapper launch requires model_path to be provided".to_string()
     })?;
     command.arg("--model-path").arg(model_path);
 
-    if let Some(log_path) = log_path {
-        let log_file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(log_path)
-            .map_err(|err| format!("failed to open inference wrapper log path {}: {}", log_path, err))?;
-        let log_file_err = log_file
-            .try_clone()
-            .map_err(|err| format!("failed to clone log file handle for {}: {}", log_path, err))?;
-        command.stdout(Stdio::from(log_file));
-        command.stderr(Stdio::from(log_file_err));
-    } else {
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-    }
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
 
     let mut process = command
         .spawn()
         .map_err(|err| format!("failed to launch inference wrapper process: {}", err))?;
 
-    if log_path.is_none() {
-        if let Some(stdout) = process.stdout.take() {
-            tokio::spawn(stream_output(stdout, false, None));
-        }
-        if let Some(stderr) = process.stderr.take() {
-            tokio::spawn(stream_output(stderr, true, None));
-        }
+    if let Some(stdout) = process.stdout.take() {
+        tokio::spawn(stream_output(stdout, false, None));
+    }
+    if let Some(stderr) = process.stderr.take() {
+        tokio::spawn(stream_output(stderr, true, None));
     }
 
     wait_for_wrapper_health(listen_port, &mut process, log_path).await?;

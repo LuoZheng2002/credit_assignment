@@ -228,6 +228,50 @@ fn average_accuracy(accuracies: (f32, f32, f32, f32)) -> f32 {
 }
 
 impl Orchestrator {
+    fn ensure_inference_server_process_alive(&mut self, context: &str) -> Result<(), String> {
+        enum Probe {
+            Alive,
+            Exited { pid: Option<u32>, status: std::process::ExitStatus },
+            ProbeError { pid: Option<u32>, message: String },
+        }
+
+        let probe = {
+            let Some(handle) = self.inference_server_handle.as_mut() else {
+                return Ok(());
+            };
+            let Some(process) = handle.process.as_mut() else {
+                return Ok(());
+            };
+            let pid_for_log = process.id();
+            match process.try_wait() {
+                Ok(Some(status)) => Probe::Exited {
+                    pid: pid_for_log,
+                    status,
+                },
+                Ok(None) => Probe::Alive,
+                Err(err) => Probe::ProbeError {
+                    pid: pid_for_log,
+                    message: err.to_string(),
+                },
+            }
+        };
+
+        match probe {
+            Probe::Alive => Ok(()),
+            Probe::Exited { pid, status } => {
+                self.inference_server_handle = None;
+                Err(format!(
+                    "Inference server process exited unexpectedly {} (pid={:?}, status={})",
+                    context, pid, status
+                ))
+            }
+            Probe::ProbeError { pid, message } => Err(format!(
+                "Failed to probe inference server process status {} (pid={:?}): {}",
+                context, pid, message
+            )),
+        }
+    }
+
     pub fn progress_save_path(model_cli_name: &str, config_nickname: &str) -> String {
         format!(
             "results/{}/{}/orchestration_progress.json",
@@ -446,6 +490,7 @@ impl Orchestrator {
         epoch: usize,
         use_tool: bool,
     ) -> Result<(), String> {
+        self.ensure_inference_server_process_alive("before launch/reuse check")?;
         if let Some(handle) = &self.inference_server_handle {
             log_info(format!(
                 "ensure_inference_server_launched: found existing handle (stored_epoch={}, stored_use_tool={}, has_port={}, has_process={}) while requesting epoch {} use_tool={}",
@@ -464,6 +509,7 @@ impl Orchestrator {
             );
             if handle.epoch == epoch && handle.use_tool == use_tool {
                 // already launched for this epoch
+                self.ensure_inference_server_process_alive("while reusing existing handle")?;
                 log_info(format!(
                     "ensure_inference_server_launched: reusing existing inference server handle for epoch {} use_tool={}",
                     epoch, use_tool
@@ -613,8 +659,9 @@ impl Orchestrator {
         );
     }
 
-    async fn validate_model<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
+    async fn validate_model<M: LlmModelMarker>(&mut self, epoch: usize) -> Result<(), String> {
         log_info("Start validating model.");
+        self.ensure_inference_server_process_alive("before validation rollout")?;
         // assert!(self.validation_rollout_config.split == DatasetSplit::Validation);
 
         let validation_rollout_program_config = RolloutProgramConfig {
@@ -639,15 +686,17 @@ impl Orchestrator {
             total_epochs: self.num_total_epochs,
         };
         rollout_all::<M, Validation>(validation_rollout_program_config).await;
+        self.ensure_inference_server_process_alive("after validation rollout")?;
         log_info("Finished validating model.");
         Ok(())
     }
 
     async fn collect_training_rollout<M: LlmModelMarker>(
-        &self,
+        &mut self,
         epoch: usize,
     ) -> Result<(), String> {
         log_info("Collecting training rollout");
+        self.ensure_inference_server_process_alive("before training rollout collection")?;
         self.remove_epoch_training_checkpoints::<M>(epoch)?;
         let Some(sglang_server_handle) = &self.inference_server_handle else {
             panic!("Orchestrator did not launch the sglang server before generating training set");
@@ -670,6 +719,7 @@ impl Orchestrator {
             total_epochs: self.num_total_epochs,
         };
         rollout_all::<M, Training>(training_set_rollout_program_config).await;
+        self.ensure_inference_server_process_alive("after training rollout collection")?;
         log_info("Finished collecting training rollout");
         Ok(())
     }

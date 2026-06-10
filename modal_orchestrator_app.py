@@ -1,7 +1,6 @@
 import json
 import signal
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -106,7 +105,55 @@ def _extract_num_gpus(cli_args: list[str]) -> int:
 
 DEPLOY_ORCHESTRATOR_CLI_ARGS = _load_orchestrator_cli_args()
 DEPLOY_NUM_GPUS = _extract_num_gpus(DEPLOY_ORCHESTRATOR_CLI_ARGS)
-GPU = f"A100:{DEPLOY_NUM_GPUS}"
+GPU = f"H100:{DEPLOY_NUM_GPUS}"
+
+
+def _print_sglang_env_package_versions() -> None:
+    sglang_python = Path("/workspace/pyprojects/sglang/.venv/bin/python")
+    if not sglang_python.is_file():
+        print(f"[orchestrate] missing sglang python executable at {sglang_python}")
+        return
+
+    freeze_cmd = ["uv", "pip", "freeze", "--python", str(sglang_python)]
+    result = subprocess.run(
+        freeze_cmd,
+        cwd="/workspace",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        install_pip_cmd = ["uv", "pip", "install", "--python", str(sglang_python), "pip"]
+        install_pip = subprocess.run(
+            install_pip_cmd,
+            cwd="/workspace",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if install_pip.returncode == 0:
+            result = subprocess.run(
+                freeze_cmd,
+                cwd="/workspace",
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        print(
+            "[orchestrate] failed to list sglang package versions "
+            f"(rc={result.returncode}): {stderr}"
+        )
+        return
+
+    print("[orchestrate] pyprojects/sglang package versions (pip freeze):")
+    output = result.stdout.strip()
+    if output:
+        print(output)
+    else:
+        print("[orchestrate] (no packages reported)")
 
 
 def _run_orchestrator_subprocess(cli_args: list[str]) -> dict[str, Any]:
@@ -127,20 +174,12 @@ def _run_orchestrator_subprocess(cli_args: list[str]) -> dict[str, Any]:
         child = subprocess.Popen(
             cmd,
             cwd="/workspace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
         )
         while child.poll() is None:
             if termination_requested.is_set():
                 break
             time.sleep(0.5)
-        stdout_text, stderr_text = child.communicate(timeout=30)
-        if stdout_text:
-            print(stdout_text, end="", flush=True)
-        if stderr_text:
-            print(stderr_text, end="", file=sys.stderr, flush=True)
-        return_code = child.returncode
+        return_code = child.wait(timeout=30)
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm)
         signal.signal(signal.SIGINT, previous_sigint)
@@ -153,7 +192,7 @@ def _run_orchestrator_subprocess(cli_args: list[str]) -> dict[str, Any]:
     raise RuntimeError(
         "ORCHESTRATOR_PROCESS_FAILED: "
         f"orchestrator subprocess failed rc={return_code}; "
-        f"stdout_tail={stdout_text[-1000:]}; stderr_tail={stderr_text[-1000:]}"
+        "stdout/stderr are streamed directly to container logs"
     )
 
 
@@ -184,6 +223,7 @@ app = modal.App(name=APP_NAME)
 class OrchestratorService:
     @modal.method()
     def orchestrate(self) -> dict[str, Any]:
+        _print_sglang_env_package_versions()
         cli_args = _load_orchestrator_cli_args()
         requested_num_gpus = _extract_num_gpus(cli_args)
         if requested_num_gpus != DEPLOY_NUM_GPUS:

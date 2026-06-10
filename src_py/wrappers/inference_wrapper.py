@@ -24,6 +24,8 @@ from src_py.modal.inference_deployment_common import (
     ensure_undeployed,
 )
 
+_WRAPPER_LOG_FILE_HANDLE: Any | None = None
+
 
 def _set_process_name(name: str) -> None:
     try:
@@ -48,6 +50,20 @@ def _emit_status(backend: str, status: str, message: str) -> None:
             "timestamp": time.time(),
         }
     )
+
+
+def _configure_wrapper_log_file(log_path: str) -> None:
+    global _WRAPPER_LOG_FILE_HANDLE
+    resolved = log_path.strip()
+    if not resolved:
+        return
+    path = Path(resolved).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _WRAPPER_LOG_FILE_HANDLE = open(path, "a", buffering=1, encoding="utf-8")
+    os.dup2(_WRAPPER_LOG_FILE_HANDLE.fileno(), 1)
+    os.dup2(_WRAPPER_LOG_FILE_HANDLE.fileno(), 2)
+    sys.stdout = os.fdopen(1, "w", buffering=1, encoding="utf-8", closefd=False)
+    sys.stderr = os.fdopen(2, "w", buffering=1, encoding="utf-8", closefd=False)
 
 
 def _emit_inference_identity(
@@ -163,7 +179,9 @@ def _get_json(
             return {"status": "ok", "raw": raw[:200]}
 
 
-def _wait_health(url: str, timeout_secs: int, headers: dict[str, str] | None = None) -> None:
+def _wait_health(
+    url: str, timeout_secs: int, headers: dict[str, str] | None = None
+) -> None:
     deadline = time.time() + timeout_secs
     while time.time() < deadline:
         try:
@@ -192,6 +210,53 @@ def _process_exists(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _resolve_sglang_python_executable() -> str:
+    override = os.environ.get("SGLANG_PYTHON_BIN", "").strip()
+    if override:
+        override_path = Path(override)
+        if override_path.is_file():
+            return str(override_path)
+        raise FileNotFoundError(f"SGLANG_PYTHON_BIN does not exist: {override}")
+
+    repo_root = Path(__file__).resolve().parents[2]
+    python_bin = repo_root / "pyprojects" / "sglang" / ".venv" / "bin" / "python"
+    if python_bin.is_file():
+        return str(python_bin)
+    raise FileNotFoundError(
+        "expected sglang python executable at "
+        f"{python_bin}; run 'uv sync --project pyprojects/sglang' first"
+    )
+
+
+def _emit_sglang_kernels_version(sglang_python: str) -> None:
+    probe_cmd = [
+        sglang_python,
+        "-c",
+        "import kernels; print(f'{kernels.__version__}|{kernels.__file__}')",
+    ]
+    result = subprocess.run(
+        probe_cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        _emit_status(
+            "hpc",
+            "starting",
+            f"failed to probe kernels version before sglang launch: {message}",
+        )
+        return
+
+    details = result.stdout.strip() or "missing version output"
+    _emit_status(
+        "hpc",
+        "starting",
+        f"sglang env kernels before launch: {details}",
+    )
 
 
 def _start_parent_watchdog(
@@ -327,13 +392,13 @@ class HpcBackend:
         except Exception as error:  # noqa: BLE001
             if "mismatch" in str(error) or "cannot validate" in str(error):
                 raise
+        sglang_python = _resolve_sglang_python_executable()
+        _emit_sglang_kernels_version(sglang_python)
+        child_env = os.environ.copy()
+        child_env.setdefault("PYTHONUNBUFFERED", "1")
         self._process = subprocess.Popen(
             [
-                "uv",
-                "run",
-                "--project",
-                "pyprojects/sglang",
-                "python",
+                sglang_python,
                 "-m",
                 "sglang.launch_server",
                 "--model-path",
@@ -344,10 +409,15 @@ class HpcBackend:
                 str(upstream_port),
                 "--dp",
                 str(num_gpus),
-            ]
+            ],
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            env=child_env,
         )
-        _emit_status("hpc", "starting", f"launching local sglang on port {upstream_port}")
-        _wait_health(f"{self._upstream_url}/health", timeout_secs=300)
+        _emit_status(
+            "hpc", "starting", f"launching local sglang on port {upstream_port}"
+        )
+        _wait_health(f"{self._upstream_url}/health", timeout_secs=900)
         _write_hpc_server_state(
             upstream_port=upstream_port,
             model_cli_name=model_cli_name,
@@ -359,10 +429,26 @@ class HpcBackend:
         _emit_status("hpc", "ready", "local sglang health check passed")
 
     def health(self) -> dict[str, Any]:
+        exit_error = self.unexpected_exit_error()
+        if exit_error is not None:
+            raise RuntimeError(exit_error)
         return _probe_health(f"{self._upstream_url}/health")
 
     def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        exit_error = self.unexpected_exit_error()
+        if exit_error is not None:
+            raise RuntimeError(exit_error)
         return _post_json(f"{self._upstream_url}/generate", payload)
+
+    def unexpected_exit_error(self) -> str | None:
+        if self._process is None:
+            return None
+        return_code = self._process.poll()
+        if return_code is None:
+            return None
+        return (
+            f"local sglang process exited unexpectedly with return code {return_code}"
+        )
 
     def shutdown(self) -> None:
         if self._process is None:
@@ -409,7 +495,9 @@ class ModalBackend:
                 config_nickname=self._config_nickname,
                 epoch=self._epoch,
             )
-            _emit_status("modal", "starting", f"ensuring modal deployment {self._app_name}")
+            _emit_status(
+                "modal", "starting", f"ensuring modal deployment {self._app_name}"
+            )
             app_name_result, code = ensure_deployed(
                 model_cli_name=self._model_cli_name,
                 model_api_name=self._hf_model_name,
@@ -418,7 +506,9 @@ class ModalBackend:
                 num_gpus=self._num_gpus,
             )
             if code != 0:
-                raise RuntimeError(f"failed to deploy modal inference app {app_name_result}")
+                raise RuntimeError(
+                    f"failed to deploy modal inference app {app_name_result}"
+                )
             self._managed_deployment_name = app_name_result
         self._cls = None
         self._instance = None
@@ -500,14 +590,20 @@ class ModalBackend:
     def _wait_remote_ready(self, timeout_secs: int = 900) -> None:
         # Temporary toggle: rely on warmup-only readiness to avoid repeated /health polling
         # during container cold start. Set to "0" to restore health polling immediately.
-        if os.environ.get("INFERENCE_WRAPPER_SKIP_MODAL_HEALTH_POLL", "1").strip() not in (
+        if os.environ.get(
+            "INFERENCE_WRAPPER_SKIP_MODAL_HEALTH_POLL", "1"
+        ).strip() not in (
             "0",
             "false",
             "False",
         ):
             self._warmup_remote(timeout_secs=timeout_secs)
             return
-        _wait_health(f"{self._modal_base_url}/health", timeout_secs=timeout_secs, headers=self._headers)
+        _wait_health(
+            f"{self._modal_base_url}/health",
+            timeout_secs=timeout_secs,
+            headers=self._headers,
+        )
         self._warmup_remote(timeout_secs=timeout_secs)
 
     def _warmup_remote(self, timeout_secs: int = 900) -> None:
@@ -543,7 +639,9 @@ class ModalBackend:
                 )
                 self._rebind_instance()
                 time.sleep(5)
-        raise TimeoutError(f"modal warmup /generate timed out after {timeout_secs}s: {last_error}")
+        raise TimeoutError(
+            f"modal warmup /generate timed out after {timeout_secs}s: {last_error}"
+        )
 
     def health(self) -> dict[str, Any]:
         result = _probe_health(f"{self._modal_base_url}/health", headers=self._headers)
@@ -591,13 +689,18 @@ class ModalBackend:
                 )
         return
 
+    def unexpected_exit_error(self) -> str | None:
+        return None
+
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Inference wrapper for HPC and Modal backends")
+    parser = argparse.ArgumentParser(
+        description="Inference wrapper for HPC and Modal backends"
+    )
     parser.add_argument("--backend", choices=["hpc", "modal"], required=True)
     parser.add_argument("--listen-port", type=int, required=True)
     parser.add_argument("--num-gpus", type=int, default=1)
@@ -607,10 +710,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config-nickname", type=str, required=True)
     parser.add_argument("--hf-model-name", type=str, required=True)
     parser.add_argument("--artifact-root-dir", type=str, default="/mnt/service-state")
-    parser.add_argument("--modal-app-name", type=str, default="credit-assignment-inference-service")
+    parser.add_argument(
+        "--modal-app-name", type=str, default="credit-assignment-inference-service"
+    )
     parser.add_argument("--modal-class-name", type=str, default="ExperimentService")
     parser.add_argument("--modal-base-url", type=str, default="")
     parser.add_argument("--modal-auth-token-env-var", type=str, default="")
+    parser.add_argument("--wrapper-log-path", type=str, default="")
     return parser
 
 
@@ -618,11 +724,14 @@ def main() -> int:
     _set_process_name("inference_wrapper")
     args = _build_parser().parse_args()
     try:
+        _configure_wrapper_log_file(args.wrapper_log_path)
         if args.listen_port <= 0:
             raise ValueError("--listen-port must be positive")
 
         if not args.model_path:
-            raise ValueError("--model-path is required for both --backend=hpc and --backend=modal")
+            raise ValueError(
+                "--model-path is required for both --backend=hpc and --backend=modal"
+            )
         if args.backend == "modal":
             _emit_status(
                 "modal",
@@ -646,7 +755,11 @@ def main() -> int:
             args.epoch,
         )
 
-        _emit_status(args.backend, "starting", f"binding local wrapper server on port {args.listen_port}")
+        _emit_status(
+            args.backend,
+            "starting",
+            f"binding local wrapper server on port {args.listen_port}",
+        )
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
@@ -672,7 +785,9 @@ def main() -> int:
                             "timestamp": time.time(),
                         }
                     )
-                    body = json.dumps({"status": "error", "message": str(error)}).encode("utf-8")
+                    body = json.dumps(
+                        {"status": "error", "message": str(error)}
+                    ).encode("utf-8")
                     self.send_response(503)
                     self.send_header("content-type", "application/json")
                     self.send_header("content-length", str(len(body)))
@@ -705,7 +820,9 @@ def main() -> int:
                             "timestamp": time.time(),
                         }
                     )
-                    body = json.dumps({"error": {"message": str(error)}}).encode("utf-8")
+                    body = json.dumps({"error": {"message": str(error)}}).encode(
+                        "utf-8"
+                    )
                     self.send_response(500)
                     self.send_header("content-type", "application/json")
                     self.send_header("content-length", str(len(body)))
@@ -718,7 +835,29 @@ def main() -> int:
 
         server = ThreadedHTTPServer(("127.0.0.1", args.listen_port), Handler)
         shutdown_event = threading.Event()
+        fatal_error: list[str] = []
         _start_parent_watchdog(args.backend, backend, server, shutdown_event)
+
+        def _watch_backend_process() -> None:
+            while not shutdown_event.is_set():
+                exit_error = backend.unexpected_exit_error()
+                if exit_error is not None:
+                    fatal_error.append(exit_error)
+                    _emit_event(
+                        {
+                            "type": "error",
+                            "backend": args.backend,
+                            "error_code": "SGLANG_PROCESS_EXITED",
+                            "error_message": exit_error,
+                            "timestamp": time.time(),
+                        }
+                    )
+                    shutdown_event.set()
+                    threading.Thread(target=server.shutdown, daemon=True).start()
+                    return
+                shutdown_event.wait(timeout=1.0)
+
+        threading.Thread(target=_watch_backend_process, daemon=True).start()
         _emit_status(args.backend, "ready", "inference wrapper server is ready")
 
         def _shutdown(*_: Any) -> None:
@@ -735,6 +874,20 @@ def main() -> int:
             shutdown_event.set()
             backend.shutdown()
             server.server_close()
+            if fatal_error:
+                error_message = fatal_error[-1]
+                _emit_event(
+                    {
+                        "type": "result",
+                        "backend": args.backend,
+                        "ok": False,
+                        "error_code": "SGLANG_PROCESS_EXITED",
+                        "error_message": error_message,
+                        "message": error_message,
+                        "timestamp": time.time(),
+                    }
+                )
+                return 1
             _emit_event(
                 {
                     "type": "result",
