@@ -46,7 +46,7 @@ pub async fn launch_python_training_process(
         .arg("--master_port")
         .arg(master_port)
         .arg("-m")
-        .arg("src_py.train.main_from_config")
+        .arg("src_py.train.main")
         .arg("--job-folder-path")
         .arg(job_folder_path)
         .stdout(Stdio::piped())

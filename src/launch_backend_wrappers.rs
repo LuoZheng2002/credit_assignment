@@ -60,6 +60,9 @@ pub async fn launch_inference_wrapper_process(
         .arg("--model-path")
         .arg(model_path);
 
+    #[cfg(unix)]
+    command.process_group(0);
+
     command.stdout(Stdio::null());
     command.stderr(Stdio::null());
 

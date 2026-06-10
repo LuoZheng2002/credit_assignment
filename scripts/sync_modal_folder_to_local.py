@@ -37,6 +37,7 @@ def main() -> int:
     remote_volume_path = _volume_path_from_mount_path(REMOTE_MOUNT_PATH)
 
     _reset_local_destination(local_destination)
+    local_destination.mkdir(parents=True, exist_ok=True)
 
     command = [
         "uv",

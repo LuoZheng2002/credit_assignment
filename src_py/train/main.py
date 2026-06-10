@@ -1,73 +1,109 @@
 from __future__ import annotations
 
 import argparse
+import tomllib
+from pathlib import Path
+from typing import Any
+
+from torch.distributed.elastic.multiprocessing.errors import record
 
 from .engine import TrainConfig, train
-from .training_plan import TRAINING_PLAN_FSDP, TRAINING_PLAN_LORA
+from .pathing import (
+    checkpoint_parent_dir,
+    final_model_output_parent_dir,
+    model_parent_dir,
+    resolve_artifact_root_dir,
+)
+from .status_log_buffer import install_status_log_buffer, shutdown_status_log_buffer
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train causal LM with LoRA or FSDP")
-    parser.add_argument(
-        "--training-plan",
-        type=str,
-        required=True,
-        choices=[TRAINING_PLAN_LORA, TRAINING_PLAN_FSDP, "lora_current", "full_fsdp_backup"],
+    parser = argparse.ArgumentParser(
+        description="Primary training entrypoint for isolated job folders"
     )
-    parser.add_argument("--model-parent-dir", type=str, required=True)
-    parser.add_argument("--training-trajectory-sqlite-path", type=str, required=True)
-    parser.add_argument("--checkpoints-parent-dir", type=str, required=True)
-    parser.add_argument("--final-model-output-parent-dir", type=str, required=True)
-    parser.add_argument("--training-summary-parent-dir", type=str, required=True)
-    parser.add_argument("--advantage-clip", type=float, required=True)
-    parser.add_argument("--learning-rate", type=float, required=True)
-    parser.add_argument("--weight-decay", type=float, required=True)
-    parser.add_argument("--training-time", type=float, required=True)
-    parser.add_argument("--num-iterations-limit", type=int, required=True)
-    parser.add_argument("--grad-accum-steps", type=int, required=True)
-    parser.add_argument("--log-time-interval", type=float, required=True)
-    parser.add_argument("--checkpoint-save-time-interval", type=float, required=True)
-    parser.add_argument("--lora-rank", type=int, required=False, default=64)
-    parser.add_argument("--lora-alpha", type=int, required=False, default=128)
-    parser.add_argument("--lora-dropout", type=float, required=False, default=0.05)
-    parser.add_argument(
-        "--lora-target-modules-csv",
-        type=str,
-        required=False,
-        default="q_proj,k_proj,v_proj,o_proj",
-    )
-    parser.add_argument("--resume-checkpoint-tag", type=str, required=False, default="auto")
-    parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--job-folder-path", type=str, required=True)
+    parser.add_argument("--orchestrator-socket-path", type=str, default="")
     return parser
 
 
+def _load_train_config(job_folder_path: str) -> TrainConfig:
+    job_folder = Path(job_folder_path)
+    assert job_folder.exists(), f"job folder not found: {job_folder}"
+    assert job_folder.is_dir(), f"job folder must be a directory: {job_folder}"
+
+    config_path = job_folder / "train_request.toml"
+    assert config_path.exists(), f"train request file not found: {config_path}"
+
+    payload: Any
+    with config_path.open("rb") as handle:
+        payload = tomllib.load(handle)
+    assert isinstance(payload, dict), "config toml root must be a table"
+
+    artifact_root_dir = resolve_artifact_root_dir(payload)
+    model_cli_name = str(payload["model_cli_name"])
+    config_nickname = str(payload["config_nickname"])
+    epoch = int(payload["epoch"])
+    training_trajectory_sqlite_path = (
+        job_folder / "input" / "training_trajectories.sqlite"
+    )
+
+    assert training_trajectory_sqlite_path.exists(), (
+        "training trajectory sqlite was not uploaded to job folder: "
+        f"{training_trajectory_sqlite_path}"
+    )
+
+    model_parent_dir_path = model_parent_dir(
+        artifact_root_dir, model_cli_name, config_nickname, epoch
+    )
+    checkpoints_parent_dir_path = checkpoint_parent_dir(
+        artifact_root_dir, model_cli_name, config_nickname, epoch
+    )
+    final_model_output_parent_dir_path = final_model_output_parent_dir(
+        artifact_root_dir,
+        model_cli_name,
+        config_nickname,
+        epoch,
+    )
+
+    training_summary_parent_dir = checkpoints_parent_dir_path
+
+    return TrainConfig(
+        training_plan=str(payload["training_plan"]),
+        model_parent_dir=str(model_parent_dir_path),
+        training_trajectory_sqlite_path=str(training_trajectory_sqlite_path),
+        checkpoints_parent_dir=str(checkpoints_parent_dir_path),
+        final_model_output_parent_dir=str(final_model_output_parent_dir_path),
+        training_summary_parent_dir=str(training_summary_parent_dir),
+        advantage_clip=float(payload["advantage_clip"]),
+        learning_rate=float(payload["learning_rate"]),
+        weight_decay=float(payload["weight_decay"]),
+        training_time=float(payload["training_time"]),
+        num_iterations_limit=int(payload["num_iterations_limit"]),
+        grad_accum_steps=int(payload["grad_accum_steps"]),
+        log_time_interval=float(payload["log_time_interval"]),
+        checkpoint_save_time_interval=float(payload["checkpoint_save_time_interval"]),
+        lora_rank=int(payload.get("lora_rank") or 64),
+        lora_alpha=int(payload.get("lora_alpha") or 128),
+        lora_dropout=float(payload.get("lora_dropout") or 0.05),
+        lora_target_modules_csv=str(
+            payload.get("lora_target_modules_csv") or "q_proj,k_proj,v_proj,o_proj"
+        ),
+        resume_checkpoint_tag=str(payload.get("resume_checkpoint_tag") or "auto"),
+        seed=int(payload["seed"]),
+    )
+
+
+@record
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    config = TrainConfig(
-        training_plan=args.training_plan,
-        model_parent_dir=args.model_parent_dir,
-        training_trajectory_sqlite_path=args.training_trajectory_sqlite_path,
-        checkpoints_parent_dir=args.checkpoints_parent_dir,
-        final_model_output_parent_dir=args.final_model_output_parent_dir,
-        training_summary_parent_dir=args.training_summary_parent_dir,
-        advantage_clip=args.advantage_clip,
-        learning_rate=args.learning_rate,
-        weight_decay=args.weight_decay,
-        training_time=args.training_time,
-        num_iterations_limit=args.num_iterations_limit,
-        grad_accum_steps=args.grad_accum_steps,
-        log_time_interval=args.log_time_interval,
-        checkpoint_save_time_interval=args.checkpoint_save_time_interval,
-        lora_rank=args.lora_rank,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        lora_target_modules_csv=args.lora_target_modules_csv,
-        resume_checkpoint_tag=args.resume_checkpoint_tag,
-        seed=args.seed,
-    )
-    train(config)
+    install_status_log_buffer(args.job_folder_path, args.orchestrator_socket_path)
+    config = _load_train_config(job_folder_path=args.job_folder_path)
+    try:
+        train(config)
+    finally:
+        shutdown_status_log_buffer()
 
 
 if __name__ == "__main__":

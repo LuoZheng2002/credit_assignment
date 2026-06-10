@@ -88,23 +88,25 @@ You can keep all training fields in a TOML file and launch with a minimal comman
 
 Example config file:
 
-- `train_config/lora_qwen25.toml`
+- `train_request.toml` inside a job folder
 
 Launch with script:
 
 ```bash
-bash scripts/train/smoke_test_lora.sh 1 train_config/lora_qwen25.toml
+bash scripts/train/smoke_test_lora.sh 1 /path/to/job_folder
 ```
 
-Direct `torchrun` with TOML:
+Direct `torchrun` with a job folder:
 
 ```bash
-MASTER_PORT=29501 torchrun --nproc_per_node 1 --master_port "${MASTER_PORT}" src_py/train/main_from_config.py \
-  --config-toml-path train_config/lora_qwen25.toml
+MASTER_PORT=29501 torchrun --nproc_per_node 1 --master_port "${MASTER_PORT}" -m src_py.train.main \
+  --job-folder-path /path/to/job_folder
 ```
 
-TOML schema rule:
+Job folder rules:
 
+- The job folder must contain `train_request.toml` at its root.
+- The job folder must contain `input/training_trajectories.sqlite`.
 - The TOML root table must contain exactly all `TrainConfig` keys (no missing keys, no extra keys).
 - Resume mode in TOML uses the same `resume_checkpoint_tag` values: `auto`, `latest`, `none`, or an explicit checkpoint tag.
 - Use `num_iterations` for the number of passes over loaded training batches.

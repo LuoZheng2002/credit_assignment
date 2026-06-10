@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src_py.train.main_from_config import _load_train_config_from_job_folder
+from src_py.train.main import _load_train_config
 
 
 def _to_toml(payload: dict[str, object]) -> str:
@@ -17,8 +17,8 @@ def _to_toml(payload: dict[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
-class TestMainFromConfig(unittest.TestCase):
-    def test_load_train_config_from_job_folder_success(self) -> None:
+class TestMain(unittest.TestCase):
+    def test_load_train_config_success(self) -> None:
         payload = {
             "training_plan": "lora",
             "artifact_root_dir": "/tmp/storage_root",
@@ -46,13 +46,17 @@ class TestMainFromConfig(unittest.TestCase):
             (job_dir / "input" / "training_trajectories.sqlite").write_bytes(b"sqlite")
             config_path = job_dir / "train_request.toml"
             config_path.write_text(_to_toml(payload), encoding="utf-8")
-            config = _load_train_config_from_job_folder(str(job_dir))
+            config = _load_train_config(str(job_dir))
             self.assertEqual("lora", config.training_plan)
             self.assertEqual("auto", config.resume_checkpoint_tag)
             self.assertEqual(10, int(config.training_time))
-            self.assertTrue(config.training_trajectory_sqlite_path.endswith("training_trajectories.sqlite"))
+            self.assertTrue(
+                config.training_trajectory_sqlite_path.endswith(
+                    "training_trajectories.sqlite"
+                )
+            )
 
-    def test_load_train_config_from_job_folder_uses_derived_paths(self) -> None:
+    def test_load_train_config_uses_derived_paths(self) -> None:
         payload = {
             "training_plan": "lora",
             "artifact_root_dir": "/tmp/storage_root",
@@ -80,11 +84,16 @@ class TestMainFromConfig(unittest.TestCase):
             (job_dir / "input" / "training_trajectories.sqlite").write_bytes(b"sqlite")
             config_path = job_dir / "train_request.toml"
             config_path.write_text(_to_toml(payload), encoding="utf-8")
-            config = _load_train_config_from_job_folder(str(job_dir))
-            self.assertIn("/tmp/storage_root/results/qwen35_08b", config.model_parent_dir)
-            self.assertIn("/tmp/storage_root/results/qwen35_08b/run_a/epoch_0", config.checkpoints_parent_dir)
+            config = _load_train_config(str(job_dir))
+            self.assertIn(
+                "/tmp/storage_root/results/qwen35_08b", config.model_parent_dir
+            )
+            self.assertIn(
+                "/tmp/storage_root/results/qwen35_08b/run_a/epoch_0",
+                config.checkpoints_parent_dir,
+            )
 
-    def test_load_train_config_from_job_folder_requires_uploaded_sqlite(self) -> None:
+    def test_load_train_config_requires_uploaded_sqlite(self) -> None:
         payload = {
             "training_plan": "lora",
             "artifact_root_dir": "/tmp/storage_root",
@@ -111,7 +120,7 @@ class TestMainFromConfig(unittest.TestCase):
             config_path = job_dir / "train_request.toml"
             config_path.write_text(_to_toml(payload), encoding="utf-8")
             with self.assertRaises(AssertionError):
-                _load_train_config_from_job_folder(str(job_dir))
+                _load_train_config(str(job_dir))
 
     def test_load_train_config_prefers_hpc_training_root_dir_when_present(self) -> None:
         payload = {
@@ -141,8 +150,10 @@ class TestMainFromConfig(unittest.TestCase):
             (job_dir / "input" / "training_trajectories.sqlite").write_bytes(b"sqlite")
             config_path = job_dir / "train_request.toml"
             config_path.write_text(_to_toml(payload), encoding="utf-8")
-            config = _load_train_config_from_job_folder(str(job_dir))
-            self.assertIn("/tmp/hpc_volume_root/results/qwen35_08b", config.model_parent_dir)
+            config = _load_train_config(str(job_dir))
+            self.assertIn(
+                "/tmp/hpc_volume_root/results/qwen35_08b", config.model_parent_dir
+            )
 
 
 if __name__ == "__main__":

@@ -340,7 +340,7 @@ def _run_hpc_training(
                 "--nproc_per_node",
                 str(num_gpus),
                 "-m",
-                "src_py.train.main_from_config",
+                "src_py.train.main",
                 "--job-folder-path",
                 str(job_dir),
                 "--orchestrator-socket-path",
