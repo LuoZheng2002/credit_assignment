@@ -41,8 +41,8 @@ pub struct Orchestrator {
     pub validation_rollout_time_limit_secs: usize,
     pub max_python_processes: usize,
     pub inference_server_handle: Option<InferenceServerHandle>,
-    pub inference_wrapper_log_path: Option<String>,
-    pub training_wrapper_log_path: Option<String>,
+    pub inference_wrapper_log_path: String,
+    pub training_wrapper_log_path: String,
     // for training set generation
     pub cumulative_avg_abs_advantage_cutoff: f32,
     pub advantage_calculation_policy: AdvantageCalculationPolicy,
@@ -436,20 +436,20 @@ impl Orchestrator {
         }
         let model_parent_dir =
             model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
-        let model_path = Some(format!("{}/model", model_parent_dir));
+        let model_path = format!("{}/model", model_parent_dir);
 
         log_info(format!(
             "Launching local inference wrapper for model {}",
             M::CLI_NAME
         ));
         let (sglang_port, process) = launch_inference_wrapper_process(
-            model_path.as_deref(),
+            model_path.as_ref(),
             M::CLI_NAME,
             &self.config_nickname,
             epoch,
             M::API_NAME,
             self.num_gpus,
-            self.inference_wrapper_log_path.as_deref(),
+            self.inference_wrapper_log_path.as_ref(),
         )
         .await?;
         log_info(format!(
@@ -901,7 +901,7 @@ impl Orchestrator {
             M::API_NAME,
             training_config_json,
             &training_trajectory_sqlite_path,
-            self.training_wrapper_log_path.as_deref(),
+            self.training_wrapper_log_path.as_ref(),
         )
         .await?;
         log_info("Finished training model.");

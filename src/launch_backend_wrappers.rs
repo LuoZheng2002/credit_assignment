@@ -71,13 +71,13 @@ enum WrapperEvent {
 }
 
 pub async fn launch_inference_wrapper_process(
-    model_path: Option<&str>,
+    model_path: &str,
     model_cli_name: &str,
     config_nickname: &str,
     epoch: usize,
     hf_model_name: &str,
     num_gpus: usize,
-    log_path: Option<&str>,
+    log_path: &str,
 ) -> Result<(u16, Child), String> {
     let listen_port = resolve_sglang_port();
     ensure_wrapper_port_available(listen_port).await?;
@@ -98,16 +98,12 @@ pub async fn launch_inference_wrapper_process(
         .arg(model_cli_name)
         .arg("--config-nickname")
         .arg(config_nickname)
+        .arg("--log-path")
+        .arg(log_path)
         .arg("--hf-model-name")
-        .arg(hf_model_name);
-
-    if let Some(log_path) = log_path {
-        command.arg("--wrapper-log-path").arg(log_path);
-    }
-
-    let model_path = model_path
-        .ok_or_else(|| "Inference wrapper launch requires model_path to be provided".to_string())?;
-    command.arg("--model-path").arg(model_path);
+        .arg(hf_model_name)
+        .arg("--model-path")
+        .arg(model_path);
 
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -132,7 +128,7 @@ pub async fn run_training_wrapper_and_wait(
     hf_model_name: &str,
     training_config_json: String,
     trajectory_sqlite_path: &str,
-    training_wrapper_log_path: Option<&str>,
+    training_wrapper_log_path: &str,
 ) -> Result<(), String> {
     assert!(num_gpus > 0, "num_gpus must be positive");
     if !Path::new(trajectory_sqlite_path).is_file() {
@@ -141,14 +137,6 @@ pub async fn run_training_wrapper_and_wait(
             trajectory_sqlite_path
         ));
     }
-    let active_log_path = training_wrapper_log_path.and_then(|path| {
-        let trimmed = path.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        }
-    });
 
     let mut command = Command::new("uv");
     command
@@ -165,109 +153,49 @@ pub async fn run_training_wrapper_and_wait(
         .arg("--hf-model-name")
         .arg(hf_model_name)
         .arg("--training-wrapper-log-path")
-        .arg(training_wrapper_log_path.unwrap_or(""));
+        .arg(training_wrapper_log_path);
 
-    if let Some(log_path) = active_log_path {
-        let log_file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(log_path)
-            .map_err(|err| {
-                format!(
-                    "failed to open training wrapper log path {}: {}",
-                    log_path, err
-                )
-            })?;
-        let log_file_err = log_file
-            .try_clone()
-            .map_err(|err| format!("failed to clone log file handle for {}: {}", log_path, err))?;
-        command.stdout(Stdio::from(log_file));
-        command.stderr(Stdio::from(log_file_err));
-    } else {
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-    }
+    let log_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(training_wrapper_log_path)
+        .map_err(|err| {
+            format!(
+                "failed to open training wrapper log path {}: {}",
+                training_wrapper_log_path, err
+            )
+        })?;
+    let log_file_err = log_file.try_clone().map_err(|err| {
+        format!(
+            "failed to clone log file handle for {}: {}",
+            training_wrapper_log_path, err
+        )
+    })?;
+    command.stdout(Stdio::from(log_file));
+    command.stderr(Stdio::from(log_file_err));
 
     let mut process = command
         .spawn()
         .map_err(|err| format!("failed to launch training wrapper process: {}", err))?;
-
-    let wrapper_result = Arc::new(Mutex::new(None::<WrapperResultEvent>));
-    let mut stdout_listener = None;
-    let mut stderr_listener = None;
-    if active_log_path.is_none() {
-        let stdout = process
-            .stdout
-            .take()
-            .ok_or_else(|| "failed to capture training wrapper stdout".to_string())?;
-        let stderr = process
-            .stderr
-            .take()
-            .ok_or_else(|| "failed to capture training wrapper stderr".to_string())?;
-        stdout_listener = Some(tokio::spawn(stream_output(
-            stdout,
-            false,
-            Some(wrapper_result.clone()),
-        )));
-        stderr_listener = Some(tokio::spawn(stream_output(stderr, true, None)));
-    }
 
     let status = process
         .wait()
         .await
         .map_err(|err| format!("failed while waiting for training wrapper process: {}", err))?;
 
-    if let Some(listener) = stdout_listener {
-        let _ = listener.await;
-    }
-    if let Some(listener) = stderr_listener {
-        let _ = listener.await;
-    }
 
-    if let Some(log_path) = active_log_path {
-        if status.success() {
-            log_info(format!(
-                "Training wrapper completed successfully; details in {}",
-                log_path
-            ));
-            return Ok(());
-        }
-        return Err(format!(
-            "training wrapper process exited with status {}; inspect log at {}",
-            status, log_path
+    if status.success() {
+        log_info(format!(
+            "Training wrapper completed successfully; details in {}",
+            training_wrapper_log_path
         ));
-    }
-
-    let result_event = wrapper_result
-        .lock()
-        .map_err(|_| "failed to lock wrapper result mutex".to_string())?
-        .clone();
-
-    match (status.success(), result_event) {
-        (true, Some(result)) if result.ok => {
-            if let Some(message) = result.message {
-                log_info(format!("Training wrapper reported success: {}", message));
-            }
-            Ok(())
-        }
-        (_, Some(result)) => Err(format!(
-            "training wrapper failed (backend={}, code={}, message={}, process_status={})",
-            result.backend.unwrap_or_else(|| "unknown".to_string()),
-            result.error_code.unwrap_or_else(|| "unknown".to_string()),
-            result
-                .error_message
-                .or(result.message)
-                .unwrap_or_else(|| "unknown".to_string()),
-            status
-        )),
-        (true, None) => {
-            Err("training wrapper exited successfully but emitted no result event".to_string())
-        }
-        (false, None) => Err(format!(
-            "training wrapper process exited with status {} and emitted no result event",
-            status
-        )),
+        Ok(())
+    } else {
+        Err(format!(
+            "training wrapper process exited with status {}; inspect log at {}",
+            status, training_wrapper_log_path
+        ))
     }
 }
 
@@ -366,7 +294,7 @@ async fn stream_output<R>(
 async fn wait_for_wrapper_health(
     port: u16,
     process: &mut Child,
-    log_path: Option<&str>,
+    log_path: &str,
 ) -> Result<(), String> {
     let timeout_secs = std::env::var("INFERENCE_WRAPPER_HEALTH_TIMEOUT_SECS")
         .ok()
@@ -380,9 +308,7 @@ async fn wait_for_wrapper_health(
 
     loop {
         if let Ok(Some(status)) = process.try_wait() {
-            let hint = log_path
-                .map(|path| format!("; inspect wrapper log at {}", path))
-                .unwrap_or_default();
+            let hint = format!("; inspect wrapper log at {}", log_path);
             return Err(format!(
                 "inference wrapper process exited before becoming healthy: {}{}",
                 status, hint
