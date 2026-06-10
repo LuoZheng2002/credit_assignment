@@ -1,6 +1,7 @@
 import json
 import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -135,28 +136,25 @@ def _run_orchestrator_subprocess(cli_args: list[str]) -> dict[str, Any]:
                 break
             time.sleep(0.5)
         stdout_text, stderr_text = child.communicate(timeout=30)
+        if stdout_text:
+            print(stdout_text, end="", flush=True)
+        if stderr_text:
+            print(stderr_text, end="", file=sys.stderr, flush=True)
         return_code = child.returncode
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm)
         signal.signal(signal.SIGINT, previous_sigint)
 
     if termination_requested.is_set():
-        return {
-            "ok": False,
-            "error_code": "CANCELLED_BY_SIGNAL",
-            "error": "modal orchestrator subprocess received SIGTERM/SIGINT",
-        }
+        raise RuntimeError("CANCELLED_BY_SIGNAL: modal orchestrator subprocess received SIGTERM/SIGINT")
 
     if return_code == 0:
         return {"ok": True, "message": "orchestrator completed"}
-    return {
-        "ok": False,
-        "error_code": "ORCHESTRATOR_PROCESS_FAILED",
-        "error": (
-            f"orchestrator subprocess failed rc={return_code}; "
-            f"stdout_tail={stdout_text[-1000:]}; stderr_tail={stderr_text[-1000:]}"
-        ),
-    }
+    raise RuntimeError(
+        "ORCHESTRATOR_PROCESS_FAILED: "
+        f"orchestrator subprocess failed rc={return_code}; "
+        f"stdout_tail={stdout_text[-1000:]}; stderr_tail={stderr_text[-1000:]}"
+    )
 
 
 orchestrator_image = modal.Image.from_dockerfile(
@@ -189,15 +187,12 @@ class OrchestratorService:
         cli_args = _load_orchestrator_cli_args()
         requested_num_gpus = _extract_num_gpus(cli_args)
         if requested_num_gpus != DEPLOY_NUM_GPUS:
-            return {
-                "ok": False,
-                "error_code": "MODAL_GPU_COUNT_MISMATCH",
-                "error": (
-                    f"requested num_gpus={requested_num_gpus} but deployed container has "
-                    f"DEPLOY_NUM_GPUS={DEPLOY_NUM_GPUS}; redeploy modal_orchestrator_app.py "
-                    "with matching orchestrator config"
-                ),
-            }
+            raise RuntimeError(
+                "MODAL_GPU_COUNT_MISMATCH: "
+                f"requested num_gpus={requested_num_gpus} but deployed container has "
+                f"DEPLOY_NUM_GPUS={DEPLOY_NUM_GPUS}; redeploy modal_orchestrator_app.py "
+                "with matching orchestrator config"
+            )
         return _run_orchestrator_subprocess(cli_args)
 
 
