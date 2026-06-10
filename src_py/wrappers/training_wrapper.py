@@ -14,10 +14,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from src_py.modal.training_deployment_common import (
-    ensure_deployed,
-    ensure_undeployed,
-)
 from src_py.load_model_to_path import ensure_model_snapshot
 from src_py.train.pathing import model_parent_dir, resolve_artifact_root_dir
 
@@ -600,18 +596,13 @@ def main() -> int:
         return 2
 
     try:
-        if args.backend == "hpc":
-            return _run_hpc_training(
-                args.num_gpus,
-                training_config,
-                trajectory_path,
-                args.hf_model_name,
-                args.test_sleep_secs,
+        if args.backend == "modal":
+            _emit_status(
+                "modal",
+                "starting",
+                "using local HPC-style training path; wrapper-managed modal app deployment disabled",
             )
-
-        return _run_modal_training(
-            args.modal_app_name,
-            args.modal_class_name,
+        return _run_hpc_training(
             args.num_gpus,
             training_config,
             trajectory_path,

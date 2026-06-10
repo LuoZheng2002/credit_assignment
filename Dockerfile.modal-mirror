@@ -36,6 +36,8 @@ COPY src_py ./src_py
 COPY config ./config
 COPY tokenizers ./tokenizers
 
+ENV VIRTUAL_ENV=/workspace/.venv
+ENV PATH=${VIRTUAL_ENV}/bin:${PATH}
 ENV PYTHONPATH=/workspace
 
 CMD ["bash"]

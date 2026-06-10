@@ -514,13 +514,9 @@ impl Orchestrator {
             ));
             return Ok(());
         }
-        let model_path = if self.compute_backend == ComputeBackend::Hpc {
-            let model_parent_dir =
-                model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
-            Some(format!("{}/model", model_parent_dir))
-        } else {
-            None
-        };
+        let model_parent_dir =
+            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+        let model_path = Some(format!("{}/model", model_parent_dir));
         let modal_artifact_root_dir = if self.compute_backend == ComputeBackend::Modal {
             Some("/mnt/service-state".to_string())
         } else {

@@ -13,7 +13,7 @@ MINUTES = 60
 APP_NAME = "credit-assignment-orchestrator-service"
 REGION = "us-west"
 
-ORCHESTRATOR_CONFIG_PATH = Path("/workspace/src_py/modal/orchestrator_config.json")
+ORCHESTRATOR_CONFIG_RELATIVE_PATH = Path("src_py/modal/orchestrator_config.json")
 
 service_state_volume = modal.Volume.from_name(
     "credit-assignment-modal-service-state", create_if_missing=True
@@ -21,12 +21,22 @@ service_state_volume = modal.Volume.from_name(
 
 
 def _load_orchestrator_cli_args() -> list[str]:
-    try:
-        raw = ORCHESTRATOR_CONFIG_PATH.read_text(encoding="utf-8")
-    except FileNotFoundError as error:
+    candidate_paths = [
+        Path("/workspace") / ORCHESTRATOR_CONFIG_RELATIVE_PATH,
+        Path(__file__).resolve().parent / ORCHESTRATOR_CONFIG_RELATIVE_PATH,
+    ]
+    config_path = next((path for path in candidate_paths if path.is_file()), None)
+    if config_path is None:
+        searched = ", ".join(str(path) for path in candidate_paths)
         raise RuntimeError(
-            "missing /workspace/src_py/modal/orchestrator_config.json; "
-            "write orchestrator CLI args before deploy/invoke"
+            "missing orchestrator config JSON; write orchestrator CLI args before deploy/invoke; "
+            f"searched: {searched}"
+        )
+    try:
+        raw = config_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise RuntimeError(
+            f"failed to read orchestrator config JSON at {config_path}: {error}"
         ) from error
     try:
         payload = json.loads(raw)
@@ -60,10 +70,26 @@ def _load_orchestrator_cli_args() -> list[str]:
 
 
 def _extract_num_gpus(cli_args: list[str]) -> int:
+    num_gpu_args: list[str] = []
+    index = 0
+    while index < len(cli_args):
+        arg = cli_args[index]
+        if arg == "--num-gpus":
+            if index + 1 >= len(cli_args):
+                raise RuntimeError("orchestrator config missing value after --num-gpus")
+            num_gpu_args = [arg, cli_args[index + 1]]
+            break
+        if arg.startswith("--num-gpus="):
+            num_gpu_args = [arg]
+            break
+        index += 1
+    if not num_gpu_args:
+        raise RuntimeError("orchestrator config must include --num-gpus")
+
     try:
         parser = ArgumentParser(exit_on_error=False)
         parser.add_argument("--num-gpus", type=int, required=True)
-        parsed, _unknown = parser.parse_known_args(cli_args)
+        parsed = parser.parse_args(num_gpu_args)
         num_gpus = int(parsed.num_gpus)
     except Exception as error:
         raise RuntimeError(

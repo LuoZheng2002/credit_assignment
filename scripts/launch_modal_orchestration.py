@@ -28,6 +28,34 @@ def _write_orchestrator_config(repo_root: Path, cli_args: list[str]) -> Path:
     return config_path
 
 
+def _extract_num_gpus(cli_args: list[str]) -> int:
+    index = 0
+    while index < len(cli_args):
+        arg = cli_args[index]
+        if arg == "--num-gpus":
+            if index + 1 >= len(cli_args):
+                raise RuntimeError("Missing value after --num-gpus")
+            raw_value = cli_args[index + 1].strip()
+            break
+        if arg.startswith("--num-gpus="):
+            raw_value = arg.split("=", 1)[1].strip()
+            break
+        index += 1
+    else:
+        raise RuntimeError(
+            "Missing required --num-gpus argument. Ensure orchestrator script passes --num-gpus."
+        )
+
+    try:
+        num_gpus = int(raw_value)
+    except ValueError as error:
+        raise RuntimeError(f"--num-gpus must be an integer, got: {raw_value!r}") from error
+
+    if num_gpus <= 0:
+        raise RuntimeError(f"--num-gpus must be positive, got: {num_gpus}")
+    return num_gpus
+
+
 def _deploy_modal_app(repo_root: Path) -> None:
     command = [
         "uv",
@@ -60,9 +88,11 @@ def _spawn_orchestration() -> str:
 
 def main() -> int:
     cli_args = sys.argv[1:]
+    num_gpus = _extract_num_gpus(cli_args)
     repo_root = _repo_root()
     config_path = _write_orchestrator_config(repo_root, cli_args)
     print(f"Wrote orchestrator config: {config_path}", flush=True)
+    print(f"Validated orchestrator num_gpus: {num_gpus}", flush=True)
     deployed = False
     try:
         _deploy_modal_app(repo_root)

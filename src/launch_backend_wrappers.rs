@@ -127,12 +127,10 @@ pub async fn launch_inference_wrapper_process(
             .arg(modal_auth_token_env_var);
     }
 
-    if compute_backend == ComputeBackend::Hpc {
-        let model_path = model_path.ok_or_else(|| {
-            "HPC inference wrapper launch requires model_path to be provided".to_string()
-        })?;
-        command.arg("--model-path").arg(model_path);
-    }
+    let model_path = model_path.ok_or_else(|| {
+        "Inference wrapper launch requires model_path to be provided".to_string()
+    })?;
+    command.arg("--model-path").arg(model_path);
 
     if let Some(log_path) = log_path {
         let log_file = std::fs::OpenOptions::new()

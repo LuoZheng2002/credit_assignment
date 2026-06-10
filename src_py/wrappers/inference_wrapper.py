@@ -621,31 +621,23 @@ def main() -> int:
         if args.listen_port <= 0:
             raise ValueError("--listen-port must be positive")
 
-        if args.backend == "hpc":
-            if not args.model_path:
-                raise ValueError("--model-path is required for --backend=hpc")
-            backend = HpcBackend(
-                args.model_path,
-                args.num_gpus,
-                args.listen_port + 1,
-                args.epoch,
-                args.hf_model_name,
-                args.model_cli_name,
-                args.config_nickname,
+        if not args.model_path:
+            raise ValueError("--model-path is required for both --backend=hpc and --backend=modal")
+        if args.backend == "modal":
+            _emit_status(
+                "modal",
+                "starting",
+                "using local HPC-style inference path; wrapper-managed modal app deployment disabled",
             )
-        else:
-            backend = ModalBackend(
-                args.modal_app_name,
-                args.modal_class_name,
-                args.model_cli_name,
-                args.config_nickname,
-                args.epoch,
-                args.num_gpus,
-                args.hf_model_name,
-                args.artifact_root_dir,
-                args.modal_base_url,
-                args.modal_auth_token_env_var,
-            )
+        backend = HpcBackend(
+            args.model_path,
+            args.num_gpus,
+            args.listen_port + 1,
+            args.epoch,
+            args.hf_model_name,
+            args.model_cli_name,
+            args.config_nickname,
+        )
 
         _emit_inference_identity(
             args.backend,
