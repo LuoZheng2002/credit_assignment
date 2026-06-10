@@ -7,7 +7,6 @@ use std::{collections::BTreeMap, path::Path};
 use tokio::process::Child;
 
 use crate::{
-    compute_backend::ComputeBackend,
     direct_tool::{
         direct_rollout::{RolloutProgramConfig, rollout_all},
         direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
@@ -29,7 +28,7 @@ use crate::{
     },
     llm_model::{LlmCliArgs, LlmModelMarker},
     python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
-    util::{hpc_training_root_dir_from_env, storage_large_files_dir},
+    util::storage_large_files_dir,
 };
 
 pub struct Orchestrator {
@@ -59,12 +58,6 @@ pub struct Orchestrator {
     pub training_time: f32,
     pub num_iterations_limit: usize,
     pub num_gpus: usize,
-    pub compute_backend: ComputeBackend,
-    pub modal_sglang_base_url: Option<String>,
-    pub modal_training_base_url: Option<String>,
-    pub modal_auth_token_env_var: Option<String>,
-    pub modal_training_poll_interval_secs: usize,
-    pub hpc_training_base_url: Option<String>,
 }
 
 pub struct InferenceServerHandle {
@@ -444,26 +437,17 @@ impl Orchestrator {
         let model_parent_dir =
             model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
         let model_path = Some(format!("{}/model", model_parent_dir));
-        let modal_artifact_root_dir = if self.compute_backend == ComputeBackend::Modal {
-            Some("/mnt/service-state".to_string())
-        } else {
-            None
-        };
 
         log_info(format!(
-            "Launching inference wrapper for model {}",
+            "Launching local inference wrapper for model {}",
             M::CLI_NAME
         ));
         let (sglang_port, process) = launch_inference_wrapper_process(
-            self.compute_backend,
             model_path.as_deref(),
             M::CLI_NAME,
             &self.config_nickname,
             epoch,
             M::API_NAME,
-            modal_artifact_root_dir.as_deref(),
-            self.modal_sglang_base_url.as_deref(),
-            self.modal_auth_token_env_var.as_deref(),
             self.num_gpus,
             self.inference_wrapper_log_path.as_deref(),
         )
@@ -521,16 +505,10 @@ impl Orchestrator {
             log_info("Inference server shut down");
         } else {
             if model_uses_sglang::<M>() {
-                if self.compute_backend == ComputeBackend::Hpc {
-                    log_info(
-                        "ensure_inference_server_shut_down: no inference server handle present; checking for stale sglang process on configured port",
-                    );
-                    best_effort_shutdown_stale_sglang_server().await;
-                } else {
-                    log_info(
-                        "ensure_inference_server_shut_down: no Modal inference handle present; no local process cleanup needed",
-                    );
-                }
+                log_info(
+                    "ensure_inference_server_shut_down: no inference server handle present; checking for stale local sglang process on configured port",
+                );
+                best_effort_shutdown_stale_sglang_server().await;
             } else {
                 log_info(
                     "ensure_inference_server_shut_down: no inference server handle present; nothing to shut down",
@@ -904,20 +882,13 @@ impl Orchestrator {
             _phantom: std::marker::PhantomData::<M>,
         };
         let training_trajectory_sqlite_path = asset_file_training_trajectories.file_path();
-        let artifact_root_dir = match self.compute_backend {
-            ComputeBackend::Modal => storage_large_files_dir()?,
-            ComputeBackend::Hpc => hpc_training_root_dir_from_env()?,
-        };
+        let artifact_root_dir = storage_large_files_dir()?;
         let training_config = PythonTrainingConfig {
             common: self.training_config_common.clone(),
             training_time: self.training_time,
             num_iterations_limit: self.num_iterations_limit,
-            artifact_root_dir: artifact_root_dir.clone(),
-            hpc_training_root_dir: if self.compute_backend == ComputeBackend::Hpc {
-                Some(artifact_root_dir.clone())
-            } else {
-                None
-            },
+            artifact_root_dir,
+            hpc_training_root_dir: None,
             model_cli_name: M::CLI_NAME.to_string(),
             config_nickname: self.config_nickname.clone(),
             epoch,
@@ -926,7 +897,6 @@ impl Orchestrator {
         let training_config_json = serde_json::to_string(&training_config)
             .map_err(|err| format!("failed to serialize training config for wrapper: {}", err))?;
         run_training_wrapper_and_wait(
-            self.compute_backend,
             self.num_gpus,
             M::API_NAME,
             training_config_json,

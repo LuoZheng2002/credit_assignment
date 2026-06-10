@@ -1,14 +1,13 @@
 from __future__ import annotations
 
+import importlib
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 import modal
 
 APP_NAME = "credit-assignment-orchestrator-service"
-CLASS_NAME = "OrchestratorService"
 CONFIG_PATH = Path("src_py/modal/orchestrator_config.json")
 
 
@@ -49,51 +48,39 @@ def _extract_num_gpus(cli_args: list[str]) -> int:
     try:
         num_gpus = int(raw_value)
     except ValueError as error:
-        raise RuntimeError(f"--num-gpus must be an integer, got: {raw_value!r}") from error
+        raise RuntimeError(
+            f"--num-gpus must be an integer, got: {raw_value!r}"
+        ) from error
 
     if num_gpus <= 0:
         raise RuntimeError(f"--num-gpus must be positive, got: {num_gpus}")
     return num_gpus
 
 
-def _normalize_compute_backend(cli_args: list[str]) -> list[str]:
+def _strip_legacy_compute_backend(cli_args: list[str]) -> list[str]:
+    normalized: list[str] = []
     index = 0
+    removed = False
     while index < len(cli_args):
         arg = cli_args[index]
         if arg == "--compute-backend":
             if index + 1 >= len(cli_args):
                 raise RuntimeError("Missing value after --compute-backend")
-            backend = cli_args[index + 1].strip().lower()
-            if backend != "modal":
-                raise RuntimeError(
-                    f"--compute-backend must be 'modal' for this launcher, got: {backend!r}"
-                )
-            return cli_args
+            removed = True
+            index += 2
+            continue
         if arg.startswith("--compute-backend="):
-            backend = arg.split("=", 1)[1].strip().lower()
-            if backend != "modal":
-                raise RuntimeError(
-                    f"--compute-backend must be 'modal' for this launcher, got: {backend!r}"
-                )
-            return cli_args
+            removed = True
+            index += 1
+            continue
+        normalized.append(arg)
         index += 1
-
-    return [*cli_args, "--compute-backend", "modal"]
-
-
-def _deploy_modal_app(repo_root: Path) -> None:
-    command = [
-        "uv",
-        "run",
-        "modal",
-        "deploy",
-        "modal_orchestrator_app.py",
-        "--name",
-        APP_NAME,
-    ]
-    result = subprocess.run(command, cwd=str(repo_root), check=False)
-    if result.returncode != 0:
-        raise RuntimeError(f"Modal deploy failed with exit code {result.returncode}")
+    if removed:
+        print(
+            "Ignoring legacy --compute-backend flag; orchestration now always uses local wrapper-managed runtime paths.",
+            flush=True,
+        )
+    return normalized
 
 
 def _remove_config_file(config_path: Path) -> None:
@@ -101,10 +88,20 @@ def _remove_config_file(config_path: Path) -> None:
         config_path.unlink()
 
 
-def _run_orchestration() -> dict[str, object]:
-    cls = modal.Cls.from_name(APP_NAME, CLASS_NAME)
-    instance = cls()
-    result = instance.orchestrate.remote()
+def _run_orchestration(repo_root: Path) -> dict[str, object]:
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
+
+    orchestrator_module = importlib.import_module("modal_orchestrator_app")
+    app = getattr(orchestrator_module, "app")
+    service_cls = getattr(orchestrator_module, "OrchestratorService")
+
+    with modal.enable_output():
+        with app.run():
+            instance = service_cls()
+            result = instance.orchestrate.remote()
+
     if isinstance(result, dict):
         return result
     return {
@@ -115,24 +112,25 @@ def _run_orchestration() -> dict[str, object]:
 
 
 def main() -> int:
-    cli_args = _normalize_compute_backend(sys.argv[1:])
+    cli_args = _strip_legacy_compute_backend(sys.argv[1:])
     num_gpus = _extract_num_gpus(cli_args)
     repo_root = _repo_root()
     config_path = _write_orchestrator_config(repo_root, cli_args)
     print(f"Wrote orchestrator config: {config_path}", flush=True)
     print(f"Validated orchestrator num_gpus: {num_gpus}", flush=True)
-    print("Validated orchestrator compute_backend: modal", flush=True)
-    deployed = False
+    print(
+        "Validated orchestrator runtime: local wrapper-managed inference/training",
+        flush=True,
+    )
     try:
-        _deploy_modal_app(repo_root)
-        deployed = True
-        print(f"Deployed Modal app: {APP_NAME}", flush=True)
+        print(
+            f"Running Modal orchestration app in a single ephemeral step: {APP_NAME}",
+            flush=True,
+        )
+        result = _run_orchestration(repo_root)
     finally:
         _remove_config_file(config_path)
         print(f"Removed orchestrator config: {config_path}", flush=True)
-    if not deployed:
-        return 1
-    result = _run_orchestration()
     print(f"Orchestrator result: {json.dumps(result, ensure_ascii=True)}", flush=True)
     if bool(result.get("ok", False)):
         return 0

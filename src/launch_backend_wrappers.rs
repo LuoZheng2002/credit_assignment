@@ -13,7 +13,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep, timeout};
 
-use crate::{compute_backend::ComputeBackend, launch_sglang_server::resolve_sglang_port};
+use crate::launch_sglang_server::resolve_sglang_port;
 
 #[derive(Debug, Clone, Deserialize)]
 struct WrapperResultEvent {
@@ -71,24 +71,16 @@ enum WrapperEvent {
 }
 
 pub async fn launch_inference_wrapper_process(
-    compute_backend: ComputeBackend,
     model_path: Option<&str>,
     model_cli_name: &str,
     config_nickname: &str,
     epoch: usize,
     hf_model_name: &str,
-    artifact_root_dir: Option<&str>,
-    modal_base_url: Option<&str>,
-    modal_auth_token_env_var: Option<&str>,
     num_gpus: usize,
     log_path: Option<&str>,
 ) -> Result<(u16, Child), String> {
     let listen_port = resolve_sglang_port();
     ensure_wrapper_port_available(listen_port).await?;
-    let backend_flag = match compute_backend {
-        ComputeBackend::Hpc => "hpc",
-        ComputeBackend::Modal => "modal",
-    };
 
     let mut command = Command::new("uv");
     command
@@ -96,8 +88,6 @@ pub async fn launch_inference_wrapper_process(
         .arg("python")
         .arg("-m")
         .arg("src_py.wrappers.inference_wrapper")
-        .arg("--backend")
-        .arg(backend_flag)
         .arg("--listen-port")
         .arg(listen_port.to_string())
         .arg("--num-gpus")
@@ -111,29 +101,12 @@ pub async fn launch_inference_wrapper_process(
         .arg("--hf-model-name")
         .arg(hf_model_name);
 
-    if let Some(artifact_root_dir) = artifact_root_dir {
-        command
-            .arg("--artifact-root-dir")
-            .arg(artifact_root_dir);
-    }
-
-    if let Some(modal_base_url) = modal_base_url {
-        command.arg("--modal-base-url").arg(modal_base_url);
-    }
-
-    if let Some(modal_auth_token_env_var) = modal_auth_token_env_var {
-        command
-            .arg("--modal-auth-token-env-var")
-            .arg(modal_auth_token_env_var);
-    }
-
     if let Some(log_path) = log_path {
         command.arg("--wrapper-log-path").arg(log_path);
     }
 
-    let model_path = model_path.ok_or_else(|| {
-        "Inference wrapper launch requires model_path to be provided".to_string()
-    })?;
+    let model_path = model_path
+        .ok_or_else(|| "Inference wrapper launch requires model_path to be provided".to_string())?;
     command.arg("--model-path").arg(model_path);
 
     command.stdout(Stdio::piped());
@@ -155,7 +128,6 @@ pub async fn launch_inference_wrapper_process(
 }
 
 pub async fn run_training_wrapper_and_wait(
-    compute_backend: ComputeBackend,
     num_gpus: usize,
     hf_model_name: &str,
     training_config_json: String,
@@ -169,10 +141,6 @@ pub async fn run_training_wrapper_and_wait(
             trajectory_sqlite_path
         ));
     }
-    let backend_flag = match compute_backend {
-        ComputeBackend::Hpc => "hpc",
-        ComputeBackend::Modal => "modal",
-    };
     let active_log_path = training_wrapper_log_path.and_then(|path| {
         let trimmed = path.trim();
         if trimmed.is_empty() {
@@ -188,8 +156,6 @@ pub async fn run_training_wrapper_and_wait(
         .arg("python")
         .arg("-m")
         .arg("src_py.wrappers.training_wrapper")
-        .arg("--backend")
-        .arg(backend_flag)
         .arg("--num-gpus")
         .arg(num_gpus.to_string())
         .arg("--training-config-json")
@@ -207,7 +173,12 @@ pub async fn run_training_wrapper_and_wait(
             .create(true)
             .truncate(true)
             .open(log_path)
-            .map_err(|err| format!("failed to open training wrapper log path {}: {}", log_path, err))?;
+            .map_err(|err| {
+                format!(
+                    "failed to open training wrapper log path {}: {}",
+                    log_path, err
+                )
+            })?;
         let log_file_err = log_file
             .try_clone()
             .map_err(|err| format!("failed to clone log file handle for {}: {}", log_path, err))?;
@@ -290,7 +261,9 @@ pub async fn run_training_wrapper_and_wait(
                 .unwrap_or_else(|| "unknown".to_string()),
             status
         )),
-        (true, None) => Err("training wrapper exited successfully but emitted no result event".to_string()),
+        (true, None) => {
+            Err("training wrapper exited successfully but emitted no result event".to_string())
+        }
         (false, None) => Err(format!(
             "training wrapper process exited with status {} and emitted no result event",
             status
@@ -302,8 +275,7 @@ async fn stream_output<R>(
     reader: R,
     is_stderr: bool,
     result_sink: Option<Arc<Mutex<Option<WrapperResultEvent>>>>,
-)
-where
+) where
     R: AsyncRead + Unpin,
 {
     let mut lines = BufReader::new(reader).lines();
@@ -514,7 +486,10 @@ mod tests {
                 assert_eq!(backend.as_deref(), Some("modal"));
                 assert_eq!(message.as_deref(), Some("training"));
                 assert!(metrics.is_some());
-                assert_eq!(model_official_name.as_deref(), Some("Qwen/Qwen2.5-7B-Instruct"));
+                assert_eq!(
+                    model_official_name.as_deref(),
+                    Some("Qwen/Qwen2.5-7B-Instruct")
+                );
                 assert_eq!(config_nickname.as_deref(), Some("notool"));
                 assert_eq!(epoch, Some(0));
             }

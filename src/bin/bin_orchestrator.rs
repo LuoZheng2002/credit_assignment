@@ -6,7 +6,6 @@ use std::{collections::BTreeMap, path::Path};
 
 use credit_assignment::{
     check_python_env::check_sympy_availability,
-    compute_backend::ComputeBackend,
     direct_tool::{
         direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         hybrid_dataset::{Training, Validation},
@@ -23,7 +22,7 @@ use credit_assignment::{
     },
     orchestrator::{OrchestrationProgress, OrchestrationStatus, Orchestrator},
     python_training_config::PythonTrainingConfigCommon,
-    util::{configure_storage_dirs, hpc_training_root_dir_from_env},
+    util::configure_storage_dirs,
 };
 use research_utility::progress_tui_logger::{
     ProgressTuiLogger, log_exit_hint, log_info, log_warning, log_window_name,
@@ -72,18 +71,6 @@ struct Args {
     storage_large_files_dir: String,
     #[arg(long)]
     storage_small_files_dir: String,
-    #[arg(long, value_enum)]
-    compute_backend: ComputeBackend,
-    #[arg(long)]
-    modal_sglang_base_url: Option<String>,
-    #[arg(long, help = "Optional override; defaults to --modal-sglang-base-url")]
-    modal_training_base_url: Option<String>,
-    #[arg(long)]
-    modal_auth_token_env_var: Option<String>,
-    #[arg(long, default_value_t = 5)]
-    modal_training_poll_interval_secs: usize,
-    #[arg(long)]
-    hpc_training_base_url: Option<String>,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
 }
@@ -136,12 +123,6 @@ async fn main() {
         num_gpus,
         storage_large_files_dir,
         storage_small_files_dir,
-        compute_backend,
-        modal_sglang_base_url,
-        modal_training_base_url,
-        modal_auth_token_env_var,
-        modal_training_poll_interval_secs,
-        hpc_training_base_url,
     } = Args::parse();
     let process_title = format!("orchestrator_{}_{}", model_cli_name, config_nickname);
     set_title(&process_title);
@@ -166,38 +147,11 @@ async fn main() {
         .unwrap_or_else(|err| panic!("failed to prepare training wrapper log directory: {}", err));
     ensure_parent_dir_exists(&tui_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare tui log directory: {}", err));
-    if compute_backend == ComputeBackend::Modal {
-        assert!(num_gpus > 0, "--num-gpus must be positive");
-        log_info(format!(
-            "Modal inference deployment will request H100:{}",
-            num_gpus
-        ));
-        assert!(
-            modal_training_poll_interval_secs > 0,
-            "--modal-training-poll-interval-secs must be positive"
-        );
-        if modal_sglang_base_url.is_some() {
-            log_info("Using --modal-sglang-base-url for wrapper HTTP inference path");
-        }
-        if modal_training_base_url.is_some() {
-            log_info("--modal-training-base-url is ignored in current wrapper mode");
-        }
-    }
-    if compute_backend == ComputeBackend::Hpc {
-        assert!(
-            modal_training_poll_interval_secs > 0,
-            "--modal-training-poll-interval-secs must be positive"
-        );
-        if hpc_training_base_url.is_some() {
-            log_info("--hpc-training-base-url is ignored when wrapper mode is enabled");
-        }
-        hpc_training_root_dir_from_env().unwrap_or_else(|err| {
-            panic!(
-                "HPC backend requires HPC_TRAINING_ROOT_DIR to be set for training artifacts: {}",
-                err
-            )
-        });
-    }
+    assert!(num_gpus > 0, "--num-gpus must be positive");
+    log_info(format!(
+        "Local wrapper-managed inference/training will use num_gpus={}",
+        num_gpus
+    ));
 
     if ui {
         ProgressTuiLogger::initialize(tui_log_path.clone())
@@ -266,12 +220,6 @@ async fn main() {
         num_iterations_limit,
         progress,
         num_gpus,
-        compute_backend,
-        modal_sglang_base_url,
-        modal_training_base_url,
-        modal_auth_token_env_var,
-        modal_training_poll_interval_secs,
-        hpc_training_base_url,
     };
 
     let result = match model_name {

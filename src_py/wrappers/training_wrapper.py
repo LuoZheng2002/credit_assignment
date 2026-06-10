@@ -62,38 +62,6 @@ def _emit_status_with_metrics(
     )
 
 
-def _collect_modal_activity_metrics(target: Any, phase: str) -> dict[str, Any]:
-    stats_method_names = (
-        "get_current_stats",
-        "get_stats",
-        "stats",
-        "current_stats",
-    )
-    for name in stats_method_names:
-        method = getattr(target, name, None)
-        if callable(method):
-            try:
-                value = method()
-                if isinstance(value, dict):
-                    return {"phase": phase, "available": True, "raw": value}
-                return {
-                    "phase": phase,
-                    "available": True,
-                    "raw": str(value),
-                }
-            except Exception as error:  # noqa: BLE001
-                return {
-                    "phase": phase,
-                    "available": False,
-                    "error": f"stats method {name} failed: {error}",
-                }
-    return {
-        "phase": phase,
-        "available": False,
-        "error": "no supported stats method on modal target",
-    }
-
-
 def _emit_result_ok(backend: str, message: str, duration_secs: float) -> None:
     _emit_event(
         {
@@ -224,20 +192,21 @@ def _write_flat_toml(path: Path, payload: dict[str, Any]) -> None:
         if value is None:
             continue
         if isinstance(value, (dict, list)):
-            raise ValueError(f"Nested key is not supported in train_request.toml: {key}")
+            raise ValueError(
+                f"Nested key is not supported in train_request.toml: {key}"
+            )
         lines.append(f"{key} = {_to_toml_scalar(value)}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Training wrapper for HPC and Modal backends")
-    parser.add_argument("--backend", choices=["hpc", "modal"], required=True)
+    parser = argparse.ArgumentParser(
+        description="Training wrapper that always launches local training"
+    )
     parser.add_argument("--num-gpus", type=int, required=True)
     parser.add_argument("--training-config-json", type=str, required=True)
     parser.add_argument("--trajectory-sqlite-path", type=str, required=True)
     parser.add_argument("--hf-model-name", type=str, required=True)
-    parser.add_argument("--modal-app-name", type=str, default="credit-assignment-training-service")
-    parser.add_argument("--modal-class-name", type=str, default="ExperimentService")
     parser.add_argument("--training-wrapper-log-path", type=str, default="")
     parser.add_argument(
         "--test-sleep-secs",
@@ -259,7 +228,9 @@ def _ensure_initial_model_if_missing(
     artifact_root_dir = resolve_artifact_root_dir(training_config)
     model_cli_name = str(training_config["model_cli_name"])
     config_nickname = str(training_config["config_nickname"])
-    parent_dir = model_parent_dir(artifact_root_dir, model_cli_name, config_nickname, epoch)
+    parent_dir = model_parent_dir(
+        artifact_root_dir, model_cli_name, config_nickname, epoch
+    )
     model_dir = parent_dir / "model"
     if model_dir.exists():
         return
@@ -348,227 +319,17 @@ def _run_hpc_training(
         return return_code
 
 
-def _run_modal_training(
-    app_name: str,
-    class_name: str,
-    num_gpus: int,
-    training_config: dict[str, Any],
-    trajectory_path: Path,
-    hf_model_name: str,
-    test_sleep_secs: float,
-) -> int:
-    started_at = time.time()
-    backend = "modal"
-    _ensure_initial_model_if_missing(backend, training_config, hf_model_name)
-    model_cli_name = str(training_config["model_cli_name"])
-    config_nickname = str(training_config["config_nickname"])
-    epoch = int(training_config["epoch"])
-
-    deployed_app_name: str | None = None
-    if test_sleep_secs <= 0:
-        app_name_result, deploy_code = ensure_deployed(
-            model_cli_name=model_cli_name,
-            model_api_name=hf_model_name,
-            config_nickname=config_nickname,
-            epoch=epoch,
-            num_gpus=num_gpus,
-        )
-        if deploy_code != 0:
-            _emit_result_error(
-                backend,
-                "MODAL_DEPLOY_FAILED",
-                f"failed to deploy modal training app {app_name_result}",
-                time.time() - started_at,
-            )
-            return deploy_code
-        deployed_app_name = app_name_result
-
-    if app_name and deployed_app_name and app_name != deployed_app_name:
-        _emit_status(
-            backend,
-            "starting",
-            (
-                f"ignoring --modal-app-name={app_name}; using wrapper-managed deployment "
-                f"name={deployed_app_name}"
-            ),
-        )
-    target_app_name = deployed_app_name or app_name
-
-    try:
-        _emit_status(
-            backend,
-            "starting",
-            (
-                f"submitting modal training class call: {class_name} "
-                f"for experiment {model_cli_name}_{config_nickname}_e{epoch} with num_gpus={num_gpus}"
-            ),
-        )
-        import queue
-
-        if test_sleep_secs > 0:
-            result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
-
-            def _invoke_test() -> None:
-                try:
-                    time.sleep(test_sleep_secs)
-                    result_queue.put(("ok", {"ok": True}))
-                except Exception as error:  # noqa: BLE001
-                    result_queue.put(("error", str(error)))
-
-            worker = threading.Thread(target=_invoke_test, daemon=True)
-            worker.start()
-            while worker.is_alive():
-                if _TERMINATION_REQUESTED.is_set():
-                    _emit_result_error(
-                        backend,
-                        "CANCELLED_BY_SIGNAL",
-                        "training wrapper received SIGTERM/SIGINT",
-                        time.time() - started_at,
-                    )
-                    return 143
-                worker.join(timeout=0.5)
-            _emit_result_ok(backend, "modal training completed", time.time() - started_at)
-            return 0
-
-        import modal
-
-        cls = modal.Cls.from_name(target_app_name, class_name)
-        instance = cls()
-        trajectory_bytes = trajectory_path.read_bytes()
-        result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
-
-        def _invoke() -> None:
-            try:
-                response = instance.train.remote(training_config, trajectory_bytes, num_gpus)
-                result_queue.put(("ok", response))
-            except Exception as error:  # noqa: BLE001
-                result_queue.put(("error", str(error)))
-
-        worker = threading.Thread(target=_invoke, daemon=True)
-        before_metrics = _collect_modal_activity_metrics(instance.train, "before_call")
-        _emit_status_with_metrics(
-            backend,
-            "modal_call_pre",
-            "collected modal activity metrics before train call",
-            before_metrics,
-        )
-        worker.start()
-        while worker.is_alive():
-            if _TERMINATION_REQUESTED.is_set():
-                exit_metrics = _collect_modal_activity_metrics(instance.train, "wrapper_exit")
-                _emit_status_with_metrics(
-                    backend,
-                    "modal_wrapper_exit",
-                    "collected modal activity metrics before training wrapper exit",
-                    exit_metrics,
-                )
-                _emit_result_error(
-                    backend,
-                    "CANCELLED_BY_SIGNAL",
-                    "training wrapper received SIGTERM/SIGINT",
-                    time.time() - started_at,
-                )
-                return 143
-            worker.join(timeout=0.5)
-
-        if result_queue.empty():
-            after_metrics = _collect_modal_activity_metrics(instance.train, "after_call")
-            _emit_status_with_metrics(
-                backend,
-                "modal_call_post",
-                "collected modal activity metrics after train call",
-                after_metrics,
-            )
-            exit_metrics = _collect_modal_activity_metrics(instance.train, "wrapper_exit")
-            _emit_status_with_metrics(
-                backend,
-                "modal_wrapper_exit",
-                "collected modal activity metrics before training wrapper exit",
-                exit_metrics,
-            )
-            _emit_result_error(
-                backend,
-                "MODAL_TRAIN_NO_RESULT",
-                "modal function call finished without result",
-                time.time() - started_at,
-            )
-            return 1
-
-        kind, payload = result_queue.get_nowait()
-        if kind == "error":
-            after_metrics = _collect_modal_activity_metrics(instance.train, "after_call")
-            _emit_status_with_metrics(
-                backend,
-                "modal_call_post",
-                "collected modal activity metrics after train call",
-                after_metrics,
-            )
-            exit_metrics = _collect_modal_activity_metrics(instance.train, "wrapper_exit")
-            _emit_status_with_metrics(
-                backend,
-                "modal_wrapper_exit",
-                "collected modal activity metrics before training wrapper exit",
-                exit_metrics,
-            )
-            _emit_result_error(
-                backend,
-                "MODAL_TRAIN_REMOTE_ERROR",
-                str(payload),
-                time.time() - started_at,
-            )
-            return 1
-        response = payload
-        after_metrics = _collect_modal_activity_metrics(instance.train, "after_call")
-        _emit_status_with_metrics(
-            backend,
-            "modal_call_post",
-            "collected modal activity metrics after train call",
-            after_metrics,
-        )
-        exit_metrics = _collect_modal_activity_metrics(instance.train, "wrapper_exit")
-        _emit_status_with_metrics(
-            backend,
-            "modal_wrapper_exit",
-            "collected modal activity metrics before training wrapper exit",
-            exit_metrics,
-        )
-        duration_secs = time.time() - started_at
-        if response.get("ok", False):
-            _emit_result_ok(backend, "modal training completed", duration_secs)
-            return 0
-        _emit_result_error(
-            backend,
-            str(response.get("error_code") or "MODAL_TRAIN_FAILED"),
-            str(response.get("error") or response.get("error_message") or "modal training failed"),
-            duration_secs,
-        )
-        return 1
-    finally:
-        if deployed_app_name is not None:
-            app_name_result, undeploy_code = ensure_undeployed(
-                model_cli_name=model_cli_name,
-                model_api_name=hf_model_name,
-                config_nickname=config_nickname,
-                epoch=epoch,
-            )
-            if undeploy_code != 0:
-                _emit_status(
-                    backend,
-                    "stopping",
-                    f"failed to undeploy modal training app {app_name_result}",
-                )
-
-
 def main() -> int:
     _set_process_name("training_wrapper")
     started_at = time.time()
     _install_signal_handlers()
     args = _build_parser().parse_args()
+    backend_name = "hpc"
     _configure_wrapper_log_path(args.training_wrapper_log_path)
-    _start_parent_watchdog(args.backend)
+    _start_parent_watchdog(backend_name)
     if args.num_gpus <= 0:
         _emit_result_error(
-            args.backend,
+            backend_name,
             "INVALID_NUM_GPUS",
             "--num-gpus must be positive",
             time.time() - started_at,
@@ -579,7 +340,7 @@ def main() -> int:
         training_config = json.loads(args.training_config_json)
     except json.JSONDecodeError as error:
         _emit_result_error(
-            args.backend,
+            backend_name,
             "INVALID_TRAINING_CONFIG_JSON",
             f"invalid --training-config-json: {error}",
             time.time() - started_at,
@@ -588,7 +349,7 @@ def main() -> int:
     trajectory_path = Path(args.trajectory_sqlite_path)
     if not trajectory_path.exists() or not trajectory_path.is_file():
         _emit_result_error(
-            args.backend,
+            backend_name,
             "TRAJECTORY_NOT_FOUND",
             f"trajectory sqlite does not exist: {trajectory_path}",
             time.time() - started_at,
@@ -596,12 +357,6 @@ def main() -> int:
         return 2
 
     try:
-        if args.backend == "modal":
-            _emit_status(
-                "modal",
-                "starting",
-                "using local HPC-style training path; wrapper-managed modal app deployment disabled",
-            )
         return _run_hpc_training(
             args.num_gpus,
             training_config,
@@ -611,7 +366,7 @@ def main() -> int:
         )
     except Exception as error:  # noqa: BLE001
         _emit_result_error(
-            args.backend,
+            backend_name,
             "WRAPPER_RUNTIME_ERROR",
             str(error),
             time.time() - started_at,

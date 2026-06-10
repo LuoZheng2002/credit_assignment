@@ -17,5 +17,4 @@ cargo run --bin bin_orchestrator -- \
     --num-gpus 4 \
     --storage-large-files-dir "$PWD" \
     --storage-small-files-dir "$PWD" \
-    --compute-backend modal \
     --ui true

@@ -699,23 +699,15 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Inference wrapper for HPC and Modal backends"
+        description="Inference wrapper that always launches local sglang"
     )
-    parser.add_argument("--backend", choices=["hpc", "modal"], required=True)
     parser.add_argument("--listen-port", type=int, required=True)
     parser.add_argument("--num-gpus", type=int, default=1)
-    parser.add_argument("--model-path", type=str)
+    parser.add_argument("--model-path", type=str, required=True)
     parser.add_argument("--epoch", type=int, required=True)
     parser.add_argument("--model-cli-name", type=str, required=True)
     parser.add_argument("--config-nickname", type=str, required=True)
     parser.add_argument("--hf-model-name", type=str, required=True)
-    parser.add_argument("--artifact-root-dir", type=str, default="/mnt/service-state")
-    parser.add_argument(
-        "--modal-app-name", type=str, default="credit-assignment-inference-service"
-    )
-    parser.add_argument("--modal-class-name", type=str, default="ExperimentService")
-    parser.add_argument("--modal-base-url", type=str, default="")
-    parser.add_argument("--modal-auth-token-env-var", type=str, default="")
     parser.add_argument("--wrapper-log-path", type=str, default="")
     return parser
 
@@ -723,21 +715,12 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     _set_process_name("inference_wrapper")
     args = _build_parser().parse_args()
+    backend_name = "hpc"
     try:
         _configure_wrapper_log_file(args.wrapper_log_path)
         if args.listen_port <= 0:
             raise ValueError("--listen-port must be positive")
 
-        if not args.model_path:
-            raise ValueError(
-                "--model-path is required for both --backend=hpc and --backend=modal"
-            )
-        if args.backend == "modal":
-            _emit_status(
-                "modal",
-                "starting",
-                "using local HPC-style inference path; wrapper-managed modal app deployment disabled",
-            )
         backend = HpcBackend(
             args.model_path,
             args.num_gpus,
@@ -749,14 +732,14 @@ def main() -> int:
         )
 
         _emit_inference_identity(
-            args.backend,
+            backend_name,
             args.hf_model_name,
             args.config_nickname,
             args.epoch,
         )
 
         _emit_status(
-            args.backend,
+            backend_name,
             "starting",
             f"binding local wrapper server on port {args.listen_port}",
         )
@@ -779,7 +762,7 @@ def main() -> int:
                     _emit_event(
                         {
                             "type": "error",
-                            "backend": args.backend,
+                            "backend": backend_name,
                             "error_code": "INFERENCE_HEALTH_FAILED",
                             "error_message": str(error),
                             "timestamp": time.time(),
@@ -814,7 +797,7 @@ def main() -> int:
                     _emit_event(
                         {
                             "type": "error",
-                            "backend": args.backend,
+                            "backend": backend_name,
                             "error_code": "INFERENCE_GENERATE_FAILED",
                             "error_message": str(error),
                             "timestamp": time.time(),
@@ -836,7 +819,7 @@ def main() -> int:
         server = ThreadedHTTPServer(("127.0.0.1", args.listen_port), Handler)
         shutdown_event = threading.Event()
         fatal_error: list[str] = []
-        _start_parent_watchdog(args.backend, backend, server, shutdown_event)
+        _start_parent_watchdog(backend_name, backend, server, shutdown_event)
 
         def _watch_backend_process() -> None:
             while not shutdown_event.is_set():
@@ -846,7 +829,7 @@ def main() -> int:
                     _emit_event(
                         {
                             "type": "error",
-                            "backend": args.backend,
+                            "backend": backend_name,
                             "error_code": "SGLANG_PROCESS_EXITED",
                             "error_message": exit_error,
                             "timestamp": time.time(),
@@ -858,11 +841,11 @@ def main() -> int:
                 shutdown_event.wait(timeout=1.0)
 
         threading.Thread(target=_watch_backend_process, daemon=True).start()
-        _emit_status(args.backend, "ready", "inference wrapper server is ready")
+        _emit_status(backend_name, "ready", "inference wrapper server is ready")
 
         def _shutdown(*_: Any) -> None:
             shutdown_event.set()
-            _emit_status(args.backend, "stopping", "received termination signal")
+            _emit_status(backend_name, "stopping", "received termination signal")
             backend.shutdown()
             threading.Thread(target=server.shutdown, daemon=True).start()
 
@@ -879,7 +862,7 @@ def main() -> int:
                 _emit_event(
                     {
                         "type": "result",
-                        "backend": args.backend,
+                        "backend": backend_name,
                         "ok": False,
                         "error_code": "SGLANG_PROCESS_EXITED",
                         "error_message": error_message,
@@ -891,7 +874,7 @@ def main() -> int:
             _emit_event(
                 {
                     "type": "result",
-                    "backend": args.backend,
+                    "backend": backend_name,
                     "ok": True,
                     "message": "inference wrapper stopped",
                     "timestamp": time.time(),
@@ -902,7 +885,7 @@ def main() -> int:
         _emit_event(
             {
                 "type": "error",
-                "backend": args.backend,
+                "backend": backend_name,
                 "error_code": "INFERENCE_WRAPPER_INIT_FAILED",
                 "error_message": str(error),
                 "timestamp": time.time(),

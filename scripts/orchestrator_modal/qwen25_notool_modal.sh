@@ -17,5 +17,4 @@ uv run python scripts/launch_modal_orchestration.py \
     --num-gpus 4 \
     --storage-large-files-dir "/volume/large_files" \
     --storage-small-files-dir "/volume/small_files" \
-    --compute-backend modal \
     --ui true

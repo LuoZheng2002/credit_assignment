@@ -20,8 +20,6 @@ class TestTrainingWrapperSigterm(unittest.TestCase):
                 sys.executable,
                 "-m",
                 "src_py.wrappers.training_wrapper",
-                "--backend",
-                "hpc",
                 "--num-gpus",
                 "1",
                 "--training-config-json",
@@ -57,17 +55,25 @@ class TestTrainingWrapperSigterm(unittest.TestCase):
                 for event in parsed_events
                 if event.get("type") == "status" and event.get("status") == "cancelling"
             ]
-            self.assertTrue(cancelling, f"missing cancelling status event: {parsed_events}")
+            self.assertTrue(
+                cancelling, f"missing cancelling status event: {parsed_events}"
+            )
 
-            results = [event for event in parsed_events if event.get("type") == "result"]
+            results = [
+                event for event in parsed_events if event.get("type") == "result"
+            ]
             self.assertTrue(results, f"missing result event: {parsed_events}")
             last = results[-1]
             self.assertFalse(last.get("ok", True), f"expected failed result: {last}")
-            self.assertEqual(last.get("error_code"), "CANCELLED_BY_SIGNAL", f"bad result: {last}")
+            self.assertEqual(
+                last.get("error_code"), "CANCELLED_BY_SIGNAL", f"bad result: {last}"
+            )
             self.assertNotEqual(process.returncode, 0)
 
     def test_modal_wrapper_emits_cancelled_result_on_sigterm(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="wrapper_sigterm_test_modal_") as temp_dir:
+        with tempfile.TemporaryDirectory(
+            prefix="wrapper_sigterm_test_modal_"
+        ) as temp_dir:
             trajectory_path = Path(temp_dir) / "training.sqlite"
             trajectory_path.write_bytes(b"sqlite")
 
@@ -75,8 +81,6 @@ class TestTrainingWrapperSigterm(unittest.TestCase):
                 sys.executable,
                 "-m",
                 "src_py.wrappers.training_wrapper",
-                "--backend",
-                "modal",
                 "--num-gpus",
                 "1",
                 "--training-config-json",
@@ -112,13 +116,19 @@ class TestTrainingWrapperSigterm(unittest.TestCase):
                 for event in parsed_events
                 if event.get("type") == "status" and event.get("status") == "cancelling"
             ]
-            self.assertTrue(cancelling, f"missing cancelling status event: {parsed_events}")
+            self.assertTrue(
+                cancelling, f"missing cancelling status event: {parsed_events}"
+            )
 
-            results = [event for event in parsed_events if event.get("type") == "result"]
+            results = [
+                event for event in parsed_events if event.get("type") == "result"
+            ]
             self.assertTrue(results, f"missing result event: {parsed_events}")
             last = results[-1]
             self.assertFalse(last.get("ok", True), f"expected failed result: {last}")
-            self.assertEqual(last.get("error_code"), "CANCELLED_BY_SIGNAL", f"bad result: {last}")
+            self.assertEqual(
+                last.get("error_code"), "CANCELLED_BY_SIGNAL", f"bad result: {last}"
+            )
             self.assertNotEqual(process.returncode, 0)
 
 
