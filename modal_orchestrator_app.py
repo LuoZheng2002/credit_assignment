@@ -1,4 +1,6 @@
+import hashlib
 import json
+import re
 import signal
 import subprocess
 import threading
@@ -7,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import modal
-from jsonargparse import ArgumentParser
 
 MINUTES = 60
 APP_NAME = "credit-assignment-orchestrator-service"
@@ -15,9 +16,70 @@ REGION = "us-west"
 
 ORCHESTRATOR_CONFIG_RELATIVE_PATH = Path("src_py/modal/orchestrator_config.json")
 
-service_state_volume = modal.Volume.from_name(
-    "credit-assignment-modal-service-state", create_if_missing=True
-)
+
+def _extract_required_cli_arg(cli_args: list[str], flag_name: str) -> str:
+    index = 0
+    while index < len(cli_args):
+        arg = cli_args[index]
+        if arg == flag_name:
+            if index + 1 >= len(cli_args):
+                raise RuntimeError(
+                    f"orchestrator config missing value after {flag_name}"
+                )
+            value = cli_args[index + 1].strip()
+            if not value:
+                raise RuntimeError(
+                    f"orchestrator config value after {flag_name} must be non-empty"
+                )
+            return value
+        prefixed_flag = f"{flag_name}="
+        if arg.startswith(prefixed_flag):
+            value = arg[len(prefixed_flag) :].strip()
+            if not value:
+                raise RuntimeError(
+                    f"orchestrator config value for {flag_name} must be non-empty"
+                )
+            return value
+        index += 1
+    raise RuntimeError(f"orchestrator config must include {flag_name}")
+
+
+MAX_MODAL_OBJECT_NAME_LENGTH = 64
+
+
+def _sanitize_modal_name_component(value: str) -> str:
+    sanitized = re.sub(r"[^a-z0-9-]+", "-", value.lower())
+    sanitized = re.sub(r"-+", "-", sanitized).strip("-")
+    if not sanitized:
+        raise RuntimeError(f"invalid empty Modal name component derived from {value!r}")
+    return sanitized
+
+
+def _experiment_service_state_volume_name(
+    model_cli_name: str, config_nickname: str
+) -> str:
+    prefix = "credit-assignment-modal-service-state"
+    model_component = _sanitize_modal_name_component(model_cli_name)
+    config_component = _sanitize_modal_name_component(config_nickname)
+    full_name = f"{prefix}-{model_component}-{config_component}"
+    if len(full_name) <= MAX_MODAL_OBJECT_NAME_LENGTH:
+        return full_name
+
+    digest = hashlib.sha1(
+        f"{model_cli_name}\0{config_nickname}".encode("utf-8")
+    ).hexdigest()[:10]
+    remaining = MAX_MODAL_OBJECT_NAME_LENGTH - len(prefix) - len(digest) - 3
+    if remaining <= 2:
+        raise RuntimeError(
+            "Modal volume name prefix is too long to derive a per-experiment volume name"
+        )
+    model_budget = max(1, remaining // 2)
+    config_budget = max(1, remaining - model_budget)
+    truncated_model = model_component[:model_budget].rstrip("-") or model_component[:1]
+    truncated_config = (
+        config_component[:config_budget].rstrip("-") or config_component[:1]
+    )
+    return f"{prefix}-{truncated_model}-{truncated_config}-{digest}"
 
 
 def _load_orchestrator_cli_args() -> list[str]:
@@ -72,28 +134,11 @@ def _load_orchestrator_cli_args() -> list[str]:
 
 
 def _extract_num_gpus(cli_args: list[str]) -> int:
-    num_gpu_args: list[str] = []
-    index = 0
-    while index < len(cli_args):
-        arg = cli_args[index]
-        if arg == "--num-gpus":
-            if index + 1 >= len(cli_args):
-                raise RuntimeError("orchestrator config missing value after --num-gpus")
-            num_gpu_args = [arg, cli_args[index + 1]]
-            break
-        if arg.startswith("--num-gpus="):
-            num_gpu_args = [arg]
-            break
-        index += 1
-    if not num_gpu_args:
-        raise RuntimeError("orchestrator config must include --num-gpus")
+    num_gpus_raw = _extract_required_cli_arg(cli_args, "--num-gpus")
 
     try:
-        parser = ArgumentParser(exit_on_error=False)
-        parser.add_argument("--num-gpus", type=int, required=True)
-        parsed = parser.parse_args(num_gpu_args)
-        num_gpus = int(parsed.num_gpus)
-    except Exception as error:
+        num_gpus = int(num_gpus_raw)
+    except ValueError as error:
         raise RuntimeError(
             f"orchestrator config must include a valid --num-gpus integer: {error}"
         ) from error
@@ -106,8 +151,30 @@ def _extract_num_gpus(cli_args: list[str]) -> int:
 
 
 DEPLOY_ORCHESTRATOR_CLI_ARGS = _load_orchestrator_cli_args()
+DEPLOY_MODEL_CLI_NAME = _extract_required_cli_arg(
+    DEPLOY_ORCHESTRATOR_CLI_ARGS, "--model-cli-name"
+)
+DEPLOY_CONFIG_NICKNAME = _extract_required_cli_arg(
+    DEPLOY_ORCHESTRATOR_CLI_ARGS, "--config-nickname"
+)
 DEPLOY_NUM_GPUS = _extract_num_gpus(DEPLOY_ORCHESTRATOR_CLI_ARGS)
 GPU = f"H100:{DEPLOY_NUM_GPUS}"
+SERVICE_STATE_VOLUME_NAME = _experiment_service_state_volume_name(
+    DEPLOY_MODEL_CLI_NAME, DEPLOY_CONFIG_NICKNAME
+)
+service_state_volume = modal.Volume.from_name(
+    SERVICE_STATE_VOLUME_NAME,
+    create_if_missing=True,
+)
+
+
+def _print_service_state_volume_status() -> None:
+    print(
+        "[orchestrate] service state volume "
+        f"model_cli_name={DEPLOY_MODEL_CLI_NAME} "
+        f"config_nickname={DEPLOY_CONFIG_NICKNAME} "
+        f"volume_name={SERVICE_STATE_VOLUME_NAME}"
+    )
 
 
 def _print_workspace_env_file_status() -> None:
@@ -177,7 +244,7 @@ def _run_orchestrator_subprocess(cli_args: list[str]) -> dict[str, Any]:
     cmd = ["cargo", "run", "--bin", "bin_orchestrator", "--", *cli_args]
 
     termination_requested = threading.Event()
-    child: subprocess.Popen[str] | None = None
+    child: subprocess.Popen[bytes] | None = None
 
     def _on_term(_: int, __: Any) -> None:
         termination_requested.set()
@@ -192,6 +259,7 @@ def _run_orchestrator_subprocess(cli_args: list[str]) -> dict[str, Any]:
             cmd,
             cwd="/workspace",
         )
+        assert child is not None
         while child.poll() is None:
             if termination_requested.is_set():
                 break
@@ -244,6 +312,7 @@ app = modal.App(name=APP_NAME)
 class OrchestratorService:
     @modal.method()
     def orchestrate(self) -> dict[str, Any]:
+        _print_service_state_volume_status()
         _print_workspace_env_file_status()
         _print_sglang_env_package_versions()
         cli_args = _load_orchestrator_cli_args()

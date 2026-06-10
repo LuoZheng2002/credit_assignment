@@ -526,10 +526,7 @@ def _run_unified_loop(
         iteration_index=iteration_index,
         num_iterations_limit=config.num_iterations_limit,
     ):
-        _maybe_emit_master_progress(
-            clock=clock, samples_trained=samples_trained
-        ), eng=eng
-        )
+        _maybe_emit_master_progress(clock=clock, samples_trained=samples_trained)
 
         if is_distributed:
             control_tensor = torch.zeros(4, dtype=torch.int64, device=device)
