@@ -48,11 +48,9 @@ COPY research-utility ./research-utility
 RUN uv sync
 RUN uv sync --project pyprojects/sglang
 
-# Copy runtime source needed by orchestrator, wrappers, and training/inference paths.
-COPY src ./src
-COPY src_py ./src_py
-COPY config ./config
-COPY tokenizers ./tokenizers
+# Copy the full repository contents that are allowed by .dockerignore,
+# including datasets/ and any other runtime inputs.
+COPY . .
 
 ENV VIRTUAL_ENV=/workspace/.venv
 ENV PATH=${VIRTUAL_ENV}/bin:${PATH}

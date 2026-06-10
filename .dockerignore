@@ -18,6 +18,8 @@
 !tokenizers/**
 !research-utility/
 !research-utility/**
+!datasets/
+!datasets/**
 
 !pyprojects/
 !pyprojects/sglang/
@@ -34,4 +36,3 @@ target/
 results/
 results_version_tracking/
 logs/
-datasets/

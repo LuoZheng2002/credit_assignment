@@ -17,6 +17,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from research_utility.tui_message import UnixTuiForwarder
+
 from src_py.load_model_to_path import ensure_model_snapshot
 from src_py.modal.inference_deployment_common import (
     deployment_name,
@@ -25,6 +27,7 @@ from src_py.modal.inference_deployment_common import (
 )
 
 _WRAPPER_LOG_FILE_HANDLE: Any | None = None
+_TUI_FORWARDER: UnixTuiForwarder | None = None
 
 
 def _set_process_name(name: str) -> None:
@@ -56,7 +59,7 @@ def _configure_wrapper_log_file(log_path: str) -> None:
     global _WRAPPER_LOG_FILE_HANDLE
     resolved = log_path.strip()
     if not resolved:
-        return
+        raise ValueError("--wrapper-log-path must be non-empty")
     path = Path(resolved).expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     _WRAPPER_LOG_FILE_HANDLE = open(path, "a", buffering=1, encoding="utf-8")
@@ -64,6 +67,43 @@ def _configure_wrapper_log_file(log_path: str) -> None:
     os.dup2(_WRAPPER_LOG_FILE_HANDLE.fileno(), 2)
     sys.stdout = os.fdopen(1, "w", buffering=1, encoding="utf-8", closefd=False)
     sys.stderr = os.fdopen(2, "w", buffering=1, encoding="utf-8", closefd=False)
+
+
+def _configure_tui_forwarder(socket_path: str | None) -> None:
+    global _TUI_FORWARDER
+    _TUI_FORWARDER = UnixTuiForwarder(socket_path)
+
+
+def _tui_state(state: str) -> None:
+    if _TUI_FORWARDER is not None:
+        _TUI_FORWARDER.send_state(state)
+
+
+def _tui_info(message: str) -> None:
+    if _TUI_FORWARDER is not None:
+        _TUI_FORWARDER.send_info(message)
+
+
+def _tui_error(message: str) -> None:
+    if _TUI_FORWARDER is not None:
+        _TUI_FORWARDER.send_error(message)
+
+
+def _emit_inference_tui_identity(
+    model_cli_name: str,
+    config_nickname: str,
+    epoch: int,
+    hf_model_name: str,
+    listen_port: int,
+) -> None:
+    _tui_info(
+        "Inference wrapper config: "
+        f"model_cli_name={model_cli_name} "
+        f"config_nickname={config_nickname} "
+        f"epoch={epoch} "
+        f"hf_model_name={hf_model_name} "
+        f"listen_port={listen_port}"
+    )
 
 
 def _emit_inference_identity(
@@ -357,6 +397,7 @@ class HpcBackend:
                 "starting",
                 f"initial model missing at {model_path_obj}; downloading {hf_model_name}",
             )
+            _tui_info(f"Downloading initial model for inference: {hf_model_name}")
             ensure_model_snapshot(model_path_obj.parent, hf_model_name)
         if not model_path_obj.exists():
             raise FileNotFoundError(f"model path does not exist: {model_path}")
@@ -388,6 +429,9 @@ class HpcBackend:
                 "ready",
                 f"reusing existing local sglang on port {upstream_port} for matching config",
             )
+            _tui_info(
+                f"Reusing local sglang on port {upstream_port} ({self._upstream_url})"
+            )
             return
         except Exception as error:  # noqa: BLE001
             if "mismatch" in str(error) or "cannot validate" in str(error):
@@ -396,6 +440,9 @@ class HpcBackend:
         _emit_sglang_kernels_version(sglang_python)
         child_env = os.environ.copy()
         child_env.setdefault("PYTHONUNBUFFERED", "1")
+        _tui_info(
+            f"Launching local sglang on port {upstream_port} ({self._upstream_url})"
+        )
         self._process = subprocess.Popen(
             [
                 sglang_python,
@@ -418,6 +465,7 @@ class HpcBackend:
             "hpc", "starting", f"launching local sglang on port {upstream_port}"
         )
         _wait_health(f"{self._upstream_url}/health", timeout_secs=900)
+        _tui_info(f"SGLang server is up at {self._upstream_url}")
         _write_hpc_server_state(
             upstream_port=upstream_port,
             model_cli_name=model_cli_name,
@@ -708,7 +756,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-cli-name", type=str, required=True)
     parser.add_argument("--config-nickname", type=str, required=True)
     parser.add_argument("--hf-model-name", type=str, required=True)
-    parser.add_argument("--wrapper-log-path", type=str, default="")
+    parser.add_argument("--wrapper-log-path", type=str, required=True)
+    parser.add_argument("--orchestrator-socket-path", type=str, default="")
     return parser
 
 
@@ -718,6 +767,16 @@ def main() -> int:
     backend_name = "hpc"
     try:
         _configure_wrapper_log_file(args.wrapper_log_path)
+        _configure_tui_forwarder(args.orchestrator_socket_path)
+        _tui_state("Inference wrapper started")
+        _tui_info("Inference wrapper started")
+        _emit_inference_tui_identity(
+            args.model_cli_name,
+            args.config_nickname,
+            args.epoch,
+            args.hf_model_name,
+            args.listen_port,
+        )
         if args.listen_port <= 0:
             raise ValueError("--listen-port must be positive")
 
@@ -743,6 +802,7 @@ def main() -> int:
             "starting",
             f"binding local wrapper server on port {args.listen_port}",
         )
+        _tui_info(f"Binding inference wrapper server on port {args.listen_port}")
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
@@ -835,6 +895,7 @@ def main() -> int:
                             "timestamp": time.time(),
                         }
                     )
+                    _tui_error(f"Inference backend exited unexpectedly: {exit_error}")
                     shutdown_event.set()
                     threading.Thread(target=server.shutdown, daemon=True).start()
                     return
@@ -842,6 +903,8 @@ def main() -> int:
 
         threading.Thread(target=_watch_backend_process, daemon=True).start()
         _emit_status(backend_name, "ready", "inference wrapper server is ready")
+        _tui_state("Inference wrapper server is ready")
+        _tui_info("Inference wrapper server is ready")
 
         def _shutdown(*_: Any) -> None:
             shutdown_event.set()
@@ -859,6 +922,9 @@ def main() -> int:
             server.server_close()
             if fatal_error:
                 error_message = fatal_error[-1]
+                _tui_error(
+                    f"Inference wrapper stopping after backend failure: {error_message}"
+                )
                 _emit_event(
                     {
                         "type": "result",
@@ -871,6 +937,7 @@ def main() -> int:
                     }
                 )
                 return 1
+            _tui_state("Inference wrapper stopped")
             _emit_event(
                 {
                     "type": "result",
@@ -882,6 +949,7 @@ def main() -> int:
             )
         return 0
     except Exception as error:  # noqa: BLE001
+        _tui_error(f"Inference wrapper failed to start: {error}")
         _emit_event(
             {
                 "type": "error",

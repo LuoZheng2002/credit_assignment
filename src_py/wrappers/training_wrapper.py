@@ -14,8 +14,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+from research_utility.tui_message import UnixTuiForwarder
+
 from src_py.load_model_to_path import ensure_model_snapshot
-from src_py.train.pathing import model_parent_dir, resolve_artifact_root_dir
+from src_py.train.pathing import (
+    checkpoint_parent_dir,
+    final_model_output_parent_dir,
+    model_parent_dir,
+    resolve_artifact_root_dir,
+)
 
 
 def _set_process_name(name: str) -> None:
@@ -98,18 +105,57 @@ _TERMINATION_REQUESTED = threading.Event()
 _ACTIVE_PROCESS_LOCK = threading.Lock()
 _ACTIVE_PROCESS: subprocess.Popen[Any] | None = None
 _TRAINING_WRAPPER_LOG_PATH: Path | None = None
+_WRAPPER_LOG_FILE_HANDLE: Any | None = None
+_TUI_FORWARDER: UnixTuiForwarder | None = None
 
 
 def _configure_wrapper_log_path(raw_path: str) -> None:
-    global _TRAINING_WRAPPER_LOG_PATH
+    global _TRAINING_WRAPPER_LOG_PATH, _WRAPPER_LOG_FILE_HANDLE
     path = raw_path.strip()
     if not path:
-        _TRAINING_WRAPPER_LOG_PATH = None
-        return
-    resolved = Path(path)
+        raise ValueError("--wrapper-log-path must be non-empty")
+    resolved = Path(path).expanduser().resolve()
     if resolved.parent and not resolved.parent.exists():
         resolved.parent.mkdir(parents=True, exist_ok=True)
     _TRAINING_WRAPPER_LOG_PATH = resolved
+    _WRAPPER_LOG_FILE_HANDLE = open(resolved, "a", buffering=1, encoding="utf-8")
+    os.dup2(_WRAPPER_LOG_FILE_HANDLE.fileno(), 1)
+    os.dup2(_WRAPPER_LOG_FILE_HANDLE.fileno(), 2)
+    sys.stdout = os.fdopen(1, "w", buffering=1, encoding="utf-8", closefd=False)
+    sys.stderr = os.fdopen(2, "w", buffering=1, encoding="utf-8", closefd=False)
+
+
+def _configure_tui_forwarder(socket_path: str | None) -> None:
+    global _TUI_FORWARDER
+    _TUI_FORWARDER = UnixTuiForwarder(socket_path)
+
+
+def _tui_state(state: str) -> None:
+    if _TUI_FORWARDER is not None:
+        _TUI_FORWARDER.send_state(state)
+
+
+def _tui_info(message: str) -> None:
+    if _TUI_FORWARDER is not None:
+        _TUI_FORWARDER.send_info(message)
+
+
+def _tui_error(message: str) -> None:
+    if _TUI_FORWARDER is not None:
+        _TUI_FORWARDER.send_error(message)
+
+
+def _emit_training_tui_identity(
+    training_config: dict[str, Any], hf_model_name: str, trajectory_path: Path
+) -> None:
+    _tui_info(
+        "Training wrapper config: "
+        f"model_cli_name={training_config.get('model_cli_name', '')} "
+        f"config_nickname={training_config.get('config_nickname', '')} "
+        f"epoch={int(training_config.get('epoch', 0))} "
+        f"hf_model_name={hf_model_name} "
+        f"trajectory_sqlite_path={trajectory_path}"
+    )
 
 
 def _set_active_process(process: subprocess.Popen[Any] | None) -> None:
@@ -120,6 +166,7 @@ def _set_active_process(process: subprocess.Popen[Any] | None) -> None:
 
 def _on_signal(signum: int, _: Any) -> None:
     _TERMINATION_REQUESTED.set()
+    _tui_error(f"Training wrapper received signal {signum}")
     _emit_status("wrapper", "cancelling", f"received signal {signum}")
     with _ACTIVE_PROCESS_LOCK:
         process = _ACTIVE_PROCESS
@@ -207,7 +254,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--training-config-json", type=str, required=True)
     parser.add_argument("--trajectory-sqlite-path", type=str, required=True)
     parser.add_argument("--hf-model-name", type=str, required=True)
-    parser.add_argument("--training-wrapper-log-path", type=str, default="")
+    parser.add_argument("--wrapper-log-path", type=str, required=True)
+    parser.add_argument("--orchestrator-socket-path", type=str, default="")
     parser.add_argument(
         "--test-sleep-secs",
         type=float,
@@ -248,10 +296,27 @@ def _run_hpc_training(
     trajectory_path: Path,
     hf_model_name: str,
     test_sleep_secs: float,
+    orchestrator_socket_path: str,
 ) -> int:
     started_at = time.time()
     backend = "hpc"
     _emit_status(backend, "starting", "preparing HPC training job folder")
+    _tui_state("Training wrapper started")
+    _tui_info("Training wrapper started")
+    _emit_training_tui_identity(training_config, hf_model_name, trajectory_path)
+    artifact_root_dir = resolve_artifact_root_dir(training_config)
+    model_cli_name = str(training_config["model_cli_name"])
+    config_nickname = str(training_config["config_nickname"])
+    epoch = int(training_config.get("epoch", 0))
+    checkpoints_root = checkpoint_parent_dir(
+        artifact_root_dir, model_cli_name, config_nickname, epoch
+    )
+    next_model_root = final_model_output_parent_dir(
+        artifact_root_dir, model_cli_name, config_nickname, epoch
+    )
+    _tui_info(f"Training checkpoints directory: {checkpoints_root / 'checkpoints'}")
+    _tui_info(f"Training next model directory: {next_model_root / 'model'}")
+    _tui_state(f"Training checkpoints will be written under {checkpoints_root}")
     _ensure_initial_model_if_missing(backend, training_config, hf_model_name)
     with tempfile.TemporaryDirectory(prefix="training_wrapper_job_") as temp_dir:
         job_dir = Path(temp_dir)
@@ -278,11 +343,14 @@ def _run_hpc_training(
                 "src_py.train.main_from_config",
                 "--job-folder-path",
                 str(job_dir),
+                "--orchestrator-socket-path",
+                orchestrator_socket_path,
             ]
         if _TRAINING_WRAPPER_LOG_PATH is None:
             process = subprocess.Popen(cmd)
             _set_active_process(process)
             _emit_status(backend, "running", f"started torchrun with pid={process.pid}")
+            _tui_state(f"Training subprocess started (pid={process.pid})")
             return_code = process.wait()
         else:
             with _TRAINING_WRAPPER_LOG_PATH.open("a", encoding="utf-8") as log_handle:
@@ -296,10 +364,12 @@ def _run_hpc_training(
                         f"subprocess output redirected to {_TRAINING_WRAPPER_LOG_PATH}"
                     ),
                 )
+                _tui_state(f"Training subprocess started (pid={process.pid})")
                 return_code = process.wait()
         _set_active_process(None)
         duration_secs = time.time() - started_at
         if _TERMINATION_REQUESTED.is_set():
+            _tui_error("Training wrapper cancelled by signal")
             _emit_result_error(
                 backend,
                 "CANCELLED_BY_SIGNAL",
@@ -308,8 +378,12 @@ def _run_hpc_training(
             )
             return 143
         if return_code == 0:
+            _tui_state(
+                f"Training completed; checkpoint state available under {checkpoints_root}"
+            )
             _emit_result_ok(backend, "training completed", duration_secs)
             return 0
+        _tui_error(f"Training failed: torchrun exited with code {return_code}")
         _emit_result_error(
             backend,
             "TRAIN_PROCESS_FAILED",
@@ -325,9 +399,13 @@ def main() -> int:
     _install_signal_handlers()
     args = _build_parser().parse_args()
     backend_name = "hpc"
-    _configure_wrapper_log_path(args.training_wrapper_log_path)
+    _configure_wrapper_log_path(args.wrapper_log_path)
+    _configure_tui_forwarder(args.orchestrator_socket_path)
+    _tui_state("Training wrapper process initialized")
+    _tui_info("Training wrapper process initialized")
     _start_parent_watchdog(backend_name)
     if args.num_gpus <= 0:
+        _tui_error("Training wrapper failed: --num-gpus must be positive")
         _emit_result_error(
             backend_name,
             "INVALID_NUM_GPUS",
@@ -339,6 +417,7 @@ def main() -> int:
     try:
         training_config = json.loads(args.training_config_json)
     except json.JSONDecodeError as error:
+        _tui_error(f"Training wrapper failed: invalid training config JSON: {error}")
         _emit_result_error(
             backend_name,
             "INVALID_TRAINING_CONFIG_JSON",
@@ -348,6 +427,9 @@ def main() -> int:
         return 2
     trajectory_path = Path(args.trajectory_sqlite_path)
     if not trajectory_path.exists() or not trajectory_path.is_file():
+        _tui_error(
+            f"Training wrapper failed: trajectory sqlite not found at {trajectory_path}"
+        )
         _emit_result_error(
             backend_name,
             "TRAJECTORY_NOT_FOUND",
@@ -363,8 +445,10 @@ def main() -> int:
             trajectory_path,
             args.hf_model_name,
             args.test_sleep_secs,
+            args.orchestrator_socket_path,
         )
     except Exception as error:  # noqa: BLE001
+        _tui_error(f"Training wrapper runtime error: {error}")
         _emit_result_error(
             backend_name,
             "WRAPPER_RUNTIME_ERROR",

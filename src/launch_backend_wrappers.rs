@@ -1,74 +1,25 @@
 use std::{
     net::SocketAddr,
-    path::Path,
+    path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
-use research_utility::progress_tui_logger::{log_info, log_warning};
-use serde::Deserialize;
-use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use research_utility::{
+    message::TuiMessage,
+    progress_tui_logger::{log_info, log_message, log_warning},
+};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep, timeout};
 
 use crate::launch_sglang_server::resolve_sglang_port;
 
-#[derive(Debug, Clone, Deserialize)]
-struct WrapperResultEvent {
-    ok: bool,
-    #[serde(default)]
-    backend: Option<String>,
-    #[serde(default)]
-    message: Option<String>,
-    #[serde(default)]
-    error_code: Option<String>,
-    #[serde(default)]
-    error_message: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-enum WrapperEvent {
-    #[serde(rename = "status")]
-    Status {
-        status: String,
-        #[serde(default)]
-        backend: Option<String>,
-        #[serde(default)]
-        message: Option<String>,
-        #[serde(default)]
-        metrics: Option<Value>,
-        #[serde(default)]
-        model_official_name: Option<String>,
-        #[serde(default)]
-        config_nickname: Option<String>,
-        #[serde(default)]
-        epoch: Option<usize>,
-    },
-    #[serde(rename = "result")]
-    Result {
-        ok: bool,
-        #[serde(default)]
-        backend: Option<String>,
-        #[serde(default)]
-        message: Option<String>,
-        #[serde(default)]
-        error_code: Option<String>,
-        #[serde(default)]
-        error_message: Option<String>,
-    },
-    #[serde(rename = "error")]
-    Error {
-        #[serde(default)]
-        backend: Option<String>,
-        #[serde(default)]
-        error_code: Option<String>,
-        #[serde(default)]
-        error_message: Option<String>,
-    },
-}
+static WRAPPER_TUI_SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
+const WRAPPER_TUI_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const WRAPPER_TUI_ADDITIONAL_CONNECT_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn launch_inference_wrapper_process(
     model_path: &str,
@@ -77,10 +28,12 @@ pub async fn launch_inference_wrapper_process(
     epoch: usize,
     hf_model_name: &str,
     num_gpus: usize,
-    log_path: &str,
+    wrapper_log_path: &str,
 ) -> Result<(u16, Child), String> {
     let listen_port = resolve_sglang_port();
     ensure_wrapper_port_available(listen_port).await?;
+    let (socket_path, listener) = bind_wrapper_tui_listener("inference")?;
+    let socket_path_arg = socket_path_to_arg(&socket_path)?;
 
     let mut command = Command::new("uv");
     command
@@ -98,28 +51,32 @@ pub async fn launch_inference_wrapper_process(
         .arg(model_cli_name)
         .arg("--config-nickname")
         .arg(config_nickname)
-        .arg("--log-path")
-        .arg(log_path)
+        .arg("--wrapper-log-path")
+        .arg(wrapper_log_path)
+        .arg("--orchestrator-socket-path")
+        .arg(&socket_path_arg)
         .arg("--hf-model-name")
         .arg(hf_model_name)
         .arg("--model-path")
         .arg(model_path);
 
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
+    command.stdout(Stdio::null());
+    command.stderr(Stdio::null());
 
-    let mut process = command
-        .spawn()
-        .map_err(|err| format!("failed to launch inference wrapper process: {}", err))?;
+    let mut process = match command.spawn() {
+        Ok(process) => process,
+        Err(err) => {
+            cleanup_socket_path(&socket_path);
+            return Err(format!(
+                "failed to launch inference wrapper process: {}",
+                err
+            ));
+        }
+    };
 
-    if let Some(stdout) = process.stdout.take() {
-        tokio::spawn(stream_output(stdout, false, None));
-    }
-    if let Some(stderr) = process.stderr.take() {
-        tokio::spawn(stream_output(stderr, true, None));
-    }
+    spawn_wrapper_tui_listener(listener, socket_path, "inference wrapper", false);
 
-    wait_for_wrapper_health(listen_port, &mut process, log_path).await?;
+    wait_for_wrapper_health(listen_port, &mut process, wrapper_log_path).await?;
     Ok((listen_port, process))
 }
 
@@ -128,7 +85,7 @@ pub async fn run_training_wrapper_and_wait(
     hf_model_name: &str,
     training_config_json: String,
     trajectory_sqlite_path: &str,
-    training_wrapper_log_path: &str,
+    wrapper_log_path: &str,
 ) -> Result<(), String> {
     assert!(num_gpus > 0, "num_gpus must be positive");
     if !Path::new(trajectory_sqlite_path).is_file() {
@@ -137,6 +94,8 @@ pub async fn run_training_wrapper_and_wait(
             trajectory_sqlite_path
         ));
     }
+    let (socket_path, listener) = bind_wrapper_tui_listener("training")?;
+    let socket_path_arg = socket_path_to_arg(&socket_path)?;
 
     let mut command = Command::new("uv");
     command
@@ -152,141 +111,207 @@ pub async fn run_training_wrapper_and_wait(
         .arg(trajectory_sqlite_path)
         .arg("--hf-model-name")
         .arg(hf_model_name)
-        .arg("--training-wrapper-log-path")
-        .arg(training_wrapper_log_path);
+        .arg("--wrapper-log-path")
+        .arg(wrapper_log_path)
+        .arg("--orchestrator-socket-path")
+        .arg(&socket_path_arg);
 
-    let log_file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(training_wrapper_log_path)
-        .map_err(|err| {
-            format!(
-                "failed to open training wrapper log path {}: {}",
-                training_wrapper_log_path, err
-            )
-        })?;
-    let log_file_err = log_file.try_clone().map_err(|err| {
-        format!(
-            "failed to clone log file handle for {}: {}",
-            training_wrapper_log_path, err
-        )
-    })?;
-    command.stdout(Stdio::from(log_file));
-    command.stderr(Stdio::from(log_file_err));
+    command.stdout(Stdio::null());
+    command.stderr(Stdio::null());
 
-    let mut process = command
-        .spawn()
-        .map_err(|err| format!("failed to launch training wrapper process: {}", err))?;
+    let mut process = match command.spawn() {
+        Ok(process) => process,
+        Err(err) => {
+            cleanup_socket_path(&socket_path);
+            return Err(format!(
+                "failed to launch training wrapper process: {}",
+                err
+            ));
+        }
+    };
+
+    spawn_wrapper_tui_listener(listener, socket_path, "training wrapper", true);
 
     let status = process
         .wait()
         .await
         .map_err(|err| format!("failed while waiting for training wrapper process: {}", err))?;
 
-
     if status.success() {
         log_info(format!(
             "Training wrapper completed successfully; details in {}",
-            training_wrapper_log_path
+            wrapper_log_path
         ));
         Ok(())
     } else {
         Err(format!(
             "training wrapper process exited with status {}; inspect log at {}",
-            status, training_wrapper_log_path
+            status, wrapper_log_path
         ))
     }
 }
 
-async fn stream_output<R>(
-    reader: R,
-    is_stderr: bool,
-    result_sink: Option<Arc<Mutex<Option<WrapperResultEvent>>>>,
-) where
-    R: AsyncRead + Unpin,
-{
-    let mut lines = BufReader::new(reader).lines();
-    while let Ok(Some(content)) = lines.next_line().await {
-        if content.is_empty() {
-            continue;
+fn bind_wrapper_tui_listener(wrapper_kind: &str) -> Result<(PathBuf, UnixListener), String> {
+    let socket_path = wrapper_tui_socket_path(wrapper_kind);
+    cleanup_socket_path(&socket_path);
+    let listener = UnixListener::bind(&socket_path).map_err(|err| {
+        format!(
+            "failed to bind Unix socket for {} wrapper TUI listener at {}: {}",
+            wrapper_kind,
+            socket_path.display(),
+            err
+        )
+    })?;
+    Ok((socket_path, listener))
+}
+
+fn spawn_wrapper_tui_listener(
+    listener: UnixListener,
+    socket_path: PathBuf,
+    wrapper_name: &'static str,
+    allow_multiple_connections: bool,
+) {
+    tokio::spawn(async move {
+        if let Err(err) = run_wrapper_tui_listener(
+            listener,
+            &socket_path,
+            wrapper_name,
+            allow_multiple_connections,
+        )
+        .await
+        {
+            log_warning(format!(
+                "{} TUI socket listener ended with error: {}",
+                wrapper_name, err
+            ));
         }
-        if is_stderr {
-            log_warning(format!("[WRAPPER]: {}", content));
-        } else {
-            if let Ok(event) = serde_json::from_str::<WrapperEvent>(&content) {
-                match event {
-                    WrapperEvent::Status {
-                        status,
-                        backend,
-                        message,
-                        metrics,
-                        model_official_name,
-                        config_nickname,
-                        epoch,
-                    } => {
-                        let metrics_text = metrics
-                            .map(|value| value.to_string())
-                            .unwrap_or_else(|| "none".to_string());
-                        let identity_text = format!(
-                            "model_official_name={} config_nickname={} epoch={}",
-                            model_official_name.unwrap_or_else(|| "none".to_string()),
-                            config_nickname.unwrap_or_else(|| "none".to_string()),
-                            epoch
-                                .map(|value| value.to_string())
-                                .unwrap_or_else(|| "none".to_string()),
-                        );
-                        log_info(format!(
-                            "[WRAPPER][status] backend={} status={} message={} metrics={} {}",
-                            backend.unwrap_or_else(|| "unknown".to_string()),
-                            status,
-                            message.unwrap_or_default(),
-                            metrics_text,
-                            identity_text,
-                        ));
-                    }
-                    WrapperEvent::Result {
-                        ok,
-                        backend,
-                        message,
-                        error_code,
-                        error_message,
-                    } => {
-                        if let Some(sink) = &result_sink {
-                            if let Ok(mut guard) = sink.lock() {
-                                *guard = Some(WrapperResultEvent {
-                                    ok,
-                                    backend: backend.clone(),
-                                    message: message.clone(),
-                                    error_code: error_code.clone(),
-                                    error_message: error_message.clone(),
-                                });
-                            }
-                        }
-                        log_info(format!(
-                            "[WRAPPER][result] backend={} ok={} code={} message={}",
-                            backend.unwrap_or_else(|| "unknown".to_string()),
-                            ok,
-                            error_code.unwrap_or_else(|| "none".to_string()),
-                            error_message.or(message).unwrap_or_default()
-                        ));
-                    }
-                    WrapperEvent::Error {
-                        backend,
-                        error_code,
-                        error_message,
-                    } => {
-                        log_warning(format!(
-                            "[WRAPPER][error] backend={} code={} message={}",
-                            backend.unwrap_or_else(|| "unknown".to_string()),
-                            error_code.unwrap_or_else(|| "unknown".to_string()),
-                            error_message.unwrap_or_default()
-                        ));
-                    }
+        cleanup_socket_path(&socket_path);
+    });
+}
+
+async fn run_wrapper_tui_listener(
+    listener: UnixListener,
+    socket_path: &Path,
+    wrapper_name: &str,
+    allow_multiple_connections: bool,
+) -> Result<(), String> {
+    let mut connection_tasks = Vec::new();
+    let (first_stream, _) = timeout(WRAPPER_TUI_CONNECT_TIMEOUT, listener.accept())
+        .await
+        .map_err(|_| {
+            format!(
+                "timed out waiting for {} to connect to Unix socket {}",
+                wrapper_name,
+                socket_path.display()
+            )
+        })?
+        .map_err(|err| {
+            format!(
+                "failed while accepting {} Unix socket connection at {}: {}",
+                wrapper_name,
+                socket_path.display(),
+                err
+            )
+        })?;
+    connection_tasks.push(tokio::spawn(read_tui_stream(
+        first_stream,
+        wrapper_name.to_string(),
+    )));
+
+    if allow_multiple_connections {
+        loop {
+            match timeout(
+                WRAPPER_TUI_ADDITIONAL_CONNECT_IDLE_TIMEOUT,
+                listener.accept(),
+            )
+            .await
+            {
+                Ok(Ok((stream, _))) => {
+                    connection_tasks.push(tokio::spawn(read_tui_stream(
+                        stream,
+                        wrapper_name.to_string(),
+                    )));
                 }
-                continue;
+                Ok(Err(err)) => {
+                    return Err(format!(
+                        "failed while accepting additional {} Unix socket connection at {}: {}",
+                        wrapper_name,
+                        socket_path.display(),
+                        err
+                    ));
+                }
+                Err(_) => break,
             }
-            log_info(format!("[WRAPPER]: {}", content));
+        }
+    }
+
+    for task in connection_tasks {
+        match task.await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => return Err(err),
+            Err(err) => {
+                return Err(format!(
+                    "{} TUI socket reader task join failure: {}",
+                    wrapper_name, err
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn read_tui_stream(stream: UnixStream, wrapper_name: String) -> Result<(), String> {
+    let mut lines = BufReader::new(stream).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(content)) => {
+                if content.trim().is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<TuiMessage>(&content) {
+                    Ok(message) => log_message(message),
+                    Err(err) => log_warning(format!(
+                        "failed to parse {} TUI socket message as TuiMessage: {} (payload={})",
+                        wrapper_name, err, content
+                    )),
+                }
+            }
+            Ok(None) => return Ok(()),
+            Err(err) => {
+                return Err(format!(
+                    "failed while reading {} TUI socket stream: {}",
+                    wrapper_name, err
+                ));
+            }
+        }
+    }
+}
+
+fn socket_path_to_arg(socket_path: &Path) -> Result<String, String> {
+    socket_path
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("socket path is not valid UTF-8: {}", socket_path.display()))
+}
+
+fn wrapper_tui_socket_path(wrapper_kind: &str) -> PathBuf {
+    let id = WRAPPER_TUI_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "credit_assignment_{}_wrapper_{}_{}.sock",
+        wrapper_kind,
+        std::process::id(),
+        id
+    ))
+}
+
+fn cleanup_socket_path(socket_path: &Path) {
+    if let Err(err) = std::fs::remove_file(socket_path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            log_warning(format!(
+                "failed to remove Unix socket path {}: {}",
+                socket_path.display(),
+                err
+            ));
         }
     }
 }
@@ -317,10 +342,10 @@ async fn wait_for_wrapper_health(
 
         match timeout(Duration::from_secs(2), reqwest::get(url.clone())).await {
             Ok(Ok(response)) if response.status().is_success() => {
-                if let Ok(body) = response.json::<Value>().await {
+                if let Ok(body) = response.json::<serde_json::Value>().await {
                     if body
                         .get("status")
-                        .and_then(Value::as_str)
+                        .and_then(serde_json::Value::as_str)
                         .map(|s| s == "ok")
                         .unwrap_or(false)
                     {
@@ -392,74 +417,158 @@ async fn is_port_listening(port: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::WrapperEvent;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use research_utility::{
+        bincode_log_file::BincodeLogFile,
+        message::{Severity, TuiMessage},
+        progress_tui_logger::{ProgressLogFrame, ProgressTuiLogger},
+    };
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::UnixStream;
+
+    use super::{bind_wrapper_tui_listener, run_wrapper_tui_listener};
 
     #[test]
-    fn wrapper_event_status_parses() {
-        let json = r#"{"type":"status","backend":"modal","status":"running","message":"training","metrics":{"containers_running":1},"model_official_name":"Qwen/Qwen2.5-7B-Instruct","config_nickname":"notool","epoch":0}"#;
-        let parsed = serde_json::from_str::<WrapperEvent>(json).expect("status event should parse");
+    fn state_tui_message_json_parses() {
+        let json = r#"{"State":{"state":"Inference wrapper started"}}"#;
+        let parsed = serde_json::from_str::<TuiMessage>(json).expect("state message should parse");
         match parsed {
-            WrapperEvent::Status {
-                status,
-                backend,
-                message,
-                metrics,
-                model_official_name,
-                config_nickname,
-                epoch,
-            } => {
-                assert_eq!(status, "running");
-                assert_eq!(backend.as_deref(), Some("modal"));
-                assert_eq!(message.as_deref(), Some("training"));
-                assert!(metrics.is_some());
-                assert_eq!(
-                    model_official_name.as_deref(),
-                    Some("Qwen/Qwen2.5-7B-Instruct")
-                );
-                assert_eq!(config_nickname.as_deref(), Some("notool"));
-                assert_eq!(epoch, Some(0));
-            }
-            _ => panic!("expected status event"),
+            TuiMessage::State { state } => assert_eq!(state, "Inference wrapper started"),
+            _ => panic!("expected state message"),
         }
     }
 
     #[test]
-    fn wrapper_event_result_parses() {
-        let json = r#"{"type":"result","backend":"hpc","ok":true,"message":"done"}"#;
-        let parsed = serde_json::from_str::<WrapperEvent>(json).expect("result event should parse");
+    fn line_tui_message_json_parses() {
+        let json = r#"{"Line":{"message":"Training failed: torchrun exited with code 1","severity":"Error"}}"#;
+        let parsed = serde_json::from_str::<TuiMessage>(json).expect("line message should parse");
         match parsed {
-            WrapperEvent::Result {
-                ok,
-                backend,
-                message,
-                error_code,
-                error_message,
-            } => {
-                assert!(ok);
-                assert_eq!(backend.as_deref(), Some("hpc"));
-                assert_eq!(message.as_deref(), Some("done"));
-                assert!(error_code.is_none());
-                assert!(error_message.is_none());
+            TuiMessage::Line { message, severity } => {
+                assert_eq!(message, "Training failed: torchrun exited with code 1");
+                assert_eq!(severity, Severity::Error);
             }
-            _ => panic!("expected result event"),
+            _ => panic!("expected line message"),
         }
     }
 
     #[test]
-    fn wrapper_event_error_parses() {
-        let json = r#"{"type":"error","backend":"hpc","error_code":"TRAIN_PROCESS_FAILED","error_message":"boom"}"#;
-        let parsed = serde_json::from_str::<WrapperEvent>(json).expect("error event should parse");
+    fn key_value_tui_message_json_parses() {
+        let json = r#"{"KeyValuePair":{"key":"checkpoint_dir","value":"/tmp/checkpoints"}}"#;
+        let parsed =
+            serde_json::from_str::<TuiMessage>(json).expect("key value message should parse");
         match parsed {
-            WrapperEvent::Error {
-                backend,
-                error_code,
-                error_message,
-            } => {
-                assert_eq!(backend.as_deref(), Some("hpc"));
-                assert_eq!(error_code.as_deref(), Some("TRAIN_PROCESS_FAILED"));
-                assert_eq!(error_message.as_deref(), Some("boom"));
+            TuiMessage::KeyValuePair { key, value } => {
+                assert_eq!(key, "checkpoint_dir");
+                assert_eq!(value, "/tmp/checkpoints");
             }
-            _ => panic!("expected error event"),
+            _ => panic!("expected key value message"),
         }
+    }
+
+    #[tokio::test]
+    async fn unix_socket_tui_listener_forwards_messages_into_progress_log() {
+        let log_path = temp_progress_log_path("wrapper_socket_forward");
+        ProgressTuiLogger::initialize(&log_path)
+            .await
+            .expect("progress logger should initialize");
+
+        let (socket_path, listener) =
+            bind_wrapper_tui_listener("test").expect("listener should bind");
+        let socket_path_for_listener = socket_path.clone();
+        let listener_task = tokio::spawn(async move {
+            run_wrapper_tui_listener(listener, &socket_path_for_listener, "test wrapper", true)
+                .await
+                .expect("listener should complete successfully");
+        });
+
+        let mut stream = UnixStream::connect(&socket_path)
+            .await
+            .expect("first client should connect");
+        stream
+            .write_all(b"{\"State\":{\"state\":\"Training wrapper started\"}}\n")
+            .await
+            .expect("state message should write");
+        drop(stream);
+
+        let mut second_stream = UnixStream::connect(&socket_path)
+            .await
+            .expect("second client should connect");
+        second_stream
+            .write_all(
+                b"{\"KeyValuePair\":{\"key\":\"checkpoint_dir\",\"value\":\"/tmp/checkpoints\"}}\n",
+            )
+            .await
+            .expect("key value message should write");
+        second_stream
+            .write_all(
+                b"{\"Line\":{\"message\":\"Training failed: torchrun exited with code 1\",\"severity\":\"Error\"}}\n",
+            )
+            .await
+            .expect("line message should write");
+        drop(second_stream);
+
+        listener_task
+            .await
+            .expect("listener task should join successfully");
+        ProgressTuiLogger::shutdown()
+            .await
+            .expect("progress logger should shutdown cleanly");
+
+        let frames = read_all_progress_frames(&log_path);
+        assert!(
+            !frames.is_empty(),
+            "expected at least one progress log frame after socket forwarding"
+        );
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame.state.as_deref() == Some("Training wrapper started")),
+            "expected forwarded state message in progress frames"
+        );
+        assert!(
+            frames.iter().any(|frame| {
+                frame
+                    .key_values
+                    .iter()
+                    .any(|(key, value)| key == "checkpoint_dir" && value == "/tmp/checkpoints")
+            }),
+            "expected forwarded key/value message in progress frames"
+        );
+        assert!(
+            frames.iter().any(|frame| {
+                frame.log_lines.iter().any(|line| {
+                    line.message == "Training failed: torchrun exited with code 1"
+                        && line.severity == Severity::Error
+                })
+            }),
+            "expected forwarded log line in progress frames"
+        );
+
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    fn read_all_progress_frames(path: &Path) -> Vec<ProgressLogFrame> {
+        let log_file = BincodeLogFile::<ProgressLogFrame>::open(path)
+            .expect("progress log file should open for reading");
+        log_file
+            .iter()
+            .expect("progress log iterator should open")
+            .map(|frame| frame.expect("progress log frame should deserialize"))
+            .collect()
+    }
+
+    fn temp_progress_log_path(label: &str) -> std::path::PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before UNIX_EPOCH")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "credit_assignment_progress_tui_{}_{}_{}.bin",
+            label,
+            std::process::id(),
+            now
+        ))
     }
 }

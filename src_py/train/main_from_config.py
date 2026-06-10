@@ -18,8 +18,11 @@ from .status_log_buffer import install_status_log_buffer, shutdown_status_log_bu
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train causal LM from isolated job folder")
+    parser = argparse.ArgumentParser(
+        description="Train causal LM from isolated job folder"
+    )
     parser.add_argument("--job-folder-path", type=str, required=True)
+    parser.add_argument("--orchestrator-socket-path", type=str, default="")
     return parser
 
 
@@ -40,14 +43,18 @@ def _load_train_config_from_job_folder(job_folder_path: str) -> TrainConfig:
     model_cli_name = str(payload["model_cli_name"])
     config_nickname = str(payload["config_nickname"])
     epoch = int(payload["epoch"])
-    training_trajectory_sqlite_path = job_folder / "input" / "training_trajectories.sqlite"
+    training_trajectory_sqlite_path = (
+        job_folder / "input" / "training_trajectories.sqlite"
+    )
 
     assert training_trajectory_sqlite_path.exists(), (
         "training trajectory sqlite was not uploaded to job folder: "
         f"{training_trajectory_sqlite_path}"
     )
 
-    model_parent_dir_path = model_parent_dir(artifact_root_dir, model_cli_name, config_nickname, epoch)
+    model_parent_dir_path = model_parent_dir(
+        artifact_root_dir, model_cli_name, config_nickname, epoch
+    )
     checkpoints_parent_dir_path = checkpoint_parent_dir(
         artifact_root_dir, model_cli_name, config_nickname, epoch
     )
@@ -78,7 +85,9 @@ def _load_train_config_from_job_folder(job_folder_path: str) -> TrainConfig:
         lora_rank=int(payload.get("lora_rank") or 64),
         lora_alpha=int(payload.get("lora_alpha") or 128),
         lora_dropout=float(payload.get("lora_dropout") or 0.05),
-        lora_target_modules_csv=str(payload.get("lora_target_modules_csv") or "q_proj,k_proj,v_proj,o_proj"),
+        lora_target_modules_csv=str(
+            payload.get("lora_target_modules_csv") or "q_proj,k_proj,v_proj,o_proj"
+        ),
         resume_checkpoint_tag=str(payload.get("resume_checkpoint_tag") or "auto"),
         seed=int(payload["seed"]),
     )
@@ -89,7 +98,7 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    install_status_log_buffer(args.job_folder_path)
+    install_status_log_buffer(args.job_folder_path, args.orchestrator_socket_path)
     config = _load_train_config_from_job_folder(job_folder_path=args.job_folder_path)
     try:
         train(config)
