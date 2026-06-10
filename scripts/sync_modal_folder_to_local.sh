@@ -1,0 +1,1 @@
+uv run python scripts/sync_modal_folder_to_local.py

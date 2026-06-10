@@ -15,6 +15,6 @@ uv run python scripts/launch_modal_orchestration.py \
     --validation-rollout-time-limit-secs 1200 \
     --max-python-processes 1 \
     --num-gpus 4 \
-    --storage-large-files-dir "$PWD" \
-    --storage-small-files-dir "$PWD" \
+    --storage-large-files-dir "/volume/large_files" \
+    --storage-small-files-dir "/volume/small_files" \
     --ui true

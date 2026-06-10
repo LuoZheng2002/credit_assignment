@@ -16,4 +16,5 @@ log_file="$(realpath "$1")"
 cd ../research-utility
 
 cargo run --bin bin_progress_tui -- \
-    --log-file "$log_file"
+    --log-file "$log_file" \
+    --sync-script-path scripts/sync_modal_folder_to_local.sh

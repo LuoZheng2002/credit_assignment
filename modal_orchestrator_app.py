@@ -14,6 +14,10 @@ REGION = "us-west"
 
 ORCHESTRATOR_CONFIG_PATH = Path("/workspace/src_py/modal/orchestrator_config.json")
 
+service_state_volume = modal.Volume.from_name(
+    "credit-assignment-modal-service-state", create_if_missing=True
+)
+
 
 def _load_orchestrator_cli_args() -> list[str]:
     try:
@@ -124,6 +128,9 @@ app = modal.App(name=APP_NAME)
     min_containers=0,
     max_containers=1,
     timeout=24 * 60 * MINUTES,
+    volumes={
+        "/volume": service_state_volume,
+    },
 )
 class OrchestratorService:
     @modal.method()
