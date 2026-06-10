@@ -20,6 +20,7 @@ dependencies = [
     "numexpr>=2.14.1",
     "flash-linear-attention",
     # "causal-conv1d",
+    "jsonargparse>=4.42.0",
     "modal>=1.4.4.dev21",
 ]
 

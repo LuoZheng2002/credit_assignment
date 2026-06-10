@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import modal
+from jsonargparse import ArgumentParser
 
 MINUTES = 60
 APP_NAME = "credit-assignment-orchestrator-service"
@@ -56,6 +57,29 @@ def _load_orchestrator_cli_args() -> list[str]:
             raise RuntimeError(f"orchestrator config args[{index}] must be non-empty")
         result.append(stripped)
     return result
+
+
+def _extract_num_gpus(cli_args: list[str]) -> int:
+    try:
+        parser = ArgumentParser(exit_on_error=False)
+        parser.add_argument("--num-gpus", type=int, required=True)
+        parsed, _unknown = parser.parse_known_args(cli_args)
+        num_gpus = int(parsed.num_gpus)
+    except Exception as error:
+        raise RuntimeError(
+            f"orchestrator config must include a valid --num-gpus integer: {error}"
+        ) from error
+
+    if num_gpus <= 0:
+        raise RuntimeError(
+            f"orchestrator config --num-gpus must be positive, got {num_gpus}"
+        )
+    return num_gpus
+
+
+DEPLOY_ORCHESTRATOR_CLI_ARGS = _load_orchestrator_cli_args()
+DEPLOY_NUM_GPUS = _extract_num_gpus(DEPLOY_ORCHESTRATOR_CLI_ARGS)
+GPU = f"A100:{DEPLOY_NUM_GPUS}"
 
 
 def _run_orchestrator_subprocess(cli_args: list[str]) -> dict[str, Any]:
@@ -123,6 +147,7 @@ app = modal.App(name=APP_NAME)
 
 @app.cls(
     image=orchestrator_image,
+    gpu=GPU,
     region=REGION,
     startup_timeout=20 * MINUTES,
     min_containers=0,
@@ -136,6 +161,17 @@ class OrchestratorService:
     @modal.method()
     def orchestrate(self) -> dict[str, Any]:
         cli_args = _load_orchestrator_cli_args()
+        requested_num_gpus = _extract_num_gpus(cli_args)
+        if requested_num_gpus != DEPLOY_NUM_GPUS:
+            return {
+                "ok": False,
+                "error_code": "MODAL_GPU_COUNT_MISMATCH",
+                "error": (
+                    f"requested num_gpus={requested_num_gpus} but deployed container has "
+                    f"DEPLOY_NUM_GPUS={DEPLOY_NUM_GPUS}; redeploy modal_orchestrator_app.py "
+                    "with matching orchestrator config"
+                ),
+            }
         return _run_orchestrator_subprocess(cli_args)
 
 
