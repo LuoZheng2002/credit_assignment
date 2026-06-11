@@ -295,3 +295,18 @@ Test set construction:
 
 - **Branches per tree:** TBD
 - **Training dataset size and num epochs:** TBD
+
+
+
+
+qwen25 (tool) qwen34 (tool)  qwen25 (notool)  qwen34 (notool) mistral (notool) llama (notool) gemma(notool)
+
+base
+grpo
+tree-mappo (ours)
+
+
+Ablation
+tempo
+tree-rpo
+ours
