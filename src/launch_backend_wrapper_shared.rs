@@ -2,7 +2,6 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
 };
 
 use research_utility::{
@@ -13,10 +12,9 @@ use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{Child, Command};
-use tokio::time::timeout;
+use tokio::sync::watch;
 
 static WRAPPER_TUI_SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
-const WRAPPER_TUI_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) fn bind_wrapper_tui_listener(
     wrapper_kind: &str,
@@ -90,13 +88,15 @@ pub(crate) fn spawn_wrapper_tui_listener(
     socket_path: PathBuf,
     wrapper_name: &'static str,
     allow_multiple_connections: bool,
-) {
+    stop_signal: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(err) = run_wrapper_tui_listener(
             listener,
             &socket_path,
             wrapper_name,
             allow_multiple_connections,
+            stop_signal,
         )
         .await
         {
@@ -106,7 +106,7 @@ pub(crate) fn spawn_wrapper_tui_listener(
             ));
         }
         cleanup_socket_path(&socket_path);
-    });
+    })
 }
 
 async fn run_wrapper_tui_listener(
@@ -114,32 +114,45 @@ async fn run_wrapper_tui_listener(
     socket_path: &Path,
     wrapper_name: &str,
     allow_multiple_connections: bool,
+    mut stop_signal: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    let (first_stream, _) = timeout(WRAPPER_TUI_CONNECT_TIMEOUT, listener.accept())
-        .await
-        .map_err(|_| {
-            format!(
-                "timed out waiting for {} to connect to Unix socket {}",
-                wrapper_name,
-                socket_path.display()
-            )
-        })?
-        .map_err(|err| {
-            format!(
-                "failed while accepting {} Unix socket connection at {}: {}",
-                wrapper_name,
-                socket_path.display(),
-                err
-            )
-        })?;
+    if *stop_signal.borrow() {
+        return Ok(());
+    }
+    let (first_stream, _) = tokio::select! {
+        accept_result = listener.accept() => {
+            accept_result.map_err(|err| {
+                format!(
+                    "failed while accepting {} Unix socket connection at {}: {}",
+                    wrapper_name,
+                    socket_path.display(),
+                    err
+                )
+            })?
+        }
+        stop_result = stop_signal.changed() => {
+            let _ = stop_result;
+            return Ok(());
+        }
+    };
 
     let primary_connection_name = wrapper_name.to_string();
     let mut primary_connection_task =
         tokio::spawn(read_tui_stream(first_stream, primary_connection_name));
-    let mut additional_connection_tasks = Vec::new();
+    let mut additional_connection_tasks: Vec<tokio::task::JoinHandle<Result<(), String>>> =
+        Vec::new();
 
     if allow_multiple_connections {
         loop {
+            if *stop_signal.borrow() {
+                primary_connection_task.abort();
+                let _ = primary_connection_task.await;
+                for task in additional_connection_tasks {
+                    task.abort();
+                    let _ = task.await;
+                }
+                return Ok(());
+            }
             tokio::select! {
                 primary_result = &mut primary_connection_task => {
                     match primary_result {
@@ -171,17 +184,37 @@ async fn run_wrapper_tui_listener(
                         }
                     }
                 }
+                stop_result = stop_signal.changed() => {
+                    let _ = stop_result;
+                    primary_connection_task.abort();
+                    let _ = primary_connection_task.await;
+                    for task in additional_connection_tasks {
+                        task.abort();
+                        let _ = task.await;
+                    }
+                    return Ok(());
+                }
             }
         }
     } else {
-        match primary_connection_task.await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => return Err(err),
-            Err(err) => {
-                return Err(format!(
-                    "{} primary TUI socket reader task join failure: {}",
-                    wrapper_name, err
-                ));
+        tokio::select! {
+            primary_result = &mut primary_connection_task => {
+                match primary_result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => return Err(err),
+                    Err(err) => {
+                        return Err(format!(
+                            "{} primary TUI socket reader task join failure: {}",
+                            wrapper_name, err
+                        ));
+                    }
+                }
+            }
+            stop_result = stop_signal.changed() => {
+                let _ = stop_result;
+                primary_connection_task.abort();
+                let _ = primary_connection_task.await;
+                return Ok(());
             }
         }
     }
@@ -263,6 +296,7 @@ mod tests {
     };
     use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
+    use tokio::sync::watch;
 
     use super::{bind_wrapper_tui_listener, run_wrapper_tui_listener};
 
@@ -314,10 +348,17 @@ mod tests {
         let (socket_path, listener) =
             bind_wrapper_tui_listener("test").expect("listener should bind");
         let socket_path_for_listener = socket_path.clone();
+        let (_stop_signal_tx, stop_signal_rx) = watch::channel(false);
         let listener_task = tokio::spawn(async move {
-            run_wrapper_tui_listener(listener, &socket_path_for_listener, "test wrapper", true)
-                .await
-                .expect("listener should complete successfully");
+            run_wrapper_tui_listener(
+                listener,
+                &socket_path_for_listener,
+                "test wrapper",
+                true,
+                stop_signal_rx,
+            )
+            .await
+            .expect("listener should complete successfully");
         });
 
         let mut stream = UnixStream::connect(&socket_path)
@@ -397,10 +438,17 @@ mod tests {
         let (socket_path, listener) =
             bind_wrapper_tui_listener("test").expect("listener should bind");
         let socket_path_for_listener = socket_path.clone();
+        let (_stop_signal_tx, stop_signal_rx) = watch::channel(false);
         let listener_task = tokio::spawn(async move {
-            run_wrapper_tui_listener(listener, &socket_path_for_listener, "test wrapper", true)
-                .await
-                .expect("listener should complete successfully");
+            run_wrapper_tui_listener(
+                listener,
+                &socket_path_for_listener,
+                "test wrapper",
+                true,
+                stop_signal_rx,
+            )
+            .await
+            .expect("listener should complete successfully");
         });
 
         let mut primary_stream = UnixStream::connect(&socket_path)

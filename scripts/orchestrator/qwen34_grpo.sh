@@ -5,7 +5,7 @@ cargo run --bin bin_orchestrator -- \
     --validation-rollout-config-path config/rollout_config_validation_tool.json \
     --training-rollout-config-path config/rollout_config_training_grpo.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
-    --num-total-epochs 100 \
+    --num-total-epochs 10 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
     --num-iterations-limit 5 \
     --advantage-calculation-policy tree-mappo-posterior \
@@ -13,8 +13,8 @@ cargo run --bin bin_orchestrator -- \
     --training-time 600 \
     --training-rollout-time-limit-secs 600 \
     --validation-rollout-time-limit-secs 1200 \
-    --max-python-processes 1 \
+    --max-python-processes 4 \
     --num-gpus 1 \
-    --storage-large-files-dir "$PWD" \
-    --storage-small-files-dir "$PWD" \
+    --storage-large-files-dir "/volume/large_files" \
+    --storage-small-files-dir "/volume/small_files" \
     --ui true

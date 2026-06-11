@@ -13,9 +13,9 @@ use credit_assignment::{
     get_accuracy::{TestAccuracyResult, get_test_accuracies},
     jinja_directories::{model_parent_dir_from_template, test_accuracy_path_from_template},
     json_line_util::{read_json, write_json},
-    launch_sglang_server::{
-        best_effort_shutdown_stale_sglang_server, launch_sglang_server_process, model_uses_sglang,
-        shut_down_sglang_server_process,
+    launch_inference_wrapper::{
+        best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
+        model_uses_sglang, shut_down_inference_wrapper_process,
     },
     llm_model::{
         Gemma3_4BIt, Gpt4o, Llama31_8BInstruct, LlmCliArgs, LlmModelMarker, LlmModelName,
@@ -60,7 +60,7 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     num_gpus: usize,
     #[arg(long)]
-    inference_wrapper_log_path: Option<String>,
+    inference_wrapper_log_path: String,
     #[arg(long, default_value = DEFAULT_PROGRESS_TUI_LOG_PATH)]
     progress_tui_log_path: String,
 }
@@ -133,20 +133,24 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
         .await);
     }
 
-    best_effort_shutdown_stale_sglang_server().await;
+    best_effort_shutdown_stale_inference_wrapper().await;
     let model_parent_dir =
         model_parent_dir_from_template(M::CLI_NAME, &args.config_nickname, args.epoch)?;
     if args.epoch == 0 {
         load_initial_model(&model_parent_dir, M::API_NAME).await?;
     }
     let model_path = format!("{}/model", model_parent_dir);
-    let (sglang_port, mut process) = launch_sglang_server_process::<M>(
-        &model_path,
-        args.num_gpus,
-        rollout_config.use_tool,
-        args.inference_wrapper_log_path.as_deref(),
-    )
-    .await?;
+    let (sglang_port, mut process, listener_stop_signal, listener_handle) =
+        launch_inference_wrapper_process(
+            &model_path,
+            M::CLI_NAME,
+            &args.config_nickname,
+            args.epoch,
+            M::API_NAME,
+            args.num_gpus,
+            &args.inference_wrapper_log_path,
+        )
+        .await?;
 
     let mut llm_cli_args = args.llm_cli_args.clone();
     llm_cli_args.sglang_port = Some(sglang_port);
@@ -159,7 +163,9 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
     )
     .await;
 
-    shut_down_sglang_server_process(&mut process).await;
+    let _ = listener_stop_signal.send(true);
+    shut_down_inference_wrapper_process(&mut process).await;
+    let _ = listener_handle.await;
     Ok(test_result)
 }
 

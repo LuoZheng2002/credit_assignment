@@ -1,10 +1,10 @@
 use research_utility::{
     asset_file::AssetFile,
-    progress_tui_logger::{log_info, log_key_value_pair, log_state},
+    progress_tui_logger::{log_info, log_key_value_pair, log_state, log_warning},
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path, time::Instant};
-use tokio::process::Child;
+use tokio::{process::Child, sync::watch};
 
 use crate::{
     direct_tool::{
@@ -21,10 +21,9 @@ use crate::{
         model_parent_dir_from_template, progress_save_path_from_template,
     },
     json_line_util::write_json,
-    launch_inference_wrapper::launch_inference_wrapper_process,
-    launch_sglang_server::{
-        best_effort_shutdown_stale_sglang_server, model_uses_sglang,
-        shut_down_sglang_server_process,
+    launch_inference_wrapper::{
+        best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
+        model_uses_sglang, shut_down_inference_wrapper_process,
     },
     launch_training_wrapper::run_training_wrapper_and_wait,
     llm_model::{LlmCliArgs, LlmModelMarker},
@@ -67,6 +66,8 @@ pub struct InferenceServerHandle {
     pub sglang_port: Option<u16>,
     pub sglang_base_url: Option<String>,
     pub process: Option<Child>,
+    pub listener_stop_signal: Option<watch::Sender<bool>>,
+    pub listener_handle: Option<tokio::task::JoinHandle<()>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum OrchestrationStatus {
@@ -140,6 +141,11 @@ impl Orchestrator {
         match probe {
             Probe::Alive => Ok(()),
             Probe::Exited { pid, status } => {
+                if let Some(handle) = self.inference_server_handle.as_mut() {
+                    if let Some(stop_signal) = handle.listener_stop_signal.as_ref() {
+                        let _ = stop_signal.send(true);
+                    }
+                }
                 self.inference_server_handle = None;
                 Err(format!(
                     "Inference server process exited unexpectedly {} (pid={:?}, status={})",
@@ -436,6 +442,8 @@ impl Orchestrator {
                 sglang_port: None,
                 sglang_base_url: None,
                 process: None,
+                listener_stop_signal: None,
+                listener_handle: None,
             });
             log_info(format!(
                 "Model {} does not need a local inference server",
@@ -451,16 +459,17 @@ impl Orchestrator {
             "Launching local inference wrapper for model {}",
             M::CLI_NAME
         ));
-        let (sglang_port, process) = launch_inference_wrapper_process(
-            model_path.as_ref(),
-            M::CLI_NAME,
-            &self.config_nickname,
-            epoch,
-            M::API_NAME,
-            self.num_gpus,
-            self.inference_wrapper_log_path.as_ref(),
-        )
-        .await?;
+        let (sglang_port, process, listener_stop_signal, listener_handle) =
+            launch_inference_wrapper_process(
+                model_path.as_ref(),
+                M::CLI_NAME,
+                &self.config_nickname,
+                epoch,
+                M::API_NAME,
+                self.num_gpus,
+                self.inference_wrapper_log_path.as_ref(),
+            )
+            .await?;
         log_info(format!(
             "Inference wrapper is listening on port {}",
             sglang_port
@@ -472,6 +481,8 @@ impl Orchestrator {
             sglang_port: Some(sglang_port),
             sglang_base_url: None,
             process: Some(process),
+            listener_stop_signal: Some(listener_stop_signal),
+            listener_handle: Some(listener_handle),
         });
         log_info("Inference wrapper launched");
         Ok(())
@@ -479,15 +490,27 @@ impl Orchestrator {
 
     async fn ensure_inference_server_shut_down<M: LlmModelMarker>(&mut self) {
         if let Some(handle) = self.inference_server_handle.take() {
+            let InferenceServerHandle {
+                epoch,
+                use_tool,
+                sglang_port,
+                sglang_base_url,
+                process,
+                listener_stop_signal,
+                listener_handle,
+            } = handle;
             log_info(format!(
                 "Shutting down inference server (stored_epoch={}, stored_use_tool={}, has_port={}, has_base_url={}, has_process={})...",
-                handle.epoch,
-                handle.use_tool,
-                handle.sglang_port.is_some(),
-                handle.sglang_base_url.is_some(),
-                handle.process.is_some(),
+                epoch,
+                use_tool,
+                sglang_port.is_some(),
+                sglang_base_url.is_some(),
+                process.is_some(),
             ));
-            if let Some(mut process) = handle.process {
+            if let Some(stop_signal) = listener_stop_signal.as_ref() {
+                let _ = stop_signal.send(true);
+            }
+            if let Some(mut process) = process {
                 let pid_for_log = process.id();
                 match process.try_wait() {
                     Ok(Some(status)) => log_info(format!(
@@ -503,7 +526,7 @@ impl Orchestrator {
                         pid_for_log, err
                     )),
                 }
-                shut_down_sglang_server_process(&mut process).await;
+                shut_down_inference_wrapper_process(&mut process).await;
                 log_info(format!(
                     "Completed shutdown call for inference server process (pid={:?})",
                     pid_for_log
@@ -511,13 +534,22 @@ impl Orchestrator {
             } else {
                 log_info("Inference server handle had no process to shut down");
             }
+            if let Some(listener_handle) = listener_handle {
+                match listener_handle.await {
+                    Ok(()) => log_info("Inference server TUI listener joined successfully"),
+                    Err(err) => log_warning(format!(
+                        "Inference server TUI listener join failed: {}",
+                        err
+                    )),
+                }
+            }
             log_info("Inference server shut down");
         } else {
             if model_uses_sglang::<M>() {
                 log_info(
                     "ensure_inference_server_shut_down: no inference server handle present; checking for stale local sglang process on configured port",
                 );
-                best_effort_shutdown_stale_sglang_server().await;
+                best_effort_shutdown_stale_inference_wrapper().await;
             } else {
                 log_info(
                     "ensure_inference_server_shut_down: no inference server handle present; nothing to shut down",
@@ -980,6 +1012,9 @@ impl Orchestrator {
 impl Drop for Orchestrator {
     fn drop(&mut self) {
         if let Some(handle) = self.inference_server_handle.as_mut() {
+            if let Some(stop_signal) = handle.listener_stop_signal.as_ref() {
+                let _ = stop_signal.send(true);
+            }
             if let Some(process) = handle.process.as_mut() {
                 let _ = process.start_kill();
             }

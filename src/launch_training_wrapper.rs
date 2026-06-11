@@ -2,6 +2,7 @@ use std::{path::Path, process::Stdio};
 
 use research_utility::progress_tui_logger::log_info;
 use tokio::process::Command;
+use tokio::sync::watch;
 
 use crate::{
     launch_backend_wrapper_shared::{
@@ -49,12 +50,22 @@ pub async fn run_training_wrapper_and_wait(
     let mut process = spawn_wrapper_command(&mut command, &socket_path, "training wrapper")?;
     write_json_payload_to_child_stdin(&mut process, training_config, "training wrapper").await?;
 
-    spawn_wrapper_tui_listener(listener, socket_path, "training wrapper", true);
+    let (stop_signal_tx, stop_signal_rx) = watch::channel(false);
+    let listener_handle = spawn_wrapper_tui_listener(
+        listener,
+        socket_path,
+        "training wrapper",
+        true,
+        stop_signal_rx,
+    );
 
     let status = process
         .wait()
         .await
         .map_err(|err| format!("failed while waiting for training wrapper process: {}", err))?;
+
+    let _ = stop_signal_tx.send(true);
+    let _ = listener_handle.await;
 
     if status.success() {
         log_info(format!(

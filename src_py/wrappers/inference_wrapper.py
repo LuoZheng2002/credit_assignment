@@ -370,10 +370,13 @@ class HpcBackend:
         hf_model_name: str,
         model_cli_name: str,
         config_nickname: str,
+        wrapper_log_path: str,
     ) -> None:
         model_path_obj = Path(model_path)
         self._process: subprocess.Popen[bytes] | None = None
         self._upstream_url = f"http://127.0.0.1:{upstream_port}"
+        self._wrapper_log_path = Path(wrapper_log_path).expanduser().resolve()
+        self._wrapper_log_path.parent.mkdir(parents=True, exist_ok=True)
         if not model_path_obj.exists() and epoch == 0:
             _emit_status(
                 "hpc",
@@ -426,24 +429,27 @@ class HpcBackend:
         _tui_info(
             f"Launching local sglang on port {upstream_port} ({self._upstream_url})"
         )
-        self._process = subprocess.Popen(
-            [
-                sglang_python,
-                "-m",
-                "sglang.launch_server",
-                "--model-path",
-                model_path,
-                "--host",
-                "127.0.0.1",
-                "--port",
-                str(upstream_port),
-                "--dp",
-                str(num_gpus),
-            ],
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-            env=child_env,
-        )
+        with open(
+            self._wrapper_log_path, "a", buffering=1, encoding="utf-8"
+        ) as log_handle:
+            self._process = subprocess.Popen(
+                [
+                    sglang_python,
+                    "-m",
+                    "sglang.launch_server",
+                    "--model-path",
+                    model_path,
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(upstream_port),
+                    "--dp",
+                    str(num_gpus),
+                ],
+                stdout=log_handle,
+                stderr=log_handle,
+                env=child_env,
+            )
         _emit_status(
             "hpc", "starting", f"launching local sglang on port {upstream_port}"
         )
@@ -771,6 +777,7 @@ def main() -> int:
             args.hf_model_name,
             args.model_cli_name,
             args.config_nickname,
+            args.wrapper_log_path,
         )
 
         _emit_inference_identity(

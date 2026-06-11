@@ -1,20 +1,20 @@
 cargo run --bin bin_orchestrator -- \
     --model-cli-name qwen2.5-7b \
     --max-rollout-concurrency 1024 \
-    --config-nickname treerpo_fsdp \
+    --config-nickname treerpo_smoke \
     --validation-rollout-config-path config/rollout_config_validation_tool.json \
     --training-rollout-config-path config/rollout_config_training_treerpo.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
-    --num-total-epochs 100 \
+    --num-total-epochs 1 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
     --num-iterations-limit 5 \
     --advantage-calculation-policy tree-rpo-win-rate \
-    --training-config-common-path config/training/common_fsdp.toml \
-    --training-time 600 \
-    --training-rollout-time-limit-secs 600 \
-    --validation-rollout-time-limit-secs 1200 \
-    --max-python-processes 1 \
-    --num-gpus 4 \
-    --storage-large-files-dir "$PWD" \
-    --storage-small-files-dir "$PWD" \
+    --training-config-common-path config/training/common_ddp.toml \
+    --training-time 120 \
+    --training-rollout-time-limit-secs 300 \
+    --validation-rollout-time-limit-secs 120 \
+    --max-python-processes 4 \
+    --num-gpus 1 \
+    --storage-large-files-dir "/volume/large_files" \
+    --storage-small-files-dir "/volume/small_files" \
     --ui true
