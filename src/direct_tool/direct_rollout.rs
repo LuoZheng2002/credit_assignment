@@ -397,7 +397,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
     let num_all_incorrect = num_all_incorrect_trees.load(Ordering::Relaxed);
     let mixed = finished - num_all_correct - num_all_incorrect;
     log_key_value_pair(
-        "trees_correctness (all [tick], all [cross], mixed)",
+        "trees_correctness (✓, ❌, mixed)",
         format!("({num_all_correct}, {num_all_incorrect}, {mixed})"),
     );
     log_worker_progress(

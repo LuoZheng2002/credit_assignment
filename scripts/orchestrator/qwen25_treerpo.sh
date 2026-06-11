@@ -9,7 +9,7 @@ cargo run --bin bin_orchestrator -- \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
     --num-iterations-limit 5 \
     --advantage-calculation-policy tree-rpo-win-rate \
-    --training-config-common-path config/training/common.toml \
+    --training-config-common-path config/training/common_ddp.toml \
     --training-time 600 \
     --training-rollout-time-limit-secs 600 \
     --validation-rollout-time-limit-secs 1200 \

@@ -142,7 +142,7 @@ DEPLOY_CONFIG_NICKNAME = _extract_required_cli_arg(
     DEPLOY_ORCHESTRATOR_CLI_ARGS, "--config-nickname"
 )
 DEPLOY_NUM_GPUS = _extract_num_gpus(DEPLOY_ORCHESTRATOR_CLI_ARGS)
-GPU = f"A100:{DEPLOY_NUM_GPUS}"
+GPU = f"H100:{DEPLOY_NUM_GPUS}"
 APP_NAME = str(DEPLOY_ORCHESTRATOR_CONFIG["app_name"])
 SERVICE_STATE_VOLUME_NAME = str(DEPLOY_ORCHESTRATOR_CONFIG["service_state_volume_name"])
 service_state_volume = modal.Volume.from_name(

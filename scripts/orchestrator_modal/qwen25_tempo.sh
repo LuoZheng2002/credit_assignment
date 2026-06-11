@@ -9,7 +9,7 @@ uv run python scripts/launch_modal_orchestration.py \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
     --num-iterations-limit 5 \
     --advantage-calculation-policy tree-mappo-posterior \
-    --training-config-common-path config/training/common.toml \
+    --training-config-common-path config/training/common_ddp.toml \
     --training-time 600 \
     --training-rollout-time-limit-secs 600 \
     --validation-rollout-time-limit-secs 1200 \
