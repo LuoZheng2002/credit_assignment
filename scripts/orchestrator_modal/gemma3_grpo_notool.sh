@@ -1,4 +1,4 @@
-uv run python scripts/launch_modal_orchestration.py \
+uv run -m src_py.modal.launch_modal_orchestration \
     --model-cli-name gemma-3-4b-it \
     --max-rollout-concurrency 1024 \
     --config-nickname grpo_notool \

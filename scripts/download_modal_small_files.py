@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from modal_experiment_paths import (
+from src_py.modal.modal_experiment_paths import (
     experiment_local_small_files_dir,
     experiment_service_state_volume_name,
 )
