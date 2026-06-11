@@ -17,7 +17,6 @@ use tokio::time::timeout;
 
 static WRAPPER_TUI_SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
 const WRAPPER_TUI_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-const WRAPPER_TUI_ADDITIONAL_CONNECT_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) fn bind_wrapper_tui_listener(
     wrapper_kind: &str,
@@ -116,7 +115,6 @@ async fn run_wrapper_tui_listener(
     wrapper_name: &str,
     allow_multiple_connections: bool,
 ) -> Result<(), String> {
-    let mut connection_tasks = Vec::new();
     let (first_stream, _) = timeout(WRAPPER_TUI_CONNECT_TIMEOUT, listener.accept())
         .await
         .map_err(|_| {
@@ -134,39 +132,61 @@ async fn run_wrapper_tui_listener(
                 err
             )
         })?;
-    connection_tasks.push(tokio::spawn(read_tui_stream(
-        first_stream,
-        wrapper_name.to_string(),
-    )));
+
+    let primary_connection_name = wrapper_name.to_string();
+    let mut primary_connection_task =
+        tokio::spawn(read_tui_stream(first_stream, primary_connection_name));
+    let mut additional_connection_tasks = Vec::new();
 
     if allow_multiple_connections {
         loop {
-            match timeout(
-                WRAPPER_TUI_ADDITIONAL_CONNECT_IDLE_TIMEOUT,
-                listener.accept(),
-            )
-            .await
-            {
-                Ok(Ok((stream, _))) => {
-                    connection_tasks.push(tokio::spawn(read_tui_stream(
-                        stream,
-                        wrapper_name.to_string(),
-                    )));
+            tokio::select! {
+                primary_result = &mut primary_connection_task => {
+                    match primary_result {
+                        Ok(Ok(())) => break,
+                        Ok(Err(err)) => return Err(err),
+                        Err(err) => {
+                            return Err(format!(
+                                "{} primary TUI socket reader task join failure: {}",
+                                wrapper_name, err
+                            ));
+                        }
+                    }
                 }
-                Ok(Err(err)) => {
-                    return Err(format!(
-                        "failed while accepting additional {} Unix socket connection at {}: {}",
-                        wrapper_name,
-                        socket_path.display(),
-                        err
-                    ));
+                accept_result = listener.accept() => {
+                    match accept_result {
+                        Ok((stream, _)) => {
+                            additional_connection_tasks.push(tokio::spawn(read_tui_stream(
+                                stream,
+                                wrapper_name.to_string(),
+                            )));
+                        }
+                        Err(err) => {
+                            return Err(format!(
+                                "failed while accepting additional {} Unix socket connection at {}: {}",
+                                wrapper_name,
+                                socket_path.display(),
+                                err
+                            ));
+                        }
+                    }
                 }
-                Err(_) => break,
+            }
+        }
+    } else {
+        match primary_connection_task.await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => return Err(err),
+            Err(err) => {
+                return Err(format!(
+                    "{} primary TUI socket reader task join failure: {}",
+                    wrapper_name, err
+                ));
             }
         }
     }
 
-    for task in connection_tasks {
+    for task in additional_connection_tasks {
         match task.await {
             Ok(Ok(())) => {}
             Ok(Err(err)) => return Err(err),
@@ -233,7 +253,8 @@ fn cleanup_socket_path(socket_path: &Path) {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::OnceLock;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use research_utility::{
         bincode_log_file::BincodeLogFile,
@@ -284,6 +305,7 @@ mod tests {
 
     #[tokio::test]
     async fn unix_socket_tui_listener_forwards_messages_into_progress_log() {
+        let _guard = progress_logger_test_lock().lock().await;
         let log_path = temp_progress_log_path("wrapper_socket_forward");
         ProgressTuiLogger::initialize(&log_path)
             .await
@@ -362,6 +384,70 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[tokio::test]
+    async fn unix_socket_tui_listener_accepts_delayed_second_connection_while_primary_is_open() {
+        let _guard = progress_logger_test_lock().lock().await;
+        let log_path = temp_progress_log_path("wrapper_socket_delayed_second_connection");
+        ProgressTuiLogger::initialize(&log_path)
+            .await
+            .expect("progress logger should initialize");
+
+        let (socket_path, listener) =
+            bind_wrapper_tui_listener("test").expect("listener should bind");
+        let socket_path_for_listener = socket_path.clone();
+        let listener_task = tokio::spawn(async move {
+            run_wrapper_tui_listener(listener, &socket_path_for_listener, "test wrapper", true)
+                .await
+                .expect("listener should complete successfully");
+        });
+
+        let mut primary_stream = UnixStream::connect(&socket_path)
+            .await
+            .expect("primary client should connect");
+        primary_stream
+            .write_all(b"{\"State\":{\"state\":\"Training wrapper started\"}}\n")
+            .await
+            .expect("state message should write");
+
+        tokio::time::sleep(Duration::from_secs(6)).await;
+
+        let mut second_stream = UnixStream::connect(&socket_path)
+            .await
+            .expect("delayed second client should connect");
+        second_stream
+            .write_all(
+                b"{\"Line\":{\"message\":\"delayed training info\",\"severity\":\"Info\"}}\n",
+            )
+            .await
+            .expect("delayed line message should write");
+        drop(second_stream);
+        drop(primary_stream);
+
+        listener_task
+            .await
+            .expect("listener task should join successfully");
+        ProgressTuiLogger::shutdown()
+            .await
+            .expect("progress logger should shutdown cleanly");
+
+        let frames = read_all_progress_frames(&log_path);
+        assert!(
+            frames.iter().any(|frame| {
+                frame.log_lines.iter().any(|line| {
+                    line.message == "delayed training info" && line.severity == Severity::Info
+                })
+            }),
+            "expected delayed second connection log line in progress frames"
+        );
+
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    fn progress_logger_test_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
     fn read_all_progress_frames(path: &Path) -> Vec<ProgressLogFrame> {

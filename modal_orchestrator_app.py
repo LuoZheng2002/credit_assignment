@@ -1,6 +1,4 @@
-import hashlib
 import json
-import re
 import signal
 import subprocess
 import threading
@@ -44,45 +42,7 @@ def _extract_required_cli_arg(cli_args: list[str], flag_name: str) -> str:
     raise RuntimeError(f"orchestrator config must include {flag_name}")
 
 
-MAX_MODAL_OBJECT_NAME_LENGTH = 64
-
-
-def _sanitize_modal_name_component(value: str) -> str:
-    sanitized = re.sub(r"[^a-z0-9-]+", "-", value.lower())
-    sanitized = re.sub(r"-+", "-", sanitized).strip("-")
-    if not sanitized:
-        raise RuntimeError(f"invalid empty Modal name component derived from {value!r}")
-    return sanitized
-
-
-def _experiment_service_state_volume_name(
-    model_cli_name: str, config_nickname: str
-) -> str:
-    prefix = "credit-assignment-modal-service-state"
-    model_component = _sanitize_modal_name_component(model_cli_name)
-    config_component = _sanitize_modal_name_component(config_nickname)
-    full_name = f"{prefix}-{model_component}-{config_component}"
-    if len(full_name) <= MAX_MODAL_OBJECT_NAME_LENGTH:
-        return full_name
-
-    digest = hashlib.sha1(
-        f"{model_cli_name}\0{config_nickname}".encode("utf-8")
-    ).hexdigest()[:10]
-    remaining = MAX_MODAL_OBJECT_NAME_LENGTH - len(prefix) - len(digest) - 3
-    if remaining <= 2:
-        raise RuntimeError(
-            "Modal volume name prefix is too long to derive a per-experiment volume name"
-        )
-    model_budget = max(1, remaining // 2)
-    config_budget = max(1, remaining - model_budget)
-    truncated_model = model_component[:model_budget].rstrip("-") or model_component[:1]
-    truncated_config = (
-        config_component[:config_budget].rstrip("-") or config_component[:1]
-    )
-    return f"{prefix}-{truncated_model}-{truncated_config}-{digest}"
-
-
-def _load_orchestrator_cli_args() -> list[str]:
+def _load_orchestrator_config_payload() -> dict[str, Any]:
     candidate_paths = [
         Path("/workspace") / ORCHESTRATOR_CONFIG_RELATIVE_PATH,
         Path(__file__).resolve().parent / ORCHESTRATOR_CONFIG_RELATIVE_PATH,
@@ -105,22 +65,23 @@ def _load_orchestrator_cli_args() -> list[str]:
     except json.JSONDecodeError as error:
         raise RuntimeError(f"invalid orchestrator config JSON: {error}") from error
 
-    args: Any
+    config_payload: dict[str, Any]
     if isinstance(payload, list):
-        args = payload
+        config_payload = {"args": payload}
     elif isinstance(payload, dict):
-        args = payload.get("args")
+        config_payload = payload
     else:
         raise RuntimeError(
             "orchestrator config must be a JSON array or object with 'args'"
         )
 
+    args = config_payload.get("args")
     if not isinstance(args, list):
         raise RuntimeError("orchestrator config field 'args' must be a JSON array")
     if not args:
         raise RuntimeError("orchestrator config CLI args array must be non-empty")
 
-    result: list[str] = []
+    validated_args: list[str] = []
     for index, value in enumerate(args):
         if not isinstance(value, str):
             raise RuntimeError(
@@ -129,8 +90,23 @@ def _load_orchestrator_cli_args() -> list[str]:
         stripped = value.strip()
         if not stripped:
             raise RuntimeError(f"orchestrator config args[{index}] must be non-empty")
-        result.append(stripped)
-    return result
+        validated_args.append(stripped)
+
+    service_state_volume_name = config_payload.get("service_state_volume_name")
+    if not isinstance(service_state_volume_name, str):
+        raise RuntimeError(
+            "orchestrator config field 'service_state_volume_name' must be a string"
+        )
+    service_state_volume_name = service_state_volume_name.strip()
+    if not service_state_volume_name:
+        raise RuntimeError(
+            "orchestrator config field 'service_state_volume_name' must be non-empty"
+        )
+
+    return {
+        "args": validated_args,
+        "service_state_volume_name": service_state_volume_name,
+    }
 
 
 def _extract_num_gpus(cli_args: list[str]) -> int:
@@ -150,7 +126,8 @@ def _extract_num_gpus(cli_args: list[str]) -> int:
     return num_gpus
 
 
-DEPLOY_ORCHESTRATOR_CLI_ARGS = _load_orchestrator_cli_args()
+DEPLOY_ORCHESTRATOR_CONFIG = _load_orchestrator_config_payload()
+DEPLOY_ORCHESTRATOR_CLI_ARGS = list(DEPLOY_ORCHESTRATOR_CONFIG["args"])
 DEPLOY_MODEL_CLI_NAME = _extract_required_cli_arg(
     DEPLOY_ORCHESTRATOR_CLI_ARGS, "--model-cli-name"
 )
@@ -159,9 +136,7 @@ DEPLOY_CONFIG_NICKNAME = _extract_required_cli_arg(
 )
 DEPLOY_NUM_GPUS = _extract_num_gpus(DEPLOY_ORCHESTRATOR_CLI_ARGS)
 GPU = f"H100:{DEPLOY_NUM_GPUS}"
-SERVICE_STATE_VOLUME_NAME = _experiment_service_state_volume_name(
-    DEPLOY_MODEL_CLI_NAME, DEPLOY_CONFIG_NICKNAME
-)
+SERVICE_STATE_VOLUME_NAME = str(DEPLOY_ORCHESTRATOR_CONFIG["service_state_volume_name"])
 service_state_volume = modal.Volume.from_name(
     SERVICE_STATE_VOLUME_NAME,
     create_if_missing=True,
@@ -173,6 +148,18 @@ def _print_service_state_volume_status() -> None:
         "[orchestrate] service state volume "
         f"model_cli_name={DEPLOY_MODEL_CLI_NAME} "
         f"config_nickname={DEPLOY_CONFIG_NICKNAME} "
+        f"volume_name={SERVICE_STATE_VOLUME_NAME}"
+    )
+
+
+def _commit_service_state_volume() -> None:
+    print(
+        "[orchestrate] committing service state volume "
+        f"volume_name={SERVICE_STATE_VOLUME_NAME}"
+    )
+    service_state_volume.commit()
+    print(
+        "[orchestrate] committed service state volume "
         f"volume_name={SERVICE_STATE_VOLUME_NAME}"
     )
 
@@ -315,7 +302,7 @@ class OrchestratorService:
         _print_service_state_volume_status()
         _print_workspace_env_file_status()
         _print_sglang_env_package_versions()
-        cli_args = _load_orchestrator_cli_args()
+        cli_args = list(DEPLOY_ORCHESTRATOR_CLI_ARGS)
         requested_num_gpus = _extract_num_gpus(cli_args)
         if requested_num_gpus != DEPLOY_NUM_GPUS:
             raise RuntimeError(
@@ -324,7 +311,10 @@ class OrchestratorService:
                 f"DEPLOY_NUM_GPUS={DEPLOY_NUM_GPUS}; redeploy modal_orchestrator_app.py "
                 "with matching orchestrator config"
             )
-        return _run_orchestrator_subprocess(cli_args)
+        try:
+            return _run_orchestrator_subprocess(cli_args)
+        finally:
+            _commit_service_state_volume()
 
 
 @app.local_entrypoint()
