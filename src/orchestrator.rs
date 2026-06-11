@@ -3,7 +3,7 @@ use research_utility::{
     progress_tui_logger::{log_info, log_key_value_pair, log_state},
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::Path};
+use std::{collections::BTreeMap, path::Path, time::Instant};
 use tokio::process::Child;
 
 use crate::{
@@ -83,6 +83,12 @@ pub struct OrchestrationProgress {
     pub epoch: usize,
     pub validation_accuracies: BTreeMap<usize, (f32, f32, f32, f32)>,
     pub training_rollout_accuracies: BTreeMap<usize, (f32, f32, f32, f32)>,
+    #[serde(default)]
+    pub validation_rollout_llm_call_throughputs: BTreeMap<usize, f32>,
+    #[serde(default)]
+    pub training_rollout_llm_call_throughputs: BTreeMap<usize, f32>,
+    #[serde(default)]
+    pub training_throughputs: BTreeMap<usize, f32>,
 }
 
 fn accuracy_tuple_to_string(accuracies: (f32, f32, f32, f32)) -> String {
@@ -253,6 +259,12 @@ impl Orchestrator {
         Ok(())
     }
 
+    fn save_progress<M: LlmModelMarker>(&self) {
+        let progress_save_path =
+            Orchestrator::progress_save_path(M::CLI_NAME.into(), &self.config_nickname);
+        write_json(&progress_save_path, &self.progress).unwrap();
+    }
+
     fn update_and_save_progress<M: LlmModelMarker>(
         &mut self,
         status: OrchestrationStatus,
@@ -260,9 +272,7 @@ impl Orchestrator {
     ) {
         self.progress.status = status;
         self.progress.epoch = epoch;
-        let progress_save_path =
-            Orchestrator::progress_save_path(M::CLI_NAME.into(), &self.config_nickname);
-        write_json(&progress_save_path, &self.progress).unwrap();
+        self.save_progress::<M>();
     }
 
     async fn read_and_log_validation_accuracy<M: LlmModelMarker>(
@@ -296,9 +306,7 @@ impl Orchestrator {
             format!("epoch_{}_validation_accuracy_gsm8k", epoch),
             accuracies.3.to_string(),
         );
-        let progress_save_path =
-            Orchestrator::progress_save_path(M::CLI_NAME.into(), &self.config_nickname);
-        write_json(&progress_save_path, &self.progress).unwrap();
+        self.save_progress::<M>();
         log_info(format!(
             "Epoch {} validation accuracies (avg, deepmath, math, gsm8k): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
             epoch,
@@ -345,9 +353,7 @@ impl Orchestrator {
             format!("epoch_{}_training_rollout_accuracy_gsm8k", epoch),
             accuracies.3.to_string(),
         );
-        let progress_save_path =
-            Orchestrator::progress_save_path(M::CLI_NAME.into(), &self.config_nickname);
-        write_json(&progress_save_path, &self.progress).unwrap();
+        self.save_progress::<M>();
         log_info(format!(
             "Epoch {} training rollout accuracies (avg, deepmath, math, gsm8k): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
             epoch,
@@ -548,7 +554,22 @@ impl Orchestrator {
             max_python_processes: self.max_python_processes,
             total_epochs: self.num_total_epochs,
         };
-        rollout_all::<M, Validation>(validation_rollout_program_config).await;
+        let rollout_summary = rollout_all::<M, Validation>(validation_rollout_program_config).await;
+        self.progress
+            .validation_rollout_llm_call_throughputs
+            .insert(epoch, rollout_summary.llm_call_throughput_per_sec);
+        self.save_progress::<M>();
+        log_key_value_pair(
+            format!("epoch_{}_validation_llm_call_throughput_per_sec", epoch),
+            format!("{:.6}", rollout_summary.llm_call_throughput_per_sec),
+        );
+        log_info(format!(
+            "Epoch {} validation rollout LLM throughput: {:.6} calls/sec over {:.3}s ({} total LLM calls)",
+            epoch,
+            rollout_summary.llm_call_throughput_per_sec,
+            rollout_summary.elapsed_secs,
+            rollout_summary.total_llm_calls,
+        ));
         self.ensure_inference_server_process_alive("after validation rollout")?;
         log_info("Finished validating model.");
         Ok(())
@@ -581,7 +602,25 @@ impl Orchestrator {
             max_python_processes: self.max_python_processes,
             total_epochs: self.num_total_epochs,
         };
-        rollout_all::<M, Training>(training_set_rollout_program_config).await;
+        let rollout_summary = rollout_all::<M, Training>(training_set_rollout_program_config).await;
+        self.progress
+            .training_rollout_llm_call_throughputs
+            .insert(epoch, rollout_summary.llm_call_throughput_per_sec);
+        self.save_progress::<M>();
+        log_key_value_pair(
+            format!(
+                "epoch_{}_training_rollout_llm_call_throughput_per_sec",
+                epoch
+            ),
+            format!("{:.6}", rollout_summary.llm_call_throughput_per_sec),
+        );
+        log_info(format!(
+            "Epoch {} training rollout LLM throughput: {:.6} calls/sec over {:.3}s ({} total LLM calls)",
+            epoch,
+            rollout_summary.llm_call_throughput_per_sec,
+            rollout_summary.elapsed_secs,
+            rollout_summary.total_llm_calls,
+        ));
         self.ensure_inference_server_process_alive("after training rollout collection")?;
         log_info("Finished collecting training rollout");
         Ok(())
@@ -866,7 +905,7 @@ impl Orchestrator {
         asset_file_training_trajectories.synchronize().await;
         log_info("Finished generating training set");
     }
-    async fn train_model<M: LlmModelMarker>(&self, epoch: usize) -> Result<(), String> {
+    async fn train_model<M: LlmModelMarker>(&mut self, epoch: usize) -> Result<(), String> {
         log_info("Start training model.");
         log_info(format!(
             "train_model called for epoch {} with in-memory inference_server_handle_present={}",
@@ -882,6 +921,16 @@ impl Orchestrator {
             advantage_calculation_policy: self.advantage_calculation_policy,
             _phantom: std::marker::PhantomData::<M>,
         };
+        let training_trajectory_store = asset_file_training_trajectories.fetch().await;
+        let num_training_samples = training_trajectory_store
+            .get_keys()
+            .map_err(|err| {
+                format!(
+                    "Failed to read training trajectory keys for epoch {}: {}",
+                    epoch, err
+                )
+            })?
+            .len();
         let training_trajectory_sqlite_path = asset_file_training_trajectories.file_path();
         let artifact_root_dir = storage_large_files_dir()?;
         let training_config = PythonTrainingConfig {
@@ -895,6 +944,7 @@ impl Orchestrator {
             epoch,
         };
 
+        let training_start_time = Instant::now();
         run_training_wrapper_and_wait(
             self.num_gpus,
             M::API_NAME,
@@ -903,6 +953,24 @@ impl Orchestrator {
             self.training_wrapper_log_path.as_ref(),
         )
         .await?;
+        let elapsed_secs = training_start_time.elapsed().as_secs_f32();
+        let training_throughput = if elapsed_secs <= f32::EPSILON {
+            0.0
+        } else {
+            num_training_samples as f32 / elapsed_secs
+        };
+        self.progress
+            .training_throughputs
+            .insert(epoch, training_throughput);
+        self.save_progress::<M>();
+        log_key_value_pair(
+            format!("epoch_{}_training_throughput_num_samples_per_sec", epoch),
+            format!("{training_throughput:.6}"),
+        );
+        log_info(format!(
+            "Epoch {} training throughput: {:.6} samples/sec over {:.3}s ({} training samples)",
+            epoch, training_throughput, elapsed_secs, num_training_samples,
+        ));
         log_info("Finished training model.");
         Ok(())
     }

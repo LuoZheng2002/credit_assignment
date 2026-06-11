@@ -59,7 +59,9 @@ def _write_deploy_config(
         "DEPLOY_NUM_GPUS": num_gpus,
         "DEPLOY_ARTIFACT_ROOT_DIR": DEFAULT_ARTIFACT_ROOT_DIR,
     }
-    _deploy_config_path().write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+    _deploy_config_path().write_text(
+        json.dumps(payload, ensure_ascii=True), encoding="utf-8"
+    )
 
 
 def _remove_deploy_config() -> None:
@@ -86,7 +88,9 @@ def load_materialized_deploy_config() -> dict[str, Any]:
     result = dict(parsed)
     for key, value in result.items():
         if value is None:
-            raise RuntimeError(f"materialized deploy config missing required field: {key}")
+            raise RuntimeError(
+                f"materialized deploy config missing required field: {key}"
+            )
     required_keys = (
         "DEPLOY_MODEL_CLI_NAME",
         "DEPLOY_MODEL_API_NAME",
@@ -97,13 +101,18 @@ def load_materialized_deploy_config() -> dict[str, Any]:
     )
     for key in required_keys:
         if key not in result:
-            raise RuntimeError(f"materialized deploy config missing required field: {key}")
+            raise RuntimeError(
+                f"materialized deploy config missing required field: {key}"
+            )
     return result
 
 
 def app_is_active(apps: list[dict[str, Any]], app_name: str) -> bool:
     for app in apps:
-        if app.get("Description") == app_name and str(app.get("State", "")).lower() != "stopped":
+        if (
+            app.get("Description") == app_name
+            and str(app.get("State", "")).lower() != "stopped"
+        ):
             return True
     return False
 
@@ -116,10 +125,21 @@ def ensure_deployed(
     num_gpus: int,
 ) -> tuple[str, int]:
     app_name = deployment_name(model_cli_name, model_api_name, config_nickname, epoch)
-    _write_deploy_config(model_cli_name, model_api_name, config_nickname, epoch, num_gpus)
+    _write_deploy_config(
+        model_cli_name, model_api_name, config_nickname, epoch, num_gpus
+    )
     try:
         result = subprocess.run(
-            ["uv", "run", "modal", "deploy", "modal_training_app.py", "--name", app_name],
+            [
+                "uv",
+                "run",
+                "modal",
+                "deploy",
+                "modal_training_app.py",
+                "--name",
+                app_name,
+                "--detach",
+            ],
             check=False,
         )
         return app_name, result.returncode

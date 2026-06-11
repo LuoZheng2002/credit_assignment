@@ -75,7 +75,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         max_python_processes: args.max_python_processes,
         total_epochs: args.total_epochs,
     };
-    rollout_all::<M, S>(program_config).await;
+    let _ = rollout_all::<M, S>(program_config).await;
 }
 
 macro_rules! run_rollout {

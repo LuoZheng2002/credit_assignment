@@ -5,14 +5,14 @@ uv run python scripts/launch_modal_orchestration.py \
     --validation-rollout-config-path config/rollout_config_validation_notool.json \
     --training-rollout-config-path config/rollout_config_training_notool.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
-    --num-total-epochs 3 \
+    --num-total-epochs 2 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
     --num-iterations-limit 5 \
     --advantage-calculation-policy tree-mappo-posterior \
     --training-config-common-path config/training/common_fsdp.toml \
-    --training-time 600 \
-    --training-rollout-time-limit-secs 600 \
-    --validation-rollout-time-limit-secs 1200 \
+    --training-time 120 \
+    --training-rollout-time-limit-secs 120 \
+    --validation-rollout-time-limit-secs 120 \
     --max-python-processes 4 \
     --num-gpus 1 \
     --storage-large-files-dir "/volume/large_files" \

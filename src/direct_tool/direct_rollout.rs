@@ -425,9 +425,15 @@ pub struct RolloutProgramConfig<S: DatasetSplit> {
     pub total_epochs: usize,
 }
 
+pub struct RolloutExecutionSummary {
+    pub llm_call_throughput_per_sec: f32,
+    pub elapsed_secs: f32,
+    pub total_llm_calls: usize,
+}
+
 pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     program_config: RolloutProgramConfig<S>,
-) {
+) -> RolloutExecutionSummary {
     let RolloutProgramConfig {
         config_nickname,
         rollout_config,
@@ -637,4 +643,22 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     delete_worker_progress_bar("branches");
     delete_worker_progress_bar("trees");
     log_master_progress(1.0, "Rollout: time up or all finished");
+
+    let elapsed_secs = start_time.elapsed().as_secs_f32();
+    let total_llm_calls = shared_states.total_llm_calls.load(Ordering::Relaxed);
+    let llm_call_throughput_per_sec = if elapsed_secs <= f32::EPSILON {
+        0.0
+    } else {
+        total_llm_calls as f32 / elapsed_secs
+    };
+    log_key_value_pair(
+        "llm_call_throughput_per_sec_total",
+        format!("{llm_call_throughput_per_sec:.2}"),
+    );
+
+    RolloutExecutionSummary {
+        llm_call_throughput_per_sec,
+        elapsed_secs,
+        total_llm_calls,
+    }
 }

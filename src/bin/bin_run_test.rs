@@ -99,7 +99,7 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
         max_python_processes: args.max_python_processes,
         total_epochs: args.total_epochs,
     };
-    rollout_all::<M, Testing>(program_config).await;
+    let _ = rollout_all::<M, Testing>(program_config).await;
 
     let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M, Testing> {
         nickname: args.config_nickname.clone(),

@@ -196,6 +196,9 @@ async fn main() {
                 epoch: 0,
                 validation_accuracies: BTreeMap::new(),
                 training_rollout_accuracies: BTreeMap::new(),
+                validation_rollout_llm_call_throughputs: BTreeMap::new(),
+                training_rollout_llm_call_throughputs: BTreeMap::new(),
+                training_throughputs: BTreeMap::new(),
             }
         }
     };
