@@ -1,7 +1,49 @@
+use serde::{Serialize, de::DeserializeOwned};
 use std::{
+    fs::{File, OpenOptions},
     future::Future,
-    sync::{LazyLock, OnceLock},
+    io::BufReader,
+    path::Path,
+    sync::OnceLock,
 };
+
+pub fn read_json<T: DeserializeOwned>(path: impl AsRef<Path>) -> Result<T, String> {
+    let file = File::open(path.as_ref())
+        .map_err(|e| format!("Cannot open file {}: {}", path.as_ref().display(), e))?;
+    let reader = BufReader::new(file);
+    serde_json::from_reader(reader).map_err(|e| format!("Failed to parse JSON: {}", e))
+}
+
+pub fn write_json<T: Serialize>(file_path: impl AsRef<Path>, data: &T) -> Result<(), String> {
+    let file_path = file_path.as_ref();
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(file_path)
+        .map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(file, data).map_err(|e| e.to_string())
+}
+
+pub fn read_toml<T: DeserializeOwned>(path: impl AsRef<Path>) -> Result<T, String> {
+    let content = std::fs::read_to_string(path.as_ref())
+        .map_err(|e| format!("Cannot read file {}: {}", path.as_ref().display(), e))?;
+    toml::from_str(&content).map_err(|e| format!("Failed to parse TOML: {}", e))
+}
+
+pub fn write_toml<T: Serialize>(file_path: impl AsRef<Path>, data: &T) -> Result<(), String> {
+    let file_path = file_path.as_ref();
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let content =
+        toml::to_string_pretty(data).map_err(|e| format!("Failed to serialize TOML: {}", e))?;
+    std::fs::write(file_path, content)
+        .map_err(|e| format!("Failed to write file {}: {}", file_path.display(), e))
+}
 
 pub fn block_on_async<F: Future>(future: F) -> F::Output {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -68,23 +110,23 @@ pub fn extract_boxed_content(text: &str) -> Option<String> {
     None
 }
 
-pub fn storage_dir_from_env() -> Result<String, String> {
-    static STORAGE_DIR: LazyLock<Result<String, String>> = LazyLock::new(|| {
-        dotenvy::dotenv().ok();
-        let storage_dir = std::env::var("STORAGE_DIR")
-            .map_err(|err| format!("Failed to read STORAGE_DIR from environment: {}", err))?;
-        let storage_dir = storage_dir.trim();
-        if storage_dir.is_empty() {
-            return Err("STORAGE_DIR is set but empty".to_string());
-        }
-        Ok(storage_dir.to_string())
-    });
+// pub fn storage_dir_from_env() -> Result<String, String> {
+//     static STORAGE_DIR: LazyLock<Result<String, String>> = LazyLock::new(|| {
+//         dotenvy::dotenv().ok();
+//         let storage_dir = std::env::var("STORAGE_DIR")
+//             .map_err(|err| format!("Failed to read STORAGE_DIR from environment: {}", err))?;
+//         let storage_dir = storage_dir.trim();
+//         if storage_dir.is_empty() {
+//             return Err("STORAGE_DIR is set but empty".to_string());
+//         }
+//         Ok(storage_dir.to_string())
+//     });
 
-    STORAGE_DIR
-        .as_ref()
-        .map(|storage_dir| storage_dir.clone())
-        .map_err(|err| err.clone())
-}
+//     STORAGE_DIR
+//         .as_ref()
+//         .map(|storage_dir| storage_dir.clone())
+//         .map_err(|err| err.clone())
+// }
 
 static STORAGE_LARGE_FILES_DIR_ARG: OnceLock<String> = OnceLock::new();
 static STORAGE_SMALL_FILES_DIR_ARG: OnceLock<String> = OnceLock::new();
@@ -131,45 +173,15 @@ pub fn configure_storage_dirs(
 }
 
 pub fn storage_large_files_dir() -> Result<String, String> {
-    if let Some(configured) = STORAGE_LARGE_FILES_DIR_ARG.get() {
-        return Ok(configured.clone());
-    }
-    dotenvy::dotenv().ok();
-    if let Ok(value) = std::env::var("STORAGE_LARGE_FILES_DIR") {
-        return _normalize_non_empty_dir(&value, "STORAGE_LARGE_FILES_DIR");
-    }
-    storage_dir_from_env()
+    STORAGE_LARGE_FILES_DIR_ARG
+        .get()
+        .cloned()
+        .ok_or_else(|| "STORAGE_LARGE_FILES_DIR_ARG not set".into())
 }
 
 pub fn storage_small_files_dir() -> Result<String, String> {
-    if let Some(configured) = STORAGE_SMALL_FILES_DIR_ARG.get() {
-        return Ok(configured.clone());
-    }
-    dotenvy::dotenv().ok();
-    if let Ok(value) = std::env::var("STORAGE_SMALL_FILES_DIR") {
-        return _normalize_non_empty_dir(&value, "STORAGE_SMALL_FILES_DIR");
-    }
-    storage_dir_from_env()
-}
-
-pub fn hpc_training_root_dir_from_env() -> Result<String, String> {
-    static HPC_TRAINING_ROOT_DIR: LazyLock<Result<String, String>> = LazyLock::new(|| {
-        dotenvy::dotenv().ok();
-        let root_dir = std::env::var("HPC_TRAINING_ROOT_DIR").map_err(|err| {
-            format!(
-                "Failed to read HPC_TRAINING_ROOT_DIR from environment: {}",
-                err
-            )
-        })?;
-        let root_dir = root_dir.trim();
-        if root_dir.is_empty() {
-            return Err("HPC_TRAINING_ROOT_DIR is set but empty".to_string());
-        }
-        Ok(root_dir.to_string())
-    });
-
-    HPC_TRAINING_ROOT_DIR
-        .as_ref()
-        .map(|root_dir| root_dir.clone())
-        .map_err(|err| err.clone())
+    STORAGE_SMALL_FILES_DIR_ARG
+        .get()
+        .cloned()
+        .ok_or_else(|| "STORAGE_SMALL_FILES_DIR_ARG not set".into())
 }

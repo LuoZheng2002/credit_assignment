@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     direct_tool::{
-        direct_tree::{ContentIndex, DirectTree, SegmentContent, SegmentId},
-        direct_tree_action::TokenPositionInTree,
+        tree::{ContentIndex, DirectTree, SegmentContent, SegmentId},
+        tree_action::TokenPositionInTree,
         hybrid_dataset::DatasetSplit,
     },
     llm_model::LlmModelMarker,

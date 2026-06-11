@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     direct_tool::{
-        direct_trajectory::FinalAnswer,
-        direct_tree::{SegmentContent, SegmentId},
-        direct_tree_action::TokenPositionInTree,
-        direct_tree_spontaneous_branching::TokenPositionInSegment,
+        trajectory::FinalAnswer,
+        tree::{SegmentContent, SegmentId},
+        tree_action::TokenPositionInTree,
+        tree_spontaneous_branching::TokenPositionInSegment,
     },
     judge_correctness::CorrectnessJudgment,
     llm_model::LlmModelMarker,

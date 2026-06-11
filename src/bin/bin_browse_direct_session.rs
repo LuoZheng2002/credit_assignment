@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use clap::Parser;
-use credit_assignment::direct_tool::direct_tree_action::DirectTreeAction;
+use credit_assignment::direct_tool::tree_action::DirectTreeAction;
 use credit_assignment::direct_tool::hybrid_dataset::{
     AssetFileHybridDataset, DatasetSplit, DatasetSplitEnum, HybridDatasetQuestion, QuestionFlatId,
     Testing, Training, Validation,
@@ -15,10 +15,10 @@ use credit_assignment::direct_tool::hybrid_dataset::{
 use credit_assignment::judge_correctness::CorrectnessJudgment;
 use credit_assignment::{
     direct_tool::{
-        direct_rollout_config::DirectRolloutConfig,
-        direct_tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
-        direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
-        direct_tree_to_actions::TokenBranchingScore,
+        rollout_config::DirectRolloutConfig,
+        tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
+        tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
+        tree_to_action::TokenBranchingScore,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_toml_utils::read_json,

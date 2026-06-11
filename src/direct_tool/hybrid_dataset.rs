@@ -15,12 +15,6 @@ pub struct HybridDatasetQuestion<S: DatasetSplit> {
     pub correct_answer: String,
 }
 
-// impl<S: DatasetSplit> HasId for HybridDatasetQuestion<S> {
-//     fn id(&self) -> usize {
-//         self.flat_id.0
-//     }
-// }
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct QuestionFlatId<S: DatasetSplit>(pub usize, pub std::marker::PhantomData<S>);
 

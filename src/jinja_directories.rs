@@ -2,7 +2,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::sync::LazyLock;
 
-use crate::util::{
+use crate::utils::{
     load_jinja_template_environment, storage_large_files_dir, storage_small_files_dir,
 };
 

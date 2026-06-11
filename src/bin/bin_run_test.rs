@@ -4,9 +4,9 @@ use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
     direct_tool::{
-        direct_rollout::{RolloutProgramConfig, rollout_all},
-        direct_rollout_config::DirectRolloutConfig,
-        direct_tree_action_log::AssetFileDirectTreeActionLogs,
+        rollout::{RolloutProgramConfig, rollout_all},
+        rollout_config::DirectRolloutConfig,
+        tree_action_log::AssetFileDirectTreeActionLogs,
         hybrid_dataset::Testing,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
@@ -21,7 +21,6 @@ use credit_assignment::{
         Gemma3_4BIt, Llama31_8BInstruct, LlmCliArgs, LlmModelMarker, LlmModelName,
         Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
-    load_initial_model::load_initial_model,
 };
 use reqwest::Client;
 use research_utility::progress_tui_logger::ProgressTuiLogger;
@@ -135,9 +134,6 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
     best_effort_shutdown_stale_inference_wrapper().await;
     let model_parent_dir =
         model_parent_dir_from_template(M::CLI_NAME, &args.config_nickname, args.epoch)?;
-    if args.epoch == 0 {
-        load_initial_model(&model_parent_dir, M::API_NAME).await?;
-    }
     let model_path = format!("{}/model", model_parent_dir);
     let (sglang_port, mut process, listener_stop_signal, listener_handle) =
         launch_inference_wrapper_process(

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     direct_tool::{
-        direct_tree::{DirectTree, SegmentId},
+        tree::{DirectTree, SegmentId},
         hybrid_dataset::DatasetSplit,
         posterior_calculation_config::PosteriorHyperparameters,
     },

@@ -3,8 +3,8 @@ use std::backtrace::Backtrace;
 use clap::Parser;
 use credit_assignment::{
     direct_tool::{
-        direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
-        direct_training_set::AssetFileTrainingTrajectories,
+        rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+        training_set::AssetFileTrainingTrajectories,
         hybrid_dataset::Training,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },

@@ -1,10 +1,10 @@
 use crate::{
     direct_tool::{
-        direct_rollout_config::BranchingPolicy,
-        direct_tree::{DirectTree, Segment, SegmentContent, SegmentId},
-        direct_tree_action::{DirectTreeAction, TokenPositionInTree},
-        direct_tree_spontaneous_branching::TokenPositionInSegment,
-        direct_tree_status::{
+        rollout_config::BranchingPolicy,
+        tree::{DirectTree, Segment, SegmentContent, SegmentId},
+        tree_action::{DirectTreeAction, TokenPositionInTree},
+        tree_spontaneous_branching::TokenPositionInSegment,
+        tree_status::{
             DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus,
             TrunkSubStatus,
         },

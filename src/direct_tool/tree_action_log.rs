@@ -9,8 +9,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     direct_tool::{
-        direct_rollout_config::DirectRolloutConfig,
-        direct_tree_action::DirectTreeAction,
+        rollout_config::DirectRolloutConfig,
+        tree_action::DirectTreeAction,
         hybrid_dataset::{
             AssetFileHybridDataset, DatasetSplit, HybridDatasetQuestion, QuestionFlatId,
         },

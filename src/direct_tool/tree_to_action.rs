@@ -8,10 +8,10 @@ use reqwest::Client;
 use research_utility::progress_tui_logger::log_warning;
 
 use crate::atomic_count_guard::AtomicCountGuard;
-use crate::direct_tool::direct_rollout::StopRequestedError;
-use crate::direct_tool::direct_trajectory::{DirectTrajectory, TrajectoryContent};
-use crate::direct_tool::direct_tree_action::DirectTreeAction::SubmitAnswer;
-use crate::direct_tool::direct_tree_status::{
+use crate::direct_tool::rollout::StopRequestedError;
+use crate::direct_tool::trajectory::{DirectTrajectory, TrajectoryContent};
+use crate::direct_tool::tree_action::DirectTreeAction::SubmitAnswer;
+use crate::direct_tool::tree_status::{
     GuidedBranchingSubStatus, SpontaneousBranchingSubStatus, TrunkSubStatus,
 };
 use crate::direct_tool::hybrid_dataset::{DatasetSplit, QuestionFlatId};
@@ -20,10 +20,10 @@ use crate::llm_model::MyTokenizer;
 use crate::tool_call_python::{PythonToolResponse, PythonToolServerPool, execute_python_tool_call};
 use crate::{
     direct_tool::{
-        direct_tree::{ContentIndex, DirectTree, SegmentContent, SegmentId},
-        direct_tree_action::{DirectTreeAction, TokenPositionInTree},
-        direct_tree_posterior::Posterior,
-        direct_tree_status::DirectTreeStatus,
+        tree::{ContentIndex, DirectTree, SegmentContent, SegmentId},
+        tree_action::{DirectTreeAction, TokenPositionInTree},
+        tree_posterior::Posterior,
+        tree_status::DirectTreeStatus,
     },
     llm_model::{
         LlmCallable, LlmModelMarker, TokenArrayWithLogprob, TokenLogprobCandidate, Top8Candidates,

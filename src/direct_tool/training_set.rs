@@ -13,13 +13,13 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use crate::direct_tool::direct_tree_action::DirectTreeAction;
+use crate::direct_tool::tree_action::DirectTreeAction;
 use crate::direct_tool::hybrid_dataset::{AssetFileHybridDataset, QuestionFlatId, Training};
 use crate::{
     direct_tool::{
-        direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
-        direct_tree::{DirectTree, SegmentContent, SegmentId},
-        direct_tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
+        rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+        tree::{DirectTree, SegmentContent, SegmentId},
+        tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
         hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
     },

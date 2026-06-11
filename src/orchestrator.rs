@@ -8,10 +8,10 @@ use tokio::{process::Child, sync::watch};
 
 use crate::{
     direct_tool::{
-        direct_rollout::{RolloutProgramConfig, rollout_all},
-        direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
-        direct_training_set::AssetFileTrainingTrajectories,
-        direct_tree_action_log::AssetFileDirectTreeActionLogs,
+        rollout::{RolloutProgramConfig, rollout_all},
+        rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+        training_set::AssetFileTrainingTrajectories,
+        tree_action_log::AssetFileDirectTreeActionLogs,
         hybrid_dataset::{Training, Validation},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
@@ -28,7 +28,7 @@ use crate::{
     launch_training_wrapper::run_training_wrapper_and_wait,
     llm_model::{LlmCliArgs, LlmModelMarker},
     python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
-    util::storage_large_files_dir,
+    utils::storage_large_files_dir,
 };
 
 pub struct Orchestrator {

@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     direct_tool::{
-        direct_tree::{DirectTree, SegmentId},
-        direct_tree_posterior::Posterior,
+        tree::{DirectTree, SegmentId},
+        tree_posterior::Posterior,
         hybrid_dataset::DatasetSplit,
         posterior_calculation_config::PosteriorHyperparameters,
     },

@@ -8,13 +8,13 @@ use std::{
 use crate::{
     constants::sglang_context_length,
     direct_tool::{
-        direct_tree::{DirectTree, SegmentContent, SegmentId},
+        tree::{DirectTree, SegmentContent, SegmentId},
         hybrid_dataset::DatasetSplit,
     },
     llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob},
     token_array::TokenArray,
     tool_call_python::extract_python_tool_call,
-    util::extract_boxed_content,
+    utils::extract_boxed_content,
 };
 
 const CONTEXT_LENGTH_SAFETY_MARGIN: usize = 10;

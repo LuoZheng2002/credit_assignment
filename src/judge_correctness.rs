@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::{Duration, sleep};
 
-use crate::{atomic_count_guard::AtomicCountGuard, direct_tool::direct_trajectory::FinalAnswer};
+use crate::{atomic_count_guard::AtomicCountGuard, direct_tool::trajectory::FinalAnswer};
 
 const OPENROUTER_CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const JUDGE_DETERMINISTIC_SEED: i64 = 42;

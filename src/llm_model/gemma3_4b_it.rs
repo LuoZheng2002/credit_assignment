@@ -5,7 +5,7 @@ use serde::Serialize;
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
-use crate::util::load_jinja_template_environment;
+use crate::utils::load_jinja_template_environment;
 
 use super::sglang_model_shared::{
     SharedSglangLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,

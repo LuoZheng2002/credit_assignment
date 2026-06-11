@@ -5,7 +5,7 @@ use serde::Serialize;
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
-use crate::{token_array::TokenArray, util::load_jinja_template_environment};
+use crate::{token_array::TokenArray, utils::load_jinja_template_environment};
 
 use super::sglang_model_shared::{
     SharedSglangLlmCallable, build_qwen25_python_response_turn_disable_thinking,

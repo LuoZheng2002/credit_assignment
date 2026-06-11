@@ -4,8 +4,8 @@ use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
     direct_tool::{
-        direct_rollout::{RolloutProgramConfig, rollout_all},
-        direct_rollout_config::DirectRolloutConfig,
+        rollout::{RolloutProgramConfig, rollout_all},
+        rollout_config::DirectRolloutConfig,
         hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },

@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     direct_tool::{
-        direct_trajectory::FinalAnswer,
-        direct_tree::{ContentIndex, SegmentContent, SegmentId},
-        direct_tree_spontaneous_branching::TokenPositionInSegment,
+        trajectory::FinalAnswer,
+        tree::{ContentIndex, SegmentContent, SegmentId},
+        tree_spontaneous_branching::TokenPositionInSegment,
     },
     judge_correctness::CorrectnessJudgment,
 };

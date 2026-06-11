@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, path::Path};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
     direct_tool::{
-        direct_rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+        rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         hybrid_dataset::{Training, Validation},
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
@@ -22,7 +22,7 @@ use credit_assignment::{
     },
     orchestrator::{OrchestrationProgress, OrchestrationStatus, Orchestrator},
     python_training_config::PythonTrainingConfigCommon,
-    util::configure_storage_dirs,
+    utils::configure_storage_dirs,
 };
 use research_utility::progress_tui_logger::{
     ProgressTuiLogger, log_exit_hint, log_info, log_warning, log_window_name,

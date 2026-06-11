@@ -3,11 +3,11 @@ use std::error::Error;
 use std::io::{self, Stdout};
 
 use clap::Parser;
-use credit_assignment::direct_tool::direct_rollout_config::AdvantageCalculationPolicy;
+use credit_assignment::direct_tool::rollout_config::AdvantageCalculationPolicy;
 use credit_assignment::{
     direct_tool::{
-        direct_rollout_config::DirectRolloutConfig,
-        direct_training_set::{
+        rollout_config::DirectRolloutConfig,
+        training_set::{
             AssetFileTrainingTrajectories, DirectTrainingSetStatistics, DirectTrainingTrajectory,
         },
         hybrid_dataset::Training,
