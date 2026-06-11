@@ -48,7 +48,6 @@ class TrainingWrapperLaunchArgs(BaseModel):
 class TrainProcessLaunchArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    job_folder_path: str
     training_trajectory_sqlite_path: str
     orchestrator_socket_path: str = ""
 

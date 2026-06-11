@@ -4,11 +4,9 @@ import argparse
 import ctypes
 import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -262,7 +260,7 @@ def _run_hpc_training(
     backend = "hpc"
     trajectory_path = Path(launch_args.trajectory_sqlite_path)
     hf_model_name = launch_args.hf_model_name
-    _emit_status(backend, "starting", "preparing HPC training job folder")
+    _emit_status(backend, "starting", "preparing HPC training job")
     _tui_state("Training wrapper started")
     _tui_info("Training wrapper started")
     _emit_training_tui_identity(training_config, hf_model_name, trajectory_path)
@@ -280,93 +278,86 @@ def _run_hpc_training(
     _tui_info(f"Training next model directory: {next_model_root / 'model'}")
     _tui_state(f"Training checkpoints will be written under {checkpoints_root}")
     _ensure_initial_model_if_missing(backend, training_config, hf_model_name)
-    with tempfile.TemporaryDirectory(prefix="training_wrapper_job_") as temp_dir:
-        job_dir = Path(temp_dir)
-        input_dir = job_dir / "input"
-        input_dir.mkdir(parents=True, exist_ok=True)
-        dst_trajectory = input_dir / "training_trajectories.sqlite"
-        shutil.copy2(trajectory_path, dst_trajectory)
-        if launch_args.test_sleep_secs > 0:
-            cmd = [
-                sys.executable,
-                "-c",
-                f"import time; time.sleep({launch_args.test_sleep_secs})",
-            ]
-            stdin_payload = None
-        else:
-            train_process_launch_args = TrainProcessLaunchArgs(
-                job_folder_path=str(job_dir),
-                training_trajectory_sqlite_path=str(dst_trajectory),
-                orchestrator_socket_path=launch_args.orchestrator_socket_path,
-            )
-            cmd = [
-                "uv",
-                "run",
-                "torchrun",
-                "--nproc_per_node",
-                str(launch_args.num_gpus),
-                "-m",
-                "src_py.train.main",
-                *model_to_cli_args(train_process_launch_args),
-            ]
-            stdin_payload = model_to_json_bytes(training_config)
-        if _TRAINING_WRAPPER_LOG_PATH is None:
+    if launch_args.test_sleep_secs > 0:
+        cmd = [
+            sys.executable,
+            "-c",
+            f"import time; time.sleep({launch_args.test_sleep_secs})",
+        ]
+        stdin_payload = None
+    else:
+        train_process_launch_args = TrainProcessLaunchArgs(
+            training_trajectory_sqlite_path=str(trajectory_path),
+            orchestrator_socket_path=launch_args.orchestrator_socket_path,
+        )
+        cmd = [
+            "uv",
+            "run",
+            "torchrun",
+            "--nproc_per_node",
+            str(launch_args.num_gpus),
+            "-m",
+            "src_py.train.main",
+            *model_to_cli_args(train_process_launch_args),
+        ]
+        stdin_payload = model_to_json_bytes(training_config)
+    if _TRAINING_WRAPPER_LOG_PATH is None:
+        process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE if stdin_payload is not None else None,
+        )
+        if stdin_payload is not None:
+            _write_subprocess_stdin(process, stdin_payload)
+        _set_active_process(process)
+        _emit_status(backend, "running", f"started torchrun with pid={process.pid}")
+        _tui_state(f"Training subprocess started (pid={process.pid})")
+        return_code = process.wait()
+    else:
+        with _TRAINING_WRAPPER_LOG_PATH.open("a", encoding="utf-8") as log_handle:
             process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE if stdin_payload is not None else None,
+                stdout=log_handle,
+                stderr=log_handle,
             )
             if stdin_payload is not None:
                 _write_subprocess_stdin(process, stdin_payload)
             _set_active_process(process)
-            _emit_status(backend, "running", f"started torchrun with pid={process.pid}")
+            _emit_status(
+                backend,
+                "running",
+                (
+                    f"started torchrun with pid={process.pid}; "
+                    f"subprocess output redirected to {_TRAINING_WRAPPER_LOG_PATH}"
+                ),
+            )
             _tui_state(f"Training subprocess started (pid={process.pid})")
             return_code = process.wait()
-        else:
-            with _TRAINING_WRAPPER_LOG_PATH.open("a", encoding="utf-8") as log_handle:
-                process = subprocess.Popen(
-                    cmd,
-                    stdin=subprocess.PIPE if stdin_payload is not None else None,
-                    stdout=log_handle,
-                    stderr=log_handle,
-                )
-                if stdin_payload is not None:
-                    _write_subprocess_stdin(process, stdin_payload)
-                _set_active_process(process)
-                _emit_status(
-                    backend,
-                    "running",
-                    (
-                        f"started torchrun with pid={process.pid}; "
-                        f"subprocess output redirected to {_TRAINING_WRAPPER_LOG_PATH}"
-                    ),
-                )
-                _tui_state(f"Training subprocess started (pid={process.pid})")
-                return_code = process.wait()
-        _set_active_process(None)
-        duration_secs = time.time() - started_at
-        if _TERMINATION_REQUESTED.is_set():
-            _tui_error("Training wrapper cancelled by signal")
-            _emit_result_error(
-                backend,
-                "CANCELLED_BY_SIGNAL",
-                "training wrapper received SIGTERM/SIGINT",
-                duration_secs,
-            )
-            return 143
-        if return_code == 0:
-            _tui_state(
-                f"Training completed; checkpoint state available under {checkpoints_root}"
-            )
-            _emit_result_ok(backend, "training completed", duration_secs)
-            return 0
-        _tui_error(f"Training failed: torchrun exited with code {return_code}")
+    _set_active_process(None)
+    duration_secs = time.time() - started_at
+    if _TERMINATION_REQUESTED.is_set():
+        _tui_error("Training wrapper cancelled by signal")
         _emit_result_error(
             backend,
-            "TRAIN_PROCESS_FAILED",
-            f"torchrun exited with code {return_code}",
+            "CANCELLED_BY_SIGNAL",
+            "training wrapper received SIGTERM/SIGINT",
             duration_secs,
         )
-        return return_code
+        return 143
+    if return_code == 0:
+        _tui_state(
+            f"Training completed; checkpoint state available under {checkpoints_root}"
+        )
+        _emit_result_ok(backend, "training completed", duration_secs)
+        return 0
+    _tui_error(f"Training failed: torchrun exited with code {return_code}")
+    _emit_result_error(
+        backend,
+        "TRAIN_PROCESS_FAILED",
+        f"torchrun exited with code {return_code}",
+        duration_secs,
+    )
+    return return_code
 
 
 def main() -> int:

@@ -6,8 +6,8 @@ from pathlib import Path
 from torch.distributed.elastic.multiprocessing.errors import record
 
 from .cli_args import (
-    TrainProcessLaunchArgs,
     TrainingRequestArgs,
+    TrainProcessLaunchArgs,
     add_model_arguments,
     parse_model_args,
     parse_model_stdin,
@@ -33,22 +33,23 @@ def _build_parser() -> argparse.ArgumentParser:
 def _load_train_config(
     launch_args: TrainProcessLaunchArgs, request: TrainingRequestArgs
 ) -> TrainConfig:
-    job_folder = Path(launch_args.job_folder_path)
-    assert job_folder.exists(), f"job folder not found: {job_folder}"
-    assert job_folder.is_dir(), f"job folder must be a directory: {job_folder}"
-
     training_trajectory_sqlite_path = Path(launch_args.training_trajectory_sqlite_path)
     assert training_trajectory_sqlite_path.exists(), (
-        "training trajectory sqlite was not uploaded to job folder: "
-        f"{training_trajectory_sqlite_path}"
+        f"training trajectory sqlite not found: {training_trajectory_sqlite_path}"
     )
 
     artifact_root_dir = resolve_artifact_root_dir(request)
     model_parent_dir_path = model_parent_dir(
-        artifact_root_dir, request.model_cli_name, request.config_nickname, request.epoch
+        artifact_root_dir,
+        request.model_cli_name,
+        request.config_nickname,
+        request.epoch,
     )
     checkpoints_parent_dir_path = checkpoint_parent_dir(
-        artifact_root_dir, request.model_cli_name, request.config_nickname, request.epoch
+        artifact_root_dir,
+        request.model_cli_name,
+        request.config_nickname,
+        request.epoch,
     )
     final_model_output_parent_dir_path = final_model_output_parent_dir(
         artifact_root_dir,
@@ -77,7 +78,8 @@ def _load_train_config(
         lora_rank=request.lora_rank or 64,
         lora_alpha=request.lora_alpha or 128,
         lora_dropout=request.lora_dropout or 0.05,
-        lora_target_modules_csv=request.lora_target_modules_csv or "q_proj,k_proj,v_proj,o_proj",
+        lora_target_modules_csv=request.lora_target_modules_csv
+        or "q_proj,k_proj,v_proj,o_proj",
         resume_checkpoint_tag=request.resume_checkpoint_tag or "auto",
         seed=request.seed,
     )
@@ -86,9 +88,7 @@ def _load_train_config(
 @record
 def main() -> None:
     launch_args = parse_model_args(_build_parser(), TrainProcessLaunchArgs)
-    install_status_log_buffer(
-        launch_args.job_folder_path, launch_args.orchestrator_socket_path
-    )
+    install_status_log_buffer(launch_args.orchestrator_socket_path)
     request = parse_model_stdin(TrainingRequestArgs)
     config = _load_train_config(launch_args, request)
     try:

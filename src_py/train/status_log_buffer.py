@@ -5,7 +5,6 @@ import builtins
 import json
 import sys
 import threading
-from pathlib import Path
 from typing import Any
 
 from ..tui_logging import (
@@ -20,8 +19,6 @@ from ..tui_logging import (
 _ORIGINAL_PRINT = builtins.print
 _BUFFER_LOCK = threading.Lock()
 _BUFFERED_LINES: list[str] = []
-_STOP_EVENT = threading.Event()
-_POLL_THREAD: threading.Thread | None = None
 
 _TUI_MESSAGE_VARIANTS = {
     "Line",
@@ -103,39 +100,12 @@ def flush_buffered_lines() -> int:
     return len(lines)
 
 
-def _flush_poller(job_folder: Path) -> None:
-    request_file = job_folder / ".flush_logs.request"
-    while not _STOP_EVENT.is_set():
-        if request_file.exists():
-            try:
-                request_file.unlink()
-            except FileNotFoundError:
-                pass
-            flush_buffered_lines()
-        _STOP_EVENT.wait(0.2)
-
-
-def install_status_log_buffer(
-    job_folder_path: str, orchestrator_socket_path: str = ""
-) -> None:
-    global _POLL_THREAD
-
-    job_folder = Path(job_folder_path)
-    job_folder.mkdir(parents=True, exist_ok=True)
-
+def install_status_log_buffer(orchestrator_socket_path: str = "") -> None:
     builtins.print = buffered_print
-    _STOP_EVENT.clear()
     configure_tui_forwarder(orchestrator_socket_path)
-
-    if _POLL_THREAD is None or not _POLL_THREAD.is_alive():
-        _POLL_THREAD = threading.Thread(
-            target=_flush_poller, args=(job_folder,), daemon=True
-        )
-        _POLL_THREAD.start()
 
 
 def shutdown_status_log_buffer() -> None:
-    _STOP_EVENT.set()
     flush_buffered_lines()
     builtins.print = _ORIGINAL_PRINT
     shutdown_tui_forwarder()
