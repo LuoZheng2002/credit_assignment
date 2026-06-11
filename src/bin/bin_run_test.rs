@@ -12,7 +12,7 @@ use credit_assignment::{
     },
     get_accuracy::{TestAccuracyResult, get_test_accuracies},
     jinja_directories::{model_parent_dir_from_template, test_accuracy_path_from_template},
-    json_line_util::{read_json, write_json},
+    json_toml_utils::{read_json, write_json},
     launch_inference_wrapper::{
         best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
         model_uses_sglang, shut_down_inference_wrapper_process,

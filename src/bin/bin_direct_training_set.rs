@@ -8,7 +8,7 @@ use credit_assignment::{
         hybrid_dataset::Training,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
-    json_line_util::read_json,
+    json_toml_utils::read_json,
     llm_model::{
         Gemma3_4BIt, Gpt4o, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
         Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,

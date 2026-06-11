@@ -26,7 +26,7 @@ use crate::{
     jinja_directories::{
         training_trajectories_path_from_template, training_trajectories_stats_path_from_template,
     },
-    json_line_util::{read_json, write_json},
+    json_toml_utils::{read_json, write_json},
     llm_model::LlmModelMarker,
 };
 

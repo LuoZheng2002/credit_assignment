@@ -20,7 +20,7 @@ use crate::{
         model_checkpoint_dir_from_template, model_metrics_path_from_template,
         model_parent_dir_from_template, progress_save_path_from_template,
     },
-    json_line_util::write_json,
+    json_toml_utils::write_json,
     launch_inference_wrapper::{
         best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
         model_uses_sglang, shut_down_inference_wrapper_process,

@@ -15,7 +15,7 @@ use credit_assignment::{
         inference_wrapper_log_path_from_template, training_wrapper_log_path_from_template,
         tui_log_path_from_template,
     },
-    json_line_util::{read_json, read_toml},
+    json_toml_utils::{read_json, read_toml},
     llm_model::{
         Gemma3_4BIt, Gpt4o, Llama31_8BInstruct, LlmModelName, Mistral7BInstructV03, Qwen3_4B,
         Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
