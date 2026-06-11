@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import fcntl
 import importlib
 import json
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import modal
 from modal_experiment_paths import experiment_service_state_volume_name
 
 CONFIG_PATH = Path("src_py/modal/orchestrator_config.json")
+CONFIG_LOCK_PATH = Path("src_py/modal/orchestrator_config.lock")
 
 
 def _repo_root() -> Path:
@@ -122,6 +125,19 @@ def _remove_config_file(config_path: Path) -> None:
         config_path.unlink()
 
 
+@contextmanager
+def _config_file_lock(repo_root: Path):
+    lock_path = repo_root / CONFIG_LOCK_PATH
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        print("Waiting for config file lock...", flush=True)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _launch_orchestration(repo_root: Path):
     repo_root_str = str(repo_root)
     if repo_root_str not in sys.path:
@@ -147,10 +163,6 @@ def main() -> int:
     )
     app_name = _orchestrator_app_name(model_cli_name, config_nickname)
     repo_root = _repo_root()
-    config_path = _write_orchestrator_config(
-        repo_root, cli_args, service_state_volume_name, app_name
-    )
-    print(f"Wrote orchestrator config: {config_path}", flush=True)
     print(f"Validated orchestrator num_gpus: {num_gpus}", flush=True)
     print(
         "Validated orchestrator runtime: local wrapper-managed inference/training",
@@ -162,15 +174,21 @@ def main() -> int:
     )
 
     orchestration_call = None
-    try:
-        print(
-            f"Submitting Modal orchestration app in detached mode: {app_name}",
-            flush=True,
-        )
-        orchestration_call = _launch_orchestration(repo_root)
-    finally:
-        _remove_config_file(config_path)
-        print(f"Removed orchestrator config: {config_path}", flush=True)
+    config_path = repo_root / CONFIG_PATH
+    with _config_file_lock(repo_root):
+        try:
+            config_path = _write_orchestrator_config(
+                repo_root, cli_args, service_state_volume_name, app_name
+            )
+            print(f"Wrote orchestrator config: {config_path}", flush=True)
+            print(
+                f"Submitting Modal orchestration app in detached mode: {app_name}",
+                flush=True,
+            )
+            orchestration_call = _launch_orchestration(repo_root)
+        finally:
+            _remove_config_file(config_path)
+            print(f"Removed orchestrator config: {config_path}", flush=True)
 
     if orchestration_call is None:
         raise RuntimeError("failed to submit Modal orchestration call")

@@ -1,6 +1,6 @@
 uv run python scripts/launch_modal_orchestration.py \
     --model-cli-name llama-3.1-8b-instruct \
-    --max-rollout-concurrency 300 \
+    --max-rollout-concurrency 1024 \
     --config-nickname notool \
     --validation-rollout-config-path config/rollout_config_validation_notool.json \
     --training-rollout-config-path config/rollout_config_training_notool.json \

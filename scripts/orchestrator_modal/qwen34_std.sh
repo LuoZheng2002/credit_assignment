@@ -1,6 +1,6 @@
 uv run python scripts/launch_modal_orchestration.py \
     --model-cli-name qwen3-4b \
-    --max-rollout-concurrency 300 \
+    --max-rollout-concurrency 1024 \
     --config-nickname std \
     --validation-rollout-config-path config/rollout_config_validation_tool.json \
     --training-rollout-config-path config/rollout_config_training_std.json \

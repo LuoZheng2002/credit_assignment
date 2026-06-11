@@ -386,15 +386,20 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
     let final_tree = DirectTree::<M, S>::from_action_log(&action_log);
     if let Some(all_correct) = classify_all_same_trunk_tree(&final_tree) {
         if all_correct {
-            let num = num_all_correct_trees.fetch_add(1, Ordering::Relaxed) + 1;
-            log_key_value_pair("num_all_correct_trees", num.to_string());
+            num_all_correct_trees.fetch_add(1, Ordering::Relaxed);
         } else {
-            let num = num_all_incorrect_trees.fetch_add(1, Ordering::Relaxed) + 1;
-            log_key_value_pair("num_all_incorrect_trees", num.to_string());
+            num_all_incorrect_trees.fetch_add(1, Ordering::Relaxed);
         }
     }
     // log_info(format!("Rollout {} finished", question.flat_id));
     let finished = num_finished_trees.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let num_all_correct = num_all_correct_trees.load(Ordering::Relaxed);
+    let num_all_incorrect = num_all_incorrect_trees.load(Ordering::Relaxed);
+    let mixed = finished - num_all_correct - num_all_incorrect;
+    log_key_value_pair(
+        "trees_correctness (all [tick], all [cross], mixed)",
+        format!("({num_all_correct}, {num_all_incorrect}, {mixed})"),
+    );
     log_worker_progress(
         "trees",
         finished as f32 / total_trees_to_finish as f32,

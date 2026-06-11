@@ -792,11 +792,8 @@ def _run_unified_loop(
         )
         _tui_key_value("trajectory_length_cap", str(trajectory_length_cap))
         _tui_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}")
-        _tui_info(f"gpu_memory_usage_pct: {gpu_memory_usage_pct:.2f}%")
         _tui_key_value("gpu_memory_allocated_pct", f"{gpu_memory_allocated_pct:.2f}")
-        _tui_info(f"gpu_memory_allocated_pct: {gpu_memory_allocated_pct:.2f}%")
         _tui_key_value("gpu_memory_reserved_pct", f"{gpu_memory_reserved_pct:.2f}")
-        _tui_info(f"gpu_memory_reserved_pct: {gpu_memory_reserved_pct:.2f}%")
         if _is_primary_rank():
             _tui_key_value("global_step", str(global_step))
             _tui_key_value("iteration", str(iteration_index))

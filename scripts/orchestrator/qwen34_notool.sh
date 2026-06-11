@@ -1,6 +1,6 @@
 cargo run --bin bin_orchestrator -- \
     --model-cli-name qwen3-4b \
-    --max-rollout-concurrency 300 \
+    --max-rollout-concurrency 1024 \
     --config-nickname notool \
     --validation-rollout-config-path config/rollout_config_validation_notool.json \
     --training-rollout-config-path config/rollout_config_training_notool.json \

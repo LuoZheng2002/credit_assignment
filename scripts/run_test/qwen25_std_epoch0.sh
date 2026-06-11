@@ -1,6 +1,6 @@
 cargo run --bin bin_run_test -- \
     --model-cli-name qwen2.5-7b \
-    --max-rollout-concurrency 300 \
+    --max-rollout-concurrency 1024 \
     --config-nickname std \
     --rollout-config-path config/rollout_config_testing_tool.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \

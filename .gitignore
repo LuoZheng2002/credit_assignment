@@ -16,6 +16,7 @@ __pycache__
 log
 logs
 plots
+modal_downloads
 
 .venv
 # Added by cargo
