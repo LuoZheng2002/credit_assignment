@@ -18,7 +18,7 @@ use crate::{
     get_accuracy::get_accuracy,
     jinja_directories::{
         model_checkpoint_dir_from_template, model_metrics_path_from_template,
-        model_parent_dir_from_template,
+        model_parent_dir_from_template, progress_save_path_from_template,
     },
     json_line_util::write_json,
     launch_inference_wrapper::launch_inference_wrapper_process,
@@ -154,10 +154,12 @@ impl Orchestrator {
     }
 
     pub fn progress_save_path(model_cli_name: &str, config_nickname: &str) -> String {
-        format!(
-            "results/{}/{}/orchestration_progress.json",
-            model_cli_name, config_nickname,
-        )
+        progress_save_path_from_template(model_cli_name, config_nickname).unwrap_or_else(|err| {
+            panic!(
+                "failed to render progress save path for model_cli_name={}, config_nickname={}: {}",
+                model_cli_name, config_nickname, err
+            )
+        })
     }
     pub async fn orchestrate<M: LlmModelMarker>(&mut self) -> Result<(), String> {
         loop {

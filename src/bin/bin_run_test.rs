@@ -11,7 +11,7 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     get_accuracy::{TestAccuracyResult, get_test_accuracies},
-    jinja_directories::model_parent_dir_from_template,
+    jinja_directories::{model_parent_dir_from_template, test_accuracy_path_from_template},
     json_line_util::{read_json, write_json},
     launch_sglang_server::{
         best_effort_shutdown_stale_sglang_server, launch_sglang_server_process, model_uses_sglang,
@@ -250,10 +250,13 @@ async fn main() {
     )
     .unwrap();
 
-    let output_path = format!(
-        "results/{}/{}/test_accuracy_epoch_{}.json",
-        model_cli_name, args.config_nickname, args.epoch
-    );
+    let output_path = test_accuracy_path_from_template(&model_cli_name, &args.config_nickname, args.epoch)
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to render test accuracy path for model_cli_name={}, config_nickname={}, epoch={}: {}",
+                model_cli_name, args.config_nickname, args.epoch, err
+            )
+        });
     write_json(&output_path, &test_result).unwrap();
     println!("Test accuracy results written to {}", output_path);
 

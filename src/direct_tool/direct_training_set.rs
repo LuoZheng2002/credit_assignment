@@ -23,6 +23,9 @@ use crate::{
         hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
+    jinja_directories::{
+        training_trajectories_path_from_template, training_trajectories_stats_path_from_template,
+    },
     json_line_util::{read_json, write_json},
     llm_model::LlmModelMarker,
 };
@@ -786,22 +789,29 @@ impl<M: LlmModelMarker> AssetFileTrainingTrajectories<M> {
         short_hash
     }
     pub fn file_path(&self) -> String {
-        format!(
-            "results/{}/{}/epoch_{}/training_trajectories_{}.sqlite",
-            M::CLI_NAME,
-            self.config_nickname,
-            self.epoch,
-            self.to_short_hash()
-        )
+        let hash = self.to_short_hash();
+        training_trajectories_path_from_template(M::CLI_NAME, &self.config_nickname, self.epoch, &hash)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "failed to render training trajectories path for model_cli_name={}, config_nickname={}, epoch={}, hash={}: {}",
+                    M::CLI_NAME, self.config_nickname, self.epoch, hash, err
+                )
+            })
     }
     pub fn statistics_file_path(&self) -> String {
-        format!(
-            "results/{}/{}/epoch_{}/training_trajectories_{}_statistics.json",
+        let hash = self.to_short_hash();
+        training_trajectories_stats_path_from_template(
             M::CLI_NAME,
-            self.config_nickname,
+            &self.config_nickname,
             self.epoch,
-            self.to_short_hash()
+            &hash,
         )
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to render training trajectories stats path for model_cli_name={}, config_nickname={}, epoch={}, hash={}: {}",
+                M::CLI_NAME, self.config_nickname, self.epoch, hash, err
+            )
+        })
     }
     fn version_tracking_path(&self) -> String {
         format!(

@@ -9,7 +9,6 @@ from typing import Any
 import modal
 
 MINUTES = 60
-APP_NAME = "credit-assignment-orchestrator-service"
 REGION = "us-west"
 
 ORCHESTRATOR_CONFIG_RELATIVE_PATH = Path("src_py/modal/orchestrator_config.json")
@@ -103,9 +102,17 @@ def _load_orchestrator_config_payload() -> dict[str, Any]:
             "orchestrator config field 'service_state_volume_name' must be non-empty"
         )
 
+    app_name = config_payload.get("app_name")
+    if not isinstance(app_name, str):
+        raise RuntimeError("orchestrator config field 'app_name' must be a string")
+    app_name = app_name.strip()
+    if not app_name:
+        raise RuntimeError("orchestrator config field 'app_name' must be non-empty")
+
     return {
         "args": validated_args,
         "service_state_volume_name": service_state_volume_name,
+        "app_name": app_name,
     }
 
 
@@ -136,6 +143,7 @@ DEPLOY_CONFIG_NICKNAME = _extract_required_cli_arg(
 )
 DEPLOY_NUM_GPUS = _extract_num_gpus(DEPLOY_ORCHESTRATOR_CLI_ARGS)
 GPU = f"H100:{DEPLOY_NUM_GPUS}"
+APP_NAME = str(DEPLOY_ORCHESTRATOR_CONFIG["app_name"])
 SERVICE_STATE_VOLUME_NAME = str(DEPLOY_ORCHESTRATOR_CONFIG["service_state_volume_name"])
 service_state_volume = modal.Volume.from_name(
     SERVICE_STATE_VOLUME_NAME,

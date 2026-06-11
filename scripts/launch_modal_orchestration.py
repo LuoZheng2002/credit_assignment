@@ -8,7 +8,6 @@ from pathlib import Path
 import modal
 from modal_experiment_paths import experiment_service_state_volume_name
 
-APP_NAME = "credit-assignment-orchestrator-service"
 CONFIG_PATH = Path("src_py/modal/orchestrator_config.json")
 
 
@@ -37,8 +36,15 @@ def _extract_required_cli_arg(cli_args: list[str], flag_name: str) -> str:
     raise RuntimeError(f"Missing required {flag_name} argument")
 
 
+def _orchestrator_app_name(model_cli_name: str, config_nickname: str) -> str:
+    return f"credit-assignment-{model_cli_name}-{config_nickname}"
+
+
 def _write_orchestrator_config(
-    repo_root: Path, cli_args: list[str], service_state_volume_name: str
+    repo_root: Path,
+    cli_args: list[str],
+    service_state_volume_name: str,
+    app_name: str,
 ) -> Path:
     if not cli_args:
         raise RuntimeError(
@@ -49,6 +55,7 @@ def _write_orchestrator_config(
     payload = {
         "args": cli_args,
         "service_state_volume_name": service_state_volume_name,
+        "app_name": app_name,
     }
     config_path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
     return config_path
@@ -138,9 +145,10 @@ def main() -> int:
     service_state_volume_name = experiment_service_state_volume_name(
         model_cli_name, config_nickname
     )
+    app_name = _orchestrator_app_name(model_cli_name, config_nickname)
     repo_root = _repo_root()
     config_path = _write_orchestrator_config(
-        repo_root, cli_args, service_state_volume_name
+        repo_root, cli_args, service_state_volume_name, app_name
     )
     print(f"Wrote orchestrator config: {config_path}", flush=True)
     print(f"Validated orchestrator num_gpus: {num_gpus}", flush=True)
@@ -156,7 +164,7 @@ def main() -> int:
     orchestration_call = None
     try:
         print(
-            f"Submitting Modal orchestration app in detached mode: {APP_NAME}",
+            f"Submitting Modal orchestration app in detached mode: {app_name}",
             flush=True,
         )
         orchestration_call = _launch_orchestration(repo_root)

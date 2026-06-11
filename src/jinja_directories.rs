@@ -13,6 +13,12 @@ const INFERENCE_WRAPPER_LOG_PATH_TEMPLATE_PATH: &str =
 const MODEL_PARENT_DIR_TEMPLATE_PATH: &str = "config/directories/model_parent_dir.jinja";
 const MODEL_CHECKPOINT_DIR_TEMPLATE_PATH: &str = "config/directories/model_checkpoint_dir.jinja";
 const MODEL_METRICS_PATH_TEMPLATE_PATH: &str = "config/directories/model_metrics_path.jinja";
+const PROGRESS_SAVE_PATH_TEMPLATE_PATH: &str = "config/directories/progress_save_path.jinja";
+const TEST_ACCURACY_PATH_TEMPLATE_PATH: &str = "config/directories/test_accuracy_path.jinja";
+const TRAINING_TRAJECTORIES_PATH_TEMPLATE_PATH: &str =
+    "config/directories/training_trajectories_path.jinja";
+const TRAINING_TRAJECTORIES_STATS_PATH_TEMPLATE_PATH: &str =
+    "config/directories/training_trajectories_stats_path.jinja";
 const TRAINING_SUMMARY_PARENT_DIR_TEMPLATE_PATH: &str =
     "config/directories/training_summary_parent_dir.jinja";
 const TRAINING_WRAPPER_LOG_PATH_TEMPLATE_PATH: &str =
@@ -53,6 +59,36 @@ static MODEL_METRICS_PATH_TEMPLATE_ENVIRONMENT: LazyLock<
     Result<minijinja::Environment<'static>, String>,
 > = LazyLock::new(|| {
     load_jinja_template_environment(MODEL_METRICS_PATH_TEMPLATE_PATH, "model_metrics_path")
+});
+
+static PROGRESS_SAVE_PATH_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    load_jinja_template_environment(PROGRESS_SAVE_PATH_TEMPLATE_PATH, "progress_save_path")
+});
+
+static TEST_ACCURACY_PATH_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    load_jinja_template_environment(TEST_ACCURACY_PATH_TEMPLATE_PATH, "test_accuracy_path")
+});
+
+static TRAINING_TRAJECTORIES_PATH_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    load_jinja_template_environment(
+        TRAINING_TRAJECTORIES_PATH_TEMPLATE_PATH,
+        "training_trajectories_path",
+    )
+});
+
+static TRAINING_TRAJECTORIES_STATS_PATH_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    load_jinja_template_environment(
+        TRAINING_TRAJECTORIES_STATS_PATH_TEMPLATE_PATH,
+        "training_trajectories_stats_path",
+    )
 });
 
 static TRAINING_SUMMARY_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
@@ -138,6 +174,28 @@ fn render_model_config_template(
     )
 }
 
+fn render_training_trajectories_template(
+    template_env: &LazyLock<Result<minijinja::Environment<'static>, String>>,
+    template_name: &'static str,
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+    hash: &str,
+) -> Result<String, String> {
+    let storage_large_files_dir = storage_large_files_dir()?;
+    render_template(
+        template_env,
+        template_name,
+        json!({
+            "storage_large_files_dir": storage_large_files_dir,
+            "model_cli_name": model_cli_name,
+            "config_nickname": config_nickname,
+            "epoch": epoch,
+            "hash": hash,
+        }),
+    )
+}
+
 pub fn action_logs_parent_dir_from_template(
     model_cli_name: &str,
     config_nickname: &str,
@@ -203,6 +261,64 @@ pub fn model_metrics_path_from_template(
         model_cli_name,
         config_nickname,
         epoch,
+    )
+}
+
+pub fn progress_save_path_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+) -> Result<String, String> {
+    render_model_config_template(
+        &PROGRESS_SAVE_PATH_TEMPLATE_ENVIRONMENT,
+        "progress_save_path",
+        model_cli_name,
+        config_nickname,
+    )
+}
+
+pub fn test_accuracy_path_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+) -> Result<String, String> {
+    render_epoch_template(
+        &TEST_ACCURACY_PATH_TEMPLATE_ENVIRONMENT,
+        "test_accuracy_path",
+        model_cli_name,
+        config_nickname,
+        epoch,
+    )
+}
+
+pub fn training_trajectories_path_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+    hash: &str,
+) -> Result<String, String> {
+    render_training_trajectories_template(
+        &TRAINING_TRAJECTORIES_PATH_TEMPLATE_ENVIRONMENT,
+        "training_trajectories_path",
+        model_cli_name,
+        config_nickname,
+        epoch,
+        hash,
+    )
+}
+
+pub fn training_trajectories_stats_path_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+    hash: &str,
+) -> Result<String, String> {
+    render_training_trajectories_template(
+        &TRAINING_TRAJECTORIES_STATS_PATH_TEMPLATE_ENVIRONMENT,
+        "training_trajectories_stats_path",
+        model_cli_name,
+        config_nickname,
+        epoch,
+        hash,
     )
 }
 
