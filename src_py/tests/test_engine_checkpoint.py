@@ -60,6 +60,53 @@ class TestEngineCheckpoint(unittest.TestCase):
             self.assertEqual(0, resumed.accumulation_step)
             self.assertEqual("checkpoints", _read_latest_checkpoint_pointer(output_dir))
 
+    def test_save_and_load_checkpoint_roundtrip_ddp_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir)
+            model = torch.nn.Linear(4, 3)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+            inputs = torch.randn(2, 4)
+            loss = model(inputs).sum()
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+
+            expected_weight = model.weight.detach().clone()
+            expected_bias = model.bias.detach().clone()
+
+            _save_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                output_dir=output_dir,
+                checkpoint_tag="checkpoints",
+                training_plan="ddp",
+                global_step=4,
+                next_iteration_index=2,
+                next_batch_cursor=1,
+                accumulation_step=0,
+            )
+
+            with torch.no_grad():
+                model.weight.add_(5.0)
+                model.bias.sub_(5.0)
+
+            resumed = _load_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                output_dir=output_dir,
+                checkpoint_tag="checkpoints",
+                training_plan="ddp",
+            )
+
+            self.assertTrue(torch.allclose(expected_weight, model.weight.detach()))
+            self.assertTrue(torch.allclose(expected_bias, model.bias.detach()))
+            self.assertEqual(4, resumed.global_step)
+            self.assertEqual(2, resumed.next_iteration_index)
+            self.assertEqual(1, resumed.next_batch_cursor)
+            self.assertEqual(0, resumed.accumulation_step)
+            self.assertEqual("checkpoints", _read_latest_checkpoint_pointer(output_dir))
+
     def test_save_checkpoint_rejects_partial_accumulation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_dir = Path(tmp_dir)
@@ -114,9 +161,15 @@ class TestEngineCheckpoint(unittest.TestCase):
             self.assertEqual("", _resolve_resume_checkpoint_tag(output_dir, "auto"))
 
             latest_pointer.write_text("checkpoints\n", encoding="utf-8")
-            self.assertEqual("checkpoints", _resolve_resume_checkpoint_tag(output_dir, "latest"))
-            self.assertEqual("checkpoints", _resolve_resume_checkpoint_tag(output_dir, "auto"))
-            self.assertEqual("checkpoints", _resolve_resume_checkpoint_tag(output_dir, "checkpoints"))
+            self.assertEqual(
+                "checkpoints", _resolve_resume_checkpoint_tag(output_dir, "latest")
+            )
+            self.assertEqual(
+                "checkpoints", _resolve_resume_checkpoint_tag(output_dir, "auto")
+            )
+            self.assertEqual(
+                "checkpoints", _resolve_resume_checkpoint_tag(output_dir, "checkpoints")
+            )
 
 
 if __name__ == "__main__":

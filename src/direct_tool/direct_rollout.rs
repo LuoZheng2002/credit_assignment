@@ -6,6 +6,7 @@ use std::sync::{
 };
 
 use kll_rs::KllFloatSketch;
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 use reqwest::Client;
 use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
 use research_utility::{
@@ -508,12 +509,18 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
             epoch < total_epochs,
             "epoch ({epoch}) must be less than total_epochs ({total_epochs}) for training split"
         );
-        let training_segment_start = epoch * question_keys.len() / total_epochs;
+        let training_segment_start = if question_keys.is_empty() {
+            0
+        } else {
+            let mut training_segment_rng = StdRng::seed_from_u64(epoch as u64);
+            training_segment_rng.random_range(0..question_keys.len())
+        };
         question_keys.rotate_left(training_segment_start);
         log_key_value_pair(
             "training_segment_start_index",
             training_segment_start.to_string(),
         );
+        log_key_value_pair("training_segment_start_seed", epoch.to_string());
         log_key_value_pair(
             "training_segment_total_keys",
             question_keys.len().to_string(),

@@ -8,6 +8,7 @@ import random
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -16,6 +17,7 @@ from ..tui_logging import _tui_error, _tui_info, _tui_warning
 from .batch_dataset import LazyResolvedBatchLoader
 from .train_loop import run_training_loop
 from .training_plan import (
+    TRAINING_PLAN_DDP,
     TRAINING_PLAN_FSDP,
     TRAINING_PLAN_LORA,
     assert_supported_training_plan,
@@ -151,11 +153,12 @@ def _load_causal_lm_with_attention(
     }
     backend = "sdpa"
     try:
-        model = AutoModelForCausalLM.from_pretrained(
+        loaded_model: Any = AutoModelForCausalLM.from_pretrained(
             model_path,
             attn_implementation=backend,
             **load_kwargs,
-        ).to(device)
+        )
+        model = cast(torch.nn.Module, loaded_model.to(device))
         return model, backend
     except Exception as exc:
         _release_step_memory(device)
@@ -166,10 +169,11 @@ def _load_causal_lm_with_attention(
                 f"error_type={type(exc).__name__}"
             )
 
-    model = AutoModelForCausalLM.from_pretrained(
+    fallback_loaded_model: Any = AutoModelForCausalLM.from_pretrained(
         model_path,
         **load_kwargs,
-    ).to(device)
+    )
+    model = cast(torch.nn.Module, fallback_loaded_model.to(device))
     return model, "eager"
 
 
@@ -389,6 +393,13 @@ def _init_distributed_device() -> torch.device:
     return torch.device("cuda", local_rank)
 
 
+def _unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
+    wrapped_module = getattr(model, "module", None)
+    if isinstance(wrapped_module, torch.nn.Module):
+        return wrapped_module
+    return model
+
+
 def _save_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -472,13 +483,15 @@ def _save_checkpoint(
         optimizer.state_dict(), checkpoint_dir / f"optimizer_state.rank{rank}.pt"
     )
 
-    if training_plan == TRAINING_PLAN_LORA:
+    if training_plan in {TRAINING_PLAN_LORA, TRAINING_PLAN_DDP}:
         if rank == 0:
-            unwrapped = model.module if hasattr(model, "module") else model
-            torch.save(
-                _extract_lora_checkpoint_state_dict(unwrapped),
-                checkpoint_dir / "model_state.pt",
+            unwrapped = _unwrap_model(model)
+            state_dict = (
+                _extract_lora_checkpoint_state_dict(unwrapped)
+                if training_plan == TRAINING_PLAN_LORA
+                else unwrapped.state_dict()
             )
+            torch.save(state_dict, checkpoint_dir / "model_state.pt")
             _write_latest_checkpoint_pointer(
                 output_dir=output_dir, checkpoint_tag=checkpoint_tag
             )
@@ -577,14 +590,13 @@ def _save_final_model_folder(
 
     _distributed_barrier()
 
-    if training_plan == TRAINING_PLAN_LORA:
+    if training_plan in {TRAINING_PLAN_LORA, TRAINING_PLAN_DDP}:
         if rank == 0:
-            unwrapped = model.module if hasattr(model, "module") else model
-            export_model = (
-                unwrapped.merge_and_unload()
-                if hasattr(unwrapped, "merge_and_unload")
-                else unwrapped
-            )
+            unwrapped = _unwrap_model(model)
+            export_model: Any = unwrapped
+            merge_and_unload = getattr(unwrapped, "merge_and_unload", None)
+            if training_plan == TRAINING_PLAN_LORA and callable(merge_and_unload):
+                export_model = merge_and_unload()
             export_model.save_pretrained(
                 final_model_output_path,
                 safe_serialization=True,
@@ -725,12 +737,16 @@ def _load_checkpoint(
     )
 
     model_state_dict = torch.load(model_state_path, map_location="cpu")
-    if training_plan == TRAINING_PLAN_LORA:
-        unwrapped = model.module if hasattr(model, "module") else model
+    incompatible: Any = None
+    if training_plan in {TRAINING_PLAN_LORA, TRAINING_PLAN_DDP}:
+        unwrapped = _unwrap_model(model)
         assert isinstance(model_state_dict, dict), (
             "checkpoint model state must be a state_dict"
         )
-        _load_lora_checkpoint_state_dict(unwrapped, model_state_dict)
+        if training_plan == TRAINING_PLAN_LORA:
+            _load_lora_checkpoint_state_dict(unwrapped, model_state_dict)
+        else:
+            incompatible = unwrapped.load_state_dict(model_state_dict, strict=True)
     else:
         assert training_plan == TRAINING_PLAN_FSDP, (
             "unknown training plan for checkpoint loading"
@@ -748,7 +764,7 @@ def _load_checkpoint(
         with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, load_policy):
             incompatible = model.load_state_dict(model_state_dict, strict=True)
 
-    if training_plan != TRAINING_PLAN_LORA:
+    if training_plan in {TRAINING_PLAN_DDP, TRAINING_PLAN_FSDP}:
         assert len(incompatible.missing_keys) == 0, (
             "checkpoint model state is missing keys"
         )
@@ -1115,7 +1131,8 @@ def _build_lora_model(
     base_model, attention_backend = _load_causal_lm_with_attention(
         model_path=model_path, device=device
     )
-    base_model.gradient_checkpointing_enable()
+    base_model_any: Any = base_model
+    base_model_any.gradient_checkpointing_enable()
 
     lora_config = LoraConfig(
         r=lora_rank,
@@ -1125,12 +1142,23 @@ def _build_lora_model(
         bias="none",
         task_type="CAUSAL_LM",
     )
-    model = get_peft_model(base_model, lora_config)
+    model = cast(torch.nn.Module, get_peft_model(base_model_any, lora_config))
     trainable_count = sum(
         parameter.numel() for parameter in model.parameters() if parameter.requires_grad
     )
     assert trainable_count > 0, "LoRA model must expose trainable parameters"
     return model, attention_backend
+
+
+def _build_full_model(
+    model_path: str, device: torch.device
+) -> tuple[torch.nn.Module, str]:
+    base_model, attention_backend = _load_causal_lm_with_attention(
+        model_path=model_path, device=device
+    )
+    base_model_any: Any = base_model
+    base_model_any.gradient_checkpointing_enable()
+    return base_model, attention_backend
 
 
 def _build_fsdp_model(
@@ -1139,10 +1167,9 @@ def _build_fsdp_model(
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
     from torch.distributed.fsdp import MixedPrecision
 
-    base_model, attention_backend = _load_causal_lm_with_attention(
+    base_model, attention_backend = _build_full_model(
         model_path=model_path, device=device
     )
-    base_model.gradient_checkpointing_enable()
 
     mixed_precision = MixedPrecision(
         param_dtype=torch.bfloat16,
@@ -1246,6 +1273,10 @@ def train(config: TrainConfig) -> None:
             lora_target_modules_csv=config.lora_target_modules_csv,
             device=device,
         )
+    elif training_plan == TRAINING_PLAN_DDP:
+        model, attention_backend = _build_full_model(
+            model_path=resolved_model_path, device=device
+        )
     else:
         model, attention_backend = _build_fsdp_model(
             model_path=resolved_model_path, device=device
@@ -1253,7 +1284,7 @@ def train(config: TrainConfig) -> None:
 
     _tui_info(f"rank={rank} attention_backend={attention_backend}")
 
-    input_embeddings = model.get_input_embeddings()
+    input_embeddings = cast(Any, model).get_input_embeddings()
     assert input_embeddings is not None, "model must expose input embeddings"
     model_vocab_size = input_embeddings.num_embeddings
 
@@ -1264,7 +1295,7 @@ def train(config: TrainConfig) -> None:
         betas=(0.9, 0.95),
     )
 
-    if training_plan == TRAINING_PLAN_LORA and world_size > 1:
+    if training_plan in {TRAINING_PLAN_LORA, TRAINING_PLAN_DDP} and world_size > 1:
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[device.index],

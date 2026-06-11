@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 TRAINING_PLAN_LORA = "lora"
+TRAINING_PLAN_DDP = "ddp"
 TRAINING_PLAN_FSDP = "fsdp"
 
 _LEGACY_PLAN_ALIASES = {
@@ -19,6 +20,7 @@ def assert_supported_training_plan(plan_name: str) -> str:
     normalized = normalize_training_plan(plan_name)
     assert normalized in {
         TRAINING_PLAN_LORA,
+        TRAINING_PLAN_DDP,
         TRAINING_PLAN_FSDP,
-    }, "training_plan must be one of: lora, fsdp"
+    }, "training_plan must be one of: lora, ddp, fsdp"
     return normalized
