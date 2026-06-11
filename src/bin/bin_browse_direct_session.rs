@@ -23,7 +23,7 @@ use credit_assignment::{
     },
     json_toml_utils::read_json,
     llm_model::{
-        Gemma3_4BIt, Gpt4o, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
+        Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
         Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
 };
@@ -2491,8 +2491,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         LlmModelName::Qwen35_08b, Qwen35_08B,
         LlmModelName::Gemma3_4b, Gemma3_4BIt,
         LlmModelName::Llama31_8b, Llama31_8BInstruct,
-        LlmModelName::Mistral7bInstructV03, Mistral7BInstructV03,
-        LlmModelName::Gpt4o, Gpt4o;
+        LlmModelName::Mistral7bInstructV03, Mistral7BInstructV03;
         DatasetSplitEnum::Training, Training,
         DatasetSplitEnum::Validation, Validation,
         DatasetSplitEnum::Testing, Testing

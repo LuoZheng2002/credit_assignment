@@ -1,5 +1,5 @@
 pub mod gemma3_4b_it;
-pub mod gpt_4o;
+
 pub mod llama31_8b_instruct;
 pub mod llm_model_name;
 pub mod llm_model_traits;
@@ -14,7 +14,7 @@ pub mod sglang_model_shared;
 pub use crate::token_array::TokenArray;
 pub use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate, Top8Candidates};
 pub use gemma3_4b_it::{Gemma3_4BIt, Gemma3_4BItLlmCallable, Gemma3_4BItTokenizer};
-pub use gpt_4o::{Gpt4o, Gpt4oLlmCallable, Gpt4oTokenizer};
+
 pub use llama31_8b_instruct::{
     Llama31_8BInstruct, Llama31_8BInstructLlmCallable, Llama31_8BInstructTokenizer,
 };

@@ -18,7 +18,7 @@ use credit_assignment::{
         model_uses_sglang, shut_down_inference_wrapper_process,
     },
     llm_model::{
-        Gemma3_4BIt, Gpt4o, Llama31_8BInstruct, LlmCliArgs, LlmModelMarker, LlmModelName,
+        Gemma3_4BIt, Llama31_8BInstruct, LlmCliArgs, LlmModelMarker, LlmModelName,
         Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
     load_initial_model::load_initial_model,
@@ -67,7 +67,6 @@ struct Args {
 
 fn model_cli_name_to_string(model_name: &LlmModelName) -> String {
     match model_name {
-        LlmModelName::Gpt4o => Gpt4o::CLI_NAME,
         LlmModelName::Gemma3_4b => Gemma3_4BIt::CLI_NAME,
         LlmModelName::Llama31_8b => Llama31_8BInstruct::CLI_NAME,
         LlmModelName::Mistral7bInstructV03 => Mistral7BInstructV03::CLI_NAME,
@@ -251,8 +250,7 @@ async fn main() {
         LlmModelName::Qwen35_08b, Qwen35_08B,
         LlmModelName::Gemma3_4b, Gemma3_4BIt,
         LlmModelName::Llama31_8b, Llama31_8BInstruct,
-        LlmModelName::Mistral7bInstructV03, Mistral7BInstructV03,
-        LlmModelName::Gpt4o, Gpt4o
+        LlmModelName::Mistral7bInstructV03, Mistral7BInstructV03
     )
     .unwrap();
 

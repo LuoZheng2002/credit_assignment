@@ -15,7 +15,7 @@ use credit_assignment::{
     },
     json_toml_utils::read_json,
     llm_model::{
-        Gemma3_4BIt, Gpt4o, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
+        Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
         MyTokenizer, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
 };
@@ -702,7 +702,6 @@ async fn main() {
         advantage_calculation_policy,
     };
     match model {
-        LlmModelName::Gpt4o => run_program::<Gpt4o>(run_program_args).await,
         LlmModelName::Gemma3_4b => run_program::<Gemma3_4BIt>(run_program_args).await,
         LlmModelName::Llama31_8b => run_program::<Llama31_8BInstruct>(run_program_args).await,
         LlmModelName::Mistral7bInstructV03 => {
