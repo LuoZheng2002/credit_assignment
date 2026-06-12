@@ -12,6 +12,40 @@ import time
 from pathlib import Path
 from typing import Any
 
+
+def _early_redirect_to_log(argv: list[str]) -> None:
+    """Redirect stdout/stderr to the wrapper log file before any application imports.
+
+    Scanning argv directly (without argparse) keeps this function stdlib-only so that
+    any import error in an application dependency is captured in the log rather than
+    silently swallowed by the Stdio::null() pipes set by the Rust launcher.
+    """
+    log_path: str | None = None
+    for i, arg in enumerate(argv):
+        if arg == "--wrapper-log-path" and i + 1 < len(argv):
+            log_path = argv[i + 1]
+            break
+        if arg.startswith("--wrapper-log-path="):
+            log_path = arg[len("--wrapper-log-path=") :]
+            break
+    if not log_path or not log_path.strip():
+        return
+    path = Path(log_path.strip()).expanduser().resolve()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(path, "a", buffering=1, encoding="utf-8")  # noqa: SIM115
+        os.dup2(handle.fileno(), 1)
+        os.dup2(handle.fileno(), 2)
+        sys.stdout = os.fdopen(1, "w", buffering=1, encoding="utf-8", closefd=False)
+        sys.stderr = os.fdopen(2, "w", buffering=1, encoding="utf-8", closefd=False)
+    except Exception:  # noqa: BLE001
+        pass  # best-effort; _configure_wrapper_log_path in main() will report the failure
+
+
+_early_redirect_to_log(sys.argv)
+
+# Application-level imports placed after the early redirect so that any ImportError
+# or module-load-time exception is captured in the log file rather than discarded.
 from pydantic import ValidationError
 
 from src_py.load_model_to_path import ensure_model_snapshot
