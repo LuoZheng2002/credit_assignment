@@ -18,4 +18,5 @@ cargo run --bin bin_orchestrator -- \
     --storage-large-files-dir "/volume/large_files" \
     --storage-medium-files-dir "/volume/medium_files" \
     --storage-small-files-dir "/volume/small_files" \
+    --keep-action-logs true \
     --ui true

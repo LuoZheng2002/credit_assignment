@@ -75,6 +75,8 @@ struct Args {
     storage_small_files_dir: String,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
+    #[arg(long, action = ArgAction::Set, default_value_t = true)]
+    keep_action_logs: bool,
 }
 
 fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
@@ -126,6 +128,7 @@ async fn main() {
         storage_large_files_dir,
         storage_medium_files_dir,
         storage_small_files_dir,
+        keep_action_logs,
     } = Args::parse();
     let process_title = format!("orchestrator_{}_{}", model_cli_name, config_nickname);
     set_title(&process_title);
@@ -232,6 +235,7 @@ async fn main() {
         inference_server_handle: None,
         inference_wrapper_log_path,
         training_wrapper_log_path,
+        keep_action_logs,
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         training_config_common,

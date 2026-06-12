@@ -44,6 +44,7 @@ pub struct Orchestrator {
     pub inference_server_handle: Option<InferenceServerHandle>,
     pub inference_wrapper_log_path: String,
     pub training_wrapper_log_path: String,
+    pub keep_action_logs: bool,
     // for training set generation
     pub cumulative_avg_abs_advantage_cutoff: f32,
     pub advantage_calculation_policy: AdvantageCalculationPolicy,
@@ -786,6 +787,14 @@ impl Orchestrator {
         &self,
         epoch: usize,
     ) -> Result<(), String> {
+        if self.keep_action_logs {
+            log_info(format!(
+                "Keeping training and validation rollout action logs for epoch {}",
+                epoch
+            ));
+            return Ok(());
+        }
+
         self.delete_file_if_exists(
             &action_logs_file_path::<M, Training>(&self.config_nickname, epoch),
             &format!("training rollout action logs for epoch {}", epoch),
