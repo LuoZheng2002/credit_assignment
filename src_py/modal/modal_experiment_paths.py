@@ -60,3 +60,15 @@ def experiment_local_small_files_dir(
         / config_nickname
         / "small_files"
     )
+
+
+def experiment_local_large_files_dir(
+    repo_root: Path, model_cli_name: str, config_nickname: str
+) -> Path:
+    return (
+        repo_root
+        / LOCAL_MODAL_DOWNLOADS_DIR
+        / model_cli_name
+        / config_nickname
+        / "large_files"
+    )

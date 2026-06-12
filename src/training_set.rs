@@ -19,7 +19,7 @@ use crate::{
     direct_tool::{
         rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         tree::{DirectTree, SegmentContent, SegmentId},
-        tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
+        tree_action_log::{AssetFileActionLogs, DirectTreeActionLog},
         hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
@@ -842,7 +842,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
         })
     }
     async fn synchronize(&self) -> Base64Hash {
-        let asset_file_rollout_logs = AssetFileDirectTreeActionLogs::<M, Training> {
+        let asset_file_rollout_logs = AssetFileActionLogs::<M, Training> {
             nickname: self.config_nickname.clone(),
             rollout_config: self.rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),

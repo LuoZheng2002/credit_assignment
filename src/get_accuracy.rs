@@ -5,7 +5,7 @@ use tokio::{sync::Semaphore, task::JoinSet};
 use crate::{
     direct_tool::{
         tree::DirectTree,
-        tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
+        tree_action_log::{AssetFileActionLogs, DirectTreeActionLog},
         hybrid_dataset::{AssetFileHybridDataset, DatasetSplit},
     },
     llm_model::LlmModelMarker,
@@ -106,7 +106,7 @@ fn tree_accuracy<M: LlmModelMarker, S: DatasetSplit>(
 }
 
 pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
-    asset_file_action_logs: AssetFileDirectTreeActionLogs<M, S>,
+    asset_file_action_logs: AssetFileActionLogs<M, S>,
     progress_bar_label: &str,
 ) -> AccuracyStats {
     let asset_file_dataset = AssetFileHybridDataset::<S>(PhantomData);
@@ -214,7 +214,7 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
 }
 
 pub async fn get_per_question_accuracies<M: LlmModelMarker, S: DatasetSplit>(
-    asset_file_action_logs: AssetFileDirectTreeActionLogs<M, S>,
+    asset_file_action_logs: AssetFileActionLogs<M, S>,
     progress_bar_label: &str,
 ) -> Vec<Option<f32>> {
     let asset_file_dataset = AssetFileHybridDataset::<S>(PhantomData);
@@ -316,7 +316,7 @@ pub struct TestAccuracyResult {
 }
 
 pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
-    asset_file_action_logs: AssetFileDirectTreeActionLogs<M, S>,
+    asset_file_action_logs: AssetFileActionLogs<M, S>,
     progress_bar_label: &str,
     max_num_trunks: usize,
 ) -> TestAccuracyResult {

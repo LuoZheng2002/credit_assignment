@@ -8,7 +8,7 @@ from pathlib import Path
 import _bootstrap  # noqa: F401
 
 from src_py.modal.modal_experiment_paths import (
-    experiment_local_small_files_dir,
+    experiment_local_large_files_dir,
     experiment_service_state_volume_name,
 )
 
@@ -26,7 +26,7 @@ def _reset_local_destination(local_destination: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Download the Modal small_files folder for a specific experiment"
+        description="Download the Modal large_files folder for a specific experiment"
     )
     parser.add_argument("--model-cli-name", required=True)
     parser.add_argument("--config-nickname", required=True)
@@ -36,7 +36,7 @@ def main() -> int:
     service_state_volume_name = experiment_service_state_volume_name(
         args.model_cli_name, args.config_nickname
     )
-    local_destination = experiment_local_small_files_dir(
+    local_destination = experiment_local_large_files_dir(
         repo_root, args.model_cli_name, args.config_nickname
     )
     destination_parent = local_destination.parent
@@ -52,7 +52,7 @@ def main() -> int:
         "get",
         "--force",
         service_state_volume_name,
-        "small_files",
+        "large_files",
         str(destination_parent),
     ]
     result = subprocess.run(command, cwd=str(repo_root), check=False)
@@ -62,7 +62,7 @@ def main() -> int:
         )
 
     print(
-        f"Downloaded small_files from volume '{service_state_volume_name}' to {local_destination}",
+        f"Downloaded large_files from volume '{service_state_volume_name}' to {local_destination}",
         flush=True,
     )
     return 0

@@ -17,7 +17,7 @@ use credit_assignment::{
     direct_tool::{
         rollout_config::DirectRolloutConfig,
         tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
-        tree_action_log::{AssetFileDirectTreeActionLogs, DirectTreeActionLog},
+        tree_action_log::{AssetFileActionLogs, DirectTreeActionLog},
         tree_to_action::TokenBranchingScore,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
@@ -432,7 +432,7 @@ struct App<M: LlmModelMarker, S: DatasetSplit> {
     _model_marker: PhantomData<M>,
     override_hyperparameters: Option<PosteriorHyperparameters>,
     // action_log_store: DirectTreeActionLogStore<M>,
-    asset_file_action_logs: AssetFileDirectTreeActionLogs<M, S>,
+    asset_file_action_logs: AssetFileActionLogs<M, S>,
     question_store: SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>>,
     action_store: SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>,
     entry_keys: Vec<QuestionFlatId<S>>,
@@ -459,7 +459,7 @@ struct App<M: LlmModelMarker, S: DatasetSplit> {
 
 impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
     async fn new(
-        asset_file_action_logs: AssetFileDirectTreeActionLogs<M, S>,
+        asset_file_action_logs: AssetFileActionLogs<M, S>,
         // action_log_store: DirectTreeActionLogStore<M>,
         // entry_keys: Vec<usize>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
@@ -2359,7 +2359,7 @@ async fn run_model_app<'a, M: LlmModelMarker, S: DatasetSplit>(
         epoch,
         override_hyperparameters,
     } = run_model_app_args;
-    let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M, S> {
+    let asset_file_action_logs = AssetFileActionLogs::<M, S> {
         nickname: config_nickname,
         rollout_config,
         posterior_calculation_config,

@@ -11,7 +11,7 @@ use crate::{
         rollout::{RolloutProgramConfig, rollout_all},
         rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         training_set::AssetFileTrainingTrajectories,
-        tree_action_log::AssetFileDirectTreeActionLogs,
+        tree_action_log::AssetFileActionLogs,
         hybrid_dataset::{Training, Validation},
         posterior_calculation_config::PosteriorCalculationConfig,
     },
@@ -288,7 +288,7 @@ impl Orchestrator {
         epoch: usize,
     ) -> Result<(), String> {
         log_info("Reading and logging validation accuracy...");
-        let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M, Validation> {
+        let asset_file_action_logs = AssetFileActionLogs::<M, Validation> {
             nickname: self.config_nickname.clone(),
             rollout_config: self.validation_rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
@@ -332,7 +332,7 @@ impl Orchestrator {
         epoch: usize,
     ) -> Result<(), String> {
         log_info("Reading and logging training rollout accuracy...");
-        let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M, Training> {
+        let asset_file_action_logs = AssetFileActionLogs::<M, Training> {
             nickname: self.config_nickname.clone(),
             rollout_config: self.training_set_rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
@@ -766,7 +766,7 @@ impl Orchestrator {
         &self,
         epoch: usize,
     ) -> Result<(), String> {
-        let training_logs = AssetFileDirectTreeActionLogs::<M, Training> {
+        let training_logs = AssetFileActionLogs::<M, Training> {
             nickname: self.config_nickname.clone(),
             rollout_config: self.training_set_rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
@@ -778,7 +778,7 @@ impl Orchestrator {
             &format!("training rollout action logs for epoch {}", epoch),
         )?;
 
-        let validation_logs = AssetFileDirectTreeActionLogs::<M, Validation> {
+        let validation_logs = AssetFileActionLogs::<M, Validation> {
             nickname: self.config_nickname.clone(),
             rollout_config: self.validation_rollout_config.clone(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),

@@ -6,7 +6,7 @@ use credit_assignment::{
     direct_tool::{
         rollout::{RolloutProgramConfig, rollout_all},
         rollout_config::DirectRolloutConfig,
-        tree_action_log::AssetFileDirectTreeActionLogs,
+        tree_action_log::AssetFileActionLogs,
         hybrid_dataset::Testing,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
@@ -99,7 +99,7 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
     };
     let _ = rollout_all::<M, Testing>(program_config).await;
 
-    let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M, Testing> {
+    let asset_file_action_logs = AssetFileActionLogs::<M, Testing> {
         nickname: args.config_nickname.clone(),
         rollout_config: rollout_config.clone(),
         posterior_calculation_config: posterior_calculation_config,

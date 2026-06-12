@@ -311,7 +311,7 @@ pub enum RolloutPurpose {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound(deserialize = "S: DatasetSplit"))]
-pub struct AssetFileDirectTreeActionLogsTracking<S: DatasetSplit> {
+pub struct AssetFileActionLogsTracking<S: DatasetSplit> {
     pub dataset_hash: Base64Hash,
     pub config_nickname: String,
     pub rollout_config: DirectRolloutConfig<S>,
@@ -322,7 +322,7 @@ pub struct AssetFileDirectTreeActionLogsTracking<S: DatasetSplit> {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(bound(deserialize = "S: DatasetSplit"))]
-pub struct AssetFileDirectTreeActionLogs<M: LlmModelMarker, S: DatasetSplit> {
+pub struct AssetFileActionLogs<M: LlmModelMarker, S: DatasetSplit> {
     pub nickname: String,
     pub rollout_config: DirectRolloutConfig<S>,
     pub posterior_calculation_config: PosteriorCalculationConfig,
@@ -334,7 +334,7 @@ pub struct AssetFileDirectTreeActionLogs<M: LlmModelMarker, S: DatasetSplit> {
 // for this asset, we check if the tracking file is stale
 // if so, we delete the target file
 
-impl<M: LlmModelMarker, S: DatasetSplit> AssetFileDirectTreeActionLogs<M, S> {
+impl<M: LlmModelMarker, S: DatasetSplit> AssetFileActionLogs<M, S> {
     fn to_short_hash(&self) -> String {
         let serialized = serde_json::to_vec(self).unwrap();
         let hash = blake3::hash(&serialized);
@@ -360,7 +360,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> AssetFileDirectTreeActionLogs<M, S> {
         )
     }
     pub fn delete_target_file_if_stale(&self) {
-        let stale_reason: Option<String> = match read_json::<AssetFileDirectTreeActionLogsTracking<S>>(
+        let stale_reason: Option<String> = match read_json::<AssetFileActionLogsTracking<S>>(
             self.version_tracking_path(),
         ) {
             Ok(tracking_content) => {
@@ -421,7 +421,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> AssetFileDirectTreeActionLogs<M, S> {
         // we collect the dataset hash
         let dataset_asset_file = AssetFileHybridDataset::<S>(PhantomData);
         let dataset_hash = futures::executor::block_on(dataset_asset_file.synchronize());
-        let tracking_content = AssetFileDirectTreeActionLogsTracking {
+        let tracking_content = AssetFileActionLogsTracking {
             dataset_hash,
             config_nickname: self.nickname.clone(),
             rollout_config: self.rollout_config.clone(),
@@ -434,14 +434,14 @@ impl<M: LlmModelMarker, S: DatasetSplit> AssetFileDirectTreeActionLogs<M, S> {
 }
 
 #[async_trait::async_trait]
-impl<M: LlmModelMarker, S: DatasetSplit> AssetFile for AssetFileDirectTreeActionLogs<M, S> {
+impl<M: LlmModelMarker, S: DatasetSplit> AssetFile for AssetFileActionLogs<M, S> {
     type FileModel = SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>;
     async fn synchronize(&self) -> Base64Hash {
         // synchromize all dependency assets
         let dataset_asset_file = AssetFileHybridDataset::<S>(PhantomData);
         let dataset_hash = dataset_asset_file.synchronize().await;
         let tracking_content =
-            read_json::<AssetFileDirectTreeActionLogsTracking<S>>(self.version_tracking_path())
+            read_json::<AssetFileActionLogsTracking<S>>(self.version_tracking_path())
                 .expect("Tracking file missing for direct action log");
 
         assert_eq!(dataset_hash, tracking_content.dataset_hash);

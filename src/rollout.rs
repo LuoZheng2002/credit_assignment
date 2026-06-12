@@ -27,7 +27,7 @@ use crate::{
         rollout_config::DirectRolloutConfig,
         tree::{DirectTree, SegmentContent},
         tree_action::DirectTreeAction,
-        tree_action_log::{ActionStoreAdapter, AssetFileDirectTreeActionLogs},
+        tree_action_log::{ActionStoreAdapter, AssetFileActionLogs},
         tree_status::{
             DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus,
             TrunkSubStatus,
@@ -478,7 +478,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     let llm_callable = M::Callable::from_cli_args(client.clone(), &llm_cli_args);
     let asset_file_dataset = AssetFileHybridDataset::<S>(PhantomData);
     let dataset = asset_file_dataset.fetch().await;
-    let asset_file_action_logs = AssetFileDirectTreeActionLogs::<M, S> {
+    let asset_file_action_logs = AssetFileActionLogs::<M, S> {
         nickname: config_nickname,
         rollout_config: rollout_config.clone(),
         posterior_calculation_config: posterior_calculation_config.clone(),
