@@ -13,12 +13,6 @@ from .cli_args import (
     parse_model_stdin,
 )
 from .engine import TrainConfig, train
-from .pathing import (
-    checkpoint_parent_dir,
-    final_model_output_parent_dir,
-    model_parent_dir,
-    resolve_artifact_root_dir,
-)
 from .status_log_buffer import install_status_log_buffer, shutdown_status_log_buffer
 
 
@@ -38,25 +32,9 @@ def _load_train_config(
         f"training trajectory sqlite not found: {training_trajectory_sqlite_path}"
     )
 
-    artifact_root_dir = resolve_artifact_root_dir(request)
-    model_parent_dir_path = model_parent_dir(
-        artifact_root_dir,
-        request.model_cli_name,
-        request.config_nickname,
-        request.epoch,
-    )
-    checkpoints_parent_dir_path = checkpoint_parent_dir(
-        artifact_root_dir,
-        request.model_cli_name,
-        request.config_nickname,
-        request.epoch,
-    )
-    final_model_output_parent_dir_path = final_model_output_parent_dir(
-        artifact_root_dir,
-        request.model_cli_name,
-        request.config_nickname,
-        request.epoch,
-    )
+    model_parent_dir_path = Path(request.model_parent_dir)
+    checkpoints_parent_dir_path = Path(request.checkpoints_parent_dir)
+    final_model_output_parent_dir_path = Path(request.final_model_output_parent_dir)
 
     training_summary_parent_dir = checkpoints_parent_dir_path
 

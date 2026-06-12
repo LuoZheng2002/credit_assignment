@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from typing import cast
 
 from src_py.train.cli_args import TrainingRequestArgs, TrainProcessLaunchArgs
 from src_py.train.main import _load_train_config
@@ -30,6 +31,26 @@ class TestMain(unittest.TestCase):
             "seed": 42,
         }
         payload.update(overrides)
+        epoch = cast(int, payload["epoch"])
+        root_dir = cast(str, payload["artifact_root_dir"])
+        model_cli_name = cast(str, payload["model_cli_name"])
+        config_nickname = cast(str, payload["config_nickname"])
+        if epoch == 0:
+            model_parent_dir = f"{root_dir}/results/{model_cli_name}"
+            checkpoints_parent_dir = (
+                f"{root_dir}/results/{model_cli_name}/{config_nickname}/epoch_{epoch}"
+            )
+        else:
+            model_parent_dir = (
+                f"{root_dir}/results/{model_cli_name}/{config_nickname}/epoch_{epoch}"
+            )
+            checkpoints_parent_dir = model_parent_dir
+        payload.setdefault("model_parent_dir", model_parent_dir)
+        payload.setdefault("checkpoints_parent_dir", checkpoints_parent_dir)
+        payload.setdefault(
+            "final_model_output_parent_dir",
+            f"{root_dir}/results/{model_cli_name}/{config_nickname}/epoch_{epoch + 1}",
+        )
         return TrainingRequestArgs.model_validate(payload)
 
     def test_load_train_config_success(self) -> None:
@@ -47,6 +68,18 @@ class TestMain(unittest.TestCase):
             self.assertEqual(
                 str(trajectory_path), config.training_trajectory_sqlite_path
             )
+            self.assertEqual(
+                "/tmp/storage_root/results/qwen35_08b/run_a/epoch_3",
+                config.model_parent_dir,
+            )
+            self.assertEqual(
+                "/tmp/storage_root/results/qwen35_08b/run_a/epoch_3",
+                config.checkpoints_parent_dir,
+            )
+            self.assertEqual(
+                "/tmp/storage_root/results/qwen35_08b/run_a/epoch_4",
+                config.final_model_output_parent_dir,
+            )
 
     def test_load_train_config_uses_derived_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -57,10 +90,11 @@ class TestMain(unittest.TestCase):
             )
             request = self._training_request(epoch=0)
             config = _load_train_config(launch_args, request)
-            self.assertIn(
-                "/tmp/storage_root/results/qwen35_08b", config.model_parent_dir
+            self.assertEqual(
+                "/tmp/storage_root/results/qwen35_08b",
+                config.model_parent_dir,
             )
-            self.assertIn(
+            self.assertEqual(
                 "/tmp/storage_root/results/qwen35_08b/run_a/epoch_0",
                 config.checkpoints_parent_dir,
             )
@@ -73,7 +107,7 @@ class TestMain(unittest.TestCase):
         with self.assertRaises(AssertionError):
             _load_train_config(launch_args, request)
 
-    def test_load_train_config_prefers_hpc_training_root_dir_when_present(self) -> None:
+    def test_load_train_config_keeps_explicit_paths_when_hpc_root_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             trajectory_path = Path(tmp_dir) / "training_trajectories.sqlite"
             trajectory_path.write_bytes(b"sqlite")
@@ -86,8 +120,9 @@ class TestMain(unittest.TestCase):
                 epoch=1,
             )
             config = _load_train_config(launch_args, request)
-            self.assertIn(
-                "/tmp/hpc_volume_root/results/qwen35_08b", config.model_parent_dir
+            self.assertEqual(
+                "/tmp/storage_root/results/qwen35_08b/run_a/epoch_1",
+                config.model_parent_dir,
             )
 
 

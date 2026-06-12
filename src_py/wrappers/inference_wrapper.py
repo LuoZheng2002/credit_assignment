@@ -55,7 +55,6 @@ from src_py.load_model_to_path import ensure_model_snapshot
 from src_py.tui_logging import (
     _tui_error,
     _tui_info,
-    _tui_state,
     configure_tui_forwarder,
 )
 
@@ -795,7 +794,6 @@ def main() -> int:
     try:
         _configure_wrapper_log_file(args.wrapper_log_path)
         configure_tui_forwarder(args.orchestrator_socket_path)
-        _tui_state("Inference wrapper started")
         _tui_info("Inference wrapper started")
         _emit_inference_tui_identity(
             args.model_cli_name,
@@ -931,7 +929,6 @@ def main() -> int:
 
         threading.Thread(target=_watch_backend_process, daemon=True).start()
         _emit_status(backend_name, "ready", "inference wrapper server is ready")
-        _tui_state("Inference wrapper server is ready")
         _tui_info("Inference wrapper server is ready")
 
         def _shutdown(*_: Any) -> None:
@@ -965,7 +962,7 @@ def main() -> int:
                     }
                 )
                 return 1
-            _tui_state("Inference wrapper stopped")
+            _tui_info("Inference wrapper stopped")
             _emit_event(
                 {
                     "type": "result",

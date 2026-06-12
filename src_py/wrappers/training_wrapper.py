@@ -59,16 +59,9 @@ from src_py.train.cli_args import (
     parse_model_args,
     parse_model_stdin,
 )
-from src_py.train.pathing import (
-    checkpoint_parent_dir,
-    final_model_output_parent_dir,
-    model_parent_dir,
-    resolve_artifact_root_dir,
-)
 from src_py.tui_logging import (
     _tui_error,
     _tui_info,
-    _tui_state,
     configure_tui_forwarder,
 )
 
@@ -262,12 +255,7 @@ def _ensure_initial_model_if_missing(
     epoch = training_config.epoch
     if epoch != 0:
         return
-    artifact_root_dir = resolve_artifact_root_dir(training_config)
-    model_cli_name = training_config.model_cli_name
-    config_nickname = training_config.config_nickname
-    parent_dir = model_parent_dir(
-        artifact_root_dir, model_cli_name, config_nickname, epoch
-    )
+    parent_dir = Path(training_config.model_parent_dir)
     model_dir = parent_dir / "model"
     if model_dir.exists():
         return
@@ -296,22 +284,13 @@ def _run_hpc_training(
     trajectory_path = Path(launch_args.trajectory_sqlite_path)
     hf_model_name = launch_args.hf_model_name
     _emit_status(backend, "starting", "preparing HPC training job")
-    _tui_state("Training wrapper started")
     _tui_info("Training wrapper started")
     _emit_training_tui_identity(training_config, hf_model_name, trajectory_path)
-    artifact_root_dir = resolve_artifact_root_dir(training_config)
-    model_cli_name = training_config.model_cli_name
-    config_nickname = training_config.config_nickname
-    epoch = training_config.epoch
-    checkpoints_root = checkpoint_parent_dir(
-        artifact_root_dir, model_cli_name, config_nickname, epoch
-    )
-    next_model_root = final_model_output_parent_dir(
-        artifact_root_dir, model_cli_name, config_nickname, epoch
-    )
+    checkpoints_root = Path(training_config.checkpoints_parent_dir)
+    next_model_root = Path(training_config.final_model_output_parent_dir)
     _tui_info(f"Training checkpoints directory: {checkpoints_root / 'checkpoints'}")
     _tui_info(f"Training next model directory: {next_model_root / 'model'}")
-    _tui_state(f"Training checkpoints will be written under {checkpoints_root}")
+    _tui_info(f"Training checkpoints will be written under {checkpoints_root}")
     _ensure_initial_model_if_missing(backend, training_config, hf_model_name)
     if launch_args.test_sleep_secs > 0:
         cmd = [
@@ -345,7 +324,7 @@ def _run_hpc_training(
             _write_subprocess_stdin(process, stdin_payload)
         _set_active_process(process)
         _emit_status(backend, "running", f"started torchrun with pid={process.pid}")
-        _tui_state(f"Training subprocess started (pid={process.pid})")
+        _tui_info(f"Training subprocess started (pid={process.pid})")
         return_code = process.wait()
     else:
         with _TRAINING_WRAPPER_LOG_PATH.open("a", encoding="utf-8") as log_handle:
@@ -366,7 +345,7 @@ def _run_hpc_training(
                     f"subprocess output redirected to {_TRAINING_WRAPPER_LOG_PATH}"
                 ),
             )
-            _tui_state(f"Training subprocess started (pid={process.pid})")
+            _tui_info(f"Training subprocess started (pid={process.pid})")
             return_code = process.wait()
     _set_active_process(None)
     duration_secs = time.time() - started_at
@@ -380,7 +359,7 @@ def _run_hpc_training(
         )
         return 143
     if return_code == 0:
-        _tui_state(
+        _tui_info(
             f"Training completed; checkpoint state available under {checkpoints_root}"
         )
         _emit_result_ok(backend, "training completed", duration_secs)
@@ -403,7 +382,6 @@ def main() -> int:
     backend_name = "hpc"
     _configure_wrapper_log_path(launch_args.wrapper_log_path)
     configure_tui_forwarder(launch_args.orchestrator_socket_path)
-    _tui_state("Training wrapper process initialized")
     _tui_info("Training wrapper process initialized")
     _start_parent_watchdog(backend_name)
     if launch_args.num_gpus <= 0:

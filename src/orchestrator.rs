@@ -988,6 +988,12 @@ impl Orchestrator {
             epoch,
         );
         let artifact_root_dir = storage_large_files_dir()?;
+        let model_parent_dir =
+            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+        let checkpoints_parent_dir =
+            model_checkpoint_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+        let final_model_output_parent_dir =
+            model_checkpoint_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch + 1)?;
         let training_config = PythonTrainingConfig {
             common: self.training_config_common.clone(),
             training_time: self.training_time,
@@ -997,6 +1003,9 @@ impl Orchestrator {
             model_cli_name: M::CLI_NAME.to_string(),
             config_nickname: self.config_nickname.clone(),
             epoch,
+            model_parent_dir,
+            checkpoints_parent_dir,
+            final_model_output_parent_dir,
         };
 
         let training_start_time = Instant::now();

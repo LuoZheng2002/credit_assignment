@@ -43,12 +43,6 @@ def send_tui_message(payload: dict[str, Any]) -> None:
             _TUI_FORWARDER.send_message(payload)
 
 
-def _tui_state(state: str) -> None:
-    with _TUI_FORWARDER_LOCK:
-        if _TUI_FORWARDER is not None:
-            _TUI_FORWARDER.send_state(state)
-
-
 def _tui_info(message: str) -> None:
     with _TUI_FORWARDER_LOCK:
         if _TUI_FORWARDER is not None:

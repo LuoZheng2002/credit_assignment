@@ -26,6 +26,9 @@ class TrainingRequestArgs(BaseModel):
     model_cli_name: str
     config_nickname: str
     epoch: int
+    model_parent_dir: str
+    checkpoints_parent_dir: str
+    final_model_output_parent_dir: str
     hpc_training_root_dir: str | None = None
     lora_rank: int | None = None
     lora_alpha: int | None = None

@@ -12,6 +12,9 @@ pub struct PythonTrainingConfig {
     pub model_cli_name: String,
     pub config_nickname: String,
     pub epoch: usize,
+    pub model_parent_dir: String,
+    pub checkpoints_parent_dir: String,
+    pub final_model_output_parent_dir: String,
 }
 
 impl PythonTrainingConfig {
@@ -75,6 +78,10 @@ mod tests {
             model_cli_name: "qwen35_4b".to_string(),
             config_nickname: "demo".to_string(),
             epoch: 3,
+            model_parent_dir: "/tmp/artifacts/results/qwen35_4b/demo/epoch_3".to_string(),
+            checkpoints_parent_dir: "/tmp/artifacts/results/qwen35_4b/demo/epoch_3".to_string(),
+            final_model_output_parent_dir: "/tmp/artifacts/results/qwen35_4b/demo/epoch_4"
+                .to_string(),
         };
 
         let payload = config

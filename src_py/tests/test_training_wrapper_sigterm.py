@@ -47,6 +47,9 @@ class TestTrainingWrapperSigterm(unittest.TestCase):
             model_cli_name="qwen35_4b",
             config_nickname="sigterm_test",
             epoch=1,
+            model_parent_dir="/tmp/results/qwen35_4b/sigterm_test/epoch_1",
+            checkpoints_parent_dir="/tmp/results/qwen35_4b/sigterm_test/epoch_1",
+            final_model_output_parent_dir="/tmp/results/qwen35_4b/sigterm_test/epoch_2",
         )
         command = [
             sys.executable,
