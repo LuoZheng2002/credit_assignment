@@ -249,6 +249,7 @@ async fn execute_code_in_fresh_interpreter(code: String) -> PythonToolResponse {
             error
         ));
     }
+    drop(stdin);
 
     let wait_result = timeout(Duration::from_millis(PYTHON_TOOL_TIMEOUT_MS), child.wait()).await;
     match wait_result {
@@ -381,6 +382,16 @@ pub async fn execute_python_tool_call(
 mod tests {
     use super::{PYTHON_TOOL_TIMEOUT_MS, PythonToolResponse, PythonToolServerPool};
     use tokio::time::{Duration, Instant, timeout};
+
+    #[tokio::test]
+    async fn python_tool_executes_simple_code() {
+        let pool = PythonToolServerPool::new(1).await.unwrap();
+        let response = pool.execute_code("print(1 + 1)".to_string()).await;
+        assert_eq!(
+            response,
+            PythonToolResponse::PythonSuccess("2\n".to_string())
+        );
+    }
 
     #[tokio::test]
     async fn python_tool_timeout_does_not_hang_when_descendant_inherits_stdio() {
