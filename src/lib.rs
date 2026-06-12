@@ -1,5 +1,7 @@
 pub mod atomic_count_guard;
+pub mod browse_trees;
 pub mod check_python_env;
+pub mod config_paths;
 pub mod constants;
 pub mod direct_tool;
 pub mod get_accuracy;

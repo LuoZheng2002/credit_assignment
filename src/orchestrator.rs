@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, path::Path, time::Instant};
 use tokio::{process::Child, sync::watch};
 
 use crate::{
+    config_paths::{ConfigPaths, config_paths_file_path, derive_testing_rollout_config_path},
     direct_tool::{
         hybrid_dataset::{Training, Validation},
         posterior_calculation_config::PosteriorCalculationConfig,
@@ -167,6 +168,26 @@ impl Orchestrator {
             )
         })
     }
+
+    pub fn write_config_paths_file(
+        model_cli_name: &str,
+        config_nickname: &str,
+        training_rollout_config_path: &str,
+        validation_rollout_config_path: &str,
+        posterior_hyperparameters_path: &str,
+    ) -> Result<(), String> {
+        let testing_rollout_config_path =
+            derive_testing_rollout_config_path(validation_rollout_config_path)?;
+        let config_paths = ConfigPaths {
+            training_rollout_config_path: training_rollout_config_path.to_string(),
+            validation_rollout_config_path: validation_rollout_config_path.to_string(),
+            testing_rollout_config_path,
+            posterior_hyperparameters_path: posterior_hyperparameters_path.to_string(),
+        };
+        let config_paths_path = config_paths_file_path(model_cli_name, config_nickname)?;
+        write_json(config_paths_path, &config_paths)
+    }
+
     pub async fn orchestrate<M: LlmModelMarker>(&mut self) -> Result<(), String> {
         loop {
             let progress = self.progress.clone();

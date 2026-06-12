@@ -160,6 +160,15 @@ async fn main() {
         num_gpus
     ));
 
+    Orchestrator::write_config_paths_file(
+        &model_cli_name,
+        &config_nickname,
+        &training_rollout_config_path,
+        &validation_rollout_config_path,
+        &posterior_hyperparameters_path,
+    )
+    .unwrap_or_else(|err| panic!("failed to write config_paths.json: {}", err));
+
     if ui {
         ProgressTuiLogger::initialize(tui_log_path.clone())
             .await
