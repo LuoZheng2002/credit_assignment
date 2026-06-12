@@ -1,27 +1,18 @@
-use research_utility::{
-    asset_file::{AssetFile, Base64Hash, hash_file},
-    progress_tui_logger::log_warning,
-    sqlite_table_array_store::SqliteTableArrayStore,
-};
+use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     direct_tool::{
-        hybrid_dataset::{
-            DatasetSplit, HybridDatasetQuestion, QuestionFlatId, hybrid_dataset_hash,
-        },
+        hybrid_dataset::{DatasetSplit, HybridDatasetQuestion, QuestionFlatId},
         posterior_calculation_config::PosteriorCalculationConfig,
         rollout_config::DirectRolloutConfig,
         tree_action::DirectTreeAction,
     },
-    jinja_directories::action_logs_parent_dir_from_template,
-    json_toml_utils::{read_json, write_json},
+    jinja_directories::action_logs_path_from_template,
     llm_model::LlmModelMarker,
 };
-
-const ACTION_LOG_SCHEMA_VERSION: usize = 3;
 
 #[derive(Clone)]
 pub struct DirectTreeActionLog<M: LlmModelMarker, S: DatasetSplit> {
@@ -309,164 +300,26 @@ pub enum RolloutPurpose {
     Testing {},
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(deserialize = "S: DatasetSplit"))]
-pub struct AssetFileActionLogsTracking<S: DatasetSplit> {
-    pub dataset_hash: Base64Hash,
-    pub config_nickname: String,
-    pub rollout_config: DirectRolloutConfig<S>,
-    pub posterior_calculation_config: PosteriorCalculationConfig,
-    pub epoch: usize, // the epoch index
-    pub action_log_schema_version: usize,
+pub fn action_logs_file_path<M: LlmModelMarker, S: DatasetSplit>(
+    config_nickname: &str,
+    epoch: usize,
+) -> String {
+    action_logs_path_from_template::<S>(M::CLI_NAME, config_nickname, epoch)
+        .unwrap_or_else(|err| panic!("Failed to resolve action logs path: {}", err))
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(bound(deserialize = "S: DatasetSplit"))]
-pub struct AssetFileActionLogs<M: LlmModelMarker, S: DatasetSplit> {
-    pub nickname: String,
-    pub rollout_config: DirectRolloutConfig<S>,
-    pub posterior_calculation_config: PosteriorCalculationConfig,
-    pub epoch: usize, // the epoch index
-    #[serde(skip)]
-    pub _phantom: PhantomData<M>,
-}
-
-// for this asset, we check if the tracking file is stale
-// if so, we delete the target file
-
-impl<M: LlmModelMarker, S: DatasetSplit> AssetFileActionLogs<M, S> {
-    fn to_short_hash(&self) -> String {
-        let serialized = serde_json::to_vec(self).unwrap();
-        let hash = blake3::hash(&serialized);
-        let short_hash = hex::encode(&hash.as_bytes()[..4]); // Take the first 4 bytes for a shorter hash
-        assert_eq!(short_hash.len(), 8); // 4 bytes should give us 8 hex characters
-        short_hash
-    }
-    pub fn actions_file_path(&self) -> String {
-        let parent_dir =
-            action_logs_parent_dir_from_template(M::CLI_NAME, &self.nickname, self.epoch)
-                .unwrap_or_else(|err| {
-                    panic!("Failed to resolve action logs parent directory: {}", err)
-                });
-        format!("{}/action_logs_{}.sqlite", parent_dir, self.to_short_hash())
-    }
-    fn version_tracking_path(&self) -> String {
-        format!(
-            "results_version_tracking/{}/{}/epoch_{}/action_logs_{}_tracking.json",
-            M::CLI_NAME,
-            self.nickname,
-            self.epoch,
-            self.to_short_hash()
+pub fn open_action_logs<M: LlmModelMarker, S: DatasetSplit>(
+    config_nickname: &str,
+    epoch: usize,
+) -> SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>> {
+    SqliteTableArrayStore::<QuestionFlatId<S>, DirectTreeAction<M>>::initialize_if_missing(
+        action_logs_file_path::<M, S>(config_nickname, epoch),
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "Failed to open direct action log sqlite table array store at {}: {}",
+            action_logs_file_path::<M, S>(config_nickname, epoch),
+            e
         )
-    }
-    pub fn delete_target_file_if_stale(&self) {
-        let stale_reason: Option<String> = match read_json::<AssetFileActionLogsTracking<S>>(
-            self.version_tracking_path(),
-        ) {
-            Ok(tracking_content) => {
-                let dataset_hash = hybrid_dataset_hash::<S>();
-                if dataset_hash != tracking_content.dataset_hash {
-                    Some(format!(
-                        "Tracking file exists but stale: dataset hash mismatch (tracking: {:?}, current: {:?})",
-                        tracking_content.dataset_hash, dataset_hash
-                    ))
-                } else if tracking_content.action_log_schema_version != ACTION_LOG_SCHEMA_VERSION {
-                    Some(format!(
-                        "Tracking file exists but stale: action log schema version mismatch (tracking: {}, current: {})",
-                        tracking_content.action_log_schema_version, ACTION_LOG_SCHEMA_VERSION
-                    ))
-                } else if tracking_content.rollout_config != self.rollout_config {
-                    Some(format!(
-                        "Tracking file exists but stale: rollout config mismatch (tracking: {:?}, current: {:?})",
-                        tracking_content.rollout_config, self.rollout_config
-                    ))
-                } else if tracking_content.posterior_calculation_config
-                    != self.posterior_calculation_config
-                {
-                    Some(format!(
-                        "Tracking file exists but stale: posterior calculation config mismatch (tracking: {:?}, current: {:?})",
-                        tracking_content.posterior_calculation_config,
-                        self.posterior_calculation_config
-                    ))
-                } else if tracking_content.config_nickname != self.nickname {
-                    Some(format!(
-                        "Tracking file exists but stale: nickname mismatch (tracking: {:?}, current: {:?})",
-                        tracking_content.config_nickname, self.nickname
-                    ))
-                } else {
-                    None
-                }
-            }
-            Err(_) => {
-                // if we cannot read the tracking file, we consider the target file as stale (if exists)
-                Some("Tracking file missing or incompatible format".to_string())
-            }
-        };
-        if let Some(reason) = stale_reason {
-            log_warning(&format!(
-                "Target file {} is stale. Deleting if exists... Reason: {}",
-                self.actions_file_path(),
-                reason
-            ));
-            // the target file is stale, delete it if exists
-            if std::path::Path::new(&self.actions_file_path()).exists() {
-                std::fs::remove_file(self.actions_file_path())
-                    .expect("Failed to delete stale target file");
-                log_warning("Deleted stale target file for direct action log");
-            }
-        }
-    }
-    pub fn create_tracking_file(&self) {
-        // we collect the dataset hash
-        let dataset_hash = hybrid_dataset_hash::<S>();
-        let tracking_content = AssetFileActionLogsTracking {
-            dataset_hash,
-            config_nickname: self.nickname.clone(),
-            rollout_config: self.rollout_config.clone(),
-            posterior_calculation_config: self.posterior_calculation_config.clone(),
-            action_log_schema_version: ACTION_LOG_SCHEMA_VERSION,
-            epoch: self.epoch,
-        };
-        write_json(self.version_tracking_path(), &tracking_content).unwrap();
-    }
-}
-
-#[async_trait::async_trait]
-impl<M: LlmModelMarker, S: DatasetSplit> AssetFile for AssetFileActionLogs<M, S> {
-    type FileModel = SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>;
-    async fn synchronize(&self) -> Base64Hash {
-        // synchromize all dependency assets
-        let dataset_hash = hybrid_dataset_hash::<S>();
-        let tracking_content =
-            read_json::<AssetFileActionLogsTracking<S>>(self.version_tracking_path())
-                .expect("Tracking file missing for direct action log");
-
-        assert_eq!(dataset_hash, tracking_content.dataset_hash);
-        assert_eq!(
-            tracking_content.action_log_schema_version,
-            ACTION_LOG_SCHEMA_VERSION
-        );
-        assert_eq!(tracking_content.rollout_config, self.rollout_config);
-        assert_eq!(
-            tracking_content.posterior_calculation_config,
-            self.posterior_calculation_config
-        );
-        assert_eq!(tracking_content.config_nickname, self.nickname);
-        // check if target file exists and returns hash
-        hash_file(self.actions_file_path()).expect("Target file missing for direct action log")
-    }
-    async fn fetch(&self) -> Self::FileModel {
-        self.synchronize().await;
-        // DirectTreeActionLogStore::<M>::initialize_if_missing(self.file_path())
-        SqliteTableArrayStore::<QuestionFlatId<S>, DirectTreeAction<M>>::initialize_if_missing(
-            self.actions_file_path(),
-        )
-        .unwrap_or_else(|e| {
-            panic!(
-                "Failed to open direct action log sqlite table array store at {}: {}",
-                self.actions_file_path(),
-                e
-            )
-        })
-    }
+    })
 }

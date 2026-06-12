@@ -1,19 +1,19 @@
-use research_utility::{
-    asset_file::AssetFile,
-    progress_tui_logger::{log_info, log_key_value_pair, log_state, log_warning},
-};
+use research_utility::progress_tui_logger::{log_info, log_key_value_pair, log_state, log_warning};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path, time::Instant};
 use tokio::{process::Child, sync::watch};
 
 use crate::{
     direct_tool::{
-        rollout::{RolloutProgramConfig, rollout_all},
-        rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
-        training_set::AssetFileTrainingTrajectories,
-        tree_action_log::AssetFileActionLogs,
         hybrid_dataset::{Training, Validation},
         posterior_calculation_config::PosteriorCalculationConfig,
+        rollout::{RolloutProgramConfig, rollout_all},
+        rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+        training_set::{
+            generate_training_trajectories, open_training_trajectories,
+            training_trajectories_file_path, training_trajectories_stats_file_path,
+        },
+        tree_action_log::action_logs_file_path,
     },
     get_accuracy::get_accuracy,
     jinja_directories::{
@@ -288,14 +288,14 @@ impl Orchestrator {
         epoch: usize,
     ) -> Result<(), String> {
         log_info("Reading and logging validation accuracy...");
-        let asset_file_action_logs = AssetFileActionLogs::<M, Validation> {
-            nickname: self.config_nickname.clone(),
-            rollout_config: self.validation_rollout_config.clone(),
-            posterior_calculation_config: self.posterior_calculation_config.clone(),
+        let accuracy_stats = get_accuracy::<M, Validation>(
+            self.config_nickname.clone(),
+            self.validation_rollout_config.clone(),
+            self.posterior_calculation_config.clone(),
             epoch,
-            _phantom: std::marker::PhantomData,
-        };
-        let accuracy_stats = get_accuracy(asset_file_action_logs, "Validation accuracy").await;
+            "Validation accuracy",
+        )
+        .await;
         let Some(accuracies) = accuracy_stats.accuracy_tuple() else {
             return Err("Validation action log is empty, cannot compute accuracy".to_string());
         };
@@ -332,15 +332,14 @@ impl Orchestrator {
         epoch: usize,
     ) -> Result<(), String> {
         log_info("Reading and logging training rollout accuracy...");
-        let asset_file_action_logs = AssetFileActionLogs::<M, Training> {
-            nickname: self.config_nickname.clone(),
-            rollout_config: self.training_set_rollout_config.clone(),
-            posterior_calculation_config: self.posterior_calculation_config.clone(),
+        let accuracy_stats = get_accuracy::<M, Training>(
+            self.config_nickname.clone(),
+            self.training_set_rollout_config.clone(),
+            self.posterior_calculation_config.clone(),
             epoch,
-            _phantom: std::marker::PhantomData,
-        };
-        let accuracy_stats =
-            get_accuracy(asset_file_action_logs, "Training rollout accuracy").await;
+            "Training rollout accuracy",
+        )
+        .await;
         let Some(accuracies) = accuracy_stats.accuracy_tuple() else {
             return Err(
                 "Training rollout action log is empty, cannot compute accuracy".to_string(),
@@ -766,27 +765,13 @@ impl Orchestrator {
         &self,
         epoch: usize,
     ) -> Result<(), String> {
-        let training_logs = AssetFileActionLogs::<M, Training> {
-            nickname: self.config_nickname.clone(),
-            rollout_config: self.training_set_rollout_config.clone(),
-            posterior_calculation_config: self.posterior_calculation_config.clone(),
-            epoch,
-            _phantom: std::marker::PhantomData,
-        };
         self.delete_file_if_exists(
-            &training_logs.actions_file_path(),
+            &action_logs_file_path::<M, Training>(&self.config_nickname, epoch),
             &format!("training rollout action logs for epoch {}", epoch),
         )?;
 
-        let validation_logs = AssetFileActionLogs::<M, Validation> {
-            nickname: self.config_nickname.clone(),
-            rollout_config: self.validation_rollout_config.clone(),
-            posterior_calculation_config: self.posterior_calculation_config.clone(),
-            epoch,
-            _phantom: std::marker::PhantomData,
-        };
         self.delete_file_if_exists(
-            &validation_logs.actions_file_path(),
+            &action_logs_file_path::<M, Validation>(&self.config_nickname, epoch),
             &format!("validation rollout action logs for epoch {}", epoch),
         )?;
 
@@ -797,19 +782,25 @@ impl Orchestrator {
         &self,
         epoch: usize,
     ) -> Result<(), String> {
-        let asset_file_training_trajectories = AssetFileTrainingTrajectories {
-            config_nickname: self.config_nickname.clone(),
-            epoch,
-            rollout_config: self.training_set_rollout_config.clone(),
-            posterior_calculation_config: self.posterior_calculation_config.clone(),
-            cumulative_avg_abs_advantage_cutoff: self.cumulative_avg_abs_advantage_cutoff,
-            advantage_calculation_policy: self.advantage_calculation_policy,
-            _phantom: std::marker::PhantomData::<M>,
-        };
         self.delete_file_if_exists(
-            &asset_file_training_trajectories.file_path(),
+            &training_trajectories_file_path::<M>(
+                &self.config_nickname,
+                &self.training_set_rollout_config,
+                &self.posterior_calculation_config,
+                epoch,
+            ),
             &format!("training trajectories sqlite for epoch {}", epoch),
-        )
+        )?;
+        self.delete_file_if_exists(
+            &training_trajectories_stats_file_path::<M>(
+                &self.config_nickname,
+                &self.training_set_rollout_config,
+                &self.posterior_calculation_config,
+                epoch,
+            ),
+            &format!("training trajectories stats for epoch {}", epoch),
+        )?;
+        Ok(())
     }
 
     fn cleanup_epoch_model_dir_if_not_best<M: LlmModelMarker>(
@@ -927,16 +918,15 @@ impl Orchestrator {
 
     async fn generate_training_set<M: LlmModelMarker>(&self, epoch: usize) {
         log_info("Generating training set");
-        let asset_file_training_trajectories = AssetFileTrainingTrajectories {
-            config_nickname: self.config_nickname.clone(),
+        generate_training_trajectories::<M>(
+            &self.config_nickname,
+            self.training_set_rollout_config.clone(),
+            self.posterior_calculation_config.clone(),
             epoch,
-            rollout_config: self.training_set_rollout_config.clone(),
-            posterior_calculation_config: self.posterior_calculation_config.clone(),
-            cumulative_avg_abs_advantage_cutoff: self.cumulative_avg_abs_advantage_cutoff,
-            advantage_calculation_policy: self.advantage_calculation_policy,
-            _phantom: std::marker::PhantomData::<M>,
-        };
-        asset_file_training_trajectories.synchronize().await;
+            self.cumulative_avg_abs_advantage_cutoff,
+            self.advantage_calculation_policy,
+        )
+        .await;
         log_info("Finished generating training set");
     }
     async fn train_model<M: LlmModelMarker>(&mut self, epoch: usize) -> Result<(), String> {
@@ -946,16 +936,12 @@ impl Orchestrator {
             epoch,
             self.inference_server_handle.is_some()
         ));
-        let asset_file_training_trajectories = AssetFileTrainingTrajectories {
-            config_nickname: self.config_nickname.clone(),
+        let training_trajectory_store = open_training_trajectories::<M>(
+            &self.config_nickname,
+            &self.training_set_rollout_config,
+            &self.posterior_calculation_config,
             epoch,
-            rollout_config: self.training_set_rollout_config.clone(),
-            posterior_calculation_config: self.posterior_calculation_config.clone(),
-            cumulative_avg_abs_advantage_cutoff: self.cumulative_avg_abs_advantage_cutoff,
-            advantage_calculation_policy: self.advantage_calculation_policy,
-            _phantom: std::marker::PhantomData::<M>,
-        };
-        let training_trajectory_store = asset_file_training_trajectories.fetch().await;
+        );
         let num_training_samples = training_trajectory_store
             .get_keys()
             .map_err(|err| {
@@ -965,7 +951,12 @@ impl Orchestrator {
                 )
             })?
             .len();
-        let training_trajectory_sqlite_path = asset_file_training_trajectories.file_path();
+        let training_trajectory_sqlite_path = training_trajectories_file_path::<M>(
+            &self.config_nickname,
+            &self.training_set_rollout_config,
+            &self.posterior_calculation_config,
+            epoch,
+        );
         let artifact_root_dir = storage_large_files_dir()?;
         let training_config = PythonTrainingConfig {
             common: self.training_config_common.clone(),

@@ -5,8 +5,7 @@ use std::sync::Arc;
 use ordered_float::NotNan;
 use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
 use research_utility::{
-    asset_file::{AssetFile, Base64Hash, hash_file},
-    progress_tui_logger::{log_info, log_key_value_pair, log_master_progress, log_warning},
+    progress_tui_logger::{log_info, log_key_value_pair, log_master_progress},
     sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
 };
 use serde::{Deserialize, Serialize};
@@ -21,12 +20,12 @@ use crate::{
         posterior_calculation_config::PosteriorCalculationConfig,
         rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         tree::{DirectTree, SegmentContent, SegmentId},
-        tree_action_log::{AssetFileActionLogs, DirectTreeActionLog},
+        tree_action_log::{DirectTreeActionLog, open_action_logs},
     },
     jinja_directories::{
         training_trajectories_path_from_template, training_trajectories_stats_path_from_template,
     },
-    json_toml_utils::{read_json, write_json},
+    json_toml_utils::write_json,
     llm_model::LlmModelMarker,
 };
 
@@ -752,161 +751,139 @@ pub struct DirectTrainingTrajectory<M: LlmModelMarker> {
     pub _phantom: std::marker::PhantomData<M>,
 }
 
-pub struct AssetFileTrainingTrajectories<M: LlmModelMarker> {
-    // pub model: LlmModelName,
-    pub config_nickname: String,
-    pub rollout_config: DirectRolloutConfig<Training>,
-    pub posterior_calculation_config: PosteriorCalculationConfig,
-    pub advantage_calculation_policy: AdvantageCalculationPolicy,
-    pub epoch: usize, // the epoch index
-    pub cumulative_avg_abs_advantage_cutoff: f32,
-    pub _phantom: std::marker::PhantomData<M>,
+fn training_trajectories_short_hash(
+    config_nickname: &str,
+    rollout_config: &DirectRolloutConfig<Training>,
+    posterior_calculation_config: &PosteriorCalculationConfig,
+    epoch: usize,
+) -> String {
+    let serialized = serde_json::to_vec(&(
+        &config_nickname,
+        rollout_config,
+        posterior_calculation_config,
+        &epoch,
+    ))
+    .unwrap();
+    let hash = blake3::hash(&serialized);
+    hex::encode(&hash.as_bytes()[..4])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(bound = "")]
-pub struct AssetFileTrainingTrajectoriesTracking<S: DatasetSplit> {
-    pub rollout_log_hash: Base64Hash,
-    pub config_nickname: String,
-    pub rollout_config: DirectRolloutConfig<S>,
-    pub posterior_calculation_config: PosteriorCalculationConfig,
-    pub advantage_calculation_policy: AdvantageCalculationPolicy,
-    pub epoch: usize, // the epoch index
-    pub cumulative_avg_abs_advantage_cutoff: f32,
+pub fn training_trajectories_file_path<M: LlmModelMarker>(
+    config_nickname: &str,
+    rollout_config: &DirectRolloutConfig<Training>,
+    posterior_calculation_config: &PosteriorCalculationConfig,
+    epoch: usize,
+) -> String {
+    let hash = training_trajectories_short_hash(
+        config_nickname,
+        rollout_config,
+        posterior_calculation_config,
+        epoch,
+    );
+    training_trajectories_path_from_template(M::CLI_NAME, config_nickname, epoch, &hash)
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to render training trajectories path for model_cli_name={}, config_nickname={}, epoch={}, hash={}: {}",
+                M::CLI_NAME, config_nickname, epoch, hash, err
+            )
+        })
 }
 
-impl<M: LlmModelMarker> AssetFileTrainingTrajectories<M> {
-    fn to_short_hash(&self) -> String {
-        let serialized = serde_json::to_vec(&(
-            &&self.config_nickname,
-            &self.rollout_config,
-            &self.posterior_calculation_config,
-            &self.epoch,
-        ))
-        .unwrap();
-        let hash = blake3::hash(&serialized);
-        let short_hash = hex::encode(&hash.as_bytes()[..4]); // Take the first 4 bytes for a shorter hash
-        short_hash
-    }
-    pub fn file_path(&self) -> String {
-        let hash = self.to_short_hash();
-        training_trajectories_path_from_template(M::CLI_NAME, &self.config_nickname, self.epoch, &hash)
-            .unwrap_or_else(|err| {
-                panic!(
-                    "failed to render training trajectories path for model_cli_name={}, config_nickname={}, epoch={}, hash={}: {}",
-                    M::CLI_NAME, self.config_nickname, self.epoch, hash, err
-                )
-            })
-    }
-    pub fn statistics_file_path(&self) -> String {
-        let hash = self.to_short_hash();
-        training_trajectories_stats_path_from_template(
-            M::CLI_NAME,
-            &self.config_nickname,
-            self.epoch,
-            &hash,
-        )
+pub fn training_trajectories_stats_file_path<M: LlmModelMarker>(
+    config_nickname: &str,
+    rollout_config: &DirectRolloutConfig<Training>,
+    posterior_calculation_config: &PosteriorCalculationConfig,
+    epoch: usize,
+) -> String {
+    let hash = training_trajectories_short_hash(
+        config_nickname,
+        rollout_config,
+        posterior_calculation_config,
+        epoch,
+    );
+    training_trajectories_stats_path_from_template(M::CLI_NAME, config_nickname, epoch, &hash)
         .unwrap_or_else(|err| {
             panic!(
                 "failed to render training trajectories stats path for model_cli_name={}, config_nickname={}, epoch={}, hash={}: {}",
-                M::CLI_NAME, self.config_nickname, self.epoch, hash, err
+                M::CLI_NAME, config_nickname, epoch, hash, err
             )
         })
-    }
-    fn version_tracking_path(&self) -> String {
-        format!(
-            "results_version_tracking/{}/{}/epoch_{}/training_trajectories_{}_tracking.json",
-            M::CLI_NAME,
-            self.config_nickname,
-            self.epoch,
-            self.to_short_hash()
-        )
-    }
 }
 
-#[async_trait::async_trait]
-impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
-    type FileModel = SqliteStore<usize, DirectTrainingTrajectory<M>>;
-    async fn fetch(&self) -> Self::FileModel {
-        self.synchronize().await;
-        SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(
-            self.file_path(),
-            false,
+pub fn open_training_trajectories<M: LlmModelMarker>(
+    config_nickname: &str,
+    rollout_config: &DirectRolloutConfig<Training>,
+    posterior_calculation_config: &PosteriorCalculationConfig,
+    epoch: usize,
+) -> SqliteStore<usize, DirectTrainingTrajectory<M>> {
+    SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(
+        training_trajectories_file_path::<M>(
+            config_nickname,
+            rollout_config,
+            posterior_calculation_config,
+            epoch,
+        ),
+        false,
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "Failed to open training trajectories sqlite store at {}: {}",
+            training_trajectories_file_path::<M>(
+                config_nickname,
+                rollout_config,
+                posterior_calculation_config,
+                epoch,
+            ),
+            e
         )
-        .unwrap_or_else(|e| {
-            panic!(
-                "Failed to open training trajectories sqlite store at {}: {}",
-                self.file_path(),
-                e
-            )
-        })
+    })
+}
+
+pub async fn generate_training_trajectories<M: LlmModelMarker>(
+    config_nickname: &str,
+    rollout_config: DirectRolloutConfig<Training>,
+    posterior_calculation_config: PosteriorCalculationConfig,
+    epoch: usize,
+    cumulative_avg_abs_advantage_cutoff: f32,
+    advantage_calculation_policy: AdvantageCalculationPolicy,
+) -> SqliteStore<usize, DirectTrainingTrajectory<M>> {
+    let file_path = training_trajectories_file_path::<M>(
+        config_nickname,
+        &rollout_config,
+        &posterior_calculation_config,
+        epoch,
+    );
+    if std::path::Path::new(&file_path).exists() {
+        std::fs::remove_file(&file_path).unwrap();
     }
-    async fn synchronize(&self) -> Base64Hash {
-        let asset_file_rollout_logs = AssetFileActionLogs::<M, Training> {
-            nickname: self.config_nickname.clone(),
-            rollout_config: self.rollout_config.clone(),
-            posterior_calculation_config: self.posterior_calculation_config.clone(),
-            epoch: self.epoch,
-            _phantom: std::marker::PhantomData,
-        };
-        let rollout_log_hash = asset_file_rollout_logs.synchronize().await;
-        let new_tracking_content = AssetFileTrainingTrajectoriesTracking::<Training> {
-            rollout_log_hash,
-            config_nickname: self.config_nickname.clone(),
-            rollout_config: self.rollout_config.clone(),
-            posterior_calculation_config: self.posterior_calculation_config.clone(),
-            advantage_calculation_policy: self.advantage_calculation_policy.clone(),
-            epoch: self.epoch,
-            cumulative_avg_abs_advantage_cutoff: self.cumulative_avg_abs_advantage_cutoff,
-        };
-        let stale = if let Ok(tracking_content) = read_json::<
-            AssetFileTrainingTrajectoriesTracking<Training>,
-        >(self.version_tracking_path())
-        {
-            let mut is_stale = false;
-            if tracking_content != new_tracking_content {
-                is_stale = true;
-            }
-            // check if file exists
-            if !std::path::Path::new(&self.file_path()).exists() {
-                is_stale = true;
-            }
-            is_stale
-        } else {
-            true
-        };
-        if stale {
-            log_warning("Training trajectories file is stale or does not exist. Regenerating...");
-            // if so, we first delete the target file
-            if std::path::Path::new(&self.file_path()).exists() {
-                std::fs::remove_file(&self.file_path()).unwrap();
-            }
-            // initialize database
-            let training_trajectory_store =
-                SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(self.file_path())
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "Failed to initialize training trajectories sqlite store at {}: {}",
-                            self.file_path(),
-                            e
-                        )
-                    });
-            let dataset_store = open_hybrid_dataset::<Training>();
-            let action_store = asset_file_rollout_logs.fetch().await;
-            rollout_logs_to_training_trajectories::<M>(
-                dataset_store,
-                action_store,
-                self.rollout_config.clone(),
-                self.posterior_calculation_config.clone(),
-                training_trajectory_store,
-                self.cumulative_avg_abs_advantage_cutoff,
-                self.statistics_file_path(),
-                self.advantage_calculation_policy,
-            )
-            .await;
-            log_info("Finished generating training trajectories file.");
-        }
-        write_json(self.version_tracking_path(), &new_tracking_content).unwrap();
-        hash_file(self.file_path()).expect("Failed to hash training trajectories file")
-    }
+    let stats_file_path = training_trajectories_stats_file_path::<M>(
+        config_nickname,
+        &rollout_config,
+        &posterior_calculation_config,
+        epoch,
+    );
+    let training_trajectory_store =
+        SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(file_path.clone())
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Failed to initialize training trajectories sqlite store at {}: {}",
+                    file_path, e
+                )
+            });
+    let dataset_store = open_hybrid_dataset::<Training>();
+    let action_store = open_action_logs::<M, Training>(config_nickname, epoch);
+    rollout_logs_to_training_trajectories::<M>(
+        dataset_store,
+        action_store,
+        rollout_config,
+        posterior_calculation_config,
+        training_trajectory_store,
+        cumulative_avg_abs_advantage_cutoff,
+        stats_file_path,
+        advantage_calculation_policy,
+    )
+    .await;
+    log_info("Finished generating training trajectories file.");
+    SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(file_path, false)
+        .unwrap_or_else(|e| panic!("Failed to reopen training trajectories sqlite store: {}", e))
 }

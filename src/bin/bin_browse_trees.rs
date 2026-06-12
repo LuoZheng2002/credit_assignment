@@ -18,7 +18,7 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
         rollout_config::DirectRolloutConfig,
         tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
-        tree_action_log::{AssetFileActionLogs, DirectTreeActionLog},
+        tree_action_log::{DirectTreeActionLog, open_action_logs},
         tree_to_action::TokenBranchingScore,
     },
     json_toml_utils::read_json,
@@ -44,7 +44,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui_core::buffer::Buffer;
-use research_utility::asset_file::AssetFile;
+
 use research_utility::sqlite_store::SqliteStore;
 use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
 use std::collections::hash_map::DefaultHasher;
@@ -432,7 +432,8 @@ struct App<M: LlmModelMarker, S: DatasetSplit> {
     _model_marker: PhantomData<M>,
     override_hyperparameters: Option<PosteriorHyperparameters>,
     // action_log_store: DirectTreeActionLogStore<M>,
-    asset_file_action_logs: AssetFileActionLogs<M, S>,
+    rollout_config: DirectRolloutConfig<S>,
+    posterior_calculation_config: PosteriorCalculationConfig,
     question_store: SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>>,
     action_store: SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>,
     entry_keys: Vec<QuestionFlatId<S>>,
@@ -459,14 +460,17 @@ struct App<M: LlmModelMarker, S: DatasetSplit> {
 
 impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
     async fn new(
-        asset_file_action_logs: AssetFileActionLogs<M, S>,
+        config_nickname: String,
+        rollout_config: DirectRolloutConfig<S>,
+        posterior_calculation_config: PosteriorCalculationConfig,
+        epoch: usize,
         // action_log_store: DirectTreeActionLogStore<M>,
         // entry_keys: Vec<usize>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> Self {
         let (entry_load_tx, entry_load_rx) = unbounded_channel();
         let question_store = open_hybrid_dataset::<S>();
-        let action_store = asset_file_action_logs.fetch().await;
+        let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
         let mut entry_keys = action_store.get_keys().unwrap();
         entry_keys.sort_by_key(|key| key.0);
         let entry_cache = std::iter::repeat_with(|| EntryLoadState::Unloaded)
@@ -475,7 +479,8 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
         Self {
             _model_marker: PhantomData,
             override_hyperparameters,
-            asset_file_action_logs,
+            rollout_config,
+            posterior_calculation_config,
             entry_keys,
             entry_cache,
             entry_load_tx,
@@ -530,11 +535,8 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
                 let question = self.question_store.get(key).unwrap().unwrap();
                 let action_log = DirectTreeActionLog {
                     question,
-                    rollout_config: self.asset_file_action_logs.rollout_config.clone(),
-                    posterior_calculation_config: self
-                        .asset_file_action_logs
-                        .posterior_calculation_config
-                        .clone(),
+                    rollout_config: self.rollout_config.clone(),
+                    posterior_calculation_config: self.posterior_calculation_config.clone(),
                     actions,
                 };
                 let (num_correct, num_leaves, win_rate) =
@@ -2358,17 +2360,17 @@ async fn run_model_app<'a, M: LlmModelMarker, S: DatasetSplit>(
         epoch,
         override_hyperparameters,
     } = run_model_app_args;
-    let asset_file_action_logs = AssetFileActionLogs::<M, S> {
-        nickname: config_nickname,
+    // let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
+    // let mut keys = action_store.get_keys().unwrap();
+    // keys.sort();
+    let app = App::<M, S>::new(
+        config_nickname,
         rollout_config,
         posterior_calculation_config,
         epoch,
-        _phantom: std::marker::PhantomData,
-    };
-    // let action_store = asset_file_action_logs.fetch().await;
-    // let mut keys = action_store.get_keys().unwrap();
-    // keys.sort();
-    let app = App::<M, S>::new(asset_file_action_logs, override_hyperparameters).await;
+        override_hyperparameters,
+    )
+    .await;
     run_app::<M, S>(terminal, app)
 }
 

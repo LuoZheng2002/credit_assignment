@@ -11,13 +11,12 @@ use reqwest::Client;
 use research_utility::progress_tui_logger::{
     delete_worker_progress_bar, log_key_value_pair, log_master_progress, log_worker_progress,
 };
-use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
+
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep_until};
 
 use crate::atomic_count_guard::AtomicCountGuard;
-use crate::direct_tool::hybrid_dataset::QuestionFlatId;
 use crate::direct_tool::tree_action_log::DirectTreeActionLog;
 use crate::{
     direct_tool::{
@@ -26,7 +25,7 @@ use crate::{
         rollout_config::DirectRolloutConfig,
         tree::{DirectTree, SegmentContent},
         tree_action::DirectTreeAction,
-        tree_action_log::{ActionStoreAdapter, AssetFileActionLogs},
+        tree_action_log::{ActionStoreAdapter, open_action_logs},
         tree_status::{
             DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus,
             TrunkSubStatus,
@@ -474,33 +473,15 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     );
     let llm_callable = M::Callable::from_cli_args(client.clone(), &llm_cli_args);
     let dataset = open_hybrid_dataset::<S>();
-    let asset_file_action_logs = AssetFileActionLogs::<M, S> {
-        nickname: config_nickname,
-        rollout_config: rollout_config.clone(),
-        posterior_calculation_config: posterior_calculation_config.clone(),
-        epoch,
-        _phantom: std::marker::PhantomData,
-    };
-    asset_file_action_logs.delete_target_file_if_stale();
-    asset_file_action_logs.create_tracking_file();
+
     // let DirectTreeActionLogStore {
     //     metadata_store,
     //     action_store,
     //     _phantom,
     // } = DirectTreeActionLogStore::<M>::initialize_if_missing(
-    //     asset_file_action_logs.actions_file_path(),
+    //     action_logs_file_path::<M, S>(&config_nickname, epoch),
     // );
-    let action_store =
-        SqliteTableArrayStore::<QuestionFlatId<S>, DirectTreeAction<M>>::initialize_if_missing(
-            asset_file_action_logs.actions_file_path(),
-        )
-        .unwrap_or_else(|e| {
-            panic!(
-                "Failed to open direct action log sqlite table array store at {}: {}",
-                asset_file_action_logs.actions_file_path(),
-                e
-            )
-        });
+    let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
     let action_store_adapter = ActionStoreAdapter::new(action_store);
     let mut question_keys = dataset.get_keys().unwrap();
     // sort by question id to ensure deterministic order

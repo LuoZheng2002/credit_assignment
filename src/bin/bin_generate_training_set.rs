@@ -3,10 +3,10 @@ use std::backtrace::Backtrace;
 use clap::Parser;
 use credit_assignment::{
     direct_tool::{
-        rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
-        training_set::AssetFileTrainingTrajectories,
         hybrid_dataset::Training,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+        rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+        training_set::generate_training_trajectories,
     },
     json_toml_utils::read_json,
     llm_model::{
@@ -14,7 +14,7 @@ use credit_assignment::{
         Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
 };
-use research_utility::asset_file::AssetFile;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Interactively browse training sets")]
 struct Args {
@@ -101,14 +101,13 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
     } = run_program_args;
-    let asset_file_training_set = AssetFileTrainingTrajectories::<M> {
-        config_nickname: config_nickname.clone(),
+    generate_training_trajectories::<M>(
+        &config_nickname,
         rollout_config,
         posterior_calculation_config,
         epoch,
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
-        _phantom: std::marker::PhantomData::<M>,
-    };
-    asset_file_training_set.synchronize().await;
+    )
+    .await;
 }

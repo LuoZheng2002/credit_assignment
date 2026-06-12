@@ -3,15 +3,16 @@ use std::error::Error;
 use std::io::{self, Stdout};
 
 use clap::Parser;
-use credit_assignment::direct_tool::rollout_config::AdvantageCalculationPolicy;
+
 use credit_assignment::{
     direct_tool::{
-        rollout_config::DirectRolloutConfig,
-        training_set::{
-            AssetFileTrainingTrajectories, DirectTrainingSetStatistics, DirectTrainingTrajectory,
-        },
         hybrid_dataset::Training,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+        rollout_config::DirectRolloutConfig,
+        training_set::{
+            DirectTrainingSetStatistics, DirectTrainingTrajectory, open_training_trajectories,
+            training_trajectories_stats_file_path,
+        },
     },
     json_toml_utils::read_json,
     llm_model::{
@@ -36,7 +37,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui_core::buffer::Buffer;
-use research_utility::{asset_file::AssetFile, sqlite_store::SqliteStore};
+use research_utility::sqlite_store::SqliteStore;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Interactively browse training sets")]
@@ -51,10 +52,6 @@ struct Args {
     posterior_hyperparameters_path: String,
     #[arg(long)]
     epoch: usize, // the epoch index
-    #[arg(long)]
-    cumulative_avg_abs_advantage_cutoff: f32,
-    #[arg(long, value_enum)]
-    advantage_calculation_policy: AdvantageCalculationPolicy,
 }
 
 struct ConversationRender {
@@ -655,8 +652,6 @@ struct RunProgramArgs {
     rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize, // the epoch index
-    cumulative_avg_abs_advantage_cutoff: f32,
-    advantage_calculation_policy: AdvantageCalculationPolicy,
 }
 
 fn restore_terminal_after_panic() {
@@ -684,8 +679,6 @@ async fn main() {
         rollout_config_path,
         posterior_hyperparameters_path,
         epoch,
-        cumulative_avg_abs_advantage_cutoff,
-        advantage_calculation_policy,
     } = Args::parse();
     let rollout_config: DirectRolloutConfig<Training> = read_json(rollout_config_path).unwrap();
     let posterior_hyperparameters =
@@ -698,8 +691,6 @@ async fn main() {
         rollout_config,
         posterior_calculation_config,
         epoch,
-        cumulative_avg_abs_advantage_cutoff,
-        advantage_calculation_policy,
     };
     match model {
         LlmModelName::Gemma3_4b => run_program::<Gemma3_4BIt>(run_program_args).await,
@@ -721,24 +712,24 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         rollout_config,
         posterior_calculation_config,
         epoch,
-        cumulative_avg_abs_advantage_cutoff,
-        advantage_calculation_policy,
+        ..
     } = run_program_args;
-    let asset_file_training_set = AssetFileTrainingTrajectories::<M> {
-        config_nickname: config_nickname.clone(),
-        rollout_config,
-        posterior_calculation_config,
+    let training_set_store = open_training_trajectories::<M>(
+        &config_nickname,
+        &rollout_config,
+        &posterior_calculation_config,
         epoch,
-        cumulative_avg_abs_advantage_cutoff,
-        advantage_calculation_policy,
-        _phantom: std::marker::PhantomData::<M>,
-    };
-    let training_set_store = asset_file_training_set.fetch().await;
+    );
     let mut keys = training_set_store.get_keys().unwrap();
     keys.sort();
     let statistics =
-        read_json::<DirectTrainingSetStatistics>(asset_file_training_set.statistics_file_path())
-            .ok();
+        read_json::<DirectTrainingSetStatistics>(training_trajectories_stats_file_path::<M>(
+            &config_nickname,
+            &rollout_config,
+            &posterior_calculation_config,
+            epoch,
+        ))
+        .ok();
 
     enable_raw_mode().unwrap();
     let mut stdout = io::stdout();

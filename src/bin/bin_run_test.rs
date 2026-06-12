@@ -4,11 +4,11 @@ use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
     direct_tool::{
-        rollout::{RolloutProgramConfig, rollout_all},
-        rollout_config::DirectRolloutConfig,
-        tree_action_log::AssetFileActionLogs,
         hybrid_dataset::Testing,
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+        rollout::{RolloutProgramConfig, rollout_all},
+        rollout_config::DirectRolloutConfig,
+        tree_action_log::open_action_logs,
     },
     get_accuracy::{TestAccuracyResult, get_test_accuracies},
     jinja_directories::{model_parent_dir_from_template, test_accuracy_path_from_template},
@@ -99,15 +99,12 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
     };
     let _ = rollout_all::<M, Testing>(program_config).await;
 
-    let asset_file_action_logs = AssetFileActionLogs::<M, Testing> {
-        nickname: args.config_nickname.clone(),
-        rollout_config: rollout_config.clone(),
-        posterior_calculation_config: posterior_calculation_config,
-        epoch: args.epoch,
-        _phantom: std::marker::PhantomData,
-    };
+    let _ = open_action_logs::<M, Testing>(&args.config_nickname, args.epoch);
     get_test_accuracies::<M, Testing>(
-        asset_file_action_logs,
+        args.config_nickname.clone(),
+        rollout_config.clone(),
+        posterior_calculation_config,
+        args.epoch,
         "Test accuracy",
         rollout_config.max_num_trunks,
     )

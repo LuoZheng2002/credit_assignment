@@ -1,12 +1,14 @@
-use research_utility::{asset_file::AssetFile, progress_tui_logger::log_master_progress};
+use research_utility::progress_tui_logger::log_master_progress;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::{
     direct_tool::{
         hybrid_dataset::{DatasetSplit, open_hybrid_dataset},
+        posterior_calculation_config::PosteriorCalculationConfig,
+        rollout_config::DirectRolloutConfig,
         tree::DirectTree,
-        tree_action_log::{AssetFileActionLogs, DirectTreeActionLog},
+        tree_action_log::{DirectTreeActionLog, open_action_logs},
     },
     llm_model::LlmModelMarker,
 };
@@ -106,11 +108,14 @@ fn tree_accuracy<M: LlmModelMarker, S: DatasetSplit>(
 }
 
 pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
-    asset_file_action_logs: AssetFileActionLogs<M, S>,
+    config_nickname: String,
+    rollout_config: DirectRolloutConfig<S>,
+    posterior_calculation_config: PosteriorCalculationConfig,
+    epoch: usize,
     progress_bar_label: &str,
 ) -> AccuracyStats {
     let question_store = open_hybrid_dataset::<S>();
-    let action_store = asset_file_action_logs.fetch().await;
+    let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
     let mut keys = action_store.get_keys().unwrap();
     keys.sort();
 
@@ -143,10 +148,8 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
                 let actions = action_store.load_table_sorted(key).unwrap();
                 let action_log = DirectTreeActionLog {
                     question,
-                    rollout_config: asset_file_action_logs.rollout_config.clone(),
-                    posterior_calculation_config: asset_file_action_logs
-                        .posterior_calculation_config
-                        .clone(),
+                    rollout_config: rollout_config.clone(),
+                    posterior_calculation_config: posterior_calculation_config.clone(),
                     actions,
                 };
 
@@ -213,11 +216,14 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
 }
 
 pub async fn get_per_question_accuracies<M: LlmModelMarker, S: DatasetSplit>(
-    asset_file_action_logs: AssetFileActionLogs<M, S>,
+    config_nickname: String,
+    rollout_config: DirectRolloutConfig<S>,
+    posterior_calculation_config: PosteriorCalculationConfig,
+    epoch: usize,
     progress_bar_label: &str,
 ) -> Vec<Option<f32>> {
     let question_store = open_hybrid_dataset::<S>();
-    let action_store = asset_file_action_logs.fetch().await;
+    let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
     let mut keys = action_store.get_keys().unwrap();
     keys.sort();
 
@@ -247,10 +253,8 @@ pub async fn get_per_question_accuracies<M: LlmModelMarker, S: DatasetSplit>(
                 let actions = action_store.load_table_sorted(key).unwrap();
                 let action_log = DirectTreeActionLog {
                     question,
-                    rollout_config: asset_file_action_logs.rollout_config.clone(),
-                    posterior_calculation_config: asset_file_action_logs
-                        .posterior_calculation_config
-                        .clone(),
+                    rollout_config: rollout_config.clone(),
+                    posterior_calculation_config: posterior_calculation_config.clone(),
                     actions,
                 };
 
@@ -314,12 +318,15 @@ pub struct TestAccuracyResult {
 }
 
 pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
-    asset_file_action_logs: AssetFileActionLogs<M, S>,
+    config_nickname: String,
+    rollout_config: DirectRolloutConfig<S>,
+    posterior_calculation_config: PosteriorCalculationConfig,
+    epoch: usize,
     progress_bar_label: &str,
     max_num_trunks: usize,
 ) -> TestAccuracyResult {
     let question_store = open_hybrid_dataset::<S>();
-    let action_store = asset_file_action_logs.fetch().await;
+    let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
     let mut keys = action_store.get_keys().unwrap();
     keys.sort();
 
@@ -350,10 +357,8 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
                 let actions = action_store.load_table_sorted(key).unwrap();
                 let action_log = DirectTreeActionLog {
                     question,
-                    rollout_config: asset_file_action_logs.rollout_config.clone(),
-                    posterior_calculation_config: asset_file_action_logs
-                        .posterior_calculation_config
-                        .clone(),
+                    rollout_config: rollout_config.clone(),
+                    posterior_calculation_config: posterior_calculation_config.clone(),
                     actions,
                 };
 
