@@ -1,48 +1,22 @@
 use std::collections::BTreeMap;
-use std::error::Error;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::io::Stdout;
-use std::marker::PhantomData;
-use std::path::Path;
-use std::time::{Duration, Instant};
 
-use clap::ValueEnum;
-
-use crate::config_paths::{ConfigPaths, config_paths_file_path_from_action_logs_path};
-use crate::direct_tool::hybrid_dataset::{
-    DatasetSplit, DatasetSplitEnum, HybridDatasetQuestion, QuestionFlatId, Testing, Training,
-    Validation, open_hybrid_dataset,
+use crate::direct_tool::hybrid_dataset::{DatasetSplit, QuestionFlatId};
+use crate::direct_tool::{
+    posterior_calculation_config::PosteriorHyperparameters,
+    tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
+    tree_action_log::DirectTreeActionLog,
+    tree_to_action::TokenBranchingScore,
 };
-use crate::direct_tool::tree_action::DirectTreeAction;
 use crate::judge_correctness::CorrectnessJudgment;
-use crate::{
-    direct_tool::{
-        posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-        rollout_config::DirectRolloutConfig,
-        tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
-        tree_action_log::{DirectTreeActionLog, open_action_logs},
-        tree_to_action::TokenBranchingScore,
-    },
-    json_toml_utils::read_json,
-    llm_model::{
-        Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
-        Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
-    },
-};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
+use crate::llm_model::LlmModelMarker;
+use ratatui::layout::{Position, Rect};
 use ratatui::prelude::Widget;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui_core::buffer::Buffer;
-
-use research_utility::sqlite_store::SqliteStore;
-use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
-use std::collections::hash_map::DefaultHasher;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 // home page: view the questions and win rate
 // the questions should be paged; each page should have 10 questions
@@ -57,27 +31,27 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 // use the key q to transition from tree page to home page, and press q again to exit the program
 
-const QUESTIONS_PER_PAGE: usize = 10;
-const CONVERSATION_SCROLL_SENSITIVITY: usize = 4;
+pub(super) const QUESTIONS_PER_PAGE: usize = 10;
+pub(super) const CONVERSATION_SCROLL_SENSITIVITY: usize = 4;
 
-struct QuestionEntry<M: LlmModelMarker, S: DatasetSplit> {
-    key: QuestionFlatId<S>,
-    action_log: DirectTreeActionLog<M, S>,
-    win_rate: f64,
-    num_correct: usize,
-    num_leaves: usize,
+pub(super) struct QuestionEntry<M: LlmModelMarker, S: DatasetSplit> {
+    pub(super) key: QuestionFlatId<S>,
+    pub(super) action_log: DirectTreeActionLog<M, S>,
+    pub(super) win_rate: f64,
+    pub(super) num_correct: usize,
+    pub(super) num_leaves: usize,
 }
 
-enum EntryLoadState<M: LlmModelMarker, S: DatasetSplit> {
+pub(super) enum EntryLoadState<M: LlmModelMarker, S: DatasetSplit> {
     Unloaded,
     Loading,
     Loaded(QuestionEntry<M, S>),
     Failed(String),
 }
 
-struct EntryLoadResult<M: LlmModelMarker, S: DatasetSplit> {
-    index: usize,
-    state: EntryLoadState<M, S>,
+pub(super) struct EntryLoadResult<M: LlmModelMarker, S: DatasetSplit> {
+    pub(super) index: usize,
+    pub(super) state: EntryLoadState<M, S>,
 }
 
 impl<M: LlmModelMarker, S: DatasetSplit> Clone for QuestionEntry<M, S> {
@@ -93,26 +67,26 @@ impl<M: LlmModelMarker, S: DatasetSplit> Clone for QuestionEntry<M, S> {
 }
 
 #[derive(Clone, Copy)]
-struct SegmentPosteriorStats {
+pub(super) struct SegmentPosteriorStats {
     pub(super) posterior_mean: f32,
     pub(super) posterior_std: f32,
     pub(super) signal_to_noise: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
+pub(super) enum Mode {
     Home,
     Tree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TreePaneFocus {
+pub(super) enum TreePaneFocus {
     Summary,
     Conversation,
     Tree,
 }
 
-struct TreePage<M: LlmModelMarker, S: DatasetSplit> {
+pub(super) struct TreePage<M: LlmModelMarker, S: DatasetSplit> {
     pub(super) entry_index: usize,
     pub(super) total_actions: usize,
     pub(super) action_limit: usize,
@@ -135,14 +109,14 @@ struct TreePage<M: LlmModelMarker, S: DatasetSplit> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TreeScrollMode {
+pub(super) enum TreeScrollMode {
     Scaling,
     Panning,
     Evolution,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TreeColorMode {
+pub(super) enum TreeColorMode {
     SignalToNoise,
     BranchingScore,
     PosteriorMean,
@@ -152,7 +126,7 @@ enum TreeColorMode {
 }
 
 impl TreeColorMode {
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::SignalToNoise => "SignalToNoise",
             Self::BranchingScore => "BranchingScore",
@@ -165,7 +139,7 @@ impl TreeColorMode {
 }
 
 impl TreeScrollMode {
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::Scaling => "Scaling",
             Self::Panning => "Panning",
@@ -175,19 +149,19 @@ impl TreeScrollMode {
 }
 
 #[derive(Clone, Copy)]
-struct TreeRenderedSegment {
+pub(super) struct TreeRenderedSegment {
     pub(super) segment_id: SegmentId,
     pub(super) row: usize,
     pub(super) col: usize,
     pub(super) width: usize,
 }
 
-struct ConversationRender {
+pub(super) struct ConversationRender {
     pub(super) plain: String,
     pub(super) styled: Text<'static>,
 }
 
-struct TreePageState<M: LlmModelMarker, S: DatasetSplit> {
+pub(super) struct TreePageState<M: LlmModelMarker, S: DatasetSplit> {
     pub(super) tree_snapshot: TreeDisplaySnapshot<M, S>,
     pub(super) root_segment_id: SegmentId,
     pub(super) segment_advantages_from_posteriors: BTreeMap<SegmentId, f32>,
@@ -202,7 +176,7 @@ struct TreePageState<M: LlmModelMarker, S: DatasetSplit> {
     pub(super) rendered_segments: Vec<TreeRenderedSegment>,
 }
 
-struct TreeDisplaySnapshot<M: LlmModelMarker, S: DatasetSplit> {
+pub(super) struct TreeDisplaySnapshot<M: LlmModelMarker, S: DatasetSplit> {
     pub(super) segments: BTreeMap<SegmentId, Segment<M>>,
     pub(super) leaf_segment_judgments: BTreeMap<SegmentId, CorrectnessJudgment>,
     pub(super) _phantom: std::marker::PhantomData<S>,
@@ -213,17 +187,17 @@ impl<M: LlmModelMarker, S: DatasetSplit> TreeDisplaySnapshot<M, S> {
         tree.root_segment_id
             .expect("Direct tree browser requires root segment");
         Self {
-            pub(super) segments: tree.segments,
-            pub(super) leaf_segment_judgments: tree.leaf_segment_judgments,
-            pub(super) _phantom: std::marker::PhantomData,
+            segments: tree.segments,
+            leaf_segment_judgments: tree.leaf_segment_judgments,
+            _phantom: std::marker::PhantomData,
         }
     }
 
-    fn contains_segment(&self, segment_id: SegmentId) -> bool {
+    pub(super) fn contains_segment(&self, segment_id: SegmentId) -> bool {
         self.segments.contains_key(&segment_id)
     }
 
-    fn get_trajectory_length_till_id(&self, segment_id: SegmentId) -> usize {
+    pub(super) fn get_trajectory_length_till_id(&self, segment_id: SegmentId) -> usize {
         self.path_root_to_segment(segment_id)
             .iter()
             .map(|id| {
@@ -235,7 +209,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> TreeDisplaySnapshot<M, S> {
             .sum()
     }
 
-    fn path_root_to_segment(&self, segment_id: SegmentId) -> Vec<SegmentId> {
+    pub(super) fn path_root_to_segment(&self, segment_id: SegmentId) -> Vec<SegmentId> {
         let mut path = Vec::new();
         let mut cursor = Some(segment_id);
         while let Some(current_id) = cursor {
@@ -252,8 +226,8 @@ impl<M: LlmModelMarker, S: DatasetSplit> TreeDisplaySnapshot<M, S> {
 }
 
 impl<M: LlmModelMarker, S: DatasetSplit> TreePage<M, S> {
-    fn new(
-        pub(super) entry_index: usize,
+    pub(super) fn new(
+        entry_index: usize,
         entry: &QuestionEntry<M, S>,
         override_hyperparameters: Option<&PosteriorHyperparameters>,
     ) -> Self {
@@ -272,25 +246,25 @@ impl<M: LlmModelMarker, S: DatasetSplit> TreePage<M, S> {
             total_actions,
             action_limit,
             width_division_ratio,
-            pub(super) tree_snapshot: state.tree_snapshot,
-            pub(super) root_segment_id: state.root_segment_id,
-            pub(super) segment_advantages_from_posteriors: state.segment_advantages_from_posteriors,
-            pub(super) segment_advantages_from_win_rate: state.segment_advantages_from_win_rate,
-            pub(super) segment_posterior_stats: state.segment_posterior_stats,
-            pub(super) segment_posterior_signal_scaled: state.segment_posterior_signal_scaled,
-            pub(super) segment_posterior_mean_scaled: state.segment_posterior_mean_scaled,
-            pub(super) segment_posterior_std_scaled: state.segment_posterior_std_scaled,
-            pub(super) segment_branching_score_display: state.segment_branching_score_display,
-            pub(super) segment_display_widths: state.segment_display_widths,
+            tree_snapshot: state.tree_snapshot,
+            root_segment_id: state.root_segment_id,
+            segment_advantages_from_posteriors: state.segment_advantages_from_posteriors,
+            segment_advantages_from_win_rate: state.segment_advantages_from_win_rate,
+            segment_posterior_stats: state.segment_posterior_stats,
+            segment_posterior_signal_scaled: state.segment_posterior_signal_scaled,
+            segment_posterior_mean_scaled: state.segment_posterior_mean_scaled,
+            segment_posterior_std_scaled: state.segment_posterior_std_scaled,
+            segment_branching_score_display: state.segment_branching_score_display,
+            segment_display_widths: state.segment_display_widths,
             selected_segment_id,
-            pub(super) tree_lines: state.tree_lines,
-            pub(super) rendered_segments: state.rendered_segments,
-            pub(super) hovered_segment_id: None,
-            pub(super) tree_area: None,
+            tree_lines: state.tree_lines,
+            rendered_segments: state.rendered_segments,
+            hovered_segment_id: None,
+            tree_area: None,
         }
     }
 
-    fn rebuild_snapshot(
+    pub(super) fn rebuild_snapshot(
         &mut self,
         entry: &QuestionEntry<M, S>,
         override_hyperparameters: Option<&PosteriorHyperparameters>,
@@ -327,7 +301,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> TreePage<M, S> {
         }
     }
 
-    fn set_action_limit(
+    pub(super) fn set_action_limit(
         &mut self,
         entry: &QuestionEntry<M, S>,
         new_limit: usize,
@@ -340,7 +314,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> TreePage<M, S> {
         self.rebuild_snapshot(entry, override_hyperparameters);
     }
 
-    fn set_width_division_ratio(
+    pub(super) fn set_width_division_ratio(
         &mut self,
         entry: &QuestionEntry<M, S>,
         new_ratio: usize,
@@ -356,8 +330,8 @@ impl<M: LlmModelMarker, S: DatasetSplit> TreePage<M, S> {
 
 fn tree_page_state_from_action_log<M: LlmModelMarker, S: DatasetSplit>(
     action_log: &DirectTreeActionLog<M, S>,
-    pub(super) action_limit: usize,
-    pub(super) width_division_ratio: usize,
+    action_limit: usize,
+    width_division_ratio: usize,
     override_hyperparameters: Option<&PosteriorHyperparameters>,
 ) -> TreePageState<M, S> {
     let partial_log = partial_action_log(action_log, action_limit);
@@ -402,11 +376,11 @@ fn tree_page_state_from_action_log<M: LlmModelMarker, S: DatasetSplit>(
         rendered_segments,
     }
 }
-fn contains_point(area: Rect, x: u16, y: u16) -> bool {
+pub(super) fn contains_point(area: Rect, x: u16, y: u16) -> bool {
     x >= area.x && x < area.x + area.width && y >= area.y && y < area.y + area.height
 }
 
-fn clamp_scroll(value: usize) -> u16 {
+pub(super) fn clamp_scroll(value: usize) -> u16 {
     if value > u16::MAX as usize {
         u16::MAX
     } else {
@@ -414,7 +388,7 @@ fn clamp_scroll(value: usize) -> u16 {
     }
 }
 
-fn scale_horizontal_scroll(scroll: usize, old_ratio: usize, new_ratio: usize) -> usize {
+pub(super) fn scale_horizontal_scroll(scroll: usize, old_ratio: usize, new_ratio: usize) -> usize {
     let safe_old = old_ratio.max(1) as f64;
     let safe_new = new_ratio.max(1) as f64;
     ((scroll as f64) * safe_old / safe_new).round() as usize
@@ -444,7 +418,7 @@ fn fixed_width_scale_ratio_for_tree<M: crate::llm_model::LlmModelMarker, S: Data
 
 fn segment_display_widths<M: crate::llm_model::LlmModelMarker, S: DatasetSplit>(
     tree: &DirectTree<'_, M, S>,
-    pub(super) width_division_ratio: Option<usize>,
+    width_division_ratio: Option<usize>,
 ) -> BTreeMap<SegmentId, usize> {
     let mut widths = BTreeMap::new();
     if tree.segments.is_empty() {
@@ -464,8 +438,8 @@ fn segment_display_widths<M: crate::llm_model::LlmModelMarker, S: DatasetSplit>(
 
 fn segment_branching_score_display<M: crate::llm_model::LlmModelMarker, S: DatasetSplit>(
     tree: &DirectTree<'_, M, S>,
-    pub(super) width_division_ratio: usize,
-    pub(super) segment_display_widths: &BTreeMap<SegmentId, usize>,
+    width_division_ratio: usize,
+    segment_display_widths: &BTreeMap<SegmentId, usize>,
     override_hyperparameters: Option<&PosteriorHyperparameters>,
 ) -> BTreeMap<SegmentId, Vec<Option<f32>>> {
     let mut displays = BTreeMap::new();
@@ -554,7 +528,7 @@ fn segment_posterior_stats<M: crate::llm_model::LlmModelMarker, S: DatasetSplit>
         stats_by_segment.insert(
             segment_id,
             SegmentPosteriorStats {
-                pub(super) posterior_mean: posterior.mean,
+                posterior_mean: posterior.mean,
                 posterior_std,
                 signal_to_noise,
             },
@@ -685,7 +659,7 @@ fn count_wrapped_lines(text: &str, area: Rect) -> usize {
         .max(1)
 }
 
-fn bottom_scroll_limit(lines: usize, height: usize) -> usize {
+pub(super) fn bottom_scroll_limit(lines: usize, height: usize) -> usize {
     if height == 0 {
         return lines + 2;
     }
@@ -694,14 +668,14 @@ fn bottom_scroll_limit(lines: usize, height: usize) -> usize {
 }
 
 #[derive(Clone, Copy)]
-struct PaneMetrics {
+pub(super) struct PaneMetrics {
     pub(super) text_hash: u64,
     pub(super) width: u16,
     pub(super) height: u16,
     pub(super) lines: usize,
 }
 
-fn compute_wrapped_line_count(
+pub(super) fn compute_wrapped_line_count(
     text: &str,
     area: Rect,
     metrics_slot: &mut Option<PaneMetrics>,
@@ -723,14 +697,14 @@ fn compute_wrapped_line_count(
     let lines = count_wrapped_lines(text, area);
     *metrics_slot = Some(PaneMetrics {
         text_hash,
-        pub(super) width: area.width,
-        pub(super) height: area.height,
+        width: area.width,
+        height: area.height,
         lines,
     });
     lines
 }
 
-fn single_line_preview(text: &str, max_chars: usize) -> String {
+pub(super) fn single_line_preview(text: &str, max_chars: usize) -> String {
     let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let chars: Vec<char> = compact.chars().collect();
     if chars.len() <= max_chars {
@@ -759,7 +733,7 @@ fn write_pattern(canvas: &mut [Vec<char>], row: usize, col: usize, pattern: &str
 
 fn collect_leaf_order<M: LlmModelMarker, S: DatasetSplit>(
     tree: &DirectTree<'_, M, S>,
-    pub(super) root_segment_id: SegmentId,
+    root_segment_id: SegmentId,
 ) -> Vec<SegmentId> {
     let mut leaves = Vec::new();
     let mut stack = vec![root_segment_id];
@@ -781,7 +755,7 @@ fn collect_leaf_order<M: LlmModelMarker, S: DatasetSplit>(
 
 fn path_root_to_segment<M: LlmModelMarker, S: DatasetSplit>(
     tree: &DirectTree<'_, M, S>,
-    pub(super) segment_id: SegmentId,
+    segment_id: SegmentId,
 ) -> Vec<SegmentId> {
     let mut path = Vec::new();
     let mut cursor = Some(segment_id);
@@ -799,9 +773,9 @@ fn path_root_to_segment<M: LlmModelMarker, S: DatasetSplit>(
 
 fn build_segment_graph_lines<M: LlmModelMarker, S: DatasetSplit>(
     tree: &DirectTree<'_, M, S>,
-    pub(super) root_segment_id: SegmentId,
-    pub(super) leaf_segment_judgments: &BTreeMap<SegmentId, CorrectnessJudgment>,
-    pub(super) segment_display_widths: &BTreeMap<SegmentId, usize>,
+    root_segment_id: SegmentId,
+    leaf_segment_judgments: &BTreeMap<SegmentId, CorrectnessJudgment>,
+    segment_display_widths: &BTreeMap<SegmentId, usize>,
 ) -> (Vec<String>, Vec<TreeRenderedSegment>) {
     let ordered_leaf_ids = collect_leaf_order(tree, root_segment_id);
     let line_count = ordered_leaf_ids.len().max(1);
@@ -1003,9 +977,9 @@ fn build_segment_graph_lines<M: LlmModelMarker, S: DatasetSplit>(
     (lines, rendered_segments)
 }
 
-fn render_tree_line<M: LlmModelMarker, S: DatasetSplit>(
+pub(super) fn render_tree_line<M: LlmModelMarker, S: DatasetSplit>(
     tree_page: &TreePage<M, S>,
-    pub(super) row: usize,
+    row: usize,
     horizontal_scroll: usize,
     color_mode: TreeColorMode,
 ) -> Line<'static> {
@@ -1189,10 +1163,10 @@ fn render_tree_line<M: LlmModelMarker, S: DatasetSplit>(
     Line::from(spans)
 }
 
-fn tree_segment_at_mouse<M: LlmModelMarker, S: DatasetSplit>(
+pub(super) fn tree_segment_at_mouse<M: LlmModelMarker, S: DatasetSplit>(
     tree_page: &TreePage<M, S>,
     column: u16,
-    pub(super) row: u16,
+    row: u16,
     horizontal_scroll: usize,
 ) -> Option<SegmentId> {
     let area = tree_page.tree_area?;
@@ -1221,10 +1195,10 @@ fn tree_segment_at_mouse<M: LlmModelMarker, S: DatasetSplit>(
 }
 
 fn push_text_as_spans(
-    pub(super) lines: &mut Vec<Vec<Span<'static>>>,
+    lines: &mut Vec<Vec<Span<'static>>>,
     text: &str,
     style: Option<Style>,
-    pub(super) plain: &mut String,
+    plain: &mut String,
 ) {
     if text.is_empty() {
         return;
@@ -1251,10 +1225,10 @@ fn push_text_as_spans(
     }
 }
 
-fn build_conversation_render<M: LlmModelMarker, S: DatasetSplit>(
-    pub(super) tree_snapshot: &TreeDisplaySnapshot<M, S>,
-    pub(super) segment_posterior_signal_scaled: &BTreeMap<SegmentId, f32>,
-    pub(super) segment_id: SegmentId,
+pub(super) fn build_conversation_render<M: LlmModelMarker, S: DatasetSplit>(
+    tree_snapshot: &TreeDisplaySnapshot<M, S>,
+    segment_posterior_signal_scaled: &BTreeMap<SegmentId, f32>,
+    segment_id: SegmentId,
 ) -> ConversationRender {
     let path = tree_snapshot.path_root_to_segment(segment_id);
 
@@ -1303,13 +1277,13 @@ fn build_conversation_render<M: LlmModelMarker, S: DatasetSplit>(
         .collect();
     ConversationRender {
         plain,
-        pub(super) styled: Text::from(styled_lines),
+        styled: Text::from(styled_lines),
     }
 }
 
 fn partial_action_log<M: LlmModelMarker, S: DatasetSplit>(
     action_log: &DirectTreeActionLog<M, S>,
-    pub(super) action_limit: usize,
+    action_limit: usize,
 ) -> DirectTreeActionLog<M, S> {
     let mut partial_log = action_log.clone();
     partial_log.actions = action_log
@@ -1350,7 +1324,7 @@ fn segment_advantages_from_win_rate<M: LlmModelMarker, S: DatasetSplit>(
     advantages
 }
 
-fn width_division_ratio_for_action_log<M: LlmModelMarker, S: DatasetSplit>(
+pub(super) fn width_division_ratio_for_action_log<M: LlmModelMarker, S: DatasetSplit>(
     action_log: &DirectTreeActionLog<M, S>,
 ) -> usize {
     width_division_ratio_for_tree(&DirectTree::<M, S>::from_action_log(action_log))
@@ -1366,7 +1340,7 @@ fn width_division_ratio_for_tree<M: LlmModelMarker, S: DatasetSplit>(
     ((1.0 / fixed_scale_ratio).round() as usize).max(1)
 }
 
-fn question_stats_from_action_log<M: LlmModelMarker, S: DatasetSplit>(
+pub(super) fn question_stats_from_action_log<M: LlmModelMarker, S: DatasetSplit>(
     action_log: &DirectTreeActionLog<M, S>,
 ) -> (usize, usize, f64) {
     let final_tree = DirectTree::<M, S>::from_action_log(action_log);

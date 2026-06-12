@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use clap::ValueEnum;
+
 use crate::direct_tool::hybrid_dataset::DatasetSplitEnum;
 use crate::llm_model::LlmModelName;
 
@@ -94,7 +96,7 @@ pub(super) fn parse_action_logs_context(
                 action_logs_path.display()
             )
         })?;
-    let model = model_cli_name.parse::<LlmModelName>().map_err(|err| {
+    let model = LlmModelName::from_str(model_cli_name, false).map_err(|err| {
         format!(
             "Failed to infer model from action logs path {}: {}",
             action_logs_path.display(),

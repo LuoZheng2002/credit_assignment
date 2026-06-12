@@ -1,9 +1,7 @@
 mod context;
 mod tree_render;
 
-use std::collections::hash_map::DefaultHasher;
 use std::error::Error;
-use std::hash::{Hash, Hasher};
 use std::io::Stdout;
 use std::marker::PhantomData;
 use std::path::Path;
@@ -29,17 +27,19 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, MouseButton, MouseEvent, 
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::prelude::Widget;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
-use ratatui_core::buffer::Buffer;
 use research_utility::sqlite_store::SqliteStore;
 use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use self::context::parse_action_logs_context;
 use self::tree_render::*;
+
+struct HomePageLoadRequest {
+    page_start: usize,
+    started_at: Instant,
+}
 
 struct App<M: LlmModelMarker, S: DatasetSplit> {
     _model_marker: PhantomData<M>,
