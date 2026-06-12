@@ -284,6 +284,7 @@ def _write_subprocess_stdin(process: subprocess.Popen[Any], payload: bytes) -> N
         raise RuntimeError("subprocess stdin was not piped")
     process.stdin.write(payload)
     process.stdin.close()
+    process.stdin = None
 
 
 def _run_hpc_training(

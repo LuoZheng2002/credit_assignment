@@ -80,7 +80,9 @@ pub(crate) async fn write_json_payload_to_child_stdin<T: Serialize>(
             "failed to close {} stdin after writing JSON payload: {}",
             process_name, err
         )
-    })
+    })?;
+    drop(stdin);
+    Ok(())
 }
 
 pub(crate) fn spawn_wrapper_tui_listener(
