@@ -1,9 +1,11 @@
+use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::Value;
+use std::marker::PhantomData;
 use tokenizers::Tokenizer;
 
 use crate::constants::sglang_context_length;
-use crate::llm_model::{LlmCliArgs, LlmModelMarker};
+use crate::llm_model::{LlmCallable, LlmCliArgs, LlmModelMarker, trim_tail_eos_if_needed};
 use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate};
 
 pub(crate) fn wrap_python_response_xml(raw_python_response: &str) -> String {
@@ -114,6 +116,12 @@ pub(crate) struct SharedSglangLlmCallable {
     backend_label: String,
 }
 
+#[derive(Clone)]
+pub struct SglangLlmCallable<M: LlmModelMarker> {
+    shared: SharedSglangLlmCallable,
+    _marker: PhantomData<M>,
+}
+
 impl SharedSglangLlmCallable {
     pub(crate) fn new(client: Client, sglang_port: u16) -> Self {
         assert!(sglang_port > 0, "SGLang port must be greater than 0");
@@ -145,9 +153,12 @@ impl SharedSglangLlmCallable {
         if let Some(base_url) = llm_cli_args.sglang_base_url.as_deref() {
             return Self::new_with_base_url(client, base_url);
         }
-        let sglang_port = llm_cli_args
-            .sglang_port
-            .unwrap_or_else(|| panic!("{} requires sglang port or sglang base URL", model_name_for_error));
+        let sglang_port = llm_cli_args.sglang_port.unwrap_or_else(|| {
+            panic!(
+                "{} requires sglang port or sglang base URL",
+                model_name_for_error
+            )
+        });
         Self::new(client, sglang_port)
     }
 
@@ -170,19 +181,14 @@ impl SharedSglangLlmCallable {
             body["sampling_params"]["stop"] = serde_json::json!(["```\n"]);
         }
 
-        let response = self
-            .post_json(&self.generate_url, body)
-            .await?;
+        let response = self.post_json(&self.generate_url, body).await?;
 
         if let Some(error_message) = response["error"]["message"].as_str() {
             return Err(error_message.to_string());
         }
 
-        let generated_tokens = parse_sglang_generated_token_ids(
-            &response,
-            &tokens,
-            &self.backend_label,
-        )?;
+        let generated_tokens =
+            parse_sglang_generated_token_ids(&response, &tokens, &self.backend_label)?;
         Ok(generated_tokens)
     }
 
@@ -214,13 +220,8 @@ impl SharedSglangLlmCallable {
             body["sampling_params"]["stop"] = serde_json::json!(["```\n"]);
         }
 
-        let json = self
-            .post_json(&self.generate_url, body)
-            .await?;
-        let result = parse_sglang_response_with_logprobs(
-            &self.backend_label,
-            &json,
-        )?;
+        let json = self.post_json(&self.generate_url, body).await?;
+        let result = parse_sglang_response_with_logprobs(&self.backend_label, &json)?;
         Ok(result)
     }
 
@@ -236,6 +237,44 @@ impl SharedSglangLlmCallable {
             .json()
             .await
             .map_err(|err| format!("SGLang failed to parse JSON from {}: {}", url, err))
+    }
+}
+
+#[async_trait]
+impl<M: LlmModelMarker> LlmCallable<M> for SglangLlmCallable<M> {
+    fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
+        Self {
+            shared: SharedSglangLlmCallable::from_llm_cli_args(
+                client,
+                llm_cli_args,
+                M::MODEL_LABEL,
+            ),
+            _marker: PhantomData,
+        }
+    }
+
+    async fn generate_tokens(
+        &self,
+        tokens: Vec<i32>,
+        passes_in_stop: bool,
+    ) -> Result<Vec<i32>, String> {
+        self.shared
+            .generate_tokens_from_tokens::<M>(tokens, passes_in_stop)
+            .await
+    }
+
+    async fn generate_tokens_with_logprobs(
+        &self,
+        tokens: Vec<i32>,
+        passes_in_stop: bool,
+        temperature: f32,
+        trim_eos: bool,
+    ) -> Result<TokenArrayWithLogprob<M>, String> {
+        let output = self
+            .shared
+            .generate_tokens_with_logprobs_from_tokens::<M>(tokens, passes_in_stop, temperature)
+            .await?;
+        Ok(trim_tail_eos_if_needed::<M>(output, trim_eos))
     }
 }
 

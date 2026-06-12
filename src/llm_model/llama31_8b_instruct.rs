@@ -1,6 +1,4 @@
-use async_trait::async_trait;
 use minijinja::context;
-use reqwest::Client;
 use serde::Serialize;
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
@@ -8,21 +6,16 @@ use tokenizers::Tokenizer;
 use crate::utils::load_jinja_template_environment;
 
 use super::sglang_model_shared::{
-    SharedSglangLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
-    wrap_python_response_xml,
+    decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id, wrap_python_response_xml,
 };
-use super::{
-    LlmCallable, LlmCliArgs, LlmModelMarker, MyTokenizer, TokenArray, TokenArrayWithLogprob,
-    trim_tail_eos_if_needed,
-};
+use super::{LlmModelMarker, MyTokenizer, SglangLlmCallable, TokenArray};
 
 static LLAMA31_8B_INSTRUCT_TOKENIZER: LazyLock<Tokenizer> =
     LazyLock::new(|| Tokenizer::from_pretrained(Llama31_8BInstruct::API_NAME, None).unwrap());
 
 static LLAMA31_8B_INSTRUCT_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment<'static>> =
     LazyLock::new(|| {
-        load_jinja_template_environment("tokenizers/llama31/chat_template.jinja", "chat")
-            .unwrap()
+        load_jinja_template_environment("tokenizers/llama31/chat_template.jinja", "chat").unwrap()
     });
 
 #[derive(Serialize)]
@@ -57,54 +50,6 @@ fn build_llama31_8b_instruct_python_response_turn(raw_python_response: &str) -> 
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Llama31_8BInstruct;
-
-#[derive(Clone)]
-pub struct Llama31_8BInstructLlmCallable {
-    shared: SharedSglangLlmCallable,
-}
-
-#[async_trait]
-impl LlmCallable<Llama31_8BInstruct> for Llama31_8BInstructLlmCallable {
-    fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
-        Self {
-            shared: SharedSglangLlmCallable::from_llm_cli_args(
-                client,
-                llm_cli_args,
-                "Llama-3.1-8B-Instruct model",
-            ),
-        }
-    }
-
-    async fn generate_tokens(
-        &self,
-        prompt_or_tokens: Vec<i32>,
-        passes_in_stop: bool,
-    ) -> Result<Vec<i32>, String> {
-        self.shared
-            .generate_tokens_from_tokens::<Llama31_8BInstruct>(prompt_or_tokens, passes_in_stop)
-            .await
-    }
-
-    async fn generate_tokens_with_logprobs(
-        &self,
-        prompt_or_tokens: Vec<i32>,
-        passes_in_stop: bool,
-        temperature: f32,
-        trim_eos: bool,
-    ) -> Result<TokenArrayWithLogprob<Llama31_8BInstruct>, String> {
-        let output = self
-            .shared
-            .generate_tokens_with_logprobs_from_tokens(
-                prompt_or_tokens,
-                passes_in_stop,
-                temperature,
-            )
-            .await?;
-        Ok(trim_tail_eos_if_needed::<Llama31_8BInstruct>(
-            output, trim_eos,
-        ))
-    }
-}
 
 pub struct Llama31_8BInstructTokenizer;
 impl MyTokenizer<Llama31_8BInstruct> for Llama31_8BInstructTokenizer {
@@ -150,8 +95,9 @@ impl MyTokenizer<Llama31_8BInstruct> for Llama31_8BInstructTokenizer {
 
 impl LlmModelMarker for Llama31_8BInstruct {
     type Tokenizer = Llama31_8BInstructTokenizer;
-    type Callable = Llama31_8BInstructLlmCallable;
+    type Callable = SglangLlmCallable<Self>;
 
     const CLI_NAME: &'static str = "llama-3.1-8b-instruct";
     const API_NAME: &'static str = "meta-llama/Llama-3.1-8B-Instruct";
+    const MODEL_LABEL: &'static str = "Llama-3.1-8B-Instruct model";
 }

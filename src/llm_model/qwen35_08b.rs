@@ -1,67 +1,19 @@
-use async_trait::async_trait;
-use reqwest::Client;
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
 use super::sglang_model_shared::{
-    SharedSglangLlmCallable, build_qwen35_python_response_turn_disable_thinking,
+    build_qwen35_python_response_turn_disable_thinking,
     build_qwen35_python_response_turn_enable_thinking, decode_from_i32_ids, encode_to_i32_ids,
     token_to_i32_id,
 };
 use super::{
-    LlmCallable, LlmCliArgs, LlmModelMarker, MyTokenizer, TokenArray, TokenArrayWithLogprob,
-    build_simple_qwen35_chatml_template, trim_tail_eos_if_needed,
+    LlmModelMarker, MyTokenizer, SglangLlmCallable, TokenArray, build_simple_qwen35_chatml_template,
 };
 
 static QWEN35_08B_TOKENIZER: LazyLock<Tokenizer> =
     LazyLock::new(|| Tokenizer::from_pretrained(Qwen35_08B::API_NAME, None).unwrap());
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Qwen35_08B;
-
-#[derive(Clone)]
-pub struct Qwen35_08BLlmCallable {
-    shared: SharedSglangLlmCallable,
-}
-
-#[async_trait]
-impl LlmCallable<Qwen35_08B> for Qwen35_08BLlmCallable {
-    fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
-        Self {
-            shared: SharedSglangLlmCallable::from_llm_cli_args(
-                client,
-                llm_cli_args,
-                "Qwen3.5-0.8B model",
-            ),
-        }
-    }
-    async fn generate_tokens(
-        &self,
-        prompt_or_tokens: Vec<i32>,
-        passes_in_stop: bool,
-    ) -> Result<Vec<i32>, String> {
-        self.shared
-            .generate_tokens_from_tokens::<Qwen35_08B>(prompt_or_tokens, passes_in_stop)
-            .await
-    }
-
-    async fn generate_tokens_with_logprobs(
-        &self,
-        prompt_or_tokens: Vec<i32>,
-        passes_in_stop: bool,
-        temperature: f32,
-        trim_eos: bool,
-    ) -> Result<TokenArrayWithLogprob<Qwen35_08B>, String> {
-        let output = self
-            .shared
-            .generate_tokens_with_logprobs_from_tokens(
-                prompt_or_tokens,
-                passes_in_stop,
-                temperature,
-            )
-            .await?;
-        Ok(trim_tail_eos_if_needed::<Qwen35_08B>(output, trim_eos))
-    }
-}
 
 pub struct Qwen35_08BTokenizer;
 impl MyTokenizer<Qwen35_08B> for Qwen35_08BTokenizer {
@@ -105,8 +57,9 @@ impl MyTokenizer<Qwen35_08B> for Qwen35_08BTokenizer {
 
 impl LlmModelMarker for Qwen35_08B {
     type Tokenizer = Qwen35_08BTokenizer;
-    type Callable = Qwen35_08BLlmCallable;
+    type Callable = SglangLlmCallable<Self>;
 
     const CLI_NAME: &'static str = "qwen3.5-0.8b";
     const API_NAME: &'static str = "Qwen/Qwen3.5-0.8B";
+    const MODEL_LABEL: &'static str = "Qwen3.5-0.8B model";
 }

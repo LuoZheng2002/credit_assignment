@@ -1,6 +1,4 @@
-use async_trait::async_trait;
 use minijinja::context;
-use reqwest::Client;
 use serde::Serialize;
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
@@ -8,21 +6,16 @@ use tokenizers::Tokenizer;
 use crate::utils::load_jinja_template_environment;
 
 use super::sglang_model_shared::{
-    SharedSglangLlmCallable, decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id,
-    wrap_python_response_xml,
+    decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id, wrap_python_response_xml,
 };
-use super::{
-    LlmCallable, LlmCliArgs, LlmModelMarker, MyTokenizer, TokenArray, TokenArrayWithLogprob,
-    trim_tail_eos_if_needed,
-};
+use super::{LlmModelMarker, MyTokenizer, SglangLlmCallable, TokenArray};
 
 static GEMMA3_4B_IT_TOKENIZER: LazyLock<Tokenizer> =
     LazyLock::new(|| Tokenizer::from_pretrained(Gemma3_4BIt::API_NAME, None).unwrap());
 
 static GEMMA3_4B_IT_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment<'static>> =
     LazyLock::new(|| {
-        load_jinja_template_environment("tokenizers/gemma3/chat_template.jinja", "chat")
-            .unwrap()
+        load_jinja_template_environment("tokenizers/gemma3/chat_template.jinja", "chat").unwrap()
     });
 
 #[derive(Serialize)]
@@ -57,52 +50,6 @@ fn build_gemma3_4b_it_python_response_turn(raw_python_response: &str) -> String 
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Gemma3_4BIt;
-
-#[derive(Clone)]
-pub struct Gemma3_4BItLlmCallable {
-    shared: SharedSglangLlmCallable,
-}
-
-#[async_trait]
-impl LlmCallable<Gemma3_4BIt> for Gemma3_4BItLlmCallable {
-    fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
-        Self {
-            shared: SharedSglangLlmCallable::from_llm_cli_args(
-                client,
-                llm_cli_args,
-                "Gemma-3-4B-IT model",
-            ),
-        }
-    }
-
-    async fn generate_tokens(
-        &self,
-        prompt_or_tokens: Vec<i32>,
-        passes_in_stop: bool,
-    ) -> Result<Vec<i32>, String> {
-        self.shared
-            .generate_tokens_from_tokens::<Gemma3_4BIt>(prompt_or_tokens, passes_in_stop)
-            .await
-    }
-
-    async fn generate_tokens_with_logprobs(
-        &self,
-        prompt_or_tokens: Vec<i32>,
-        passes_in_stop: bool,
-        temperature: f32,
-        trim_eos: bool,
-    ) -> Result<TokenArrayWithLogprob<Gemma3_4BIt>, String> {
-        let output = self
-            .shared
-            .generate_tokens_with_logprobs_from_tokens(
-                prompt_or_tokens,
-                passes_in_stop,
-                temperature,
-            )
-            .await?;
-        Ok(trim_tail_eos_if_needed::<Gemma3_4BIt>(output, trim_eos))
-    }
-}
 
 pub struct Gemma3_4BItTokenizer;
 impl MyTokenizer<Gemma3_4BIt> for Gemma3_4BItTokenizer {
@@ -148,8 +95,9 @@ impl MyTokenizer<Gemma3_4BIt> for Gemma3_4BItTokenizer {
 
 impl LlmModelMarker for Gemma3_4BIt {
     type Tokenizer = Gemma3_4BItTokenizer;
-    type Callable = Gemma3_4BItLlmCallable;
+    type Callable = SglangLlmCallable<Self>;
 
     const CLI_NAME: &'static str = "gemma-3-4b-it";
     const API_NAME: &'static str = "google/gemma-3-4b-it";
+    const MODEL_LABEL: &'static str = "Gemma-3-4B-IT model";
 }

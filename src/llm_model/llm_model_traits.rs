@@ -18,6 +18,7 @@ pub trait LlmModelMarker: Sized + Send + Sync + 'static + Clone {
 
     const CLI_NAME: &'static str;
     const API_NAME: &'static str;
+    const MODEL_LABEL: &'static str;
 }
 
 pub trait MyTokenizer<M: LlmModelMarker>: Send + Sync + 'static {
