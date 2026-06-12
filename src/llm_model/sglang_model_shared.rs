@@ -110,25 +110,21 @@ pub(crate) fn token_to_i32_id(tokenizer: &Tokenizer, token: &str, api_name: &str
 }
 
 #[derive(Clone)]
-pub(crate) struct SharedSglangLlmCallable {
+pub struct SglangLlmCallable<M: LlmModelMarker> {
     client: Client,
     generate_url: String,
     backend_label: String,
-}
-
-#[derive(Clone)]
-pub struct SglangLlmCallable<M: LlmModelMarker> {
-    shared: SharedSglangLlmCallable,
     _marker: PhantomData<M>,
 }
 
-impl SharedSglangLlmCallable {
+impl<M: LlmModelMarker> SglangLlmCallable<M> {
     pub(crate) fn new(client: Client, sglang_port: u16) -> Self {
         assert!(sglang_port > 0, "SGLang port must be greater than 0");
         Self {
             client,
             generate_url: format!("http://localhost:{}/generate", sglang_port),
             backend_label: format!("SGLang port {}", sglang_port),
+            _marker: PhantomData,
         }
     }
 
@@ -142,6 +138,7 @@ impl SharedSglangLlmCallable {
             client,
             generate_url: format!("{}/generate", base_url),
             backend_label: format!("SGLang endpoint {}", base_url),
+            _marker: PhantomData,
         }
     }
 
@@ -162,7 +159,7 @@ impl SharedSglangLlmCallable {
         Self::new(client, sglang_port)
     }
 
-    pub(crate) async fn generate_tokens_from_tokens<M: LlmModelMarker>(
+    pub(crate) async fn generate_tokens_from_tokens(
         &self,
         tokens: Vec<i32>,
         passes_in_stop: bool,
@@ -192,7 +189,7 @@ impl SharedSglangLlmCallable {
         Ok(generated_tokens)
     }
 
-    pub(crate) async fn generate_tokens_with_logprobs_from_tokens<M: LlmModelMarker>(
+    pub(crate) async fn generate_tokens_with_logprobs_from_tokens(
         &self,
         tokens: Vec<i32>,
         passes_in_stop: bool,
@@ -243,14 +240,7 @@ impl SharedSglangLlmCallable {
 #[async_trait]
 impl<M: LlmModelMarker> LlmCallable<M> for SglangLlmCallable<M> {
     fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
-        Self {
-            shared: SharedSglangLlmCallable::from_llm_cli_args(
-                client,
-                llm_cli_args,
-                M::MODEL_LABEL,
-            ),
-            _marker: PhantomData,
-        }
+        Self::from_llm_cli_args(client, llm_cli_args, M::MODEL_LABEL)
     }
 
     async fn generate_tokens(
@@ -258,8 +248,7 @@ impl<M: LlmModelMarker> LlmCallable<M> for SglangLlmCallable<M> {
         tokens: Vec<i32>,
         passes_in_stop: bool,
     ) -> Result<Vec<i32>, String> {
-        self.shared
-            .generate_tokens_from_tokens::<M>(tokens, passes_in_stop)
+        self.generate_tokens_from_tokens(tokens, passes_in_stop)
             .await
     }
 
@@ -271,8 +260,7 @@ impl<M: LlmModelMarker> LlmCallable<M> for SglangLlmCallable<M> {
         trim_eos: bool,
     ) -> Result<TokenArrayWithLogprob<M>, String> {
         let output = self
-            .shared
-            .generate_tokens_with_logprobs_from_tokens::<M>(tokens, passes_in_stop, temperature)
+            .generate_tokens_with_logprobs_from_tokens(tokens, passes_in_stop, temperature)
             .await?;
         Ok(trim_tail_eos_if_needed::<M>(output, trim_eos))
     }
