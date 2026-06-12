@@ -74,10 +74,10 @@ struct App<M: LlmModelMarker, S: DatasetSplit> {
 
 impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
     async fn new(
-        config_nickname: String,
+        _config_nickname: String,
         rollout_config: DirectRolloutConfig<S>,
         posterior_calculation_config: PosteriorCalculationConfig,
-        epoch: usize,
+        _epoch: usize,
         // action_log_store: DirectTreeActionLogStore<M>,
         // entry_keys: Vec<usize>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
