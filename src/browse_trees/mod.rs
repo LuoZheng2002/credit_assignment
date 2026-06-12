@@ -4,7 +4,7 @@ mod tree_render;
 use std::error::Error;
 use std::io::Stdout;
 use std::marker::PhantomData;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::config_paths::{ConfigPaths, config_paths_file_path_from_action_logs_path};
@@ -16,7 +16,7 @@ use crate::direct_tool::tree_action::DirectTreeAction;
 use crate::direct_tool::{
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     rollout_config::DirectRolloutConfig,
-    tree_action_log::{DirectTreeActionLog, open_action_logs},
+    tree_action_log::DirectTreeActionLog,
 };
 use crate::json_toml_utils::read_json;
 use crate::llm_model::{
@@ -81,10 +81,21 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
         // action_log_store: DirectTreeActionLogStore<M>,
         // entry_keys: Vec<usize>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
+        action_logs_path: PathBuf,
     ) -> Self {
         let (entry_load_tx, entry_load_rx) = unbounded_channel();
         let question_store = open_hybrid_dataset::<S>();
-        let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
+        let action_store =
+            SqliteTableArrayStore::<QuestionFlatId<S>, DirectTreeAction<M>>::initialize_if_missing(
+                &action_logs_path,
+            )
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Failed to open direct action log sqlite table array store at {}: {}",
+                    action_logs_path.display(),
+                    e
+                )
+            });
         let mut entry_keys = action_store.get_keys().unwrap();
         entry_keys.sort_by_key(|key| key.0);
         let entry_cache = std::iter::repeat_with(|| EntryLoadState::Unloaded)
@@ -187,7 +198,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
     fn maybe_load_home_page(&mut self, page_start: usize) {
         let should_load = self.home_page_load_request.as_ref().is_some_and(|request| {
             request.page_start == page_start
-                && request.started_at.elapsed() >= Duration::from_millis(500)
+                && request.started_at.elapsed() >= Duration::from_millis(100)
         });
         if should_load {
             self.load_visible_home_page(page_start);
@@ -997,6 +1008,7 @@ async fn run_model_app<'a, M: LlmModelMarker, S: DatasetSplit>(
         posterior_calculation_config,
         epoch,
         override_hyperparameters,
+        action_logs_path,
     } = run_model_app_args;
     // let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
     // let mut keys = action_store.get_keys().unwrap();
@@ -1007,6 +1019,7 @@ async fn run_model_app<'a, M: LlmModelMarker, S: DatasetSplit>(
         posterior_calculation_config,
         epoch,
         override_hyperparameters,
+        action_logs_path,
     )
     .await;
     run_app::<M, S>(terminal, app)
@@ -1019,6 +1032,7 @@ struct RunModelAppArgs<'a, S: DatasetSplit> {
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize, // the epoch index
     override_hyperparameters: Option<PosteriorHyperparameters>,
+    action_logs_path: PathBuf,
 }
 
 macro_rules! run_model_app_for_model_and_split {
@@ -1030,7 +1044,8 @@ macro_rules! run_model_app_for_model_and_split {
         $rollout_config_path:expr,
         $posterior_calculation_config:expr,
         $epoch:expr,
-        $override_hyperparameters:expr;
+        $override_hyperparameters:expr,
+        $action_logs_path:expr;
         $( $model_enum:path, $model_ty:ty ),+ $(,)?;
         $( $split_enum:path, $split_ty:ty ),+ $(,)?
     ) => {{
@@ -1042,6 +1057,7 @@ macro_rules! run_model_app_for_model_and_split {
         let posterior_calculation_config = $posterior_calculation_config;
         let epoch = $epoch;
         let override_hyperparameters = $override_hyperparameters;
+        let action_logs_path = $action_logs_path;
 
         macro_rules! run_model_for_split {
             ($rollout_config:expr, $inner_split_ty:ty) => {{
@@ -1052,6 +1068,7 @@ macro_rules! run_model_app_for_model_and_split {
                     posterior_calculation_config: (*posterior_calculation_config).clone(),
                     epoch,
                     override_hyperparameters: (*override_hyperparameters).clone(),
+                    action_logs_path: action_logs_path.to_path_buf(),
                 };
                 match model_name {
                     $(
@@ -1084,6 +1101,7 @@ async fn run_with_resolved_context(
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize,
     override_hyperparameters: Option<PosteriorHyperparameters>,
+    action_logs_path: PathBuf,
 ) -> Result<(), Box<dyn Error>> {
     let result = run_model_app_for_model_and_split!(
         model,
@@ -1093,7 +1111,8 @@ async fn run_with_resolved_context(
         &rollout_config_path,
         &posterior_calculation_config,
         epoch,
-        &override_hyperparameters;
+        &override_hyperparameters,
+        &action_logs_path;
         LlmModelName::Qwen25_7b, Qwen25_7B,
         LlmModelName::Qwen3_06b, Qwen3_06B,
         LlmModelName::Qwen3_4b, Qwen3_4B,
@@ -1158,6 +1177,7 @@ pub async fn run(
         posterior_calculation_config,
         context.epoch,
         override_hyperparameters,
+        action_logs_path.to_path_buf(),
     )
     .await
 }

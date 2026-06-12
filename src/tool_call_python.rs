@@ -4,8 +4,9 @@ use research_utility::progress_tui_logger::log_warning;
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    process::Command,
+    process::{Child, Command},
     sync::Semaphore,
+    task::JoinHandle,
     time::timeout,
 };
 
@@ -62,6 +63,8 @@ impl PythonToolResponse {
 }
 
 const PYTHON_TOOL_TIMEOUT_MS: u64 = 5000;
+const PYTHON_TOOL_PROCESS_SHUTDOWN_TIMEOUT_MS: u64 = 1000;
+const PYTHON_TOOL_PIPE_DRAIN_TIMEOUT_MS: u64 = 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PythonToolResponseWire {
@@ -123,6 +126,58 @@ where
     String::from_utf8_lossy(&buffer).to_string()
 }
 
+async fn terminate_tool_process(child: &mut Child, child_pid: Option<u32>) {
+    #[cfg(unix)]
+    {
+        if let Some(pid) = child_pid {
+            let _ = Command::new("kill")
+                .arg("-KILL")
+                .arg("--")
+                .arg(format!("-{}", pid))
+                .status()
+                .await;
+        }
+    }
+
+    let _ = child.start_kill();
+    let wait_result = timeout(
+        Duration::from_millis(PYTHON_TOOL_PROCESS_SHUTDOWN_TIMEOUT_MS),
+        child.wait(),
+    )
+    .await;
+    if wait_result.is_err() {
+        log_warning(format!(
+            "Python tool process did not exit within {} ms after kill signal (pid={:?}).",
+            PYTHON_TOOL_PROCESS_SHUTDOWN_TIMEOUT_MS, child_pid
+        ));
+    }
+}
+
+async fn await_pipe_task(task: JoinHandle<String>, label: &str) -> Result<String, String> {
+    match timeout(
+        Duration::from_millis(PYTHON_TOOL_PIPE_DRAIN_TIMEOUT_MS),
+        task,
+    )
+    .await
+    {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(join_error)) => Err(format!(
+            "Failed to join {} reader task: {}",
+            label, join_error
+        )),
+        Err(_) => {
+            log_warning(format!(
+                "Timed out draining python interpreter {} within {} ms after process exit; a descendant process may still be holding the pipe open.",
+                label, PYTHON_TOOL_PIPE_DRAIN_TIMEOUT_MS
+            ));
+            Err(format!(
+                "Timed out while draining python interpreter {} after process exit; a descendant process may still be holding the pipe open.",
+                label
+            ))
+        }
+    }
+}
+
 async fn execute_code_in_fresh_interpreter(code: String) -> PythonToolResponse {
     let mut command = Command::new("uv");
     command
@@ -134,6 +189,9 @@ async fn execute_code_in_fresh_interpreter(code: String) -> PythonToolResponse {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    #[cfg(unix)]
+    command.process_group(0);
+
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -144,11 +202,12 @@ async fn execute_code_in_fresh_interpreter(code: String) -> PythonToolResponse {
         }
     };
 
+    let child_pid = child.id();
+
     let mut stdin = match child.stdin.take() {
         Some(stdin) => stdin,
         None => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
+            terminate_tool_process(&mut child, child_pid).await;
             return PythonToolResponse::PythonError(
                 "Failed to capture python interpreter stdin".to_string(),
             );
@@ -157,8 +216,7 @@ async fn execute_code_in_fresh_interpreter(code: String) -> PythonToolResponse {
     let stdout = match child.stdout.take() {
         Some(stdout) => stdout,
         None => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
+            terminate_tool_process(&mut child, child_pid).await;
             return PythonToolResponse::PythonError(
                 "Failed to capture python interpreter stdout".to_string(),
             );
@@ -167,8 +225,7 @@ async fn execute_code_in_fresh_interpreter(code: String) -> PythonToolResponse {
     let stderr = match child.stderr.take() {
         Some(stderr) => stderr,
         None => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
+            terminate_tool_process(&mut child, child_pid).await;
             return PythonToolResponse::PythonError(
                 "Failed to capture python interpreter stderr".to_string(),
             );
@@ -179,16 +236,14 @@ async fn execute_code_in_fresh_interpreter(code: String) -> PythonToolResponse {
     let stderr_task = tokio::spawn(read_pipe_to_string(stderr));
 
     if let Err(error) = stdin.write_all(code.as_bytes()).await {
-        let _ = child.start_kill();
-        let _ = child.wait().await;
+        terminate_tool_process(&mut child, child_pid).await;
         return PythonToolResponse::PythonError(format!(
             "Failed to write python code to interpreter stdin: {}",
             error
         ));
     }
     if let Err(error) = stdin.shutdown().await {
-        let _ = child.start_kill();
-        let _ = child.wait().await;
+        terminate_tool_process(&mut child, child_pid).await;
         return PythonToolResponse::PythonError(format!(
             "Failed to close python interpreter stdin: {}",
             error
@@ -198,29 +253,51 @@ async fn execute_code_in_fresh_interpreter(code: String) -> PythonToolResponse {
     let wait_result = timeout(Duration::from_millis(PYTHON_TOOL_TIMEOUT_MS), child.wait()).await;
     match wait_result {
         Ok(Ok(_status)) => {
-            let stdout_text = stdout_task.await.unwrap_or_default();
-            let stderr_text = stderr_task.await.unwrap_or_default();
+            let stdout_text = match await_pipe_task(stdout_task, "stdout").await {
+                Ok(output) => output,
+                Err(error) => {
+                    return PythonToolResponse::PythonError(error);
+                }
+            };
+            let stderr_text = match await_pipe_task(stderr_task, "stderr").await {
+                Ok(output) => output,
+                Err(error) => {
+                    return PythonToolResponse::PythonError(error);
+                }
+            };
             parse_python_response(stdout_text, stderr_text)
         }
         Ok(Err(error)) => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
-            PythonToolResponse::PythonError(format!(
+            terminate_tool_process(&mut child, child_pid).await;
+            let stdout_result = await_pipe_task(stdout_task, "stdout").await;
+            let stderr_result = await_pipe_task(stderr_task, "stderr").await;
+            let mut message = format!(
                 "Failed while waiting for python interpreter process: {}",
                 error
-            ))
+            );
+            if let Err(stdout_error) = stdout_result {
+                message.push_str(&format!(" stdout_drain_error={}", stdout_error));
+            }
+            if let Err(stderr_error) = stderr_result {
+                message.push_str(&format!(" stderr_drain_error={}", stderr_error));
+            }
+            PythonToolResponse::PythonError(message)
         }
         Err(_) => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
-            PythonToolResponse::PythonError(format!(
+            terminate_tool_process(&mut child, child_pid).await;
+            let stdout_result = await_pipe_task(stdout_task, "stdout").await;
+            let stderr_result = await_pipe_task(stderr_task, "stderr").await;
+            let mut message = format!(
                 "Python code execution timed out after {} ms.",
                 PYTHON_TOOL_TIMEOUT_MS
-            ))
+            );
+            if let Err(stdout_error) = stdout_result {
+                message.push_str(&format!(" stdout_drain_error={}", stdout_error));
+            }
+            if let Err(stderr_error) = stderr_result {
+                message.push_str(&format!(" stderr_drain_error={}", stderr_error));
+            }
+            PythonToolResponse::PythonError(message)
         }
     }
 }
@@ -298,4 +375,47 @@ pub async fn execute_python_tool_call(
     }
     let code = &trimmed_tool_call[code_start..fence_end_index];
     pool.execute_code(code.to_string()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PYTHON_TOOL_TIMEOUT_MS, PythonToolResponse, PythonToolServerPool};
+    use tokio::time::{Duration, Instant, timeout};
+
+    #[tokio::test]
+    async fn python_tool_timeout_does_not_hang_when_descendant_inherits_stdio() {
+        let pool = PythonToolServerPool::new(1).await.unwrap();
+        let code = r#"
+import subprocess
+import sys
+
+subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+while True:
+    pass
+"#;
+        let started = Instant::now();
+        let response = timeout(
+            Duration::from_millis(PYTHON_TOOL_TIMEOUT_MS + 4000),
+            pool.execute_code(code.to_string()),
+        )
+        .await
+        .expect("tool execution should return promptly after timeout handling");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(PYTHON_TOOL_TIMEOUT_MS + 4000),
+            "tool execution took too long: {:?}",
+            elapsed
+        );
+        match response {
+            PythonToolResponse::PythonError(message) => {
+                assert!(
+                    message.contains("timed out")
+                        || message.contains("draining python interpreter"),
+                    "unexpected error message: {}",
+                    message
+                );
+            }
+            other => panic!("expected timeout error, got {:?}", other),
+        }
+    }
 }
