@@ -271,6 +271,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
     llm_callable: M::Callable,
     client: Client,
     shared_states: RolloutSharedStates,
+    _active_rollouts_guard: AtomicCountGuard,
     _permit: OwnedSemaphorePermit,
 ) -> Result<(), StopRequestedError> {
     let RolloutSharedStates {
@@ -295,8 +296,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
         total_trees_to_finish,
     } = shared_states;
 
-    let _active_rollouts_guard =
-        AtomicCountGuard::new(num_active_rollouts.clone(), "num_active_rollouts");
+    let _ = num_active_rollouts;
     let mut llm_calls_so_far = action_log
         .actions
         .iter()
@@ -569,36 +569,70 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     let semaphore = Arc::new(Semaphore::new(max_rollout_concurrency));
     let mut join_set = JoinSet::new();
     let mut next_question_index = 0;
-    let mut truncated_trees_to_finish = total_trees_to_finish;
     let halfway_time = start_time + rollout_time_limit / 2;
-    let mut did_truncate_at_halfway = false;
+    let mut did_set_halfway_threshold = false;
+    let mut halfway_question_queue_size = question_keys.len();
+    let extra_question_active_rollout_threshold = max_rollout_concurrency.min(20);
+    let mut entered_extra_question_phase = false;
 
-    while next_question_index < truncated_trees_to_finish || !join_set.is_empty() {
-        if S::IS_TRAINING && !did_truncate_at_halfway && Instant::now() >= halfway_time {
-            did_truncate_at_halfway = true;
+    while next_question_index < question_keys.len() || !join_set.is_empty() {
+        if S::IS_TRAINING && !did_set_halfway_threshold && Instant::now() >= halfway_time {
+            did_set_halfway_threshold = true;
             let num_finished_branches_so_far =
                 shared_states.num_finished_branches.load(Ordering::Relaxed);
-            if num_finished_branches_so_far > 0 {
-                let target_total_branches = num_finished_branches_so_far.saturating_mul(2);
-                truncated_trees_to_finish = target_total_branches
-                    .div_ceil(shared_states.trajectories_per_tree)
-                    .max(next_question_index)
-                    .min(question_keys.len());
-                question_keys.truncate(truncated_trees_to_finish);
-                log_key_value_pair(
-                    "halfway_target_total_branches_to_finish",
-                    target_total_branches.to_string(),
-                );
-                log_key_value_pair(
-                    "halfway_question_queue_size",
-                    truncated_trees_to_finish.to_string(),
-                );
-            }
+            let num_extra_trees_to_finish =
+                num_finished_branches_so_far / shared_states.trajectories_per_tree;
+            halfway_question_queue_size = next_question_index
+                .saturating_add(num_extra_trees_to_finish)
+                .min(question_keys.len());
+            log_key_value_pair(
+                "halfway_finished_total_branches",
+                num_finished_branches_so_far.to_string(),
+            );
+            log_key_value_pair(
+                "halfway_extra_trees_to_finish",
+                num_extra_trees_to_finish.to_string(),
+            );
+            log_key_value_pair(
+                "halfway_question_queue_size",
+                halfway_question_queue_size.to_string(),
+            );
         }
 
+        let finished_trees = shared_states.num_finished_trees.load(Ordering::Relaxed);
+        let in_extra_question_phase = S::IS_TRAINING
+            && did_set_halfway_threshold
+            && finished_trees >= halfway_question_queue_size;
+        if in_extra_question_phase && !entered_extra_question_phase {
+            entered_extra_question_phase = true;
+            log_key_value_pair(
+                "extra_question_active_rollout_threshold",
+                extra_question_active_rollout_threshold.to_string(),
+            );
+        }
+        let current_question_queue_limit = if in_extra_question_phase {
+            question_keys.len()
+        } else {
+            halfway_question_queue_size
+        };
+        let current_active_rollout_threshold = if in_extra_question_phase {
+            extra_question_active_rollout_threshold
+        } else {
+            max_rollout_concurrency
+        };
+
         tokio::select! {
-            permit_result = semaphore.clone().acquire_owned(), if next_question_index < truncated_trees_to_finish && !shared_states.stop_signal.load(Ordering::Relaxed) => {
+            permit_result = semaphore.clone().acquire_owned(), if next_question_index < current_question_queue_limit
+                && !shared_states.stop_signal.load(Ordering::Relaxed)
+                && shared_states.num_active_rollouts.load(Ordering::Relaxed) < current_active_rollout_threshold => {
                 let permit = permit_result.expect("rollout semaphore should not be closed");
+                let Some(active_rollouts_guard) = AtomicCountGuard::try_new_with_max(
+                    shared_states.num_active_rollouts.clone(),
+                    "num_active_rollouts",
+                    current_active_rollout_threshold,
+                ) else {
+                    continue;
+                };
                 let question_key = question_keys[next_question_index];
                 next_question_index += 1;
                 let question = dataset
@@ -619,6 +653,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
                     llm_callable.clone(),
                     client.clone(),
                     shared_states.clone(),
+                    active_rollouts_guard,
                     permit,
                 ));
             }

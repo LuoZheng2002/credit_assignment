@@ -13,7 +13,7 @@ fi
 log_file="$(realpath "$1")"
 
 # cd "$script_dir/../research-utility"
-cd ../research-utility
+cd research-utility
 
 cargo run --bin bin_progress_tui -- \
     --log-file "$log_file"
