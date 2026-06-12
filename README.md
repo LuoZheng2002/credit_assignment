@@ -1,37 +1,45 @@
-This project is about verifying a fine-grained credit assignment strategy for agentic LLM.
+# Modal experiments
+To run the experiments on Modal, go to `scripts/orchestrator_modal` folder and select one of the scripts. For example: `scripts/orchestrator_modal/qwen25_std.sh`.
 
-It makes the LLM to break a problem into multiple steps and solve it step by step.
+Then we do `bash scripts/orchestrator_modal/qwen25_std.sh` to deploy the experiment on Modal. You can run multiple deployment scripts at the same time, but they will mostly run in serial since the deployment involves writing a json config file, uploading the repository containing the json file to Modal, and then deleting the local json file. The second deployment script will not run until the first one has completed. It is normal to see the execution pauses at `Waiting for config file lock...` if there are other deployment scripts already running.
 
-We then make the LLM to branch at the middle of the problem solving with some perturbations to lead to different outcomes.
+# Modal progress inspection
+The first thing to check after deployment is https://modal.com/apps/glad-lab/main. Click into the app you just deployed, and it will show the logs.
 
-Then we assign the credits to the steps based on the different outcomes.
+# Debugging
+Go to https://modal.com/storage/glad-lab/main to see the volumes.
 
-If the outcome diverges at the very end, then the diverged steps at the end are very likely responsible.
+The corresponding volume should have a name like `credit-assignment-qwen2-5-7b-std`.
 
-If the average outcome given an early step is above average, then the early step is likely to be good, but with less confidence.
+There should be `small_files`, `medium_files`, and `large_files` directories.
 
-We model each step's contribution to be a scalar either positive or negative that adds to the final outcome. If the final outcome is positive, then it succeeds, otherwise it ails.
+`small_files` contains the inference wrapper log, training wrapper log, orchestration progress and tui log. The last one requires `bash tui.sh` to run.
 
-We model the prior of the steps to be a gaussian distribution, and then use expectation maximization algorithm to fit the different outcomes to get each step's posterior. This allows us to naturally quantify the "contribution direction" and "confidence" for each step, and use this information to determine the advantage of each step.
+`medium_files` contains the inference and training action logs (the trees). You can use `cargo run --bin bin_browse_trees` to browse them.
 
-## Submodule setup
+`large_files` contains the model weights and checkpoints.
 
-This repository depends on the `research-utility` submodule at `research-utility/`.
+## Downloading volume folders to local machine
+We have:
+- `scripts/download_modal_small_files.py`
+- `scripts/download_modal_medium_files.py`
+- `scripts/download_modal_large_files.py`
 
-Clone with submodules:
-
-```bash
-git clone --recurse-submodules <repo-url>
-```
-
-If you already cloned, initialize and update submodules:
-
-```bash
-git submodule update --init --recursive
-```
-
-To update `research-utility` to the latest remote commit and record that pointer in this repo:
+For example to download the small files folder, run:
 
 ```bash
-git submodule update --remote --merge research-utility
+uv run scripts/download_modal_small_files.py --model-cli-name qwen2.5-7b --config-nickname std
 ```
+
+The `--model-cli-name` options can be found in `src/llm_model/llm_model_name.rs`.
+
+`--config-nickname` is the one in `scripts/orchestrator_modal` folder scripts.
+
+## Replay the training progress
+1. Locate the downloaded small files folder. In it, there is a `tui_log.bin` file. For example: `modal_downloads/qwen2.5-7b/std/small_files/qwen2.5-7b/std/tui_log.bin`.
+2. Run `bash tui.sh [tui_log.bin path]`
+
+## Browse the action logs that form the trees
+1. Locate the action log files in medium files folder. For example: // to do
+2. Run `cargo run --bin bin_browse_trees -- --action-logs-path [action log files path]`
+

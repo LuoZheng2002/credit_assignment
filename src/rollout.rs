@@ -9,7 +9,8 @@ use kll_rs::KllFloatSketch;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use reqwest::Client;
 use research_utility::progress_tui_logger::{
-    delete_worker_progress_bar, log_key_value_pair, log_master_progress, log_worker_progress,
+    delete_worker_progress_bar, log_info, log_key_value_pair, log_master_progress,
+    log_worker_progress,
 };
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -396,11 +397,14 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
             num_all_incorrect_trees.fetch_add(1, Ordering::Relaxed);
         }
     }
-    // log_info(format!("Rollout {} finished", question.flat_id));
     let finished = num_finished_trees.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     let num_all_correct = num_all_correct_trees.load(Ordering::Relaxed);
     let num_all_incorrect = num_all_incorrect_trees.load(Ordering::Relaxed);
     let mixed = finished - num_all_correct - num_all_incorrect;
+    log_info(format!(
+        "Rollout {} finished; trees_correctness (✓, ❌, mixed) = ({num_all_correct}, {num_all_incorrect}, {mixed})",
+        action_log.question.flat_id
+    ));
     log_key_value_pair(
         "trees_correctness (✓, ❌, mixed)",
         format!("({num_all_correct}, {num_all_incorrect}, {mixed})"),

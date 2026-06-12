@@ -313,17 +313,17 @@ orchestrator_image = (
         context_dir=str(_repo_root()),
         ignore=MODAL_BUILD_CONTEXT_IGNORE,
     )
+    .env(
+        {
+            "PYTHONPATH": "/workspace",
+        }
+    )
     .add_local_dir(
         _repo_root(),
         remote_path="/workspace",
         ignore=modal.FilePatternMatcher.from_file(
             str(_repo_root() / MODAL_RUNTIME_IGNORE_PATH)
         ),
-    )
-    .env(
-        {
-            "PYTHONPATH": "/workspace",
-        }
     )
 )
 
