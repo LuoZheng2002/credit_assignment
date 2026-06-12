@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::marker::PhantomData;
+
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -8,22 +8,21 @@ use std::sync::{
 use kll_rs::KllFloatSketch;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use reqwest::Client;
-use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
-use research_utility::{
-    asset_file::AssetFile,
-    progress_tui_logger::{
-        delete_worker_progress_bar, log_key_value_pair, log_master_progress, log_worker_progress,
-    },
+use research_utility::progress_tui_logger::{
+    delete_worker_progress_bar, log_key_value_pair, log_master_progress, log_worker_progress,
 };
+use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep_until};
 
 use crate::atomic_count_guard::AtomicCountGuard;
-use crate::direct_tool::tree_action_log::DirectTreeActionLog;
 use crate::direct_tool::hybrid_dataset::QuestionFlatId;
+use crate::direct_tool::tree_action_log::DirectTreeActionLog;
 use crate::{
     direct_tool::{
+        hybrid_dataset::{DatasetSplit, open_hybrid_dataset},
+        posterior_calculation_config::PosteriorCalculationConfig,
         rollout_config::DirectRolloutConfig,
         tree::{DirectTree, SegmentContent},
         tree_action::DirectTreeAction,
@@ -32,8 +31,6 @@ use crate::{
             DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus,
             TrunkSubStatus,
         },
-        hybrid_dataset::{AssetFileHybridDataset, DatasetSplit},
-        posterior_calculation_config::PosteriorCalculationConfig,
     },
     llm_model::{LlmCallable, LlmCliArgs, LlmModelMarker},
     tool_call_python::PythonToolServerPool,
@@ -476,8 +473,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
             .expect("failed to initialize python tool server pool"),
     );
     let llm_callable = M::Callable::from_cli_args(client.clone(), &llm_cli_args);
-    let asset_file_dataset = AssetFileHybridDataset::<S>(PhantomData);
-    let dataset = asset_file_dataset.fetch().await;
+    let dataset = open_hybrid_dataset::<S>();
     let asset_file_action_logs = AssetFileActionLogs::<M, S> {
         nickname: config_nickname,
         rollout_config: rollout_config.clone(),

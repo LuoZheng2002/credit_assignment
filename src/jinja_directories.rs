@@ -3,7 +3,8 @@ use serde_json::json;
 use std::sync::LazyLock;
 
 use crate::utils::{
-    load_jinja_template_environment, storage_large_files_dir, storage_small_files_dir,
+    load_jinja_template_environment, storage_large_files_dir, storage_medium_files_dir,
+    storage_small_files_dir,
 };
 
 const ACTION_LOGS_PARENT_DIR_TEMPLATE_PATH: &str =
@@ -140,12 +141,14 @@ fn render_epoch_template(
     epoch: usize,
 ) -> Result<String, String> {
     let storage_large_files_dir = storage_large_files_dir()?;
+    let storage_medium_files_dir = storage_medium_files_dir()?;
     let storage_small_files_dir = storage_small_files_dir()?;
     render_template(
         template_env,
         template_name,
         json!({
             "storage_large_files_dir": storage_large_files_dir,
+            "storage_medium_files_dir": storage_medium_files_dir,
             "storage_small_files_dir": storage_small_files_dir,
             "model_cli_name": model_cli_name,
             "config_nickname": config_nickname,
@@ -183,11 +186,13 @@ fn render_training_trajectories_template(
     hash: &str,
 ) -> Result<String, String> {
     let storage_large_files_dir = storage_large_files_dir()?;
+    let storage_medium_files_dir = storage_medium_files_dir()?;
     render_template(
         template_env,
         template_name,
         json!({
             "storage_large_files_dir": storage_large_files_dir,
+            "storage_medium_files_dir": storage_medium_files_dir,
             "model_cli_name": model_cli_name,
             "config_nickname": config_nickname,
             "epoch": epoch,

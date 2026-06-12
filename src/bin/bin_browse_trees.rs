@@ -7,19 +7,19 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use clap::Parser;
-use credit_assignment::direct_tool::tree_action::DirectTreeAction;
 use credit_assignment::direct_tool::hybrid_dataset::{
-    AssetFileHybridDataset, DatasetSplit, DatasetSplitEnum, HybridDatasetQuestion, QuestionFlatId,
-    Testing, Training, Validation,
+    DatasetSplit, DatasetSplitEnum, HybridDatasetQuestion, QuestionFlatId, Testing, Training,
+    Validation, open_hybrid_dataset,
 };
+use credit_assignment::direct_tool::tree_action::DirectTreeAction;
 use credit_assignment::judge_correctness::CorrectnessJudgment;
 use credit_assignment::{
     direct_tool::{
+        posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
         rollout_config::DirectRolloutConfig,
         tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
         tree_action_log::{AssetFileActionLogs, DirectTreeActionLog},
         tree_to_action::TokenBranchingScore,
-        posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     },
     json_toml_utils::read_json,
     llm_model::{
@@ -465,8 +465,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
         override_hyperparameters: Option<PosteriorHyperparameters>,
     ) -> Self {
         let (entry_load_tx, entry_load_rx) = unbounded_channel();
-        let asset_file_dataset = AssetFileHybridDataset::<S>(PhantomData);
-        let question_store = asset_file_dataset.fetch().await;
+        let question_store = open_hybrid_dataset::<S>();
         let action_store = asset_file_action_logs.fetch().await;
         let mut entry_keys = action_store.get_keys().unwrap();
         entry_keys.sort_by_key(|key| key.0);

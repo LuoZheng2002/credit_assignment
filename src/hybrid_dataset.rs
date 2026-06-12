@@ -1,5 +1,5 @@
 use research_utility::{
-    asset_file::{AssetFile, hash_file},
+    asset_file::{Base64Hash, hash_file},
     sqlite_store::{SqliteStore, SqliteStoreKey},
     sqlite_table_array_store::SqliteTableArrayKey,
 };
@@ -131,29 +131,23 @@ impl DatasetSplit for Testing {
     }
 }
 
-pub struct AssetFileHybridDataset<S: DatasetSplit>(pub std::marker::PhantomData<S>);
-
-impl<S: DatasetSplit> AssetFileHybridDataset<S> {
-    pub fn file_path(&self) -> String {
-        format!("datasets/hybrid_{}.sqlite", S::dataset_file_postfix())
-    }
+pub fn hybrid_dataset_file_path<S: DatasetSplit>() -> String {
+    format!("datasets/hybrid_{}.sqlite", S::dataset_file_postfix())
 }
 
-#[async_trait::async_trait]
-impl<S: DatasetSplit> AssetFile for AssetFileHybridDataset<S> {
-    type FileModel = SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>>;
-    async fn synchronize(&self) -> research_utility::asset_file::Base64Hash {
-        // if the file is stale, we should panic instead of synchronizing, since the file should be updated manually by the user
-        hash_file(self.file_path()).unwrap()
-    }
-    async fn fetch(&self) -> Self::FileModel {
-        self.synchronize().await;
-        SqliteStore::assume_initialized(self.file_path(), true).unwrap_or_else(|e| {
-            panic!(
-                "Failed to open hybrid dataset sqlite store at {}: {}",
-                self.file_path(),
-                e
-            )
-        })
-    }
+pub fn hybrid_dataset_hash<S: DatasetSplit>() -> Base64Hash {
+    // If the file is stale, we should panic instead of synchronizing, since the file should be
+    // updated manually by the user.
+    hash_file(hybrid_dataset_file_path::<S>()).unwrap()
+}
+
+pub fn open_hybrid_dataset<S: DatasetSplit>()
+-> SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>> {
+    SqliteStore::assume_initialized(hybrid_dataset_file_path::<S>(), true).unwrap_or_else(|e| {
+        panic!(
+            "Failed to open hybrid dataset sqlite store at {}: {}",
+            hybrid_dataset_file_path::<S>(),
+            e
+        )
+    })
 }

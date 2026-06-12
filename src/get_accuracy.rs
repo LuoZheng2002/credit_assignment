@@ -1,12 +1,12 @@
 use research_utility::{asset_file::AssetFile, progress_tui_logger::log_master_progress};
-use std::{collections::BTreeMap, marker::PhantomData, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::{
     direct_tool::{
+        hybrid_dataset::{DatasetSplit, open_hybrid_dataset},
         tree::DirectTree,
         tree_action_log::{AssetFileActionLogs, DirectTreeActionLog},
-        hybrid_dataset::{AssetFileHybridDataset, DatasetSplit},
     },
     llm_model::LlmModelMarker,
 };
@@ -109,8 +109,7 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
     asset_file_action_logs: AssetFileActionLogs<M, S>,
     progress_bar_label: &str,
 ) -> AccuracyStats {
-    let asset_file_dataset = AssetFileHybridDataset::<S>(PhantomData);
-    let question_store = asset_file_dataset.fetch().await;
+    let question_store = open_hybrid_dataset::<S>();
     let action_store = asset_file_action_logs.fetch().await;
     let mut keys = action_store.get_keys().unwrap();
     keys.sort();
@@ -217,8 +216,7 @@ pub async fn get_per_question_accuracies<M: LlmModelMarker, S: DatasetSplit>(
     asset_file_action_logs: AssetFileActionLogs<M, S>,
     progress_bar_label: &str,
 ) -> Vec<Option<f32>> {
-    let asset_file_dataset = AssetFileHybridDataset::<S>(PhantomData);
-    let question_store = asset_file_dataset.fetch().await;
+    let question_store = open_hybrid_dataset::<S>();
     let action_store = asset_file_action_logs.fetch().await;
     let mut keys = action_store.get_keys().unwrap();
     keys.sort();
@@ -320,8 +318,7 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
     progress_bar_label: &str,
     max_num_trunks: usize,
 ) -> TestAccuracyResult {
-    let asset_file_dataset = AssetFileHybridDataset::<S>(PhantomData);
-    let question_store = asset_file_dataset.fetch().await;
+    let question_store = open_hybrid_dataset::<S>();
     let action_store = asset_file_action_logs.fetch().await;
     let mut keys = action_store.get_keys().unwrap();
     keys.sort();

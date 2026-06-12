@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::marker::PhantomData;
+
 use std::sync::Arc;
 
 use ordered_float::NotNan;
@@ -13,15 +13,15 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use crate::direct_tool::hybrid_dataset::{QuestionFlatId, Training, open_hybrid_dataset};
 use crate::direct_tool::tree_action::DirectTreeAction;
-use crate::direct_tool::hybrid_dataset::{AssetFileHybridDataset, QuestionFlatId, Training};
 use crate::{
     direct_tool::{
+        hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
+        posterior_calculation_config::PosteriorCalculationConfig,
         rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         tree::{DirectTree, SegmentContent, SegmentId},
         tree_action_log::{AssetFileActionLogs, DirectTreeActionLog},
-        hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
-        posterior_calculation_config::PosteriorCalculationConfig,
     },
     jinja_directories::{
         training_trajectories_path_from_template, training_trajectories_stats_path_from_template,
@@ -891,8 +891,7 @@ impl<M: LlmModelMarker> AssetFile for AssetFileTrainingTrajectories<M> {
                             e
                         )
                     });
-            let asset_file_dataset = AssetFileHybridDataset::<Training>(PhantomData);
-            let dataset_store = asset_file_dataset.fetch().await;
+            let dataset_store = open_hybrid_dataset::<Training>();
             let action_store = asset_file_rollout_logs.fetch().await;
             rollout_logs_to_training_trajectories::<M>(
                 dataset_store,

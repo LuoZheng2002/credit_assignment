@@ -7,9 +7,9 @@ use std::{collections::BTreeMap, path::Path};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
     direct_tool::{
-        rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         hybrid_dataset::{Training, Validation},
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+        rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
     },
     jinja_directories::{
         inference_wrapper_log_path_from_template, training_wrapper_log_path_from_template,
@@ -70,6 +70,8 @@ struct Args {
     #[arg(long)]
     storage_large_files_dir: String,
     #[arg(long)]
+    storage_medium_files_dir: String,
+    #[arg(long)]
     storage_small_files_dir: String,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
@@ -122,6 +124,7 @@ async fn main() {
         num_iterations_limit,
         num_gpus,
         storage_large_files_dir,
+        storage_medium_files_dir,
         storage_small_files_dir,
     } = Args::parse();
     let process_title = format!("orchestrator_{}_{}", model_cli_name, config_nickname);
@@ -131,8 +134,12 @@ async fn main() {
         max_python_processes > 0,
         "max_python_processes must be positive"
     );
-    configure_storage_dirs(&storage_large_files_dir, &storage_small_files_dir)
-        .unwrap_or_else(|err| panic!("failed to configure storage directories: {}", err));
+    configure_storage_dirs(
+        &storage_large_files_dir,
+        &storage_medium_files_dir,
+        &storage_small_files_dir,
+    )
+    .unwrap_or_else(|err| panic!("failed to configure storage directories: {}", err));
     let inference_wrapper_log_path =
         inference_wrapper_log_path_from_template(&model_cli_name, &config_nickname)
             .unwrap_or_else(|err| panic!("failed to render inference wrapper log path: {}", err));

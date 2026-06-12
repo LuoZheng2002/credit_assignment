@@ -9,12 +9,12 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     direct_tool::{
-        rollout_config::DirectRolloutConfig,
-        tree_action::DirectTreeAction,
         hybrid_dataset::{
-            AssetFileHybridDataset, DatasetSplit, HybridDatasetQuestion, QuestionFlatId,
+            DatasetSplit, HybridDatasetQuestion, QuestionFlatId, hybrid_dataset_hash,
         },
         posterior_calculation_config::PosteriorCalculationConfig,
+        rollout_config::DirectRolloutConfig,
+        tree_action::DirectTreeAction,
     },
     jinja_directories::action_logs_parent_dir_from_template,
     json_toml_utils::{read_json, write_json},
@@ -364,8 +364,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> AssetFileActionLogs<M, S> {
             self.version_tracking_path(),
         ) {
             Ok(tracking_content) => {
-                let dataset_asset_file = AssetFileHybridDataset::<S>(PhantomData);
-                let dataset_hash = futures::executor::block_on(dataset_asset_file.synchronize());
+                let dataset_hash = hybrid_dataset_hash::<S>();
                 if dataset_hash != tracking_content.dataset_hash {
                     Some(format!(
                         "Tracking file exists but stale: dataset hash mismatch (tracking: {:?}, current: {:?})",
@@ -419,8 +418,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> AssetFileActionLogs<M, S> {
     }
     pub fn create_tracking_file(&self) {
         // we collect the dataset hash
-        let dataset_asset_file = AssetFileHybridDataset::<S>(PhantomData);
-        let dataset_hash = futures::executor::block_on(dataset_asset_file.synchronize());
+        let dataset_hash = hybrid_dataset_hash::<S>();
         let tracking_content = AssetFileActionLogsTracking {
             dataset_hash,
             config_nickname: self.nickname.clone(),
@@ -438,8 +436,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> AssetFile for AssetFileActionLogs<M, S>
     type FileModel = SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>;
     async fn synchronize(&self) -> Base64Hash {
         // synchromize all dependency assets
-        let dataset_asset_file = AssetFileHybridDataset::<S>(PhantomData);
-        let dataset_hash = dataset_asset_file.synchronize().await;
+        let dataset_hash = hybrid_dataset_hash::<S>();
         let tracking_content =
             read_json::<AssetFileActionLogsTracking<S>>(self.version_tracking_path())
                 .expect("Tracking file missing for direct action log");
