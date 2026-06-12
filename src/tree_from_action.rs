@@ -1,5 +1,6 @@
 use crate::{
     direct_tool::{
+        hybrid_dataset::DatasetSplit,
         rollout_config::BranchingPolicy,
         tree::{DirectTree, Segment, SegmentContent, SegmentId},
         tree_action::{DirectTreeAction, TokenPositionInTree},
@@ -8,7 +9,6 @@ use crate::{
             DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus,
             TrunkSubStatus,
         },
-        hybrid_dataset::DatasetSplit,
     },
     llm_model::{LlmModelMarker, TokenArrayWithLogprob},
 };

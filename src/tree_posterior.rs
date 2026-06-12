@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use crate::{
     direct_tool::{
-        tree::{DirectTree, SegmentId},
         hybrid_dataset::DatasetSplit,
         posterior_calculation_config::PosteriorHyperparameters,
+        tree::{DirectTree, SegmentId},
     },
     llm_model::LlmModelMarker,
 };

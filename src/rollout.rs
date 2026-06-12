@@ -257,6 +257,7 @@ pub struct RolloutSharedStates {
     correct_trajectory_length_stats: Arc<parking_lot::RwLock<DistributionStats>>,
     num_active_rollouts: Arc<AtomicUsize>,
     total_llm_calls: Arc<AtomicUsize>,
+    tool_calls_processed: Arc<AtomicUsize>,
     trajectories_per_tree: usize,
     total_trees_to_finish: usize,
 }
@@ -289,6 +290,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
         correct_trajectory_length_stats,
         num_active_rollouts,
         total_llm_calls,
+        tool_calls_processed,
         trajectories_per_tree,
         total_trees_to_finish,
     } = shared_states;
@@ -358,6 +360,13 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
                 }
             }
             _ => {}
+        }
+        if matches!(
+            &action,
+            DirectTreeAction::AppendSegmentContent(SegmentContent::ToolResponse(_))
+        ) {
+            let processed = tool_calls_processed.fetch_add(1, Ordering::Relaxed) + 1;
+            log_key_value_pair("tool_calls_processed", processed.to_string());
         }
         if action_is_llm_call(&action) {
             llm_calls_so_far += 1;
@@ -524,6 +533,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     let correct_trajectory_length_stats =
         Arc::new(parking_lot::RwLock::new(DistributionStats::new()));
     let total_llm_calls = Arc::new(AtomicUsize::new(0));
+    let tool_calls_processed = Arc::new(AtomicUsize::new(0));
     let total_trees_to_finish = question_keys.len();
 
     let shared_states = RolloutSharedStates {
@@ -543,6 +553,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         correct_trajectory_length_stats,
         num_active_rollouts,
         total_llm_calls,
+        tool_calls_processed,
         trajectories_per_tree: rollout_config.max_num_total_trajectories,
         total_trees_to_finish,
     };

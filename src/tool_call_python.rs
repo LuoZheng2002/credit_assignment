@@ -1,11 +1,11 @@
-use std::{process::Stdio, time::Duration};
+use std::{collections::VecDeque, process::Stdio, sync::Arc, time::Duration};
 
 use research_utility::progress_tui_logger::log_warning;
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    process::{Child, Command},
-    sync::Semaphore,
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command},
+    sync::{Mutex, mpsc},
     task::JoinHandle,
     time::timeout,
 };
@@ -62,9 +62,29 @@ impl PythonToolResponse {
     }
 }
 
-const PYTHON_TOOL_TIMEOUT_MS: u64 = 5000;
+const PYTHON_TOOL_REQUEST_TIMEOUT_MS: u64 = 1000;
+const PYTHON_TOOL_SERVER_RESPONSE_TIMEOUT_MS: u64 = 3000;
+const PYTHON_TOOL_SERVER_STARTUP_TIMEOUT_MS: u64 = 10_000;
 const PYTHON_TOOL_PROCESS_SHUTDOWN_TIMEOUT_MS: u64 = 1000;
-const PYTHON_TOOL_PIPE_DRAIN_TIMEOUT_MS: u64 = 1000;
+const PYTHON_TOOL_STDERR_DRAIN_TIMEOUT_MS: u64 = 1000;
+const PYTHON_TOOL_STDERR_TAIL_LINES: usize = 40;
+
+fn python_request_timeout_error_message() -> String {
+    format!(
+        "Python code execution timed out after {} ms.",
+        PYTHON_TOOL_REQUEST_TIMEOUT_MS
+    )
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PythonToolReadyWire {
+    ready: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PythonToolRequestWire {
+    code: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PythonToolResponseWire {
@@ -73,8 +93,22 @@ struct PythonToolResponseWire {
     error: Option<String>,
 }
 
+struct PythonToolServerWorker {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    stderr_tail: Arc<Mutex<VecDeque<String>>>,
+    stderr_task: JoinHandle<()>,
+}
+
+struct PythonToolServerSlot {
+    worker: Option<PythonToolServerWorker>,
+}
+
 pub struct PythonToolServerPool {
-    process_limiter: std::sync::Arc<Semaphore>,
+    slots: Vec<Arc<Mutex<PythonToolServerSlot>>>,
+    available_sender: mpsc::UnboundedSender<usize>,
+    available_receiver: Mutex<mpsc::UnboundedReceiver<usize>>,
 }
 
 impl PythonToolServerPool {
@@ -82,48 +116,375 @@ impl PythonToolServerPool {
         if max_python_processes == 0 {
             return Err("max_python_processes must be greater than zero".to_string());
         }
+
+        let (available_sender, available_receiver) = mpsc::unbounded_channel();
+        let mut slots = Vec::with_capacity(max_python_processes);
+        for worker_id in 0..max_python_processes {
+            let worker = spawn_python_tool_server_worker().await.map_err(|error| {
+                format!(
+                    "Failed to initialize python tool server worker {}: {}",
+                    worker_id, error
+                )
+            })?;
+            slots.push(Arc::new(Mutex::new(PythonToolServerSlot {
+                worker: Some(worker),
+            })));
+            available_sender
+                .send(worker_id)
+                .map_err(|_| "failed to seed python tool worker availability queue".to_string())?;
+        }
+
         Ok(Self {
-            process_limiter: std::sync::Arc::new(Semaphore::new(max_python_processes)),
+            slots,
+            available_sender,
+            available_receiver: Mutex::new(available_receiver),
         })
     }
 
     pub async fn execute_code(&self, code: String) -> PythonToolResponse {
-        let permit = match self.process_limiter.clone().acquire_owned().await {
-            Ok(permit) => permit,
-            Err(_) => {
-                return PythonToolResponse::PythonError(
-                    "Python process limiter closed unexpectedly.".to_string(),
-                );
-            }
-        };
-        let raw_response = execute_code_in_fresh_interpreter(code).await;
-        drop(permit);
-
-        match raw_response {
-            PythonToolResponse::PythonSuccess(output) => {
-                if output.trim().is_empty() {
-                    log_warning("Python interpreter did not return any output.");
-                    return PythonToolResponse::PythonSuccess(
-                        "Python interpreter did not return any output. Please use print statements to retrieve results.".to_string(),
+        let worker_id = {
+            let mut receiver = self.available_receiver.lock().await;
+            match receiver.recv().await {
+                Some(worker_id) => worker_id,
+                None => {
+                    return PythonToolResponse::PythonError(
+                        "Python tool worker queue closed unexpectedly.".to_string(),
                     );
                 }
-                PythonToolResponse::PythonSuccess(output)
             }
-            PythonToolResponse::PythonError(error) => PythonToolResponse::PythonError(error),
+        };
+
+        let response = {
+            let slot = self
+                .slots
+                .get(worker_id)
+                .expect("worker id from queue must refer to an existing slot");
+            let mut slot_guard = slot.lock().await;
+
+            if slot_guard.worker.is_none() {
+                if let Err(error) = ensure_worker_running(&mut slot_guard).await {
+                    PythonToolResponse::PythonError(error)
+                } else {
+                    execute_request_with_slot(&mut slot_guard, worker_id, code).await
+                }
+            } else {
+                execute_request_with_slot(&mut slot_guard, worker_id, code).await
+            }
+        };
+
+        let _ = self.available_sender.send(worker_id);
+        response
+    }
+}
+
+impl PythonToolServerWorker {
+    async fn execute_request(&mut self, code: String) -> Result<PythonToolResponse, String> {
+        let request = serde_json::to_string(&PythonToolRequestWire { code })
+            .map_err(|error| format!("Failed to serialize python tool request: {}", error))?;
+
+        if let Err(error) = self.stdin.write_all(request.as_bytes()).await {
+            return Err(format!(
+                "Failed to write request to python tool server stdin: {}{}",
+                error,
+                self.stderr_context().await
+            ));
+        }
+        if let Err(error) = self.stdin.write_all(b"\n").await {
+            return Err(format!(
+                "Failed to finalize request line to python tool server stdin: {}{}",
+                error,
+                self.stderr_context().await
+            ));
+        }
+
+        let mut response_line = String::new();
+        let bytes_read = match self.stdout.read_line(&mut response_line).await {
+            Ok(bytes_read) => bytes_read,
+            Err(error) => {
+                return Err(format!(
+                    "Failed to read response from python tool server stdout: {}{}",
+                    error,
+                    self.stderr_context().await
+                ));
+            }
+        };
+        if bytes_read == 0 {
+            return Err(format!(
+                "Python tool server closed stdout before returning a response.{}",
+                self.stderr_context().await
+            ));
+        }
+
+        match parse_python_response_line(&response_line) {
+            Ok(response) => Ok(response),
+            Err(error) => Err(format!("{}{}", error, self.stderr_context().await)),
+        }
+    }
+
+    async fn stderr_context(&self) -> String {
+        let stderr_tail = self.stderr_tail.lock().await;
+        if stderr_tail.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " stderr_tail={}",
+                stderr_tail.iter().cloned().collect::<Vec<_>>().join(" | ")
+            )
+        }
+    }
+
+    async fn terminate(&mut self) {
+        let child_pid = self.child.id();
+        terminate_tool_process(&mut self.child, child_pid).await;
+        await_stderr_task(&mut self.stderr_task).await;
+    }
+}
+
+async fn execute_request_with_slot(
+    slot: &mut PythonToolServerSlot,
+    worker_id: usize,
+    code: String,
+) -> PythonToolResponse {
+    let request_result = {
+        let worker = slot
+            .worker
+            .as_mut()
+            .expect("worker must exist before executing a request");
+        timeout(
+            Duration::from_millis(PYTHON_TOOL_SERVER_RESPONSE_TIMEOUT_MS),
+            worker.execute_request(code),
+        )
+        .await
+    };
+
+    match request_result {
+        Ok(Ok(raw_response)) => normalize_python_response(raw_response),
+        Ok(Err(error)) => {
+            log_warning(format!(
+                "Python tool server worker {} failed while handling a request: {}",
+                worker_id, error
+            ));
+            let restart_note = restart_worker(slot, worker_id).await;
+            PythonToolResponse::PythonError(format!(
+                "Python tool server request failed: {}{}",
+                error, restart_note
+            ))
+        }
+        Err(_) => {
+            let restart_note = restart_worker(slot, worker_id).await;
+            log_warning(format!(
+                "Python tool server worker {} did not respond within {} ms; returning a normalized request-timeout error to the model and restarting worker.{}",
+                worker_id, PYTHON_TOOL_SERVER_RESPONSE_TIMEOUT_MS, restart_note
+            ));
+            PythonToolResponse::PythonError(python_request_timeout_error_message())
         }
     }
 }
 
-async fn read_pipe_to_string<T>(pipe: T) -> String
-where
-    T: AsyncRead + Unpin,
-{
-    let mut reader = pipe;
-    let mut buffer = Vec::new();
-    if reader.read_to_end(&mut buffer).await.is_err() {
-        return String::new();
+async fn ensure_worker_running(slot: &mut PythonToolServerSlot) -> Result<(), String> {
+    if slot.worker.is_some() {
+        return Ok(());
     }
-    String::from_utf8_lossy(&buffer).to_string()
+    slot.worker = Some(spawn_python_tool_server_worker().await?);
+    Ok(())
+}
+
+async fn restart_worker(slot: &mut PythonToolServerSlot, worker_id: usize) -> String {
+    if let Some(mut worker) = slot.worker.take() {
+        worker.terminate().await;
+    }
+    match spawn_python_tool_server_worker().await {
+        Ok(worker) => {
+            slot.worker = Some(worker);
+            String::new()
+        }
+        Err(error) => {
+            log_warning(format!(
+                "Failed to respawn python tool server worker {}: {}",
+                worker_id, error
+            ));
+            format!(" Failed to respawn replacement worker: {}", error)
+        }
+    }
+}
+
+fn normalize_python_response(raw_response: PythonToolResponse) -> PythonToolResponse {
+    match raw_response {
+        PythonToolResponse::PythonSuccess(output) => {
+            if output.trim().is_empty() {
+                log_warning("Python interpreter did not return any output.");
+                PythonToolResponse::PythonSuccess(
+                    "Python interpreter did not return any output. Please use print statements to retrieve results.".to_string(),
+                )
+            } else {
+                PythonToolResponse::PythonSuccess(output)
+            }
+        }
+        PythonToolResponse::PythonError(error) => PythonToolResponse::PythonError(error),
+    }
+}
+
+async fn spawn_python_tool_server_worker() -> Result<PythonToolServerWorker, String> {
+    let mut command = Command::new("uv");
+    command
+        .arg("run")
+        .arg("python")
+        .arg("-u")
+        .arg("-B")
+        .arg("-m")
+        .arg("src_py.tool_server.main")
+        .arg("--persistent-server")
+        .arg("--request-timeout-ms")
+        .arg(PYTHON_TOOL_REQUEST_TIMEOUT_MS.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("PYTHONUNBUFFERED", "1");
+
+    #[cfg(unix)]
+    command.process_group(0);
+
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "Failed to spawn persistent python tool server process: {}",
+            error
+        )
+    })?;
+    let child_pid = child.id();
+
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to capture persistent python tool server stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture persistent python tool server stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to capture persistent python tool server stderr".to_string())?;
+
+    let stderr_tail = Arc::new(Mutex::new(VecDeque::with_capacity(
+        PYTHON_TOOL_STDERR_TAIL_LINES,
+    )));
+    let mut stderr_task = tokio::spawn(drain_stderr(stderr, stderr_tail.clone()));
+    let mut stdout = BufReader::new(stdout);
+
+    let ready_result = timeout(
+        Duration::from_millis(PYTHON_TOOL_SERVER_STARTUP_TIMEOUT_MS),
+        read_json_line(&mut stdout),
+    )
+    .await;
+
+    let ready_line = match ready_result {
+        Ok(Ok(line)) => line,
+        Ok(Err(error)) => {
+            terminate_tool_process(&mut child, child_pid).await;
+            await_stderr_task(&mut stderr_task).await;
+            return Err(format!(
+                "Python tool server failed during startup handshake: {}{}",
+                error,
+                stderr_context_from_tail(&stderr_tail).await
+            ));
+        }
+        Err(_) => {
+            terminate_tool_process(&mut child, child_pid).await;
+            await_stderr_task(&mut stderr_task).await;
+            return Err(format!(
+                "Python tool server did not signal readiness within {} ms.{}",
+                PYTHON_TOOL_SERVER_STARTUP_TIMEOUT_MS,
+                stderr_context_from_tail(&stderr_tail).await
+            ));
+        }
+    };
+
+    match serde_json::from_str::<PythonToolReadyWire>(ready_line.trim()) {
+        Ok(ready) if ready.ready => Ok(PythonToolServerWorker {
+            child,
+            stdin,
+            stdout,
+            stderr_tail,
+            stderr_task,
+        }),
+        Ok(_) => {
+            terminate_tool_process(&mut child, child_pid).await;
+            await_stderr_task(&mut stderr_task).await;
+            Err(format!(
+                "Python tool server returned an invalid readiness payload.{}",
+                stderr_context_from_tail(&stderr_tail).await
+            ))
+        }
+        Err(error) => {
+            terminate_tool_process(&mut child, child_pid).await;
+            await_stderr_task(&mut stderr_task).await;
+            Err(format!(
+                "Failed to parse python tool server readiness payload: {}. Raw stdout: {}{}",
+                error,
+                ready_line.trim(),
+                stderr_context_from_tail(&stderr_tail).await
+            ))
+        }
+    }
+}
+
+async fn drain_stderr(stderr: ChildStderr, stderr_tail: Arc<Mutex<VecDeque<String>>>) {
+    let mut reader = BufReader::new(stderr);
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line).await {
+            Ok(0) => break,
+            Ok(_) => {
+                let cleaned = line.trim().to_string();
+                if cleaned.is_empty() {
+                    continue;
+                }
+                let mut stderr_tail = stderr_tail.lock().await;
+                if stderr_tail.len() == PYTHON_TOOL_STDERR_TAIL_LINES {
+                    stderr_tail.pop_front();
+                }
+                stderr_tail.push_back(cleaned);
+            }
+            Err(error) => {
+                let mut stderr_tail = stderr_tail.lock().await;
+                if stderr_tail.len() == PYTHON_TOOL_STDERR_TAIL_LINES {
+                    stderr_tail.pop_front();
+                }
+                stderr_tail.push_back(format!(
+                    "Failed to read python tool server stderr: {}",
+                    error
+                ));
+                break;
+            }
+        }
+    }
+}
+
+async fn read_json_line(stdout: &mut BufReader<ChildStdout>) -> Result<String, String> {
+    let mut line = String::new();
+    let bytes_read = stdout.read_line(&mut line).await.map_err(|error| {
+        format!(
+            "Failed to read line from python tool server stdout: {}",
+            error
+        )
+    })?;
+    if bytes_read == 0 {
+        return Err("Python tool server stdout closed unexpectedly".to_string());
+    }
+    Ok(line)
+}
+
+async fn stderr_context_from_tail(stderr_tail: &Arc<Mutex<VecDeque<String>>>) -> String {
+    let stderr_tail = stderr_tail.lock().await;
+    if stderr_tail.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " stderr_tail={}",
+            stderr_tail.iter().cloned().collect::<Vec<_>>().join(" | ")
+        )
+    }
 }
 
 async fn terminate_tool_process(child: &mut Child, child_pid: Option<u32>) {
@@ -153,197 +514,47 @@ async fn terminate_tool_process(child: &mut Child, child_pid: Option<u32>) {
     }
 }
 
-async fn await_pipe_task(task: JoinHandle<String>, label: &str) -> Result<String, String> {
-    match timeout(
-        Duration::from_millis(PYTHON_TOOL_PIPE_DRAIN_TIMEOUT_MS),
-        task,
+async fn await_stderr_task(stderr_task: &mut JoinHandle<()>) {
+    let join_result = timeout(
+        Duration::from_millis(PYTHON_TOOL_STDERR_DRAIN_TIMEOUT_MS),
+        async {
+            let _ = (&mut *stderr_task).await;
+        },
     )
-    .await
-    {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(join_error)) => Err(format!(
-            "Failed to join {} reader task: {}",
-            label, join_error
-        )),
-        Err(_) => {
-            log_warning(format!(
-                "Timed out draining python interpreter {} within {} ms after process exit; a descendant process may still be holding the pipe open.",
-                label, PYTHON_TOOL_PIPE_DRAIN_TIMEOUT_MS
-            ));
-            Err(format!(
-                "Timed out while draining python interpreter {} after process exit; a descendant process may still be holding the pipe open.",
-                label
-            ))
-        }
+    .await;
+    if join_result.is_err() {
+        stderr_task.abort();
+        log_warning(format!(
+            "Timed out draining python tool server stderr within {} ms.",
+            PYTHON_TOOL_STDERR_DRAIN_TIMEOUT_MS
+        ));
     }
 }
 
-async fn execute_code_in_fresh_interpreter(code: String) -> PythonToolResponse {
-    let mut command = Command::new("uv");
-    command
-        .arg("run")
-        .arg("-m")
-        .arg("src_py.tool_server.main")
-        .arg("--single-shot")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    #[cfg(unix)]
-    command.process_group(0);
-
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            return PythonToolResponse::PythonError(format!(
-                "Failed to spawn python interpreter process: {}",
-                error
-            ));
-        }
-    };
-
-    let child_pid = child.id();
-
-    let mut stdin = match child.stdin.take() {
-        Some(stdin) => stdin,
-        None => {
-            terminate_tool_process(&mut child, child_pid).await;
-            return PythonToolResponse::PythonError(
-                "Failed to capture python interpreter stdin".to_string(),
-            );
-        }
-    };
-    let stdout = match child.stdout.take() {
-        Some(stdout) => stdout,
-        None => {
-            terminate_tool_process(&mut child, child_pid).await;
-            return PythonToolResponse::PythonError(
-                "Failed to capture python interpreter stdout".to_string(),
-            );
-        }
-    };
-    let stderr = match child.stderr.take() {
-        Some(stderr) => stderr,
-        None => {
-            terminate_tool_process(&mut child, child_pid).await;
-            return PythonToolResponse::PythonError(
-                "Failed to capture python interpreter stderr".to_string(),
-            );
-        }
-    };
-
-    let stdout_task = tokio::spawn(read_pipe_to_string(stdout));
-    let stderr_task = tokio::spawn(read_pipe_to_string(stderr));
-
-    if let Err(error) = stdin.write_all(code.as_bytes()).await {
-        terminate_tool_process(&mut child, child_pid).await;
-        return PythonToolResponse::PythonError(format!(
-            "Failed to write python code to interpreter stdin: {}",
-            error
-        ));
-    }
-    if let Err(error) = stdin.shutdown().await {
-        terminate_tool_process(&mut child, child_pid).await;
-        return PythonToolResponse::PythonError(format!(
-            "Failed to close python interpreter stdin: {}",
-            error
-        ));
-    }
-    drop(stdin);
-
-    let wait_result = timeout(Duration::from_millis(PYTHON_TOOL_TIMEOUT_MS), child.wait()).await;
-    match wait_result {
-        Ok(Ok(_status)) => {
-            let stdout_text = match await_pipe_task(stdout_task, "stdout").await {
-                Ok(output) => output,
-                Err(error) => {
-                    return PythonToolResponse::PythonError(error);
-                }
-            };
-            let stderr_text = match await_pipe_task(stderr_task, "stderr").await {
-                Ok(output) => output,
-                Err(error) => {
-                    return PythonToolResponse::PythonError(error);
-                }
-            };
-            parse_python_response(stdout_text, stderr_text)
-        }
-        Ok(Err(error)) => {
-            terminate_tool_process(&mut child, child_pid).await;
-            let stdout_result = await_pipe_task(stdout_task, "stdout").await;
-            let stderr_result = await_pipe_task(stderr_task, "stderr").await;
-            let mut message = format!(
-                "Failed while waiting for python interpreter process: {}",
-                error
-            );
-            if let Err(stdout_error) = stdout_result {
-                message.push_str(&format!(" stdout_drain_error={}", stdout_error));
-            }
-            if let Err(stderr_error) = stderr_result {
-                message.push_str(&format!(" stderr_drain_error={}", stderr_error));
-            }
-            PythonToolResponse::PythonError(message)
-        }
-        Err(_) => {
-            terminate_tool_process(&mut child, child_pid).await;
-            let stdout_result = await_pipe_task(stdout_task, "stdout").await;
-            let stderr_result = await_pipe_task(stderr_task, "stderr").await;
-            let mut message = format!(
-                "Python code execution timed out after {} ms.",
-                PYTHON_TOOL_TIMEOUT_MS
-            );
-            if let Err(stdout_error) = stdout_result {
-                message.push_str(&format!(" stdout_drain_error={}", stdout_error));
-            }
-            if let Err(stderr_error) = stderr_result {
-                message.push_str(&format!(" stderr_drain_error={}", stderr_error));
-            }
-            PythonToolResponse::PythonError(message)
-        }
-    }
-}
-
-fn parse_python_response(stdout_text: String, stderr_text: String) -> PythonToolResponse {
-    let trimmed_stdout = stdout_text.trim();
+fn parse_python_response_line(response_line: &str) -> Result<PythonToolResponse, String> {
+    let trimmed_stdout = response_line.trim();
     if trimmed_stdout.is_empty() {
-        let stderr = stderr_text.trim();
-        if stderr.is_empty() {
-            return PythonToolResponse::PythonError(
-                "Python interpreter returned an empty response.".to_string(),
-            );
-        }
-        return PythonToolResponse::PythonError(format!(
-            "Python interpreter returned no structured response. stderr: {}",
-            stderr
-        ));
+        return Err("Python tool server returned an empty response line.".to_string());
     }
 
     match serde_json::from_str::<PythonToolResponseWire>(trimmed_stdout) {
         Ok(response_wire) => {
             if response_wire.ok {
-                PythonToolResponse::PythonSuccess(response_wire.output.unwrap_or_default())
+                Ok(PythonToolResponse::PythonSuccess(
+                    response_wire.output.unwrap_or_default(),
+                ))
             } else {
-                PythonToolResponse::PythonError(
+                Ok(PythonToolResponse::PythonError(
                     response_wire.error.unwrap_or_else(|| {
                         "Unknown python interpreter execution error".to_string()
                     }),
-                )
-            }
-        }
-        Err(error) => {
-            let stderr = stderr_text.trim();
-            if stderr.is_empty() {
-                PythonToolResponse::PythonError(format!(
-                    "Failed to parse python interpreter response as JSON: {}. Raw stdout: {}",
-                    error, trimmed_stdout
-                ))
-            } else {
-                PythonToolResponse::PythonError(format!(
-                    "Failed to parse python interpreter response as JSON: {}. Raw stdout: {}. stderr: {}",
-                    error, trimmed_stdout, stderr
                 ))
             }
         }
+        Err(error) => Err(format!(
+            "Failed to parse python tool server response as JSON: {}. Raw stdout: {}",
+            error, trimmed_stdout
+        )),
     }
 }
 
@@ -380,7 +591,10 @@ pub async fn execute_python_tool_call(
 
 #[cfg(test)]
 mod tests {
-    use super::{PYTHON_TOOL_TIMEOUT_MS, PythonToolResponse, PythonToolServerPool};
+    use super::{
+        PYTHON_TOOL_REQUEST_TIMEOUT_MS, PYTHON_TOOL_SERVER_RESPONSE_TIMEOUT_MS, PythonToolResponse,
+        PythonToolServerPool,
+    };
     use tokio::time::{Duration, Instant, timeout};
 
     #[tokio::test]
@@ -394,39 +608,88 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn python_tool_timeout_does_not_hang_when_descendant_inherits_stdio() {
+    async fn python_tool_state_does_not_persist_across_requests() {
+        let pool = PythonToolServerPool::new(1).await.unwrap();
+        let first = pool
+            .execute_code("x = 41\nprint(\"set\")".to_string())
+            .await;
+        assert_eq!(
+            first,
+            PythonToolResponse::PythonSuccess("set\n".to_string())
+        );
+
+        let second = pool.execute_code("print(x)".to_string()).await;
+        match second {
+            PythonToolResponse::PythonError(message) => {
+                assert!(
+                    message.contains("name 'x' is not defined") || message.contains("NameError"),
+                    "unexpected error message: {}",
+                    message
+                );
+            }
+            other => panic!("expected state-isolation error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn python_tool_blocks_writing_files_to_disk() {
+        let pool = PythonToolServerPool::new(1).await.unwrap();
+        let response = pool
+            .execute_code(
+                "with open('blocked.txt', 'w') as handle:\n    handle.write('x')".to_string(),
+            )
+            .await;
+        match response {
+            PythonToolResponse::PythonError(message) => {
+                assert!(
+                    message.contains("sandbox") || message.contains("forbids"),
+                    "unexpected error message: {}",
+                    message
+                );
+            }
+            other => panic!("expected sandbox violation, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn python_tool_timeout_returns_promptly_and_pool_stays_usable() {
         let pool = PythonToolServerPool::new(1).await.unwrap();
         let code = r#"
-import subprocess
-import sys
-
-subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+import time
 while True:
     pass
 "#;
         let started = Instant::now();
         let response = timeout(
-            Duration::from_millis(PYTHON_TOOL_TIMEOUT_MS + 4000),
+            Duration::from_millis(PYTHON_TOOL_SERVER_RESPONSE_TIMEOUT_MS + 2000),
             pool.execute_code(code.to_string()),
         )
         .await
         .expect("tool execution should return promptly after timeout handling");
         let elapsed = started.elapsed();
         assert!(
-            elapsed < Duration::from_millis(PYTHON_TOOL_TIMEOUT_MS + 4000),
+            elapsed < Duration::from_millis(PYTHON_TOOL_SERVER_RESPONSE_TIMEOUT_MS + 1000),
             "tool execution took too long: {:?}",
             elapsed
         );
         match response {
             PythonToolResponse::PythonError(message) => {
                 assert!(
-                    message.contains("timed out")
-                        || message.contains("draining python interpreter"),
+                    message.contains(&format!(
+                        "timed out after {} ms",
+                        PYTHON_TOOL_REQUEST_TIMEOUT_MS
+                    )),
                     "unexpected error message: {}",
                     message
                 );
             }
             other => panic!("expected timeout error, got {:?}", other),
         }
+
+        let recovery = pool.execute_code("print(6 * 7)".to_string()).await;
+        assert_eq!(
+            recovery,
+            PythonToolResponse::PythonSuccess("42\n".to_string())
+        );
     }
 }

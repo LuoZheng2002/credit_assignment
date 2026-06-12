@@ -8,8 +8,8 @@ use std::{
 use crate::{
     constants::sglang_context_length,
     direct_tool::{
-        tree::{DirectTree, SegmentContent, SegmentId},
         hybrid_dataset::DatasetSplit,
+        tree::{DirectTree, SegmentContent, SegmentId},
     },
     llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob},
     token_array::TokenArray,
