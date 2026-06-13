@@ -24,10 +24,10 @@ use crate::{
     json_toml_utils::write_json,
     launch_inference_wrapper::{
         best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
-        model_uses_sglang, shut_down_inference_wrapper_process,
+        shut_down_inference_wrapper_process,
     },
     launch_training_wrapper::run_training_wrapper_and_wait,
-    llm_model::{LlmCliArgs, LlmModelMarker},
+    llm_model::{InferenceEndpoint, LlmModelMarker},
     python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
     utils::storage_large_files_dir,
 };
@@ -65,8 +65,7 @@ pub struct Orchestrator {
 pub struct InferenceServerHandle {
     pub epoch: usize,
     pub use_tool: bool,
-    pub sglang_port: Option<u16>,
-    pub sglang_base_url: Option<String>,
+    pub inference_endpoint: InferenceEndpoint,
     pub process: Option<Child>,
     pub listener_stop_signal: Option<watch::Sender<bool>>,
     pub listener_handle: Option<tokio::task::JoinHandle<()>>,
@@ -403,10 +402,10 @@ impl Orchestrator {
         self.ensure_inference_server_process_alive("before launch/reuse check")?;
         if let Some(handle) = &self.inference_server_handle {
             log_info(format!(
-                "ensure_inference_server_launched: found existing handle (stored_epoch={}, stored_use_tool={}, has_port={}, has_process={}) while requesting epoch {} use_tool={}",
+                "ensure_inference_server_launched: found existing handle (stored_epoch={}, stored_use_tool={}, endpoint={:?}, has_process={}) while requesting epoch {} use_tool={}",
                 handle.epoch,
                 handle.use_tool,
-                handle.sglang_port.is_some(),
+                handle.inference_endpoint,
                 handle.process.is_some(),
                 epoch,
                 use_tool,
@@ -456,22 +455,6 @@ impl Orchestrator {
             "Inference server is already launched for epoch {}, cannot launch again without shutting down",
             self.inference_server_handle.as_ref().unwrap().epoch
         );
-        if !model_uses_sglang::<M>() {
-            self.inference_server_handle = Some(InferenceServerHandle {
-                epoch,
-                use_tool,
-                sglang_port: None,
-                sglang_base_url: None,
-                process: None,
-                listener_stop_signal: None,
-                listener_handle: None,
-            });
-            log_info(format!(
-                "Model {} does not need a local inference server",
-                M::CLI_NAME
-            ));
-            return Ok(());
-        }
         let model_parent_dir =
             model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
         let model_path = format!("{}/model", model_parent_dir);
@@ -499,8 +482,7 @@ impl Orchestrator {
         self.inference_server_handle = Some(InferenceServerHandle {
             epoch,
             use_tool,
-            sglang_port: Some(sglang_port),
-            sglang_base_url: None,
+            inference_endpoint: InferenceEndpoint::SglangPort(sglang_port),
             process: Some(process),
             listener_stop_signal: Some(listener_stop_signal),
             listener_handle: Some(listener_handle),
@@ -514,18 +496,16 @@ impl Orchestrator {
             let InferenceServerHandle {
                 epoch,
                 use_tool,
-                sglang_port,
-                sglang_base_url,
+                inference_endpoint,
                 process,
                 listener_stop_signal,
                 listener_handle,
             } = handle;
             log_info(format!(
-                "Shutting down inference server (stored_epoch={}, stored_use_tool={}, has_port={}, has_base_url={}, has_process={})...",
+                "Shutting down inference server (stored_epoch={}, stored_use_tool={}, endpoint={:?}, has_process={})...",
                 epoch,
                 use_tool,
-                sglang_port.is_some(),
-                sglang_base_url.is_some(),
+                inference_endpoint,
                 process.is_some(),
             ));
             if let Some(stop_signal) = listener_stop_signal.as_ref() {
@@ -566,16 +546,10 @@ impl Orchestrator {
             }
             log_info("Inference server shut down");
         } else {
-            if model_uses_sglang::<M>() {
-                log_info(
-                    "ensure_inference_server_shut_down: no inference server handle present; checking for stale local sglang process on configured port",
-                );
-                best_effort_shutdown_stale_inference_wrapper().await;
-            } else {
-                log_info(
-                    "ensure_inference_server_shut_down: no inference server handle present; nothing to shut down",
-                );
-            }
+            log_info(
+                "ensure_inference_server_shut_down: no inference server handle present; checking for stale local sglang process on configured port",
+            );
+            best_effort_shutdown_stale_inference_wrapper().await;
         }
         assert!(
             self.inference_server_handle.is_none(),
@@ -595,16 +569,13 @@ impl Orchestrator {
             epoch,
             client: self.client.clone(),
             max_rollout_concurrency: self.max_rollout_concurrency,
-            llm_cli_args: LlmCliArgs {
-                sglang_port: self
-                    .inference_server_handle
-                    .as_ref()
-                    .and_then(|handle| handle.sglang_port),
-                sglang_base_url: self
-                    .inference_server_handle
-                    .as_ref()
-                    .and_then(|handle| handle.sglang_base_url.clone()),
-            },
+            inference_endpoint: self
+                .inference_server_handle
+                .as_ref()
+                .map(|handle| handle.inference_endpoint.clone())
+                .expect(
+                    "Orchestrator did not launch the inference server before validation rollout",
+                ),
             rollout_time_limit_secs: self.validation_rollout_time_limit_secs,
             max_python_processes: self.max_python_processes,
             total_epochs: self.num_total_epochs,
@@ -640,10 +611,7 @@ impl Orchestrator {
         let Some(sglang_server_handle) = &self.inference_server_handle else {
             panic!("Orchestrator did not launch the sglang server before generating training set");
         };
-        let llm_cli_args = LlmCliArgs {
-            sglang_port: sglang_server_handle.sglang_port.clone(),
-            sglang_base_url: sglang_server_handle.sglang_base_url.clone(),
-        };
+        let inference_endpoint = sglang_server_handle.inference_endpoint.clone();
         // assert!(self.training_set_rollout_config.split == DatasetSplit::Training);
         let training_set_rollout_program_config = RolloutProgramConfig {
             config_nickname: self.config_nickname.clone(),
@@ -652,7 +620,7 @@ impl Orchestrator {
             epoch,
             client: self.client.clone(),
             max_rollout_concurrency: self.max_rollout_concurrency,
-            llm_cli_args,
+            inference_endpoint,
             rollout_time_limit_secs: self.training_rollout_time_limit_secs,
             max_python_processes: self.max_python_processes,
             total_epochs: self.num_total_epochs,

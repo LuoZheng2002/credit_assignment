@@ -97,6 +97,18 @@ def _emit_trajectory_length_cap(*, cap: int) -> None:
     _tui_key_value("trajectory_length_cap", str(cap))
 
 
+def _tensor_diagnostic_fragment(name: str, tensor: torch.Tensor | None) -> str:
+    if tensor is None:
+        return f"{name}=None"
+
+    shape = (
+        "scalar"
+        if tensor.ndim == 0
+        else "x".join(str(int(dim)) for dim in tensor.shape)
+    )
+    return f"{name}_shape={shape} {name}_dtype={tensor.dtype}"
+
+
 def _is_primary_rank() -> bool:
     return (
         (not torch.distributed.is_available())
@@ -785,12 +797,33 @@ def _run_unified_loop(
                             "next_batch_size_float": adaptive_state.next_batch_size_float,
                         },
                     )
-                eng._release_step_memory(device)
                 if torch.cuda.is_available() and device.type == "cuda":
                     torch.cuda.synchronize(device=device)
                 continue
             if not eng._is_nonfinite_logits_exception(exc):
+                if _is_primary_rank():
+                    backward_diagnostics = " ".join(
+                        [
+                            _tensor_diagnostic_fragment("input_ids", input_ids),
+                            _tensor_diagnostic_fragment("labels", labels),
+                            _tensor_diagnostic_fragment(
+                                "attention_mask", attention_mask
+                            ),
+                            _tensor_diagnostic_fragment("advantages", advantages),
+                            _tensor_diagnostic_fragment("logits", logits),
+                        ]
+                    )
+                    _tui_warning(
+                        "unexpected_backward_failure=1 "
+                        f"error_type={type(exc).__name__} "
+                        f"error_message={exc} "
+                        f"step={global_step} iteration={iteration_index} "
+                        f"batch_index={step_batch.batch_index} "
+                        f"requested_batch_size={requested_batch_size} "
+                        f"{backward_diagnostics}"
+                    )
                 raise
+
             collated = None
             input_ids = None
             labels = None

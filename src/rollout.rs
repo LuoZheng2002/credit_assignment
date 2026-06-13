@@ -32,7 +32,7 @@ use crate::{
             TrunkSubStatus,
         },
     },
-    llm_model::{LlmCallable, LlmCliArgs, LlmModelMarker},
+    llm_model::{InferenceEndpoint, LlmCallable, LlmModelMarker},
     tool_call_python::PythonToolServerPool,
 };
 
@@ -386,7 +386,7 @@ pub struct RolloutProgramConfig<S: DatasetSplit> {
     pub epoch: usize, // the epoch index
     pub client: Client,
     pub max_rollout_concurrency: usize,
-    pub llm_cli_args: LlmCliArgs,
+    pub inference_endpoint: InferenceEndpoint,
     pub rollout_time_limit_secs: usize,
     pub max_python_processes: usize,
     pub total_epochs: usize,
@@ -408,7 +408,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         epoch,
         client,
         max_rollout_concurrency,
-        llm_cli_args,
+        inference_endpoint,
         rollout_time_limit_secs,
         max_python_processes,
         total_epochs,
@@ -440,7 +440,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
             .await
             .expect("failed to initialize python tool server pool"),
     );
-    let llm_callable = M::Callable::from_cli_args(client.clone(), &llm_cli_args);
+    let llm_callable = M::Callable::from_inference_endpoint(client.clone(), &inference_endpoint);
     let dataset = open_hybrid_dataset::<S>();
 
     // let DirectTreeActionLogStore {

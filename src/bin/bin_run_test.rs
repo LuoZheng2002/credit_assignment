@@ -18,10 +18,10 @@ use credit_assignment::{
     json_toml_utils::{read_json, write_json},
     launch_inference_wrapper::{
         best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
-        model_uses_sglang, shut_down_inference_wrapper_process,
+        shut_down_inference_wrapper_process,
     },
     llm_model::{
-        Gemma3_4BIt, Llama31_8BInstruct, LlmCliArgs, LlmModelMarker, LlmModelName,
+        Gemma3_4BIt, InferenceEndpoint, Llama31_8BInstruct, LlmModelMarker, LlmModelName,
         Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
     utils::configure_storage_dirs,
@@ -38,8 +38,7 @@ use research_utility::progress_tui_logger::ProgressTuiLogger;
 struct Args {
     #[arg(long)]
     model_cli_name: String,
-    #[command(flatten)]
-    llm_cli_args: LlmCliArgs,
+
     #[arg(long)]
     max_rollout_concurrency: usize,
     #[arg(long)]
@@ -103,7 +102,7 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
     args: &Args,
     client: Client,
     posterior_calculation_config: PosteriorCalculationConfig,
-    llm_cli_args: LlmCliArgs,
+    inference_endpoint: InferenceEndpoint,
 ) -> TestAccuracyResult {
     let program_config = RolloutProgramConfig {
         config_nickname: args.config_nickname.clone(),
@@ -112,7 +111,7 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
         epoch: args.epoch,
         client,
         max_rollout_concurrency: args.max_rollout_concurrency,
-        llm_cli_args,
+        inference_endpoint,
         rollout_time_limit_secs: args.rollout_time_limit_secs,
         max_python_processes: args.max_python_processes,
         total_epochs: args.total_epochs,
@@ -138,17 +137,6 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
     posterior_calculation_config: PosteriorCalculationConfig,
     inference_wrapper_log_path: &str,
 ) -> Result<TestAccuracyResult, String> {
-    if !model_uses_sglang::<M>() {
-        return Ok(run_rollout_and_compute_accuracy::<M>(
-            rollout_config,
-            args,
-            client,
-            posterior_calculation_config,
-            args.llm_cli_args.clone(),
-        )
-        .await);
-    }
-
     best_effort_shutdown_stale_inference_wrapper().await;
     let model_parent_dir =
         model_parent_dir_from_template(M::CLI_NAME, &args.config_nickname, args.epoch)?;
@@ -165,14 +153,12 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
         )
         .await?;
 
-    let mut llm_cli_args = args.llm_cli_args.clone();
-    llm_cli_args.sglang_port = Some(sglang_port);
     let test_result = run_rollout_and_compute_accuracy::<M>(
         rollout_config,
         args,
         client,
         posterior_calculation_config,
-        llm_cli_args,
+        InferenceEndpoint::SglangPort(sglang_port),
     )
     .await;
 

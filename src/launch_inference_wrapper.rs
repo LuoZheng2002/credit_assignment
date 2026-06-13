@@ -5,17 +5,10 @@ use tokio::process::{Child, Command};
 use tokio::sync::watch;
 use tokio::time::{Instant, sleep, timeout};
 
-use crate::{
-    launch_backend_wrapper_shared::{
-        bind_wrapper_tui_listener, socket_path_to_arg, spawn_wrapper_command,
-        spawn_wrapper_tui_listener,
-    },
-    llm_model::LlmModelMarker,
+use crate::launch_backend_wrapper_shared::{
+    bind_wrapper_tui_listener, socket_path_to_arg, spawn_wrapper_command,
+    spawn_wrapper_tui_listener,
 };
-
-pub fn model_uses_sglang<M: LlmModelMarker>() -> bool {
-    !M::CLI_NAME.starts_with("gpt-")
-}
 
 pub async fn launch_inference_wrapper_process(
     model_path: &str,

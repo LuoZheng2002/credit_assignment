@@ -78,8 +78,6 @@ def compute_advantage_weighted_causal_lm_loss(
     assert advantages.shape[1] == seq_len, "advantages seq_len must match logits"
     assert seq_len >= 2, "seq_len must be >= 2 to support causal shift"
     assert vocab_size >= 2, "vocab_size must be >= 2"
-    assert torch.isfinite(logits).all(), "logits must be finite"
-    assert torch.isfinite(advantages).all(), "advantages must be finite"
     assert advantage_clip > 0.0, "advantage_clip must be > 0"
 
     shifted_logits = logits[:, :-1, :].contiguous()

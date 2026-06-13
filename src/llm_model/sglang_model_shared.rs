@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use tokenizers::Tokenizer;
 
 use crate::constants::sglang_context_length;
-use crate::llm_model::{LlmCallable, LlmCliArgs, LlmModelMarker, trim_tail_eos_if_needed};
+use crate::llm_model::{InferenceEndpoint, LlmCallable, LlmModelMarker, trim_tail_eos_if_needed};
 use crate::token_array::{TokenArrayWithLogprob, TokenLogprobCandidate};
 
 pub(crate) fn wrap_python_response_xml(raw_python_response: &str) -> String {
@@ -142,21 +142,14 @@ impl<M: LlmModelMarker> SglangLlmCallable<M> {
         }
     }
 
-    pub(crate) fn from_llm_cli_args(
+    pub(crate) fn new_from_inference_endpoint(
         client: Client,
-        llm_cli_args: &LlmCliArgs,
-        model_name_for_error: &str,
+        inference_endpoint: &InferenceEndpoint,
     ) -> Self {
-        if let Some(base_url) = llm_cli_args.sglang_base_url.as_deref() {
-            return Self::new_with_base_url(client, base_url);
+        match inference_endpoint {
+            InferenceEndpoint::SglangBaseUrl(base_url) => Self::new_with_base_url(client, base_url),
+            InferenceEndpoint::SglangPort(sglang_port) => Self::new(client, *sglang_port),
         }
-        let sglang_port = llm_cli_args.sglang_port.unwrap_or_else(|| {
-            panic!(
-                "{} requires sglang port or sglang base URL",
-                model_name_for_error
-            )
-        });
-        Self::new(client, sglang_port)
     }
 
     pub(crate) async fn generate_tokens_from_tokens(
@@ -239,8 +232,8 @@ impl<M: LlmModelMarker> SglangLlmCallable<M> {
 
 #[async_trait]
 impl<M: LlmModelMarker> LlmCallable<M> for SglangLlmCallable<M> {
-    fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self {
-        Self::from_llm_cli_args(client, llm_cli_args, M::MODEL_LABEL)
+    fn from_inference_endpoint(client: Client, inference_endpoint: &InferenceEndpoint) -> Self {
+        Self::new_from_inference_endpoint(client, inference_endpoint)
     }
 
     async fn generate_tokens(

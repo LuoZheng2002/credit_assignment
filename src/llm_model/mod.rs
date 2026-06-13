@@ -18,7 +18,7 @@ pub use gemma3_4b_it::{Gemma3_4BIt, Gemma3_4BItTokenizer};
 pub use llama31_8b_instruct::{Llama31_8BInstruct, Llama31_8BInstructTokenizer};
 pub use llm_model_name::LlmModelName;
 pub(crate) use llm_model_traits::trim_tail_eos_if_needed;
-pub use llm_model_traits::{LlmCallable, LlmCliArgs, LlmModelMarker, MyTokenizer};
+pub use llm_model_traits::{InferenceEndpoint, LlmCallable, LlmModelMarker, MyTokenizer};
 pub use mistral_7b_instruct_v03::{Mistral7BInstructV03, Mistral7BInstructV03Tokenizer};
 pub(crate) use qwen3_4b::build_simple_qwen3_chatml_template;
 pub use qwen3_4b::{Qwen3_4B, Qwen3_4BTokenizer};

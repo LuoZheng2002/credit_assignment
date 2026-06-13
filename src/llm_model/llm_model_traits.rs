@@ -1,15 +1,30 @@
 use async_trait::async_trait;
-use clap::Args;
 use reqwest::Client;
 
 use crate::{llm_model::TokenArrayWithLogprob, token_array::TokenArray};
 
-#[derive(Args, Clone, Debug)]
-pub struct LlmCliArgs {
-    #[arg(long)]
-    pub sglang_port: Option<u16>, // used when the model is served by sglang
-    #[arg(long)]
-    pub sglang_base_url: Option<String>, // used when the model is served by remote sglang-compatible endpoint
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InferenceEndpoint {
+    SglangPort(u16),
+    SglangBaseUrl(String),
+}
+
+impl InferenceEndpoint {
+    pub fn from_cli_options(
+        sglang_port: Option<u16>,
+        sglang_base_url: Option<String>,
+    ) -> Result<Self, String> {
+        match (sglang_port, sglang_base_url) {
+            (Some(port), None) => Ok(Self::SglangPort(port)),
+            (None, Some(base_url)) => Ok(Self::SglangBaseUrl(base_url)),
+            (Some(_), Some(_)) => {
+                Err("--sglang-port and --sglang-base-url cannot both be set".to_string())
+            }
+            (None, None) => {
+                Err("either --sglang-port or --sglang-base-url must be provided".to_string())
+            }
+        }
+    }
 }
 
 pub trait LlmModelMarker: Sized + Send + Sync + 'static + Clone {
@@ -35,7 +50,7 @@ pub trait MyTokenizer<M: LlmModelMarker>: Send + Sync + 'static {
 
 #[async_trait]
 pub trait LlmCallable<M: LlmModelMarker>: Clone + Send + Sync {
-    fn from_cli_args(client: Client, llm_cli_args: &LlmCliArgs) -> Self
+    fn from_inference_endpoint(client: Client, inference_endpoint: &InferenceEndpoint) -> Self
     where
         Self: Sized;
     async fn generate_tokens(

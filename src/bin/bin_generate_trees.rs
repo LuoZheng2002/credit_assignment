@@ -11,7 +11,7 @@ use credit_assignment::{
     },
     json_toml_utils::read_json,
     llm_model::{
-        Gemma3_4BIt, Llama31_8BInstruct, LlmCliArgs, LlmModelMarker, LlmModelName,
+        Gemma3_4BIt, InferenceEndpoint, Llama31_8BInstruct, LlmModelMarker, LlmModelName,
         Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
 };
@@ -29,8 +29,10 @@ const DEFAULT_PROGRESS_TUI_LOG_PATH: &str = "progress_tui_log.bin";
 struct Args {
     #[arg(long)]
     model_cli_name: String,
-    #[command(flatten)]
-    llm_cli_args: LlmCliArgs,
+    #[arg(long, conflicts_with = "sglang_base_url")]
+    sglang_port: Option<u16>,
+    #[arg(long, conflicts_with = "sglang_port")]
+    sglang_base_url: Option<String>,
     #[arg(long)]
     max_rollout_concurrency: usize,
     #[arg(long)]
@@ -62,6 +64,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     args: &Args,
     client: Client,
     posterior_calculation_config: PosteriorCalculationConfig,
+    inference_endpoint: InferenceEndpoint,
 ) {
     let program_config = RolloutProgramConfig {
         config_nickname: args.config_nickname.clone(),
@@ -70,7 +73,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         epoch: args.epoch,
         client,
         max_rollout_concurrency: args.max_rollout_concurrency,
-        llm_cli_args: args.llm_cli_args.clone(),
+        inference_endpoint,
         rollout_time_limit_secs: args.rollout_time_limit_secs,
         max_python_processes: args.max_python_processes,
         total_epochs: args.total_epochs,
@@ -84,7 +87,8 @@ macro_rules! run_rollout {
         $dataset_split:expr,
         $args:expr,
         $client:expr,
-        $posterior:expr;
+        $posterior:expr,
+        $inference_endpoint:expr;
         $( $model_enum:path, $model_ty:ty ),+ $(,)?;
         $( $split_enum:path, $split_ty:ty ),+ $(,)?
     ) => {{
@@ -93,9 +97,10 @@ macro_rules! run_rollout {
         let args = $args;
         let client = $client;
         let posterior = $posterior;
+        let inference_endpoint = $inference_endpoint;
 
         macro_rules! run_model_for_split {
-            ($rollout_config:expr, $inner_split_ty:ty) => {
+            ($rollout_config:expr, $inner_split_ty:ty, $endpoint:expr) => {
                 match model_name {
                     $(
                         $model_enum => {
@@ -104,6 +109,7 @@ macro_rules! run_rollout {
                                 args,
                                 client,
                                 posterior,
+                                $endpoint,
                             )
                             .await
                         }
@@ -117,7 +123,7 @@ macro_rules! run_rollout {
                 $split_enum => {
                     let rollout_config: DirectRolloutConfig<$split_ty> =
                         read_json(&args.rollout_config_path).unwrap();
-                    run_model_for_split!(rollout_config, $split_ty)
+                    run_model_for_split!(rollout_config, $split_ty, inference_endpoint.clone())
                 }
             ),+
         }
@@ -153,6 +159,9 @@ async fn main() {
     };
 
     let model_name = LlmModelName::from_str(&args.model_cli_name, true).unwrap();
+    let inference_endpoint =
+        InferenceEndpoint::from_cli_options(args.sglang_port, args.sglang_base_url.clone())
+            .unwrap();
     if args.ui {
         ProgressTuiLogger::initialize(args.progress_tui_log_path.clone())
             .await
@@ -163,7 +172,8 @@ async fn main() {
         args.dataset_split,
         &args,
         client,
-        posterior_calculation_config;
+        posterior_calculation_config,
+        inference_endpoint;
         LlmModelName::Qwen25_7b, Qwen25_7B,
         LlmModelName::Qwen3_06b, Qwen3_06B,
         LlmModelName::Qwen3_4b, Qwen3_4B,
