@@ -22,7 +22,7 @@ use credit_assignment::{
     },
     orchestrator::{OrchestrationProgress, OrchestrationStatus, Orchestrator},
     python_training_config::PythonTrainingConfigCommon,
-    utils::configure_storage_dirs,
+    utils::configure_mount_dir,
 };
 use research_utility::progress_tui_logger::{
     ProgressTuiLogger, log_exit_hint, log_info, log_warning, log_window_name,
@@ -68,11 +68,7 @@ struct Args {
     #[arg(long)]
     num_gpus: usize,
     #[arg(long)]
-    storage_large_files_dir: String,
-    #[arg(long)]
-    storage_medium_files_dir: String,
-    #[arg(long)]
-    storage_small_files_dir: String,
+    mount_dir: String,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
     #[arg(long, action = ArgAction::Set, default_value_t = true)]
@@ -125,9 +121,7 @@ async fn main() {
         training_time,
         num_iterations_limit,
         num_gpus,
-        storage_large_files_dir,
-        storage_medium_files_dir,
-        storage_small_files_dir,
+        mount_dir,
         keep_action_logs,
     } = Args::parse();
     let process_title = format!("orchestrator_{}_{}", model_cli_name, config_nickname);
@@ -137,12 +131,8 @@ async fn main() {
         max_python_processes > 0,
         "max_python_processes must be positive"
     );
-    configure_storage_dirs(
-        &storage_large_files_dir,
-        &storage_medium_files_dir,
-        &storage_small_files_dir,
-    )
-    .unwrap_or_else(|err| panic!("failed to configure storage directories: {}", err));
+    configure_mount_dir(&mount_dir)
+        .unwrap_or_else(|err| panic!("failed to configure mount dir: {}", err));
     let inference_wrapper_log_path =
         inference_wrapper_log_path_from_template(&model_cli_name, &config_nickname)
             .unwrap_or_else(|err| panic!("failed to render inference wrapper log path: {}", err));

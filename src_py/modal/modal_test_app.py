@@ -7,11 +7,13 @@ from pathlib import Path
 from typing import Any
 
 import modal
+from src_py.modal.modal_experiment_paths import experiment_service_state_volume_name
 
 MINUTES = 60
 REGION = "us-west"
 
 TEST_CONFIG_RELATIVE_PATH = Path("src_py/modal/test_config.json")
+TEST_CONFIG_ABSOLUTE_PATH = Path("/workspace") / TEST_CONFIG_RELATIVE_PATH
 MODAL_RUNTIME_IGNORE_PATH = ".modalignore"
 
 MODAL_BUILD_CONTEXT_IGNORE = modal.FilePatternMatcher(
@@ -39,36 +41,45 @@ MODAL_BUILD_CONTEXT_IGNORE = modal.FilePatternMatcher(
 )
 
 
-def _extract_required_cli_arg(cli_args: list[str], flag_name: str) -> str:
-    index = 0
-    while index < len(cli_args):
-        arg = cli_args[index]
-        if arg == flag_name:
-            if index + 1 >= len(cli_args):
-                raise RuntimeError(f"test config missing value after {flag_name}")
-            value = cli_args[index + 1].strip()
-            if not value:
-                raise RuntimeError(
-                    f"test config value after {flag_name} must be non-empty"
-                )
-            return value
-        prefixed_flag = f"{flag_name}="
-        if arg.startswith(prefixed_flag):
-            value = arg[len(prefixed_flag) :].strip()
-            if not value:
-                raise RuntimeError(
-                    f"test config value for {flag_name} must be non-empty"
-                )
-            return value
-        index += 1
-    raise RuntimeError(f"test config must include {flag_name}")
+def _test_app_name(model_cli_name: str, config_nickname: str) -> str:
+    return f"credit-assignment-test-{model_cli_name}-{config_nickname}"
 
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _load_test_config_payload() -> dict[str, Any]:
+def _require_dict_value(payload: dict[str, Any], key: str, *, context: str) -> Any:
+    if key not in payload:
+        raise RuntimeError(f"{context} missing required field '{key}'")
+    return payload[key]
+
+
+def _require_string(payload: dict[str, Any], key: str, *, context: str) -> str:
+    value = _require_dict_value(payload, key, context=context)
+    if not isinstance(value, str):
+        raise RuntimeError(f"{context} field '{key}' must be a string")
+    value = value.strip()
+    if not value:
+        raise RuntimeError(f"{context} field '{key}' must be non-empty")
+    return value
+
+
+def _require_int(payload: dict[str, Any], key: str, *, context: str) -> int:
+    value = _require_dict_value(payload, key, context=context)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(f"{context} field '{key}' must be an integer")
+    return int(value)
+
+
+def _require_bool(payload: dict[str, Any], key: str, *, context: str) -> bool:
+    value = _require_dict_value(payload, key, context=context)
+    if not isinstance(value, bool):
+        raise RuntimeError(f"{context} field '{key}' must be a boolean")
+    return value
+
+
+def _load_test_configs_payload() -> list[dict[str, Any]]:
     candidate_paths = [
         Path("/workspace") / TEST_CONFIG_RELATIVE_PATH,
         _repo_root() / TEST_CONFIG_RELATIVE_PATH,
@@ -77,7 +88,7 @@ def _load_test_config_payload() -> dict[str, Any]:
     if config_path is None:
         searched = ", ".join(str(path) for path in candidate_paths)
         raise RuntimeError(
-            "missing test config JSON; write test CLI args before deploy/invoke; "
+            "missing test config JSON; write test configs before deploy/invoke; "
             f"searched: {searched}"
         )
     try:
@@ -91,107 +102,123 @@ def _load_test_config_payload() -> dict[str, Any]:
     except json.JSONDecodeError as error:
         raise RuntimeError(f"invalid test config JSON: {error}") from error
 
-    config_payload: dict[str, Any]
-    if isinstance(payload, list):
-        config_payload = {"args": payload}
-    elif isinstance(payload, dict):
-        config_payload = payload
-    else:
-        raise RuntimeError("test config must be a JSON array or object with 'args'")
+    if not isinstance(payload, list):
+        raise RuntimeError("test config JSON must be a list of testing configs")
+    if not payload:
+        raise RuntimeError("test config JSON list must be non-empty")
 
-    args = config_payload.get("args")
-    if not isinstance(args, list):
-        raise RuntimeError("test config field 'args' must be a JSON array")
-    if not args:
-        raise RuntimeError("test config CLI args array must be non-empty")
-
-    validated_args: list[str] = []
-    for index, value in enumerate(args):
-        if not isinstance(value, str):
+    normalized: list[dict[str, Any]] = []
+    for index, entry in enumerate(payload):
+        if not isinstance(entry, dict):
             raise RuntimeError(
-                f"test config args[{index}] must be string, got {type(value)}"
+                f"test config entry[{index}] must be an object, got {type(entry)}"
             )
-        stripped = value.strip()
-        if not stripped:
-            raise RuntimeError(f"test config args[{index}] must be non-empty")
-        validated_args.append(stripped)
-
-    service_state_volume_name = config_payload.get("service_state_volume_name")
-    if not isinstance(service_state_volume_name, str):
-        raise RuntimeError(
-            "test config field 'service_state_volume_name' must be a string"
+        context = f"test config entry[{index}]"
+        normalized.append(
+            {
+                "model_cli_name": _require_string(
+                    entry, "model_cli_name", context=context
+                ),
+                "config_nickname": _require_string(
+                    entry, "config_nickname", context=context
+                ),
+                "testing_rollout_config_path": _require_string(
+                    entry, "testing_rollout_config_path", context=context
+                ),
+                "posterior_hyperparameters_path": _require_string(
+                    entry, "posterior_hyperparameters_path", context=context
+                ),
+                "epoch": _require_int(entry, "epoch", context=context),
+                "total_epochs": _require_int(entry, "total_epochs", context=context),
+                "max_rollout_concurrency": _require_int(
+                    entry, "max_rollout_concurrency", context=context
+                ),
+                "ui": _require_bool(entry, "ui", context=context),
+                "rollout_time_limit_secs": _require_int(
+                    entry, "rollout_time_limit_secs", context=context
+                ),
+                "max_python_processes": _require_int(
+                    entry, "max_python_processes", context=context
+                ),
+                "num_gpus": _require_int(entry, "num_gpus", context=context),
+                "mount_dir": _require_string(entry, "mount_dir", context=context),
+            }
         )
-    service_state_volume_name = service_state_volume_name.strip()
-    if not service_state_volume_name:
-        raise RuntimeError(
-            "test config field 'service_state_volume_name' must be non-empty"
+
+    reference = normalized[0]
+    for index, entry in enumerate(normalized[1:], start=1):
+        for key in (
+            "max_rollout_concurrency",
+            "ui",
+            "rollout_time_limit_secs",
+            "max_python_processes",
+            "num_gpus",
+        ):
+            if entry[key] != reference[key]:
+                raise RuntimeError(
+                    f"test config entry[{index}] field '{key}' must match entry[0]; "
+                    f"got {entry[key]!r} vs {reference[key]!r}"
+                )
+    return normalized
+
+
+def _build_service_state_volume_mounts(
+    test_configs: list[dict[str, Any]],
+) -> list[tuple[str, str, modal.Volume]]:
+    mounts: list[tuple[str, str, modal.Volume]] = []
+    seen_mount_dirs: set[str] = set()
+    for entry in test_configs:
+        mount_dir = entry["mount_dir"]
+        if mount_dir in seen_mount_dirs:
+            continue
+        volume_name = experiment_service_state_volume_name(
+            entry["model_cli_name"], entry["config_nickname"]
         )
-
-    app_name = config_payload.get("app_name")
-    if not isinstance(app_name, str):
-        raise RuntimeError("test config field 'app_name' must be a string")
-    app_name = app_name.strip()
-    if not app_name:
-        raise RuntimeError("test config field 'app_name' must be non-empty")
-
-    return {
-        "args": validated_args,
-        "service_state_volume_name": service_state_volume_name,
-        "app_name": app_name,
-    }
+        mounts.append(
+            (
+                mount_dir,
+                volume_name,
+                modal.Volume.from_name(volume_name, create_if_missing=True),
+            )
+        )
+        seen_mount_dirs.add(mount_dir)
+    return mounts
 
 
-def _extract_num_gpus(cli_args: list[str]) -> int:
-    num_gpus_raw = _extract_required_cli_arg(cli_args, "--num-gpus")
-
-    try:
-        num_gpus = int(num_gpus_raw)
-    except ValueError as error:
-        raise RuntimeError(
-            f"test config must include a valid --num-gpus integer: {error}"
-        ) from error
-
-    if num_gpus <= 0:
-        raise RuntimeError(f"test config --num-gpus must be positive, got {num_gpus}")
-    return num_gpus
-
-
-DEPLOY_TEST_CONFIG = _load_test_config_payload()
-DEPLOY_TEST_CLI_ARGS = list(DEPLOY_TEST_CONFIG["args"])
-DEPLOY_MODEL_CLI_NAME = _extract_required_cli_arg(
-    DEPLOY_TEST_CLI_ARGS, "--model-cli-name"
+DEPLOY_TEST_CONFIGS = _load_test_configs_payload()
+DEPLOY_SERVICE_STATE_VOLUME_MOUNTS = _build_service_state_volume_mounts(
+    DEPLOY_TEST_CONFIGS
 )
-DEPLOY_CONFIG_NICKNAME = _extract_required_cli_arg(
-    DEPLOY_TEST_CLI_ARGS, "--config-nickname"
+DEPLOY_TEST_CONFIG = DEPLOY_TEST_CONFIGS[0]
+DEPLOY_MODEL_CLI_NAME = DEPLOY_TEST_CONFIG["model_cli_name"]
+DEPLOY_CONFIG_NICKNAME = DEPLOY_TEST_CONFIG["config_nickname"]
+DEPLOY_NUM_GPUS = _require_int(
+    DEPLOY_TEST_CONFIG, "num_gpus", context="deploy testing config"
 )
-DEPLOY_NUM_GPUS = _extract_num_gpus(DEPLOY_TEST_CLI_ARGS)
 GPU = f"L40S:{DEPLOY_NUM_GPUS}"
-APP_NAME = str(DEPLOY_TEST_CONFIG["app_name"])
-SERVICE_STATE_VOLUME_NAME = str(DEPLOY_TEST_CONFIG["service_state_volume_name"])
-service_state_volume = modal.Volume.from_name(
-    SERVICE_STATE_VOLUME_NAME,
-    create_if_missing=True,
-)
+APP_NAME = _test_app_name(DEPLOY_MODEL_CLI_NAME, DEPLOY_CONFIG_NICKNAME)
 
 
 def _print_service_state_volume_status() -> None:
-    print(
-        "[test] service state volume "
-        f"model_cli_name={DEPLOY_MODEL_CLI_NAME} "
-        f"config_nickname={DEPLOY_CONFIG_NICKNAME} "
-        f"volume_name={SERVICE_STATE_VOLUME_NAME}"
-    )
+    for mount_dir, volume_name, _volume in DEPLOY_SERVICE_STATE_VOLUME_MOUNTS:
+        print(
+            "[test] service state volume "
+            f"mount_dir={mount_dir} "
+            f"volume_name={volume_name}"
+        )
 
 
 def _commit_service_state_volume() -> None:
-    print(
-        "[test] committing service state volume "
-        f"volume_name={SERVICE_STATE_VOLUME_NAME}"
-    )
-    service_state_volume.commit()
-    print(
-        f"[test] committed service state volume volume_name={SERVICE_STATE_VOLUME_NAME}"
-    )
+    for mount_dir, volume_name, volume in DEPLOY_SERVICE_STATE_VOLUME_MOUNTS:
+        print(
+            "[test] committing service state volume "
+            f"mount_dir={mount_dir} volume_name={volume_name}"
+        )
+        volume.commit()
+        print(
+            "[test] committed service state volume "
+            f"mount_dir={mount_dir} volume_name={volume_name}"
+        )
 
 
 def _print_workspace_env_file_status() -> None:
@@ -257,8 +284,26 @@ def _print_sglang_env_package_versions() -> None:
         print("[test] (no packages reported)")
 
 
-def _run_test_subprocess(cli_args: list[str]) -> dict[str, Any]:
-    cmd = ["cargo", "run", "--bin", "bin_run_test", "--", *cli_args]
+def _build_runtime_cli_args() -> list[str]:
+    runtime_args = [
+        "--testing-configs-path",
+        str(TEST_CONFIG_ABSOLUTE_PATH),
+        "--max-rollout-concurrency",
+        str(DEPLOY_TEST_CONFIG["max_rollout_concurrency"]),
+        "--rollout-time-limit-secs",
+        str(DEPLOY_TEST_CONFIG["rollout_time_limit_secs"]),
+        "--max-python-processes",
+        str(DEPLOY_TEST_CONFIG["max_python_processes"]),
+        "--num-gpus",
+        str(DEPLOY_NUM_GPUS),
+    ]
+    if DEPLOY_TEST_CONFIG["ui"]:
+        runtime_args.append("--ui")
+    return runtime_args
+
+
+def _run_test_subprocess(runtime_cli_args: list[str]) -> dict[str, Any]:
+    cmd = ["cargo", "run", "--bin", "bin_run_test", "--", *runtime_cli_args]
 
     termination_requested = threading.Event()
     child: subprocess.Popen[bytes] | None = None
@@ -332,7 +377,8 @@ app = modal.App(name=APP_NAME)
     max_containers=1,
     timeout=4 * 60 * MINUTES,
     volumes={
-        "/volume": service_state_volume,
+        mount_dir: volume
+        for mount_dir, _volume_name, volume in DEPLOY_SERVICE_STATE_VOLUME_MOUNTS
     },
 )
 class TestService:
@@ -341,17 +387,9 @@ class TestService:
         _print_service_state_volume_status()
         _print_workspace_env_file_status()
         _print_sglang_env_package_versions()
-        cli_args = list(DEPLOY_TEST_CLI_ARGS)
-        requested_num_gpus = _extract_num_gpus(cli_args)
-        if requested_num_gpus != DEPLOY_NUM_GPUS:
-            raise RuntimeError(
-                "MODAL_GPU_COUNT_MISMATCH: "
-                f"requested num_gpus={requested_num_gpus} but deployed container has "
-                f"DEPLOY_NUM_GPUS={DEPLOY_NUM_GPUS}; redeploy src_py/modal/modal_test_app.py "
-                "with matching test config"
-            )
+        runtime_cli_args = _build_runtime_cli_args()
         try:
-            return _run_test_subprocess(cli_args)
+            return _run_test_subprocess(runtime_cli_args)
         finally:
             _commit_service_state_volume()
 

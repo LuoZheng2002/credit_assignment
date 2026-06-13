@@ -3,8 +3,8 @@ use std::{
     fs::{File, OpenOptions},
     future::Future,
     io::BufReader,
-    path::Path,
-    sync::OnceLock,
+    path::{Path, PathBuf},
+    sync::{OnceLock, RwLock},
 };
 
 pub fn read_json<T: DeserializeOwned>(path: impl AsRef<Path>) -> Result<T, String> {
@@ -128,9 +128,11 @@ pub fn extract_boxed_content(text: &str) -> Option<String> {
 //         .map_err(|err| err.clone())
 // }
 
-static STORAGE_LARGE_FILES_DIR_ARG: OnceLock<String> = OnceLock::new();
-static STORAGE_MEDIUM_FILES_DIR_ARG: OnceLock<String> = OnceLock::new();
-static STORAGE_SMALL_FILES_DIR_ARG: OnceLock<String> = OnceLock::new();
+static STORAGE_MOUNT_DIR: OnceLock<RwLock<String>> = OnceLock::new();
+
+fn mount_dir_lock() -> &'static RwLock<String> {
+    STORAGE_MOUNT_DIR.get_or_init(|| RwLock::new(String::new()))
+}
 
 fn _normalize_non_empty_dir(raw: &str, arg_name: &str) -> Result<String, String> {
     let value = raw.trim();
@@ -140,63 +142,40 @@ fn _normalize_non_empty_dir(raw: &str, arg_name: &str) -> Result<String, String>
     Ok(value.to_string())
 }
 
-fn _set_once_dir(slot: &OnceLock<String>, value: String, arg_name: &str) -> Result<(), String> {
-    if let Some(existing) = slot.get() {
-        if existing == &value {
-            return Ok(());
-        }
-        return Err(format!(
-            "{} is already configured as '{}', cannot reconfigure to '{}'",
-            arg_name, existing, value
-        ));
-    }
-    let _ = slot.set(value);
+pub fn configure_mount_dir(mount_dir: &str) -> Result<(), String> {
+    let mount_dir = _normalize_non_empty_dir(mount_dir, "--mount-dir")?;
+    let mut guard = mount_dir_lock()
+        .write()
+        .map_err(|err| format!("failed to set mount dir: {}", err))?;
+    *guard = mount_dir;
     Ok(())
 }
 
-pub fn configure_storage_dirs(
-    storage_large_files_dir: &str,
-    storage_medium_files_dir: &str,
-    storage_small_files_dir: &str,
-) -> Result<(), String> {
-    let large = _normalize_non_empty_dir(storage_large_files_dir, "--storage-large-files-dir")?;
-    let medium = _normalize_non_empty_dir(storage_medium_files_dir, "--storage-medium-files-dir")?;
-    let small = _normalize_non_empty_dir(storage_small_files_dir, "--storage-small-files-dir")?;
-    _set_once_dir(
-        &STORAGE_LARGE_FILES_DIR_ARG,
-        large,
-        "--storage-large-files-dir",
-    )?;
-    _set_once_dir(
-        &STORAGE_MEDIUM_FILES_DIR_ARG,
-        medium,
-        "--storage-medium-files-dir",
-    )?;
-    _set_once_dir(
-        &STORAGE_SMALL_FILES_DIR_ARG,
-        small,
-        "--storage-small-files-dir",
-    )?;
-    Ok(())
+pub fn mount_dir() -> Result<String, String> {
+    let guard = mount_dir_lock()
+        .read()
+        .map_err(|err| format!("failed to read mount dir: {}", err))?;
+    if guard.is_empty() {
+        return Err("MOUNT_DIR not set".into());
+    }
+    Ok(guard.clone())
+}
+
+fn storage_dir_from_mount_dir(subdir: &str) -> Result<String, String> {
+    Ok(PathBuf::from(mount_dir()?)
+        .join(subdir)
+        .display()
+        .to_string())
 }
 
 pub fn storage_large_files_dir() -> Result<String, String> {
-    STORAGE_LARGE_FILES_DIR_ARG
-        .get()
-        .cloned()
-        .ok_or_else(|| "STORAGE_LARGE_FILES_DIR_ARG not set".into())
+    storage_dir_from_mount_dir("large_files")
 }
 
 pub fn storage_medium_files_dir() -> Result<String, String> {
-    STORAGE_MEDIUM_FILES_DIR_ARG
-        .get()
-        .cloned()
-        .ok_or_else(|| "STORAGE_MEDIUM_FILES_DIR_ARG not set".into())
+    storage_dir_from_mount_dir("medium_files")
 }
 
 pub fn storage_small_files_dir() -> Result<String, String> {
-    STORAGE_SMALL_FILES_DIR_ARG
-        .get()
-        .cloned()
-        .ok_or_else(|| "STORAGE_SMALL_FILES_DIR_ARG not set".into())
+    storage_dir_from_mount_dir("small_files")
 }

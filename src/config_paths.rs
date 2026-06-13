@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::utils::storage_medium_files_dir;
+use crate::utils::mount_dir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigPaths {
@@ -15,7 +15,8 @@ pub fn config_paths_file_path(
     model_cli_name: &str,
     config_nickname: &str,
 ) -> Result<PathBuf, String> {
-    Ok(PathBuf::from(storage_medium_files_dir()?)
+    Ok(PathBuf::from(mount_dir()?)
+        .join("medium_files")
         .join(model_cli_name)
         .join(config_nickname)
         .join("config_paths.json"))

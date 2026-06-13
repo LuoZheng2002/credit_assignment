@@ -158,9 +158,7 @@ def main() -> int:
     num_gpus = _extract_num_gpus(cli_args)
     model_cli_name = _extract_required_cli_arg(cli_args, "--model-cli-name")
     config_nickname = _extract_required_cli_arg(cli_args, "--config-nickname")
-    storage_medium_files_dir = _extract_required_cli_arg(
-        cli_args, "--storage-medium-files-dir"
-    )
+    mount_dir = _extract_required_cli_arg(cli_args, "--mount-dir")
     service_state_volume_name = experiment_service_state_volume_name(
         model_cli_name, config_nickname
     )
@@ -171,10 +169,7 @@ def main() -> int:
         "Validated orchestrator runtime: local wrapper-managed inference/training",
         flush=True,
     )
-    print(
-        f"Validated orchestrator storage medium dir: {storage_medium_files_dir}",
-        flush=True,
-    )
+    print(f"Validated orchestrator mount dir: {mount_dir}", flush=True)
     print(
         f"Resolved experiment volume name: {service_state_volume_name}",
         flush=True,

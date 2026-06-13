@@ -3,11 +3,9 @@ from pathlib import Path
 
 
 def update_file(path: Path) -> bool:
-    old = '    --storage-small-files-dir "/volume/small_files" \\\n    --ui true\n'
+    old = '    --mount-dir "/volume" \\\n    --ui true\n'
     new = (
-        '    --storage-small-files-dir "/volume/small_files" \\\n'
-        "    --keep-action-logs true \\\n"
-        "    --ui true\n"
+        '    --mount-dir "/volume" \\\n    --keep-action-logs true \\\n    --ui true\n'
     )
     text = path.read_text()
     if "--keep-action-logs true" in text:

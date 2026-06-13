@@ -3,10 +3,7 @@ use serde_json::json;
 use std::sync::LazyLock;
 
 use crate::direct_tool::hybrid_dataset::DatasetSplit;
-use crate::utils::{
-    load_jinja_template_environment, storage_large_files_dir, storage_medium_files_dir,
-    storage_small_files_dir,
-};
+use crate::utils::{load_jinja_template_environment, mount_dir};
 
 const ACTION_LOGS_TRAINING_PATH_TEMPLATE_PATH: &str =
     "config/directories/action_logs_training_path.jinja";
@@ -163,16 +160,12 @@ fn render_epoch_template(
     config_nickname: &str,
     epoch: usize,
 ) -> Result<String, String> {
-    let storage_large_files_dir = storage_large_files_dir()?;
-    let storage_medium_files_dir = storage_medium_files_dir()?;
-    let storage_small_files_dir = storage_small_files_dir()?;
+    let mount_dir = mount_dir()?;
     render_template(
         template_env,
         template_name,
         json!({
-            "storage_large_files_dir": storage_large_files_dir,
-            "storage_medium_files_dir": storage_medium_files_dir,
-            "storage_small_files_dir": storage_small_files_dir,
+            "mount_dir": mount_dir,
             "model_cli_name": model_cli_name,
             "config_nickname": config_nickname,
             "epoch": epoch,
@@ -186,14 +179,12 @@ fn render_model_config_template(
     model_cli_name: &str,
     config_nickname: &str,
 ) -> Result<String, String> {
-    let storage_large_files_dir = storage_large_files_dir()?;
-    let storage_small_files_dir = storage_small_files_dir()?;
+    let mount_dir = mount_dir()?;
     render_template(
         template_env,
         template_name,
         json!({
-            "storage_large_files_dir": storage_large_files_dir,
-            "storage_small_files_dir": storage_small_files_dir,
+            "mount_dir": mount_dir,
             "model_cli_name": model_cli_name,
             "config_nickname": config_nickname,
         }),
@@ -208,14 +199,12 @@ fn render_training_trajectories_template(
     epoch: usize,
     hash: &str,
 ) -> Result<String, String> {
-    let storage_large_files_dir = storage_large_files_dir()?;
-    let storage_medium_files_dir = storage_medium_files_dir()?;
+    let mount_dir = mount_dir()?;
     render_template(
         template_env,
         template_name,
         json!({
-            "storage_large_files_dir": storage_large_files_dir,
-            "storage_medium_files_dir": storage_medium_files_dir,
+            "mount_dir": mount_dir,
             "model_cli_name": model_cli_name,
             "config_nickname": config_nickname,
             "epoch": epoch,

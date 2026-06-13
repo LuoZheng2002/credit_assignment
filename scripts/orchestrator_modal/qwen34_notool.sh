@@ -15,8 +15,6 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --validation-rollout-time-limit-secs 1200 \
     --max-python-processes 4 \
     --num-gpus 1 \
-    --storage-large-files-dir "/volume/large_files" \
-    --storage-medium-files-dir "/volume/medium_files" \
-    --storage-small-files-dir "/volume/small_files" \
+    --mount-dir "/volume" \
     --keep-action-logs true \
     --ui true
