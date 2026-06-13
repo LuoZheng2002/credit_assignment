@@ -140,30 +140,27 @@ fn trajectory_length_being_judged<M: LlmModelMarker, S: DatasetSplit>(
     }
 }
 
+fn all_same_correctness(judgments: impl IntoIterator<Item = bool>) -> Option<bool> {
+    let mut judgments = judgments.into_iter();
+    let first = judgments.next()?;
+    if judgments.all(|is_correct| is_correct == first) {
+        Some(first)
+    } else {
+        None
+    }
+}
+
 fn classify_all_same_trajectory_tree<M: LlmModelMarker, S: DatasetSplit>(
     tree: &DirectTree<M, S>,
 ) -> Option<bool> {
     if !S::IS_TRAINING {
         return None;
     }
-    if tree.leaf_segment_judgments.len()
-        != tree
-            .action_log
-            .rollout_config
-            .early_stopping_decision_trajectories
-    {
-        return None;
-    }
-    let mut trajectory_correctness = tree
-        .leaf_segment_judgments
-        .values()
-        .map(|judgment| judgment.is_correct);
-    let first = trajectory_correctness.next()?;
-    if trajectory_correctness.all(|is_correct| is_correct == first) {
-        Some(first)
-    } else {
-        None
-    }
+    all_same_correctness(
+        tree.leaf_segment_judgments
+            .values()
+            .map(|judgment| judgment.is_correct),
+    )
 }
 
 async fn run_progress_timer(
@@ -715,5 +712,25 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         llm_call_throughput_per_sec,
         elapsed_secs,
         total_llm_calls,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::all_same_correctness;
+
+    #[test]
+    fn all_same_correctness_handles_empty_and_single_leaf_trees() {
+        assert_eq!(all_same_correctness([]), None);
+        assert_eq!(all_same_correctness([true]), Some(true));
+        assert_eq!(all_same_correctness([false]), Some(false));
+    }
+
+    #[test]
+    fn all_same_correctness_rejects_mixed_values() {
+        assert_eq!(all_same_correctness([true, true, true]), Some(true));
+        assert_eq!(all_same_correctness([false, false]), Some(false));
+        assert_eq!(all_same_correctness([true, false]), None);
+        assert_eq!(all_same_correctness([false, true]), None);
     }
 }

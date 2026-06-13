@@ -7,7 +7,7 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --num-total-epochs 1 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
-    --num-iterations-limit 5 \
+    --num-iterations-limit 3 \
     --advantage-calculation-policy tree-rpo-win-rate \
     --training-config-common-path config/training/common_ddp.toml \
     --training-time 120 \

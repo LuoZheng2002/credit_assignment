@@ -1033,6 +1033,12 @@ def _run_unified_loop(
                     min_average_absolute_advantage=min_average_absolute_advantage,
                     median_average_absolute_advantage=median_average_absolute_advantage,
                 )
+                if _is_primary_rank():
+                    _tui_info(
+                        f"checkpoint_saved=1 checkpoint_tag={checkpoint_tag} "
+                        f"global_step={global_step} iteration={iteration_index} "
+                        f"batch_index={step_batch.batch_index} next_sample_index={global_sample_cursor}"
+                    )
                 clock.last_checkpoint_save_time = now
 
     accumulation_step, global_step, clipped_grad_norm, current_learning_rate = (
@@ -1078,6 +1084,11 @@ def _run_unified_loop(
         min_average_absolute_advantage=min_average_absolute_advantage,
         median_average_absolute_advantage=median_average_absolute_advantage,
     )
+    if _is_primary_rank():
+        _tui_info(
+            f"checkpoint_saved=1 checkpoint_tag=checkpoints global_step={global_step} "
+            f"iteration={iteration_index} next_sample_index={global_sample_cursor} final=1"
+        )
     eng._save_final_model_folder(
         model=model,
         training_plan=training_plan,
@@ -1085,6 +1096,10 @@ def _run_unified_loop(
         source_model_path=resolved_model_path,
         tokenizer=tokenizer,
     )
+    if _is_primary_rank():
+        _tui_info(
+            f"final_model_saved=1 final_model_output_parent_dir={final_model_output_parent_dir}"
+        )
     if _is_primary_rank():
         _write_training_summary(
             training_summary_parent_dir=training_summary_parent_dir,

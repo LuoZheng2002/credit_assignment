@@ -30,6 +30,7 @@ use crate::{
 };
 
 const MAX_TRAINING_TRAJECTORY_TOKEN_LENGTH: usize = 8192;
+const ALLOW_INCOMPLETE: bool = false;
 
 #[derive(Debug, Clone)]
 struct TrajectoryMetadata<S: DatasetSplit> {
@@ -532,6 +533,9 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
     advantage_calculation_policy: AdvantageCalculationPolicy,
 ) -> Vec<TrajectorySummary<S>> {
     let tree = DirectTree::from_action_log(&action_log);
+    if !ALLOW_INCOMPLETE && !tree.completed() {
+        return Vec::new();
+    }
     if !tree_has_mixed_leaf_correctness(&tree) {
         return Vec::new();
     }
@@ -621,6 +625,9 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
         return Vec::new();
     }
     let tree = DirectTree::<M, Training>::from_action_log(&action_log);
+    if !ALLOW_INCOMPLETE && !tree.completed() {
+        return Vec::new();
+    }
     if !tree_has_mixed_leaf_correctness(&tree) {
         return Vec::new();
     }
