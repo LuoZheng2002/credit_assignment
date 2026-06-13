@@ -407,10 +407,6 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
     let num_all_correct = num_all_correct_trees.load(Ordering::Relaxed);
     let num_all_incorrect = num_all_incorrect_trees.load(Ordering::Relaxed);
     let mixed = finished - num_all_correct - num_all_incorrect;
-    log_info(format!(
-        "Rollout {} finished; trees_correctness (✓, ❌, mixed) = ({num_all_correct}, {num_all_incorrect}, {mixed})",
-        action_log.question.flat_id
-    ));
     log_key_value_pair(
         "trees_correctness (✓, ❌, mixed)",
         format!("({num_all_correct}, {num_all_incorrect}, {mixed})"),
@@ -688,6 +684,20 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     delete_worker_progress_bar("branches");
     delete_worker_progress_bar("trees");
     log_master_progress(1.0, "Rollout: time up or all finished");
+
+    let num_all_correct = shared_states.num_all_correct_trees.load(Ordering::Relaxed);
+    let num_all_incorrect = shared_states
+        .num_all_incorrect_trees
+        .load(Ordering::Relaxed);
+    let finished_trees = shared_states.num_finished_trees.load(Ordering::Relaxed);
+    let mixed = finished_trees - num_all_correct - num_all_incorrect;
+    log_info(format!(
+        "Rollout_all finished; trees_correctness (✓, ❌, mixed) = ({num_all_correct}, {num_all_incorrect}, {mixed})"
+    ));
+    log_key_value_pair(
+        "trees_correctness (✓, ❌, mixed)",
+        format!("({num_all_correct}, {num_all_incorrect}, {mixed})"),
+    );
 
     let elapsed_secs = start_time.elapsed().as_secs_f32();
     let total_llm_calls = shared_states.total_llm_calls.load(Ordering::Relaxed);
