@@ -206,6 +206,13 @@ def _is_cuda_oom_exception(exc: BaseException) -> bool:
     return "out of memory" in message and "cuda" in message
 
 
+def _is_nonfinite_logits_exception(exc: BaseException) -> bool:
+    if not isinstance(exc, (AssertionError, RuntimeError)):
+        return False
+    message = str(exc).lower()
+    return "must be finite" in message
+
+
 def _print_cuda_oom_stderr(
     *,
     rank: int,

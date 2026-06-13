@@ -678,8 +678,96 @@ def _run_unified_loop(
                 )
                 loss = loss_output.loss / config.grad_accum_steps
                 loss.backward()
-        except RuntimeError as exc:
-            if not eng._is_cuda_oom_exception(exc):
+        except (RuntimeError, AssertionError) as exc:
+            if eng._is_cuda_oom_exception(exc):
+                collated = None
+                input_ids = None
+                labels = None
+                attention_mask = None
+                advantages = None
+                logits = None
+                loss_output = None
+                loss = None
+                eng._print_cuda_oom_diagnostics_stderr(
+                    rank=rank,
+                    iteration_index=iteration_index,
+                    batch_index=step_batch.batch_index,
+                    device=device,
+                )
+                eng._release_step_memory(device)
+                reduced_batch_size = max(1, adaptive_state.next_batch_size // 2)
+                eng._print_cuda_oom_stderr(
+                    rank=rank,
+                    iteration_index=iteration_index,
+                    batch_index=step_batch.batch_index,
+                    batch_token_length=max(
+                        sample.input_length for sample in step_batch.samples
+                    ),
+                    next_batch_size=(
+                        adaptive_state.next_batch_size
+                        if requested_batch_size <= 1
+                        else reduced_batch_size
+                    ),
+                    will_retry=requested_batch_size > 1,
+                )
+                should_skip_sample = requested_batch_size <= 1
+                if should_skip_sample:
+                    skipped_samples = (
+                        requested_batch_size * world_size
+                        if is_distributed
+                        else requested_batch_size
+                    )
+                    if _is_primary_rank():
+                        _tui_warning(
+                            "oom_at_batch_size_1=1 "
+                            f"skipped_samples={skipped_samples} "
+                            f"sample_index={global_sample_cursor}"
+                        )
+                        eng._log_json_line(
+                            logs_path,
+                            {
+                                "step": global_step,
+                                "iteration": iteration_index,
+                                "batch_index": step_batch.batch_index,
+                                "oom": 1,
+                                "oom_skipped_sample": 1,
+                                "skipped_samples": skipped_samples,
+                                "next_batch_size": adaptive_state.next_batch_size,
+                                "next_batch_size_float": adaptive_state.next_batch_size_float,
+                            },
+                        )
+                    global_sample_cursor += skipped_samples
+                elif _is_primary_rank():
+                    adaptive_state = AdaptiveBatchState(
+                        next_batch_size=reduced_batch_size,
+                        next_batch_size_float=float(reduced_batch_size),
+                        velocity=0.0,
+                        throughput_ema=adaptive_state.throughput_ema,
+                        best_throughput_ema=adaptive_state.best_throughput_ema,
+                        memory_utilization_ema=adaptive_state.memory_utilization_ema,
+                        previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
+                    )
+                if is_distributed:
+                    adaptive_state = _broadcast_adaptive_state_distributed(
+                        adaptive_state=adaptive_state
+                    )
+                if _is_primary_rank():
+                    eng._log_json_line(
+                        logs_path,
+                        {
+                            "step": global_step,
+                            "iteration": iteration_index,
+                            "batch_index": step_batch.batch_index,
+                            "oom": 1,
+                            "next_batch_size": adaptive_state.next_batch_size,
+                            "next_batch_size_float": adaptive_state.next_batch_size_float,
+                        },
+                    )
+                eng._release_step_memory(device)
+                if torch.cuda.is_available() and device.type == "cuda":
+                    torch.cuda.synchronize(device=device)
+                continue
+            if not eng._is_nonfinite_logits_exception(exc):
                 raise
             collated = None
             input_ids = None
@@ -689,28 +777,19 @@ def _run_unified_loop(
             logits = None
             loss_output = None
             loss = None
-            eng._print_cuda_oom_diagnostics_stderr(
-                rank=rank,
-                iteration_index=iteration_index,
-                batch_index=step_batch.batch_index,
-                device=device,
-            )
             eng._release_step_memory(device)
             reduced_batch_size = max(1, adaptive_state.next_batch_size // 2)
-            eng._print_cuda_oom_stderr(
-                rank=rank,
-                iteration_index=iteration_index,
-                batch_index=step_batch.batch_index,
-                batch_token_length=max(
-                    sample.input_length for sample in step_batch.samples
-                ),
-                next_batch_size=(
-                    adaptive_state.next_batch_size
-                    if requested_batch_size <= 1
-                    else reduced_batch_size
-                ),
-                will_retry=requested_batch_size > 1,
+            batch_token_length = max(
+                sample.input_length for sample in step_batch.samples
             )
+            if _is_primary_rank():
+                _tui_warning(
+                    "nonfinite_logits=1 "
+                    f"batch_index={step_batch.batch_index} "
+                    f"batch_token_length={batch_token_length} "
+                    f"next_batch_size={(adaptive_state.next_batch_size if requested_batch_size <= 1 else reduced_batch_size)} "
+                    f"will_retry={1 if requested_batch_size > 1 else 0}"
+                )
             should_skip_sample = requested_batch_size <= 1
             if should_skip_sample:
                 skipped_samples = (
@@ -720,7 +799,7 @@ def _run_unified_loop(
                 )
                 if _is_primary_rank():
                     _tui_warning(
-                        "oom_at_batch_size_1=1 "
+                        "nonfinite_logits_at_batch_size_1=1 "
                         f"skipped_samples={skipped_samples} "
                         f"sample_index={global_sample_cursor}"
                     )
@@ -730,8 +809,8 @@ def _run_unified_loop(
                             "step": global_step,
                             "iteration": iteration_index,
                             "batch_index": step_batch.batch_index,
-                            "oom": 1,
-                            "oom_skipped_sample": 1,
+                            "nonfinite_logits": 1,
+                            "nonfinite_logits_skipped_sample": 1,
                             "skipped_samples": skipped_samples,
                             "next_batch_size": adaptive_state.next_batch_size,
                             "next_batch_size_float": adaptive_state.next_batch_size_float,
@@ -759,12 +838,11 @@ def _run_unified_loop(
                         "step": global_step,
                         "iteration": iteration_index,
                         "batch_index": step_batch.batch_index,
-                        "oom": 1,
+                        "nonfinite_logits": 1,
                         "next_batch_size": adaptive_state.next_batch_size,
                         "next_batch_size_float": adaptive_state.next_batch_size_float,
                     },
                 )
-            eng._release_step_memory(device)
             if torch.cuda.is_available() and device.type == "cuda":
                 torch.cuda.synchronize(device=device)
             continue
