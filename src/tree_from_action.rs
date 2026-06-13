@@ -2,7 +2,7 @@ use crate::{
     direct_tool::{
         hybrid_dataset::DatasetSplit,
         rollout_config::BranchingPolicy,
-        tree::{DirectTree, Segment, SegmentContent, SegmentId},
+        tree::{DirectTree, Segment, SegmentContent, SegmentId, TreeCorrectness},
         tree_action::{DirectTreeAction, TokenPositionInTree},
         tree_spontaneous_branching::TokenPositionInSegment,
         tree_status::{
@@ -302,7 +302,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
             })
         } else if S::IS_TRAINING
             && leaf_segment_judgments_len >= rollout_config.early_stopping_decision_trajectories
-            && self.all_leaf_judgments_agree()
+            && !matches!(self.get_correctness(), TreeCorrectness::Mixed)
         {
             DirectTreeStatus::Complete
         } else if leaf_segment_judgments_len < rollout_config.max_num_total_trajectories {
@@ -322,19 +322,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
             DirectTreeStatus::Complete
         }
     }
-    fn all_leaf_judgments_agree(&self) -> bool {
-        if self.leaf_segment_judgments.is_empty() {
-            return false;
-        }
-        let mut judgments = self
-            .leaf_segment_judgments
-            .values()
-            .map(|judgment| judgment.is_correct);
-        let Some(first_is_correct) = judgments.next() else {
-            return false;
-        };
-        judgments.all(|is_correct| is_correct == first_is_correct)
-    }
+
     fn split_segment(&mut self, position: &TokenPositionInTree) -> SplitResult {
         let new_first_half_id = SegmentId(self.next_segment_id);
         self.next_segment_id += 1;

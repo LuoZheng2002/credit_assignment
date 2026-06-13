@@ -1,4 +1,4 @@
-use std::backtrace::Backtrace;
+use std::{backtrace::Backtrace, path::Path};
 
 use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
@@ -11,7 +11,10 @@ use credit_assignment::{
         tree_action_log::open_action_logs,
     },
     get_accuracy::{TestAccuracyResult, get_test_accuracies},
-    jinja_directories::{model_parent_dir_from_template, test_accuracy_path_from_template},
+    jinja_directories::{
+        inference_wrapper_log_path_from_template, model_parent_dir_from_template,
+        test_accuracy_path_from_template, tui_log_path_from_template,
+    },
     json_toml_utils::{read_json, write_json},
     launch_inference_wrapper::{
         best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
@@ -21,11 +24,10 @@ use credit_assignment::{
         Gemma3_4BIt, Llama31_8BInstruct, LlmCliArgs, LlmModelMarker, LlmModelName,
         Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
+    utils::configure_storage_dirs,
 };
 use reqwest::Client;
 use research_utility::progress_tui_logger::ProgressTuiLogger;
-
-const DEFAULT_PROGRESS_TUI_LOG_PATH: &str = "progress_tui_log.bin";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -43,7 +45,7 @@ struct Args {
     #[arg(long)]
     config_nickname: String,
     #[arg(long)]
-    rollout_config_path: String,
+    testing_rollout_config_path: String,
     #[arg(long)]
     posterior_hyperparameters_path: String,
     #[arg(long)]
@@ -59,9 +61,11 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     num_gpus: usize,
     #[arg(long)]
-    inference_wrapper_log_path: String,
-    #[arg(long, default_value = DEFAULT_PROGRESS_TUI_LOG_PATH)]
-    progress_tui_log_path: String,
+    storage_large_files_dir: String,
+    #[arg(long)]
+    storage_medium_files_dir: String,
+    #[arg(long)]
+    storage_small_files_dir: String,
 }
 
 fn model_cli_name_to_string(model_name: &LlmModelName) -> String {
@@ -76,6 +80,22 @@ fn model_cli_name_to_string(model_name: &LlmModelName) -> String {
         LlmModelName::Qwen35_4b => Qwen35_4B::CLI_NAME,
     }
     .to_string()
+}
+
+fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
+    let Some(parent) = Path::new(file_path).parent() else {
+        return Ok(());
+    };
+    if parent.as_os_str().is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(parent).map_err(|err| {
+        format!(
+            "Failed to create parent directory {}: {}",
+            parent.display(),
+            err
+        )
+    })
 }
 
 async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
@@ -116,6 +136,7 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
     args: &Args,
     client: Client,
     posterior_calculation_config: PosteriorCalculationConfig,
+    inference_wrapper_log_path: &str,
 ) -> Result<TestAccuracyResult, String> {
     if !model_uses_sglang::<M>() {
         return Ok(run_rollout_and_compute_accuracy::<M>(
@@ -140,7 +161,7 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
             args.epoch,
             M::API_NAME,
             args.num_gpus,
-            &args.inference_wrapper_log_path,
+            inference_wrapper_log_path,
         )
         .await?;
 
@@ -162,7 +183,8 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
 }
 
 macro_rules! run_model_for_testing {
-    ($model_name:expr, $rollout_config:expr, $args:expr, $client:expr, $posterior:expr;
+    ($model_name:expr, $rollout_config:expr, $args:expr, $client:expr, $posterior:expr,
+     $inference_wrapper_log_path:expr;
      $( $model_enum:path, $model_ty:ty ),+ $(,)?) => {{
         let model_name = $model_name;
         let rollout_config = $rollout_config;
@@ -178,6 +200,7 @@ macro_rules! run_model_for_testing {
                         args,
                         client,
                         posterior,
+                        $inference_wrapper_log_path,
                     )
                     .await
                 }
@@ -206,6 +229,12 @@ async fn main() {
     );
     assert!(args.num_gpus > 0, "num_gpus must be positive");
     assert!(args.total_epochs > 0, "total_epochs must be positive");
+    configure_storage_dirs(
+        &args.storage_large_files_dir,
+        &args.storage_medium_files_dir,
+        &args.storage_small_files_dir,
+    )
+    .unwrap_or_else(|err| panic!("failed to configure storage directories: {}", err));
 
     println!("Starting test accuracy evaluation pipeline...");
     let client = Client::new();
@@ -216,14 +245,23 @@ async fn main() {
     };
 
     let model_name = LlmModelName::from_str(&args.model_cli_name, true).unwrap();
+    let model_cli_name = model_cli_name_to_string(&model_name);
+    let inference_wrapper_log_path =
+        inference_wrapper_log_path_from_template(&model_cli_name, &args.config_nickname)
+            .unwrap_or_else(|err| panic!("failed to render inference wrapper log path: {}", err));
+    let progress_tui_log_path = tui_log_path_from_template(&model_cli_name, &args.config_nickname)
+        .unwrap_or_else(|err| panic!("failed to render tui log path: {}", err));
+    ensure_parent_dir_exists(&inference_wrapper_log_path)
+        .unwrap_or_else(|err| panic!("failed to prepare inference wrapper log directory: {}", err));
+    ensure_parent_dir_exists(&progress_tui_log_path)
+        .unwrap_or_else(|err| panic!("failed to prepare tui log directory: {}", err));
     if args.ui {
-        ProgressTuiLogger::initialize(args.progress_tui_log_path.clone())
+        ProgressTuiLogger::initialize(progress_tui_log_path.clone())
             .await
             .unwrap();
     }
-    let model_cli_name = model_cli_name_to_string(&model_name);
     let rollout_config: DirectRolloutConfig<Testing> =
-        read_json::<DirectRolloutConfig<Testing>>(&args.rollout_config_path).unwrap();
+        read_json::<DirectRolloutConfig<Testing>>(&args.testing_rollout_config_path).unwrap();
     assert_eq!(
         rollout_config.max_num_trunks, rollout_config.max_num_total_trajectories,
         "max_num_trunks ({}) must equal max_num_total_trajectories ({}) for test evaluation (no branching)",
@@ -235,7 +273,8 @@ async fn main() {
         rollout_config,
         &args,
         client,
-        posterior_calculation_config;
+        posterior_calculation_config,
+        &inference_wrapper_log_path;
         LlmModelName::Qwen25_7b, Qwen25_7B,
         LlmModelName::Qwen3_06b, Qwen3_06B,
         LlmModelName::Qwen3_4b, Qwen3_4B,

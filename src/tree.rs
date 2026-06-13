@@ -17,6 +17,13 @@ use crate::{
 
 use crate::llm_model::MyTokenizer;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeCorrectness {
+    AllCorrect,
+    AllIncorrect,
+    Mixed,
+}
+
 // this tree is similar to the completed tree in src/agent folder, but now it runs on a lightweight tool-calling context instead of a heavy agent framework
 #[derive(Clone)]
 pub struct DirectTree<'a, M: LlmModelMarker, S: DatasetSplit> {
@@ -86,6 +93,25 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
     }
     pub fn completed(&self) -> bool {
         matches!(self.status, DirectTreeStatus::Complete)
+    }
+
+    pub fn get_correctness(&self) -> TreeCorrectness {
+        let mut judgments = self
+            .leaf_segment_judgments
+            .values()
+            .map(|judgment| judgment.is_correct);
+        let Some(first) = judgments.next() else {
+            return TreeCorrectness::Mixed;
+        };
+        if judgments.all(|is_correct| is_correct == first) {
+            if first {
+                TreeCorrectness::AllCorrect
+            } else {
+                TreeCorrectness::AllIncorrect
+            }
+        } else {
+            TreeCorrectness::Mixed
+        }
     }
 }
 

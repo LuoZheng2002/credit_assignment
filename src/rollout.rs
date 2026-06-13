@@ -24,7 +24,7 @@ use crate::{
         hybrid_dataset::{DatasetSplit, open_hybrid_dataset},
         posterior_calculation_config::PosteriorCalculationConfig,
         rollout_config::DirectRolloutConfig,
-        tree::{DirectTree, SegmentContent},
+        tree::{DirectTree, SegmentContent, TreeCorrectness},
         tree_action::DirectTreeAction,
         tree_action_log::{ActionStoreAdapter, open_action_logs},
         tree_status::{
@@ -138,29 +138,6 @@ fn trajectory_length_being_judged<M: LlmModelMarker, S: DatasetSplit>(
         ),
         _ => None,
     }
-}
-
-fn all_same_correctness(judgments: impl IntoIterator<Item = bool>) -> Option<bool> {
-    let mut judgments = judgments.into_iter();
-    let first = judgments.next()?;
-    if judgments.all(|is_correct| is_correct == first) {
-        Some(first)
-    } else {
-        None
-    }
-}
-
-fn classify_all_same_trajectory_tree<M: LlmModelMarker, S: DatasetSplit>(
-    tree: &DirectTree<M, S>,
-) -> Option<bool> {
-    if !S::IS_TRAINING {
-        return None;
-    }
-    all_same_correctness(
-        tree.leaf_segment_judgments
-            .values()
-            .map(|judgment| judgment.is_correct),
-    )
 }
 
 async fn run_progress_timer(
@@ -277,7 +254,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
     shared_states: RolloutSharedStates,
     _active_rollouts_guard: AtomicCountGuard,
     _permit: OwnedSemaphorePermit,
-) -> Result<(), StopRequestedError> {
+) -> Result<TreeCorrectness, StopRequestedError> {
     let RolloutSharedStates {
         python_tool_pool,
         sglang_waiting_workers,
@@ -286,10 +263,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
         sqlite_waiting_workers,
         stop_signal,
         num_finished_branches,
-        num_finished_trees,
         num_correct_branches,
-        num_all_correct_trees,
-        num_all_incorrect_trees,
         llm_call_stats,
         trajectory_length_stats,
         correct_trajectory_length_stats,
@@ -298,6 +272,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
         tool_calls_processed,
         trajectories_per_tree,
         total_trees_to_finish,
+        ..
     } = shared_states;
 
     let _ = num_active_rollouts;
@@ -393,29 +368,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
         }
     }
     let final_tree = DirectTree::<M, S>::from_action_log(&action_log);
-    if let Some(all_correct) = classify_all_same_trajectory_tree(&final_tree) {
-        if all_correct {
-            num_all_correct_trees.fetch_add(1, Ordering::Relaxed);
-        } else {
-            num_all_incorrect_trees.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-    let finished = num_finished_trees.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    let num_all_correct = num_all_correct_trees.load(Ordering::Relaxed);
-    let num_all_incorrect = num_all_incorrect_trees.load(Ordering::Relaxed);
-    let mixed = finished - num_all_correct - num_all_incorrect;
-    log_key_value_pair(
-        "trees_correctness (✓, ❌, mixed)",
-        format!("({num_all_correct}, {num_all_incorrect}, {mixed})"),
-    );
-    log_worker_progress(
-        "trees",
-        finished as f32 / total_trees_to_finish as f32,
-        format!(
-            "Num Trees Completed: {}/{}",
-            finished, total_trees_to_finish
-        ),
-    );
+    let tree_correctness = final_tree.get_correctness();
     let summary = llm_call_stats
         .write()
         .update_and_get_summary(llm_calls_so_far);
@@ -423,7 +376,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
         "llm_calls_per_tree (min, median, q3, max)",
         condensed_distribution(&summary),
     );
-    Ok(())
+    Ok(tree_correctness)
 }
 
 pub struct RolloutProgramConfig<S: DatasetSplit> {
@@ -662,7 +615,37 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
             }
             joined = join_set.join_next(), if !join_set.is_empty() => {
                 match joined.expect("join_set must have at least one task") {
-                    Ok(Ok(())) | Ok(Err(StopRequestedError)) => {}
+                    Ok(Ok(tree_correctness)) => {
+                        match tree_correctness {
+                            TreeCorrectness::AllCorrect => {
+                                shared_states.num_all_correct_trees.fetch_add(1, Ordering::Relaxed);
+                            }
+                            TreeCorrectness::AllIncorrect => {
+                                shared_states.num_all_incorrect_trees.fetch_add(1, Ordering::Relaxed);
+                            }
+                            TreeCorrectness::Mixed => {}
+                        }
+                        let finished =
+                            shared_states.num_finished_trees.fetch_add(1, Ordering::Relaxed) + 1;
+                        let num_all_correct =
+                            shared_states.num_all_correct_trees.load(Ordering::Relaxed);
+                        let num_all_incorrect =
+                            shared_states.num_all_incorrect_trees.load(Ordering::Relaxed);
+                        let mixed = finished - num_all_correct - num_all_incorrect;
+                        log_key_value_pair(
+                            "trees_correctness (✓, ❌, mixed)",
+                            format!("({num_all_correct}, {num_all_incorrect}, {mixed})"),
+                        );
+                        log_worker_progress(
+                            "trees",
+                            finished as f32 / total_trees_to_finish as f32,
+                            format!(
+                                "Num Trees Completed: {}/{}",
+                                finished, total_trees_to_finish
+                            ),
+                        );
+                    }
+                    Ok(Err(StopRequestedError)) => {}
                     Err(join_err) => panic!("rollout task panicked: {join_err}"),
                 }
             }
@@ -712,25 +695,5 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         llm_call_throughput_per_sec,
         elapsed_secs,
         total_llm_calls,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::all_same_correctness;
-
-    #[test]
-    fn all_same_correctness_handles_empty_and_single_leaf_trees() {
-        assert_eq!(all_same_correctness([]), None);
-        assert_eq!(all_same_correctness([true]), Some(true));
-        assert_eq!(all_same_correctness([false]), Some(false));
-    }
-
-    #[test]
-    fn all_same_correctness_rejects_mixed_values() {
-        assert_eq!(all_same_correctness([true, true, true]), Some(true));
-        assert_eq!(all_same_correctness([false, false]), Some(false));
-        assert_eq!(all_same_correctness([true, false]), None);
-        assert_eq!(all_same_correctness([false, true]), None);
     }
 }

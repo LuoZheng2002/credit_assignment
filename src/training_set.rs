@@ -19,7 +19,7 @@ use crate::{
         hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
         rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
-        tree::{DirectTree, SegmentContent, SegmentId},
+        tree::{DirectTree, SegmentContent, SegmentId, TreeCorrectness},
         tree_action_log::{DirectTreeActionLog, open_action_logs},
     },
     jinja_directories::{
@@ -536,7 +536,7 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
     if !ALLOW_INCOMPLETE && !tree.completed() {
         return Vec::new();
     }
-    if !tree_has_mixed_leaf_correctness(&tree) {
+    if !matches!(tree.get_correctness(), TreeCorrectness::Mixed) {
         return Vec::new();
     }
     let root_segment_id = tree
@@ -628,7 +628,7 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
     if !ALLOW_INCOMPLETE && !tree.completed() {
         return Vec::new();
     }
-    if !tree_has_mixed_leaf_correctness(&tree) {
+    if !matches!(tree.get_correctness(), TreeCorrectness::Mixed) {
         return Vec::new();
     }
     let root_segment_id = tree
@@ -744,30 +744,6 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
     reconstructed
 }
 
-fn has_mixed_correctness(judgments: impl IntoIterator<Item = bool>) -> bool {
-    let mut saw_correct = false;
-    let mut saw_incorrect = false;
-
-    for is_correct in judgments {
-        if is_correct {
-            saw_correct = true;
-        } else {
-            saw_incorrect = true;
-        }
-        if saw_correct && saw_incorrect {
-            return true;
-        }
-    }
-
-    false
-}
-
-fn tree_has_mixed_leaf_correctness<M: LlmModelMarker, S: DatasetSplit>(
-    tree: &DirectTree<M, S>,
-) -> bool {
-    has_mixed_correctness(tree.leaf_segment_judgments.values().map(|j| j.is_correct))
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectTrainingTrajectory<M: LlmModelMarker> {
     pub question: HybridDatasetQuestion<Training>,
@@ -837,22 +813,6 @@ pub fn training_trajectories_stats_file_path<M: LlmModelMarker>(
                 M::CLI_NAME, config_nickname, epoch, hash, err
             )
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::has_mixed_correctness;
-
-    #[test]
-    fn mixed_correctness_accepts_only_when_both_outcomes_are_present() {
-        assert!(!has_mixed_correctness([]));
-        assert!(!has_mixed_correctness([true]));
-        assert!(!has_mixed_correctness([false]));
-        assert!(!has_mixed_correctness([true, true, true]));
-        assert!(!has_mixed_correctness([false, false]));
-        assert!(has_mixed_correctness([true, false]));
-        assert!(has_mixed_correctness([false, true, false]));
-    }
 }
 
 pub fn open_training_trajectories<M: LlmModelMarker>(
