@@ -217,6 +217,17 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     // we want to output a histogram and the advantage cutoff
     // and total samples and adopted samples
 
+    let median_average_absolute_advantage = match all_average_absolute_advantages.len() {
+        0 => 0.0,
+        len if len % 2 == 1 => all_average_absolute_advantages[len / 2],
+        len => {
+            let upper_mid = len / 2;
+            (all_average_absolute_advantages[upper_mid - 1]
+                + all_average_absolute_advantages[upper_mid])
+                / 2.0
+        }
+    };
+
     let statistics = DirectTrainingSetStatistics {
         average_absolute_advantages_sorted: all_average_absolute_advantages,
         max_average_absolute_advantage,
@@ -239,8 +250,11 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         statistics.average_absolute_advantage_cutoff.to_string(),
     );
     log_info(format!(
-        "selected_trajectories={} total_trajectories={}",
-        statistics.adopted_trajectories, statistics.total_trajectories
+        "training_samples_generated={} max_average_absolute_advantage={} min_average_absolute_advantage={} median_average_absolute_advantage={}",
+        statistics.adopted_trajectories,
+        statistics.max_average_absolute_advantage,
+        statistics.min_average_absolute_advantage,
+        median_average_absolute_advantage,
     ));
 }
 

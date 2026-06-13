@@ -40,6 +40,11 @@ The `--model-cli-name` options can be found in `src/llm_model/llm_model_name.rs`
 2. Run `bash tui.sh [tui_log.bin path]`
 
 ## Browse the action logs that form the trees
-1. Locate the action log files in medium files folder. For example: // to do
+1. Locate the action log files in medium files folder. For example: `modal_downloads/qwen2.5-7b/std/medium_files/qwen2.5-7b/std/epoch_0/action_logs_training.sqlite` and `modal_downloads/qwen2.5-7b/std/medium_files/qwen2.5-7b/std/epoch_0/action_logs_validation.sqlite`.
 2. Run `cargo run --bin bin_browse_trees -- --action-logs-path [action log files path]`
 
+## Things to check for
+1. llm_call_throughput_per_sec_5s_window, should be ideally around 20 for 1*H100.
+2. "trees_correctness (✓, ❌, mixed)" if mixed count is too small (< 5% of total), then there is likely to be a problem.
+
+Make Claude Code to modify the code in research-utility so that claude code can read the status of tui logs at a specified timestep.
