@@ -426,6 +426,10 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         "max_rollout_concurrency must be positive"
     );
     assert!(total_epochs > 0, "total_epochs must be positive");
+    log_info(format!(
+        "rollout_all using fixed_temperature={} for LLM sampling",
+        rollout_config.fixed_temperature
+    ));
     let rollout_time_limit = Duration::from_secs(rollout_time_limit_secs as u64);
     let start_time = Instant::now();
     let deadline = start_time + rollout_time_limit;

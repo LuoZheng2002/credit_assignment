@@ -344,6 +344,10 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     &trajectory,
                     generation_start_token,
                     self.action_log.rollout_config.use_tool,
+                    self.action_log
+                        .rollout_config
+                        .fixed_temperature
+                        .into_inner(),
                     llm_callable,
                     python_tool_pool,
                     sglang_waiting_workers,
@@ -727,6 +731,7 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
     trajectory: &DirectTrajectory<M>,
     new_branch_start_token: Option<i32>,
     use_tool: bool,
+    temperature: f32,
     llm_callable: &M::Callable,
     sglang_waiting_workers: Arc<AtomicUsize>,
     stop_signal: Arc<AtomicBool>,
@@ -746,7 +751,7 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
             return Err(StopRequestedError);
         }
         let generation_result = llm_callable
-            .generate_tokens_with_logprobs(prompt_tokens.clone(), use_tool, 1.0, true)
+            .generate_tokens_with_logprobs(prompt_tokens.clone(), use_tool, temperature, true)
             .await;
         match generation_result {
             Ok(result) => {
@@ -802,7 +807,8 @@ async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
     trajectory: &DirectTrajectory<M>,
     new_branch_start_token: Option<i32>,
     use_tool: bool,
-    // current_content: &[SegmentContent],
+    temperature: f32,
+    // current_content: &[SegmentContent<M>],
     // client: Client,
     llm_callable: &M::Callable,
     python_tool_pool: Arc<PythonToolServerPool>,
@@ -829,6 +835,7 @@ async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
                 trajectory,
                 new_branch_start_token,
                 use_tool,
+                temperature,
                 llm_callable,
                 sglang_waiting_workers,
                 stop_signal,
@@ -866,6 +873,7 @@ async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
                     trajectory,
                     new_branch_start_token,
                     use_tool,
+                    temperature,
                     llm_callable,
                     sglang_waiting_workers,
                     stop_signal,

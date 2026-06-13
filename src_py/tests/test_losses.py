@@ -7,7 +7,7 @@ from src_py.train.losses import IGNORE_LABEL, compute_advantage_weighted_causal_
 
 
 class TestAdvantageWeightedLoss(unittest.TestCase):
-    def test_matches_per_sample_weighting_and_not_token_raw_weighting(self) -> None:
+    def test_matches_token_wise_weighting(self) -> None:
         torch.manual_seed(7)
 
         batch_size = 2
@@ -22,7 +22,13 @@ class TestAdvantageWeightedLoss(unittest.TestCase):
             ],
             dtype=torch.long,
         )
-        advantages = torch.tensor([0.0, 2.0], dtype=torch.float32)
+        advantages = torch.tensor(
+            [
+                [0.0, 0.0, 0.5, 0.0, 0.0],
+                [0.0, -1.0, 2.0, -2.0, 1.0],
+            ],
+            dtype=torch.float32,
+        )
 
         output = compute_advantage_weighted_causal_lm_loss(
             logits=logits,
@@ -33,6 +39,7 @@ class TestAdvantageWeightedLoss(unittest.TestCase):
 
         shifted_logits = logits[:, :-1, :]
         shifted_labels = labels[:, 1:]
+        shifted_advantages = advantages[:, 1:]
         token_losses = F.cross_entropy(
             shifted_logits.reshape(-1, vocab_size),
             shifted_labels.reshape(-1),
@@ -41,23 +48,11 @@ class TestAdvantageWeightedLoss(unittest.TestCase):
         ).reshape(batch_size, seq_len - 1)
 
         mask = shifted_labels.ne(IGNORE_LABEL)
-        token_counts = mask.sum(dim=1)
-        self.assertTrue(torch.all(token_counts > 0).item())
-
-        per_sample = (token_losses * mask).sum(dim=1) / token_counts.to(token_losses.dtype)
-        adv_norm = (advantages - advantages.mean()) / advantages.std(unbiased=False)
-
-        expected_per_sample_weighted = (per_sample * adv_norm).mean()
-
-        raw_weighted = (token_losses * mask * adv_norm.unsqueeze(1)).sum() / mask.sum()
+        weighted = (token_losses * mask * shifted_advantages).sum() / mask.sum()
 
         self.assertTrue(
-            torch.allclose(output.loss.detach(), expected_per_sample_weighted, atol=1e-6),
-            "Loss must match per-sample weighting",
-        )
-        self.assertFalse(
-            torch.allclose(output.loss.detach(), raw_weighted, atol=1e-6),
-            "Loss should not match per-token raw weighting when token counts differ",
+            torch.allclose(output.loss.detach(), weighted, atol=1e-6),
+            "Loss must match token-wise weighting",
         )
 
     def test_advantage_clipping_applies(self) -> None:
@@ -75,7 +70,13 @@ class TestAdvantageWeightedLoss(unittest.TestCase):
             ],
             dtype=torch.long,
         )
-        advantages = torch.tensor([0.0, 100.0], dtype=torch.float32)
+        advantages = torch.tensor(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 100.0, -100.0],
+            ],
+            dtype=torch.float32,
+        )
 
         output = compute_advantage_weighted_causal_lm_loss(
             logits=logits,
@@ -84,19 +85,38 @@ class TestAdvantageWeightedLoss(unittest.TestCase):
             advantage_clip=0.25,
         )
 
+        shifted_logits = logits[:, :-1, :]
+        shifted_labels = labels[:, 1:]
+        shifted_advantages = advantages[:, 1:].clamp(-0.25, 0.25)
+        token_losses = F.cross_entropy(
+            shifted_logits.reshape(-1, 2),
+            shifted_labels.reshape(-1),
+            ignore_index=IGNORE_LABEL,
+            reduction="none",
+        ).reshape(2, 2)
+        mask = shifted_labels.ne(IGNORE_LABEL)
+        expected = (token_losses * mask * shifted_advantages).sum() / mask.sum()
+
+        self.assertTrue(torch.allclose(output.loss.detach(), expected, atol=1e-6))
         self.assertLessEqual(abs(output.stats["advantage_normalized_mean"]), 0.25)
         self.assertGreater(output.stats["advantage_raw_std"], 0.0)
 
-    def test_raises_when_sample_has_no_supervised_token(self) -> None:
+    def test_raises_when_batch_has_no_supervised_token(self) -> None:
         logits = torch.randn(2, 4, 5, dtype=torch.float32)
         labels = torch.tensor(
             [
                 [IGNORE_LABEL, IGNORE_LABEL, IGNORE_LABEL, IGNORE_LABEL],
-                [IGNORE_LABEL, 1, 2, 3],
+                [IGNORE_LABEL, IGNORE_LABEL, IGNORE_LABEL, IGNORE_LABEL],
             ],
             dtype=torch.long,
         )
-        advantages = torch.tensor([1.0, -1.0], dtype=torch.float32)
+        advantages = torch.tensor(
+            [
+                [0.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, -1.0, 0.5],
+            ],
+            dtype=torch.float32,
+        )
 
         with self.assertRaises(AssertionError):
             compute_advantage_weighted_causal_lm_loss(

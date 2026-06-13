@@ -4,10 +4,10 @@ import json
 import math
 import statistics
 import time
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -20,7 +20,7 @@ from ..tui_logging import (
     _tui_worker_progress,
 )
 from .batch_dataset import LazyResolvedBatchLoader, ResolvedTrainingBatch
-from .collator import collate_training_samples
+from .collator import IGNORE_LABEL, collate_training_samples
 from .data_sqlite import TrainingSampleTokenized
 from .losses import compute_advantage_weighted_causal_lm_loss
 from .training_plan import assert_supported_training_plan
@@ -70,13 +70,16 @@ def _truncate_sample_to_cap(
     assert len(truncated_input_ids) >= MIN_TRAJECTORY_LENGTH_CAP, (
         "truncated sample is too short"
     )
+    truncated_token_advantages = sample.token_advantages[start:]
+    assert len(truncated_input_ids) == len(truncated_token_advantages), (
+        "truncated token advantages must align"
+    )
     return TrainingSampleTokenized(
         id=sample.id,
         input_ids=truncated_input_ids,
         labels=truncated_labels,
-        reconstructed=sample.reconstructed,
         input_length=len(truncated_input_ids),
-        advantage=sample.advantage,
+        token_advantages=truncated_token_advantages,
         model_official_name=sample.model_official_name,
     )
 
@@ -273,6 +276,24 @@ def _broadcast_adaptive_state_distributed(
     )
 
 
+def _sample_average_supervised_advantage(
+    sample: TrainingSampleTokenized,
+) -> float:
+    assert len(sample.input_ids) == len(sample.labels), (
+        "input_ids and labels must align"
+    )
+    assert len(sample.token_advantages) == len(sample.input_ids), (
+        "token_advantages and input_ids must align"
+    )
+    supervised_advantages = [
+        advantage
+        for label, advantage in zip(sample.labels, sample.token_advantages)
+        if label != IGNORE_LABEL
+    ]
+    assert len(supervised_advantages) > 0, "sample must contain supervised tokens"
+    return float(statistics.fmean(supervised_advantages))
+
+
 def _compute_abs_advantage_stats_for_available_samples(
     *, lazy_loader: LazyResolvedBatchLoader
 ) -> tuple[float, float, float]:
@@ -280,7 +301,7 @@ def _compute_abs_advantage_stats_for_available_samples(
     absolute_advantages: list[float] = []
     for sample_index in range(lazy_loader.sample_count):
         sample = lazy_loader.get_sample(sample_index)
-        absolute_advantages.append(abs(float(sample.advantage)))
+        absolute_advantages.append(abs(_sample_average_supervised_advantage(sample)))
     assert len(absolute_advantages) > 0, "absolute_advantages cannot be empty"
     max_abs_advantage = max(absolute_advantages)
     min_abs_advantage = min(absolute_advantages)
@@ -644,9 +665,10 @@ def _run_unified_loop(
             torch.cuda.reset_peak_memory_stats(device=device)
         step_start = time.perf_counter()
         should_sync = (accumulation_step + 1) == config.grad_accum_steps
-        sync_context = nullcontext()
-        if is_distributed and hasattr(model, "no_sync") and not should_sync:
-            sync_context = model.no_sync()
+        sync_context: AbstractContextManager[None] = nullcontext()
+        no_sync_method = getattr(model, "no_sync", None)
+        if is_distributed and callable(no_sync_method) and not should_sync:
+            sync_context = cast(AbstractContextManager[None], no_sync_method())
         collated = None
         input_ids = None
         labels = None

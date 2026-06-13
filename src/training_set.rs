@@ -5,7 +5,7 @@ use std::sync::Arc;
 use ordered_float::NotNan;
 use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
 use research_utility::{
-    progress_tui_logger::{log_info, log_key_value_pair, log_master_progress},
+    progress_tui_logger::{log_info, log_key_value_pair, log_master_progress, log_warning},
     sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
 };
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,8 @@ use crate::{
 
 const MAX_TRAINING_TRAJECTORY_TOKEN_LENGTH: usize = 8192;
 const ALLOW_INCOMPLETE: bool = false;
+const MAX_ABSOLUTE_TOKEN_ADVANTAGE: f32 = 3.0;
+const EXTREME_ABSOLUTE_TOKEN_ADVANTAGE_WARNING_THRESHOLD: f32 = 5.0;
 
 #[derive(Debug, Clone)]
 struct TrajectoryMetadata<S: DatasetSplit> {
@@ -168,6 +170,65 @@ fn truncate_trajectory_tokens(
         input_ids.len() <= MAX_TRAINING_TRAJECTORY_TOKEN_LENGTH,
         "trajectory length must be capped after truncation"
     );
+}
+
+fn clip_training_advantage(value: f32) -> f32 {
+    value.clamp(-MAX_ABSOLUTE_TOKEN_ADVANTAGE, MAX_ABSOLUTE_TOKEN_ADVANTAGE)
+}
+
+fn count_branch_points<M: LlmModelMarker, S: DatasetSplit>(tree: &DirectTree<'_, M, S>) -> usize {
+    tree.segments
+        .values()
+        .filter(|segment| segment.child_ids.len() > 1)
+        .count()
+}
+
+fn count_extra_branches<M: LlmModelMarker, S: DatasetSplit>(tree: &DirectTree<'_, M, S>) -> usize {
+    tree.segments
+        .values()
+        .map(|segment| segment.child_ids.len().saturating_sub(1))
+        .sum()
+}
+
+fn log_extreme_advantage_warning<M: LlmModelMarker, S: DatasetSplit>(
+    tree: &DirectTree<'_, M, S>,
+    max_absolute_advantage: f32,
+) {
+    if max_absolute_advantage <= EXTREME_ABSOLUTE_TOKEN_ADVANTAGE_WARNING_THRESHOLD {
+        return;
+    }
+    log_warning(format!(
+        "extreme_training_advantage=1 question_flat_id={:?} max_absolute_advantage={:.6} branch_points={} branch_count={} total_segments={}",
+        tree.action_log.question.flat_id,
+        max_absolute_advantage,
+        count_branch_points(tree),
+        count_extra_branches(tree),
+        tree.segments.len(),
+    ));
+}
+
+fn supervised_content_advantage_stats<M: LlmModelMarker>(
+    segment: &crate::direct_tool::tree::Segment<M>,
+    segment_advantage: f32,
+) -> Option<(f32, usize)> {
+    let mut total_abs = 0.0_f32;
+    let mut token_count = 0usize;
+    for content in segment.content.iter() {
+        if let SegmentContent::ReasoningOrToolCall { tokens, .. } = content {
+            assert!(
+                segment_advantage.is_finite(),
+                "supervised advantage must be finite"
+            );
+            let clipped = clip_training_advantage(segment_advantage);
+            total_abs += clipped.abs() * tokens.tokens.len() as f32;
+            token_count += tokens.tokens.len();
+        }
+    }
+    if token_count == 0 {
+        None
+    } else {
+        Some((total_abs, token_count))
+    }
 }
 
 pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
@@ -554,6 +615,12 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
     for segment_id in tree.segments.keys().copied() {
         segment_advantages.entry(segment_id).or_insert(0.0);
     }
+    let max_absolute_advantage = segment_advantages
+        .values()
+        .map(|advantage| advantage.abs())
+        .fold(0.0_f32, f32::max);
+    log_extreme_advantage_warning(&tree, max_absolute_advantage);
+
     let mut trajectory_summaries: Vec<TrajectorySummary<S>> = Vec::new();
     let mut leaf_segment_ids: BTreeSet<SegmentId> =
         tree.leaf_segment_judgments.keys().cloned().collect();
@@ -561,16 +628,23 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
         let mut leaf_to_average_absolute_advantage = BTreeMap::new();
         for leaf in leaf_segment_ids.iter() {
             let segment_ids = tree.get_trajectory_segments_till_id(*leaf);
-            let non_root_segment_count = segment_ids
-                .iter()
-                .filter(|&&id| id != root_segment_id)
-                .count();
-            let average_absolute_advantage = segment_ids
-                .iter()
-                .filter(|&&id| id != root_segment_id)
-                .map(|id| segment_advantages.get(id).unwrap().abs())
-                .sum::<f32>()
-                / non_root_segment_count.max(1) as f32;
+            let mut total_abs_advantage = 0.0_f32;
+            let mut supervised_token_count = 0usize;
+            for segment_id in segment_ids.iter().filter(|&&id| id != root_segment_id) {
+                let segment = tree.segments.get(segment_id).unwrap();
+                let segment_advantage = *segment_advantages.get(segment_id).unwrap();
+                if let Some((segment_abs_sum, segment_token_count)) =
+                    supervised_content_advantage_stats(segment, segment_advantage)
+                {
+                    total_abs_advantage += segment_abs_sum;
+                    supervised_token_count += segment_token_count;
+                }
+            }
+            assert!(
+                supervised_token_count > 0,
+                "trajectory must contain supervised tokens"
+            );
+            let average_absolute_advantage = total_abs_advantage / supervised_token_count as f32;
             leaf_to_average_absolute_advantage.insert(*leaf, average_absolute_advantage);
         }
         let (best_leaf, best_average_absolute_advantage) = leaf_to_average_absolute_advantage
@@ -578,15 +652,17 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
             .unwrap();
         let segment_ids = tree.get_trajectory_segments_till_id(best_leaf);
-        let mut sum_absolute_advantage = 0.0;
-        let mut non_root_segment_count = 0usize;
+        let mut sum_absolute_advantage = 0.0_f32;
+        let mut supervised_token_count = 0usize;
         let mut trajectory_token_length = 0usize;
         for segment_id in segment_ids.iter() {
             let segment = tree.segments.get(segment_id).unwrap();
-            let segment_advantage = segment_advantages.get_mut(segment_id).unwrap();
-            if *segment_id != root_segment_id {
-                sum_absolute_advantage += segment_advantage.abs();
-                non_root_segment_count += 1;
+            let segment_advantage = *segment_advantages.get(segment_id).unwrap();
+            if let Some((segment_abs_sum, segment_token_count)) =
+                supervised_content_advantage_stats(segment, segment_advantage)
+            {
+                sum_absolute_advantage += segment_abs_sum;
+                supervised_token_count += segment_token_count;
             }
             for content in segment.content.iter() {
                 let token_count = match content {
@@ -599,10 +675,9 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
                 };
                 trajectory_token_length += token_count;
             }
-            *segment_advantage = 0.0; // we set the advantage of the taken segments to 0
         }
         let average_absolute_advantage =
-            sum_absolute_advantage / non_root_segment_count.max(1) as f32;
+            sum_absolute_advantage / supervised_token_count.max(1) as f32;
         assert_eq!(average_absolute_advantage, best_average_absolute_advantage);
         trajectory_summaries.push(TrajectorySummary {
             question_flat_id: tree.action_log.question.flat_id,
@@ -631,9 +706,6 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
     if !matches!(tree.get_correctness(), TreeCorrectness::Mixed) {
         return Vec::new();
     }
-    let root_segment_id = tree
-        .root_segment_id
-        .expect("DirectTree must have root_segment_id");
     let mut segment_advantages = match advantage_calculation_policy {
         AdvantageCalculationPolicy::TreeMappoPosterior => {
             tree.calculate_segment_advantages_from_posteriors(None)
@@ -657,16 +729,23 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
         let mut leaf_to_average_absolute_advantage = BTreeMap::new();
         for leaf in leaf_segment_ids.iter() {
             let segment_ids = tree.get_trajectory_segments_till_id(*leaf);
-            let non_root_segment_count = segment_ids
-                .iter()
-                .filter(|&&id| id != root_segment_id)
-                .count();
-            let average_absolute_advantage = segment_ids
-                .iter()
-                .filter(|&&id| id != root_segment_id)
-                .map(|id| segment_advantages.get(id).unwrap().abs())
-                .sum::<f32>()
-                / non_root_segment_count.max(1) as f32;
+            let mut total_abs_advantage = 0.0_f32;
+            let mut supervised_token_count = 0usize;
+            for segment_id in segment_ids.iter() {
+                let segment = tree.segments.get(segment_id).unwrap();
+                let segment_advantage = *segment_advantages.get(segment_id).unwrap();
+                if let Some((segment_abs_sum, segment_token_count)) =
+                    supervised_content_advantage_stats(segment, segment_advantage)
+                {
+                    total_abs_advantage += segment_abs_sum;
+                    supervised_token_count += segment_token_count;
+                }
+            }
+            assert!(
+                supervised_token_count > 0,
+                "trajectory must contain supervised tokens"
+            );
+            let average_absolute_advantage = total_abs_advantage / supervised_token_count as f32;
             leaf_to_average_absolute_advantage.insert(*leaf, average_absolute_advantage);
         }
         let (best_leaf, best_average_absolute_advantage) = leaf_to_average_absolute_advantage
@@ -679,14 +758,16 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
         let mut input_ids: Vec<i32> = Vec::new();
         let mut labels: Vec<i32> = Vec::new();
         let mut advantages: Vec<f32> = Vec::new();
-        let mut sum_absolute_advantage = 0.0;
-        let mut non_root_segment_count = 0usize;
+        let mut sum_absolute_advantage = 0.0_f32;
+        let mut supervised_token_count = 0usize;
         for segment_id in segment_ids.iter() {
             let segment = tree.segments.get(segment_id).unwrap();
-            let segment_advantage = segment_advantages.get_mut(segment_id).unwrap();
-            if *segment_id != root_segment_id {
-                sum_absolute_advantage += segment_advantage.abs();
-                non_root_segment_count += 1;
+            let segment_advantage = *segment_advantages.get(segment_id).unwrap();
+            if let Some((segment_abs_sum, segment_token_count)) =
+                supervised_content_advantage_stats(segment, segment_advantage)
+            {
+                sum_absolute_advantage += segment_abs_sum;
+                supervised_token_count += segment_token_count;
             }
             if should_materialize {
                 for content in segment.content.iter() {
@@ -695,23 +776,30 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
                         | SegmentContent::ToolResponse(token_array) => {
                             input_ids.extend(token_array.tokens.iter());
                             labels.extend(vec![-100; token_array.tokens.len()]); // we set the labels for the prompt tokens to -100 so that they will be ignored in the loss calculation
-                            advantages.extend(vec![*segment_advantage; token_array.tokens.len()]); // we assign the same advantage to all tokens in the segment
+                            advantages.extend(vec![0.0; token_array.tokens.len()]);
                         }
                         SegmentContent::ReasoningOrToolCall {
                             tokens,
                             complete: _,
                         } => {
+                            assert!(
+                                segment_advantage.is_finite(),
+                                "supervised advantage must be finite"
+                            );
+                            let clipped_advantage = clip_training_advantage(segment_advantage);
                             input_ids.extend(tokens.tokens.iter());
                             labels.extend(tokens.tokens.iter());
-                            advantages.extend(vec![*segment_advantage; tokens.tokens.len()]);
+                            advantages.extend(vec![clipped_advantage; tokens.tokens.len()]);
                         }
                     }
                 }
             }
-            *segment_advantage = 0.0; // we set the advantage of the taken segments to 0
         }
-        let average_absolute_advantage =
-            sum_absolute_advantage / non_root_segment_count.max(1) as f32;
+        assert!(
+            supervised_token_count > 0,
+            "trajectory must contain supervised tokens"
+        );
+        let average_absolute_advantage = sum_absolute_advantage / supervised_token_count as f32;
         assert_eq!(average_absolute_advantage, best_average_absolute_advantage);
 
         if should_materialize {

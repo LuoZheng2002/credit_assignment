@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 from ..tui_logging import _tui_error, _tui_info, _tui_warning
-from .batch_dataset import LazyResolvedBatchLoader
+from .batch_dataset import LazyResolvedBatchLoader, ResolvedTrainingBatch
 from .train_loop import run_training_loop
 from .training_plan import (
     TRAINING_PLAN_DDP,
@@ -1055,6 +1055,65 @@ def _update_adaptive_batch_state(
         memory_utilization_ema=updated_memory_utilization_ema,
         previous_tokens_per_sample=updated_previous_tokens_per_sample,
     )
+
+
+def _shard_batches_for_rank(
+    ordered_batches: list[ResolvedTrainingBatch], rank: int, world_size: int
+) -> list[ResolvedTrainingBatch]:
+    assert world_size > 0, "world_size must be positive"
+    assert rank >= 0, "rank must be non-negative"
+    assert rank < world_size, "rank must be less than world_size"
+    return [
+        batch for batch in ordered_batches if batch.batch_index % world_size == rank
+    ]
+
+
+def _verify_tokenizer_model_match(
+    *,
+    model_path: str,
+    tokenizer_name_or_path: str,
+    ordered_batches: list[ResolvedTrainingBatch],
+    model_vocab_size: int,
+) -> dict[str, int | str]:
+    assert len(model_path.strip()) > 0, "model_path cannot be empty"
+    assert len(tokenizer_name_or_path.strip()) > 0, (
+        "tokenizer_name_or_path cannot be empty"
+    )
+    assert model_vocab_size > 0, "model_vocab_size must be positive"
+    assert len(ordered_batches) > 0, "ordered_batches cannot be empty"
+
+    max_input_token_id = -1
+    max_label_token_id = -1
+    for batch in ordered_batches:
+        assert batch.model_official_name == model_path, (
+            "training batch model_official_name must match model_path"
+        )
+        for sample in batch.samples:
+            for token_id in sample.input_ids:
+                assert token_id >= 0, "input_ids must be non-negative"
+                if token_id > max_input_token_id:
+                    max_input_token_id = token_id
+            for token_id in sample.labels:
+                if token_id == -100:
+                    continue
+                assert token_id >= 0, "labels must be non-negative"
+                if token_id > max_label_token_id:
+                    max_label_token_id = token_id
+
+    assert max_input_token_id < model_vocab_size, (
+        "input_ids contain token id out of model vocab range"
+    )
+    assert max_label_token_id < model_vocab_size, (
+        "labels contain token id out of model vocab range"
+    )
+
+    return {
+        "model_official_name": model_path,
+        "tokenizer_name_or_path": tokenizer_name_or_path,
+        "model_vocab_size": model_vocab_size,
+        "max_input_token_id": max_input_token_id,
+        "max_label_token_id": max_label_token_id,
+    }
 
 
 def _resolve_pad_token_id(

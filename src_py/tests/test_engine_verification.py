@@ -20,9 +20,8 @@ def _build_sample(
         id=QuestionNodeId(question_id=question_id, node_id=node_id),
         input_ids=input_ids,
         labels=labels,
-        reconstructed="r",
         input_length=len(input_ids),
-        advantage=0.1,
+        token_advantages=[0.0] + [0.1] * (len(input_ids) - 1),
         model_official_name=model_official_name,
     )
 

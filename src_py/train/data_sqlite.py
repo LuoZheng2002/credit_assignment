@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 import os
 import sqlite3
+from dataclasses import dataclass
 from typing import Iterator
 
 from research_utility import SqliteStore
@@ -20,9 +20,8 @@ class TrainingSampleTokenized:
     id: QuestionNodeId
     input_ids: list[int]
     labels: list[int]
-    reconstructed: str
     input_length: int
-    advantage: float
+    token_advantages: list[float]
     model_official_name: str
 
 
@@ -78,35 +77,46 @@ def _parse_tokenized_payload(payload: object) -> TrainingSampleTokenized:
     assert "id" in payload_obj, "tokenized payload must contain id"
     assert "input_ids" in payload_obj, "tokenized payload must contain input_ids"
     assert "labels" in payload_obj, "tokenized payload must contain labels"
-    assert "reconstructed" in payload_obj, "tokenized payload must contain reconstructed"
     assert "input_length" in payload_obj, "tokenized payload must contain input_length"
-    assert "advantage" in payload_obj, "tokenized payload must contain advantage"
-    assert (
-        "model_official_name" in payload_obj
-    ), "tokenized payload must contain model_official_name"
+    assert "token_advantages" in payload_obj or "advantage" in payload_obj, (
+        "tokenized payload must contain token_advantages or advantage"
+    )
+    assert "model_official_name" in payload_obj, (
+        "tokenized payload must contain model_official_name"
+    )
 
     sample_id = _parse_question_node_id(payload_obj["id"])
     input_ids = _parse_int_list(payload_obj["input_ids"], "input_ids")
     labels = _parse_int_list(payload_obj["labels"], "labels")
-    reconstructed_obj = payload_obj["reconstructed"]
-    assert isinstance(reconstructed_obj, str), "reconstructed must be string"
     input_length = _parse_positive_int(payload_obj["input_length"], "input_length")
-    advantage = _parse_finite_float(payload_obj["advantage"], "advantage")
     model_official_name_obj = payload_obj["model_official_name"]
-    assert isinstance(model_official_name_obj, str), "model_official_name must be string"
+    if "token_advantages" in payload_obj:
+        token_advantages_obj = payload_obj["token_advantages"]
+        assert isinstance(token_advantages_obj, list), "token_advantages must be a list"
+        token_advantages = []
+        for element in token_advantages_obj:
+            token_advantages.append(_parse_finite_float(element, "token_advantages[]"))
+    else:
+        advantage = _parse_finite_float(payload_obj["advantage"], "advantage")
+        token_advantages = [advantage] * input_length
+    assert isinstance(model_official_name_obj, str), (
+        "model_official_name must be string"
+    )
     assert len(model_official_name_obj) > 0, "model_official_name cannot be empty"
 
     assert len(input_ids) > 0, "input_ids cannot be empty"
     assert len(labels) == len(input_ids), "labels and input_ids lengths must match"
     assert input_length == len(input_ids), "input_length must equal len(input_ids)"
+    assert len(token_advantages) == input_length, (
+        "token_advantages and input_ids lengths must match"
+    )
 
     return TrainingSampleTokenized(
         id=sample_id,
         input_ids=input_ids,
         labels=labels,
-        reconstructed=reconstructed_obj,
         input_length=input_length,
-        advantage=advantage,
+        token_advantages=token_advantages,
         model_official_name=model_official_name_obj,
     )
 
@@ -116,7 +126,11 @@ def _parse_direct_training_trajectory_payload(
     payload: object,
 ) -> TrainingSampleTokenized:
     payload_obj = _parse_payload_object(payload, "trajectory")
-    if "input_ids" not in payload_obj or "labels" not in payload_obj or "advantages" not in payload_obj:
+    if (
+        "input_ids" not in payload_obj
+        or "labels" not in payload_obj
+        or "advantages" not in payload_obj
+    ):
         if "question" in payload_obj and "tree" in payload_obj:
             raise AssertionError(
                 "trajectory payload appears to be DirectTreeActionLog; expected DirectTrainingTrajectory "
@@ -143,30 +157,28 @@ def _parse_direct_training_trajectory_payload(
 
     assert len(input_ids) > 0, "input_ids cannot be empty"
     assert len(labels) == len(input_ids), "labels and input_ids lengths must match"
-    assert len(token_advantages) == len(input_ids), "advantages and input_ids lengths must match"
+    assert len(token_advantages) == len(input_ids), (
+        "advantages and input_ids lengths must match"
+    )
 
     assert len(input_ids) >= 2, "trajectory must contain at least two tokens"
 
     supervised_advantages = [
         token_advantages[index] for index, label in enumerate(labels) if label != -100
     ]
-    assert len(supervised_advantages) > 0, "trajectory must contain at least one supervised token"
+    assert len(supervised_advantages) > 0, (
+        "trajectory must contain at least one supervised token"
+    )
     assert any(label != -100 for label in labels[1:]), (
         "trajectory must contain at least one supervised token after causal shift"
     )
-
-    reconstructed = ""
-    question_text_obj = question_obj.get("question")
-    if isinstance(question_text_obj, str):
-        reconstructed = question_text_obj
 
     return TrainingSampleTokenized(
         id=QuestionNodeId(question_id=question_flat_id, node_id=trajectory_id),
         input_ids=input_ids,
         labels=labels,
-        reconstructed=reconstructed,
         input_length=len(input_ids),
-        advantage=sum(supervised_advantages) / len(supervised_advantages),
+        token_advantages=token_advantages,
         model_official_name="",
     )
 
@@ -198,7 +210,9 @@ def _read_store_entry_count(sqlite_path: str) -> int:
 class LazyTrainingTrajectoryStore:
     def __init__(self, sqlite_path: str, first_n_training_samples: int = 0):
         _assert_sqlite_path_exists(sqlite_path)
-        assert first_n_training_samples >= 0, "first_n_training_samples must be non-negative"
+        assert first_n_training_samples >= 0, (
+            "first_n_training_samples must be non-negative"
+        )
 
         self._store = SqliteStore[int, object](sqlite_path)
         full_count = _read_store_entry_count(sqlite_path)
@@ -219,7 +233,9 @@ class LazyTrainingTrajectoryStore:
         assert payload is not None, (
             f"trajectory index must be contiguous: expected {trajectory_id}, got missing id {trajectory_id}"
         )
-        return _parse_direct_training_trajectory_payload(trajectory_id=trajectory_id, payload=payload)
+        return _parse_direct_training_trajectory_payload(
+            trajectory_id=trajectory_id, payload=payload
+        )
 
 
 def iter_tokenized_samples(sqlite_path: str) -> Iterator[TrainingSampleTokenized]:

@@ -32,7 +32,7 @@ class TestDataSqlite(unittest.TestCase):
                 },
                 "input_ids": [7, 8],
                 "labels": [-100, 8],
-                "advantages": [0.1, 1.5],
+                "advantages": [0.0, 1.5],
                 "average_absolute_segment_advantage": 0.8,
             }
             payload_zero = {
@@ -45,7 +45,7 @@ class TestDataSqlite(unittest.TestCase):
                 },
                 "input_ids": [11, 12, 13],
                 "labels": [-100, 12, 13],
-                "advantages": [0.2, -0.25, -0.75],
+                "advantages": [0.0, -0.25, -0.75],
                 "average_absolute_segment_advantage": 0.5,
             }
 
@@ -64,10 +64,11 @@ class TestDataSqlite(unittest.TestCase):
             self.assertEqual(0, samples[0].id.node_id)
             self.assertEqual([11, 12, 13], samples[0].input_ids)
             self.assertEqual([-100, 12, 13], samples[0].labels)
-            self.assertAlmostEqual(-0.5, samples[0].advantage, places=6)
+            self.assertEqual([0.0, -0.25, -0.75], samples[0].token_advantages)
 
             self.assertEqual(1, samples[1].id.question_id)
             self.assertEqual(1, samples[1].id.node_id)
+            self.assertEqual([0.0, 1.5], samples[1].token_advantages)
 
     def test_iter_training_trajectories_requires_contiguous_indices(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".sqlite") as temp_db:
