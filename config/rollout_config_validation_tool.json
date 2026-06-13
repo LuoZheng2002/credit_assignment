@@ -2,6 +2,7 @@
     "split": "Validation",
     "branching_policy": "TreeMappoGuided",
     "max_num_trunks": 1,
+    "early_stopping_decision_trajectories": 4,
     "max_num_total_trajectories": 1,
     "fixed_temperature": 0.0,
     "use_tool": true

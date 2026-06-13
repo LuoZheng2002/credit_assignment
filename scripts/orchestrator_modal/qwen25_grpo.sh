@@ -1,6 +1,6 @@
 uv run -m src_py.modal.launch_modal_orchestration \
     --model-cli-name qwen2.5-7b \
-    --max-rollout-concurrency 1024 \
+    --max-rollout-concurrency 300 \
     --config-nickname grpo \
     --validation-rollout-config-path config/rollout_config_validation_tool.json \
     --training-rollout-config-path config/rollout_config_training_grpo.json \

@@ -1,6 +1,6 @@
 uv run -m src_py.modal.launch_modal_orchestration \
     --model-cli-name qwen2.5-7b \
-    --max-rollout-concurrency 1024 \
+    --max-rollout-concurrency 300 \
     --config-nickname notool_h100_4 \
     --validation-rollout-config-path config/rollout_config_validation_notool.json \
     --training-rollout-config-path config/rollout_config_training_notool.json \

@@ -294,16 +294,19 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
     }
     fn determine_status_after_segment_attachment(&self) -> DirectTreeStatus<M> {
         // we can choose to work on trunk, (guided branch or spontaneous branch), or conclude the tree
-        if self.trunk_leaf_segments.len() < self.action_log.rollout_config.max_num_trunks {
+        let rollout_config = &self.action_log.rollout_config;
+        let leaf_segment_judgments_len = self.leaf_segment_judgments.len();
+        if self.trunk_leaf_segments.len() < rollout_config.max_num_trunks {
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::CollectingSegmentContents {
                 cumulative_content_array: vec![],
             })
-        } else if self.all_trunk_judgments_agree() {
-            DirectTreeStatus::Complete
-        } else if self.leaf_segment_judgments.len()
-            < self.action_log.rollout_config.max_num_total_trajectories
+        } else if S::IS_TRAINING
+            && leaf_segment_judgments_len >= rollout_config.early_stopping_decision_trajectories
+            && self.all_leaf_judgments_agree()
         {
-            match self.action_log.rollout_config.branching_policy {
+            DirectTreeStatus::Complete
+        } else if leaf_segment_judgments_len < rollout_config.max_num_total_trajectories {
+            match rollout_config.branching_policy {
                 BranchingPolicy::TreeMappoGuided => DirectTreeStatus::WorkingOnGuidedBranching(
                     GuidedBranchingSubStatus::DeterminingBranchingPoint,
                 ),
@@ -319,18 +322,14 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
             DirectTreeStatus::Complete
         }
     }
-    fn all_trunk_judgments_agree(&self) -> bool {
-        if self.trunk_leaf_segments.is_empty() {
+    fn all_leaf_judgments_agree(&self) -> bool {
+        if self.leaf_segment_judgments.is_empty() {
             return false;
         }
-        let mut judgments = self.trunk_leaf_segments.iter().map(|segment_id| {
-            self.leaf_segment_judgments
-                .get(segment_id)
-                .unwrap_or_else(|| {
-                    panic!("Trunk leaf segment {segment_id:?} is missing a judgment")
-                })
-                .is_correct
-        });
+        let mut judgments = self
+            .leaf_segment_judgments
+            .values()
+            .map(|judgment| judgment.is_correct);
         let Some(first_is_correct) = judgments.next() else {
             return false;
         };

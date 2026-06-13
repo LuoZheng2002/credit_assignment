@@ -15,11 +15,17 @@ pub enum AdvantageCalculationPolicy {
     TreeRpoWinRate, // the advantage is linearly proportional to num_wins / total_plays of a segment or node's children outcomes
 }
 
+fn default_early_stopping_decision_trajectories() -> usize {
+    8
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct DirectRolloutConfig<S: DatasetSplit> {
     // pub split: DatasetSplit,
     pub branching_policy: BranchingPolicy,
     pub max_num_trunks: usize,
+    #[serde(default = "default_early_stopping_decision_trajectories")]
+    pub early_stopping_decision_trajectories: usize,
     pub max_num_total_trajectories: usize,
     pub fixed_temperature: NotNan<f32>,
     pub use_tool: bool,

@@ -1,6 +1,6 @@
 uv run -m src_py.modal.launch_modal_orchestration \
     --model-cli-name mistral-7b-instruct-v0.3 \
-    --max-rollout-concurrency 1024 \
+    --max-rollout-concurrency 300 \
     --config-nickname grpo_notool \
     --validation-rollout-config-path config/rollout_config_validation_notool.json \
     --training-rollout-config-path config/rollout_config_training_grpo_notool.json \

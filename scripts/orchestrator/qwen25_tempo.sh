@@ -1,6 +1,6 @@
 cargo run --bin bin_orchestrator -- \
     --model-cli-name qwen2.5-7b \
-    --max-rollout-concurrency 1024 \
+    --max-rollout-concurrency 300 \
     --config-nickname tempo \
     --validation-rollout-config-path config/rollout_config_validation_tool.json \
     --training-rollout-config-path config/rollout_config_training_tempo.json \

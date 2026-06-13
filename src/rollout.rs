@@ -140,20 +140,26 @@ fn trajectory_length_being_judged<M: LlmModelMarker, S: DatasetSplit>(
     }
 }
 
-fn classify_all_same_trunk_tree<M: LlmModelMarker, S: DatasetSplit>(
+fn classify_all_same_trajectory_tree<M: LlmModelMarker, S: DatasetSplit>(
     tree: &DirectTree<M, S>,
 ) -> Option<bool> {
-    if tree.trunk_leaf_segments.len() != tree.action_log.rollout_config.max_num_trunks {
+    if !S::IS_TRAINING {
         return None;
     }
-    let mut trunk_correctness = tree.trunk_leaf_segments.iter().map(|segment_id| {
-        tree.leaf_segment_judgments
-            .get(segment_id)
-            .unwrap_or_else(|| panic!("Trunk leaf segment {segment_id:?} is missing judgment"))
-            .is_correct
-    });
-    let first = trunk_correctness.next()?;
-    if trunk_correctness.all(|is_correct| is_correct == first) {
+    if tree.leaf_segment_judgments.len()
+        != tree
+            .action_log
+            .rollout_config
+            .early_stopping_decision_trajectories
+    {
+        return None;
+    }
+    let mut trajectory_correctness = tree
+        .leaf_segment_judgments
+        .values()
+        .map(|judgment| judgment.is_correct);
+    let first = trajectory_correctness.next()?;
+    if trajectory_correctness.all(|is_correct| is_correct == first) {
         Some(first)
     } else {
         None
@@ -390,7 +396,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
         }
     }
     let final_tree = DirectTree::<M, S>::from_action_log(&action_log);
-    if let Some(all_correct) = classify_all_same_trunk_tree(&final_tree) {
+    if let Some(all_correct) = classify_all_same_trajectory_tree(&final_tree) {
         if all_correct {
             num_all_correct_trees.fetch_add(1, Ordering::Relaxed);
         } else {
