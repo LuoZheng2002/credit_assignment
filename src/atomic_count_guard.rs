@@ -1,14 +1,14 @@
-use std::sync::{Arc, atomic::AtomicUsize};
+use std::sync::atomic::AtomicUsize;
 
 use research_utility::progress_tui_logger::log_key_value_pair;
 
-pub struct AtomicCountGuard {
-    count: Arc<AtomicUsize>,
+pub struct AtomicCountGuardRef<'a> {
+    count: &'a AtomicUsize,
     key: String,
 }
 
-impl AtomicCountGuard {
-    pub fn new(count: Arc<AtomicUsize>, key: impl Into<String>) -> Self {
+impl<'a> AtomicCountGuardRef<'a> {
+    pub fn new(count: &'a AtomicUsize, key: impl Into<String>) -> Self {
         let key = key.into();
         let new_count = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         log_key_value_pair(&key, new_count.to_string());
@@ -16,7 +16,7 @@ impl AtomicCountGuard {
     }
 
     pub fn try_new_with_max(
-        count: Arc<AtomicUsize>,
+        count: &'a AtomicUsize,
         key: impl Into<String>,
         max_count: usize,
     ) -> Option<Self> {
@@ -38,7 +38,8 @@ impl AtomicCountGuard {
         Some(Self { count, key })
     }
 }
-impl Drop for AtomicCountGuard {
+
+impl Drop for AtomicCountGuardRef<'_> {
     fn drop(&mut self) {
         let new_count = self.count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) - 1;
         log_key_value_pair(&self.key, new_count.to_string());

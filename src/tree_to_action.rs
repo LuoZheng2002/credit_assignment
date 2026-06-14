@@ -1,15 +1,12 @@
 use std::collections::BTreeMap;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-};
+use std::sync::atomic::Ordering;
 
 use reqwest::Client;
 use research_utility::progress_tui_logger::log_warning;
 
-use crate::atomic_count_guard::AtomicCountGuard;
+use crate::atomic_count_guard::AtomicCountGuardRef;
 use crate::direct_tool::hybrid_dataset::{DatasetSplit, QuestionFlatId};
-use crate::direct_tool::rollout::StopRequestedError;
+use crate::direct_tool::rollout::{ROLLOUT_STOP_SIGNAL, RolloutStats, StopRequestedError};
 use crate::direct_tool::trajectory::{DirectTrajectory, TrajectoryContent};
 use crate::direct_tool::tree_action::DirectTreeAction::SubmitAnswer;
 use crate::direct_tool::tree_status::{
@@ -17,7 +14,7 @@ use crate::direct_tool::tree_status::{
 };
 use crate::judge_correctness::{JudgeAnswerModel, judge_final_answer};
 use crate::llm_model::MyTokenizer;
-use crate::tool_call_python::{PythonToolResponse, PythonToolServerPool, execute_python_tool_call};
+use crate::tool_call_python::{PythonToolResponse, execute_python_tool_call, python_tool_pool};
 use crate::{
     direct_tool::{
         tree::{ContentIndex, DirectTree, SegmentContent, SegmentId},
@@ -168,26 +165,13 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         &self,
         llm_callable: &M::Callable,
         client: Client,
-        python_tool_pool: Arc<PythonToolServerPool>,
-        sglang_waiting_workers: Arc<AtomicUsize>,
-        judge_waiting_workers: Arc<AtomicUsize>,
-        tool_waiting_workers: Arc<AtomicUsize>,
-        stop_signal: Arc<AtomicBool>,
     ) -> Result<DirectTreeAction<M>, StopRequestedError> {
         let result = match &self.status {
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::CollectingSegmentContents {
                 cumulative_content_array,
             }) => {
-                self.produce_collecting_segment_action(
-                    cumulative_content_array,
-                    None,
-                    llm_callable,
-                    python_tool_pool,
-                    sglang_waiting_workers,
-                    tool_waiting_workers,
-                    stop_signal,
-                )
-                .await?
+                self.produce_collecting_segment_action(cumulative_content_array, None, llm_callable)
+                    .await?
             }
             DirectTreeStatus::WorkingOnGuidedBranching(
                 GuidedBranchingSubStatus::CollectingSegmentContents {
@@ -204,10 +188,6 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     cumulative_content_array,
                     generation_start_token,
                     llm_callable,
-                    python_tool_pool,
-                    sglang_waiting_workers,
-                    tool_waiting_workers,
-                    stop_signal,
                 )
                 .await?
             }
@@ -216,16 +196,8 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     cumulative_content_array,
                 },
             ) => {
-                self.produce_collecting_segment_action(
-                    cumulative_content_array,
-                    None,
-                    llm_callable,
-                    python_tool_pool,
-                    sglang_waiting_workers,
-                    tool_waiting_workers,
-                    stop_signal,
-                )
-                .await?
+                self.produce_collecting_segment_action(cumulative_content_array, None, llm_callable)
+                    .await?
             }
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::JudgingSegment {
                 final_answer,
@@ -243,7 +215,6 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     &self.action_log.question.question,
                     client,
                     JudgeAnswerModel::Gemini25FlashLite,
-                    judge_waiting_workers,
                 )
                 .await;
                 DirectTreeAction::JudgeAnswer(correctness_judgment)
@@ -322,10 +293,6 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         cumulative_content_array: &[SegmentContent<M>],
         new_branch_start_token: Option<i32>,
         llm_callable: &M::Callable,
-        python_tool_pool: Arc<PythonToolServerPool>,
-        sglang_waiting_workers: Arc<AtomicUsize>,
-        tool_waiting_workers: Arc<AtomicUsize>,
-        stop_signal: Arc<AtomicBool>,
     ) -> Result<DirectTreeAction<M>, StopRequestedError> {
         let target_segment_id = self.root_segment_id.expect(
             "Root segment id must exist when creating trunk trajectory or spontaneous branch",
@@ -349,10 +316,6 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                         .fixed_temperature
                         .into_inner(),
                     llm_callable,
-                    python_tool_pool,
-                    sglang_waiting_workers,
-                    tool_waiting_workers,
-                    stop_signal,
                 )
                 .await?;
                 Ok(DirectTreeAction::AppendSegmentContent(next_content))
@@ -733,9 +696,8 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
     use_tool: bool,
     temperature: f32,
     llm_callable: &M::Callable,
-    sglang_waiting_workers: Arc<AtomicUsize>,
-    stop_signal: Arc<AtomicBool>,
 ) -> Result<SegmentContent<M>, StopRequestedError> {
+    let rollout_stats = RolloutStats::global();
     let mut prompt_tokens = trajectory.to_prompt_tokens();
     if let Some(start_token) = new_branch_start_token {
         prompt_tokens.push(start_token);
@@ -743,12 +705,12 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
     let mut response = None;
     let mut last_error: Option<String> = None;
     for trial in 1..=3 {
-        if stop_signal.load(Ordering::Relaxed) {
+        if ROLLOUT_STOP_SIGNAL.load(Ordering::Relaxed) {
             return Err(StopRequestedError);
         }
         let generation_result = {
-            let _num_sglang_waiting_workers_guard = AtomicCountGuard::new(
-                sglang_waiting_workers.clone(),
+            let _num_sglang_waiting_workers_guard = AtomicCountGuardRef::new(
+                &rollout_stats.sglang_waiting_workers,
                 "sglang_waiting_workers".to_string(),
             );
             llm_callable
@@ -813,12 +775,9 @@ async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
     // current_content: &[SegmentContent<M>],
     // client: Client,
     llm_callable: &M::Callable,
-    python_tool_pool: Arc<PythonToolServerPool>,
-    sglang_waiting_workers: Arc<AtomicUsize>,
-    tool_waiting_workers: Arc<AtomicUsize>,
-    stop_signal: Arc<AtomicBool>,
     // rng: &mut StdRng,
 ) -> Result<SegmentContent<M>, StopRequestedError> {
+    let rollout_stats = RolloutStats::global();
     let new_branch_start_token = if ENABLE_FORCED_NEW_BRANCH_START_TOKEN {
         new_branch_start_token
     } else {
@@ -839,8 +798,6 @@ async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
                 use_tool,
                 temperature,
                 llm_callable,
-                sglang_waiting_workers,
-                stop_signal,
             )
             .await?;
             Ok(new_content)
@@ -848,9 +805,12 @@ async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
         TrajectoryContent::ReasoningOrToolCallComplete(tokens) => {
             if use_tool && let Some(tool_call) = trajectory.try_get_last_content_tool_call() {
                 // log_key_value_pair("info".to_string(), "Executing a tool call".to_string());
-                let _num_tool_waiting_workers_guard =
-                    AtomicCountGuard::new(tool_waiting_workers, "tool_waiting_workers".to_string());
-                let tool_response = execute_python_tool_call(&python_tool_pool, &tool_call).await;
+                let _num_tool_waiting_workers_guard = AtomicCountGuardRef::new(
+                    &rollout_stats.tool_waiting_workers,
+                    "tool_waiting_workers".to_string(),
+                );
+                let tool_response =
+                    execute_python_tool_call(python_tool_pool().as_ref(), &tool_call).await;
                 match &tool_response {
                     PythonToolResponse::PythonSuccess(_) => {}
                     PythonToolResponse::PythonError(error) => {
@@ -877,8 +837,6 @@ async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
                     use_tool,
                     temperature,
                     llm_callable,
-                    sglang_waiting_workers,
-                    stop_signal,
                 )
                 .await
             }

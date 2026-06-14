@@ -1,12 +1,13 @@
-use std::sync::{Arc, atomic::AtomicUsize};
-
 use reqwest::Client;
 use research_utility::progress_tui_logger::log_warning;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::{Duration, sleep};
 
-use crate::{atomic_count_guard::AtomicCountGuard, direct_tool::trajectory::FinalAnswer};
+use crate::{
+    atomic_count_guard::AtomicCountGuardRef,
+    direct_tool::{rollout::RolloutStats, trajectory::FinalAnswer},
+};
 
 const OPENROUTER_CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const JUDGE_DETERMINISTIC_SEED: i64 = 42;
@@ -205,12 +206,12 @@ pub async fn judge_final_answer(
     question: &str,
     client: Client,
     _judge_model: JudgeAnswerModel,
-    num_judge_waiting_workers: Arc<AtomicUsize>,
 ) -> CorrectnessJudgment {
+    let rollout_stats = RolloutStats::global();
     let is_correct = match final_answer {
         FinalAnswer::ModelProvided(model_answer) => {
-            let _num_judge_waiting_workers_guard = AtomicCountGuard::new(
-                num_judge_waiting_workers.clone(),
+            let _num_judge_waiting_workers_guard = AtomicCountGuardRef::new(
+                &rollout_stats.judge_waiting_workers,
                 "judge_waiting_workers".to_string(),
             );
             judge_answer_task(

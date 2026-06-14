@@ -1,4 +1,9 @@
-use std::{collections::VecDeque, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    process::Stdio,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use research_utility::progress_tui_logger::log_warning;
 use serde::{Deserialize, Serialize};
@@ -109,6 +114,21 @@ pub struct PythonToolServerPool {
     slots: Vec<Arc<Mutex<PythonToolServerSlot>>>,
     available_sender: mpsc::UnboundedSender<usize>,
     available_receiver: Mutex<mpsc::UnboundedReceiver<usize>>,
+}
+
+static PYTHON_TOOL_POOL: OnceLock<Arc<PythonToolServerPool>> = OnceLock::new();
+
+pub async fn init_python_tool_pool(max_python_processes: usize) -> Result<(), String> {
+    let pool = Arc::new(PythonToolServerPool::new(max_python_processes).await?);
+    PYTHON_TOOL_POOL
+        .set(pool)
+        .map_err(|_| "python tool pool was already initialized".to_string())
+}
+
+pub fn python_tool_pool() -> &'static Arc<PythonToolServerPool> {
+    PYTHON_TOOL_POOL
+        .get()
+        .expect("python tool pool must be initialized before use")
 }
 
 impl PythonToolServerPool {

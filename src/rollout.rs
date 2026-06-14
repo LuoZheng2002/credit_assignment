@@ -5,6 +5,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+use arc_swap::ArcSwapOption;
+
 use kll_rs::KllFloatSketch;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use reqwest::Client;
@@ -17,7 +19,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep_until};
 
-use crate::atomic_count_guard::AtomicCountGuard;
+use crate::atomic_count_guard::AtomicCountGuardRef;
 use crate::direct_tool::tree_action_log::DirectTreeActionLog;
 use crate::{
     direct_tool::{
@@ -34,10 +36,10 @@ use crate::{
         },
     },
     llm_model::{InferenceEndpoint, LlmCallable, LlmModelMarker},
-    tool_call_python::PythonToolServerPool,
+    tool_call_python::init_python_tool_pool,
 };
 
-struct DistributionStats {
+pub(crate) struct DistributionStats {
     sketch: KllFloatSketch,
     num_samples: usize,
     min: usize,
@@ -102,24 +104,6 @@ fn action_is_llm_call<M: LlmModelMarker>(action: &DirectTreeAction<M>) -> bool {
     )
 }
 
-fn log_model_answer_counts(
-    completed: &Arc<AtomicUsize>,
-    context_window_overflow: &Arc<AtomicUsize>,
-    only_eos: &Arc<AtomicUsize>,
-    too_many_turns: &Arc<AtomicUsize>,
-) {
-    log_key_value_pair(
-        "model_answers (completed, context, eos, turns)",
-        format!(
-            "({}, {}, {}, {})",
-            completed.load(Ordering::Relaxed),
-            context_window_overflow.load(Ordering::Relaxed),
-            only_eos.load(Ordering::Relaxed),
-            too_many_turns.load(Ordering::Relaxed)
-        ),
-    );
-}
-
 fn trajectory_length_being_judged<M: LlmModelMarker, S: DatasetSplit>(
     tree: &DirectTree<M, S>,
 ) -> Option<usize> {
@@ -159,15 +143,8 @@ fn trajectory_length_being_judged<M: LlmModelMarker, S: DatasetSplit>(
     }
 }
 
-async fn run_progress_timer(
-    start_time: Instant,
-    deadline: Instant,
-    total_secs: f32,
-    stop_signal: Arc<AtomicBool>,
-    total_llm_calls: Arc<AtomicUsize>,
-    num_finished_trees: Arc<AtomicUsize>,
-    num_finished_branches: Arc<AtomicUsize>,
-) {
+async fn run_progress_timer(start_time: Instant, deadline: Instant, total_secs: f32) {
+    let rollout_stats = RolloutStats::global();
     let log_time_progress = |now: Instant| {
         let elapsed_secs = (now - start_time).as_secs_f32().min(total_secs);
         let progress = (elapsed_secs / total_secs).min(1.0);
@@ -184,7 +161,7 @@ async fn run_progress_timer(
     let mut next_segment_to_log = 1usize;
     let mut llm_call_samples: VecDeque<(Instant, usize)> = VecDeque::new();
     loop {
-        if stop_signal.load(Ordering::Relaxed) {
+        if ROLLOUT_STOP_SIGNAL.load(Ordering::Relaxed) {
             break;
         }
         let now = Instant::now();
@@ -203,8 +180,8 @@ async fn run_progress_timer(
                 break;
             }
             let elapsed_secs = (now - start_time).as_secs_f32().min(total_secs);
-            let finished_trees = num_finished_trees.load(Ordering::Relaxed);
-            let finished_branches = num_finished_branches.load(Ordering::Relaxed);
+            let finished_trees = rollout_stats.num_finished_trees.load(Ordering::Relaxed);
+            let finished_branches = rollout_stats.num_finished_branches.load(Ordering::Relaxed);
             log_info(format!(
                 "Rollout time segment {}/{} reached: elapsed={elapsed_secs:.1}s/{total_secs:.1}s, finished_trees={}, finished_branches={}",
                 next_segment_to_log, segment_count, finished_trees, finished_branches,
@@ -213,7 +190,7 @@ async fn run_progress_timer(
         }
 
         if now >= next_throughput_log_time {
-            let current_llm_calls = total_llm_calls.load(Ordering::Relaxed);
+            let current_llm_calls = rollout_stats.total_llm_calls.load(Ordering::Relaxed);
             llm_call_samples.push_back((now, current_llm_calls));
             while let Some((sample_time, _)) = llm_call_samples.front() {
                 if now.duration_since(*sample_time) > throughput_window {
@@ -244,7 +221,7 @@ async fn run_progress_timer(
         }
 
         if now >= deadline {
-            stop_signal.store(true, Ordering::Relaxed);
+            ROLLOUT_STOP_SIGNAL.store(true, Ordering::Relaxed);
             break;
         }
 
@@ -261,31 +238,167 @@ async fn run_progress_timer(
     log_time_progress(Instant::now());
 }
 
-#[derive(Clone)]
-pub struct RolloutSharedStates {
-    python_tool_pool: Arc<PythonToolServerPool>,
-    sglang_waiting_workers: Arc<AtomicUsize>,
-    judge_waiting_workers: Arc<AtomicUsize>,
-    tool_waiting_workers: Arc<AtomicUsize>,
-    sqlite_waiting_workers: Arc<AtomicUsize>,
-    stop_signal: Arc<AtomicBool>,
-    num_finished_branches: Arc<AtomicUsize>,
-    num_finished_trees: Arc<AtomicUsize>,
-    num_correct_branches: Arc<AtomicUsize>,
-    num_all_correct_trees: Arc<AtomicUsize>,
-    num_all_incorrect_trees: Arc<AtomicUsize>,
-    model_answers_completed: Arc<AtomicUsize>,
-    model_answers_context_window_overflow: Arc<AtomicUsize>,
-    model_answers_only_eos: Arc<AtomicUsize>,
-    model_answers_too_many_turns: Arc<AtomicUsize>,
-    llm_call_stats: Arc<parking_lot::RwLock<DistributionStats>>,
-    trajectory_length_stats: Arc<parking_lot::RwLock<DistributionStats>>,
-    correct_trajectory_length_stats: Arc<parking_lot::RwLock<DistributionStats>>,
-    num_active_rollouts: Arc<AtomicUsize>,
-    total_llm_calls: Arc<AtomicUsize>,
-    tool_calls_processed: Arc<AtomicUsize>,
-    trajectories_per_tree: usize,
-    total_trees_to_finish: usize,
+static ROLLOUT_STATS: ArcSwapOption<RolloutStats> = ArcSwapOption::const_empty();
+pub(crate) static ROLLOUT_STOP_SIGNAL: AtomicBool = AtomicBool::new(false);
+
+pub struct RolloutStats {
+    pub(crate) sglang_waiting_workers: AtomicUsize,
+    pub(crate) judge_waiting_workers: AtomicUsize,
+    pub(crate) tool_waiting_workers: AtomicUsize,
+    pub(crate) sqlite_waiting_workers: AtomicUsize,
+    pub(crate) num_finished_branches: AtomicUsize,
+    pub(crate) num_finished_trees: AtomicUsize,
+    pub(crate) num_correct_branches: AtomicUsize,
+    pub(crate) num_all_correct_trees: AtomicUsize,
+    pub(crate) num_all_incorrect_trees: AtomicUsize,
+    pub(crate) model_answers_completed: AtomicUsize,
+    pub(crate) model_answers_context_window_overflow: AtomicUsize,
+    pub(crate) model_answers_only_eos: AtomicUsize,
+    pub(crate) model_answers_too_many_turns: AtomicUsize,
+    pub(crate) llm_call_stats: parking_lot::RwLock<DistributionStats>,
+    pub(crate) trajectory_length_stats: parking_lot::RwLock<DistributionStats>,
+    pub(crate) correct_trajectory_length_stats: parking_lot::RwLock<DistributionStats>,
+    pub(crate) num_active_rollouts: AtomicUsize,
+    pub(crate) total_llm_calls: AtomicUsize,
+    pub(crate) tool_calls_processed: AtomicUsize,
+    pub(crate) trajectories_per_tree: usize,
+    pub(crate) total_trees_to_finish: usize,
+}
+
+struct RolloutAllGuard;
+
+impl Drop for RolloutAllGuard {
+    fn drop(&mut self) {
+        ROLLOUT_STOP_SIGNAL.store(true, Ordering::Relaxed);
+        ROLLOUT_STATS.store(None);
+    }
+}
+
+impl RolloutAllGuard {
+    fn new(trajectories_per_tree: usize, total_trees_to_finish: usize) -> Self {
+        ROLLOUT_STOP_SIGNAL.store(false, Ordering::Relaxed);
+        let stats = Arc::new(RolloutStats {
+            sglang_waiting_workers: AtomicUsize::new(0),
+            judge_waiting_workers: AtomicUsize::new(0),
+            tool_waiting_workers: AtomicUsize::new(0),
+            sqlite_waiting_workers: AtomicUsize::new(0),
+            num_finished_branches: AtomicUsize::new(0),
+            num_finished_trees: AtomicUsize::new(0),
+            num_correct_branches: AtomicUsize::new(0),
+            num_all_correct_trees: AtomicUsize::new(0),
+            num_all_incorrect_trees: AtomicUsize::new(0),
+            model_answers_completed: AtomicUsize::new(0),
+            model_answers_context_window_overflow: AtomicUsize::new(0),
+            model_answers_only_eos: AtomicUsize::new(0),
+            model_answers_too_many_turns: AtomicUsize::new(0),
+            llm_call_stats: parking_lot::RwLock::new(DistributionStats::new()),
+            trajectory_length_stats: parking_lot::RwLock::new(DistributionStats::new()),
+            correct_trajectory_length_stats: parking_lot::RwLock::new(DistributionStats::new()),
+            num_active_rollouts: AtomicUsize::new(0),
+            total_llm_calls: AtomicUsize::new(0),
+            tool_calls_processed: AtomicUsize::new(0),
+            trajectories_per_tree,
+            total_trees_to_finish,
+        });
+        ROLLOUT_STATS.store(Some(stats));
+        RolloutAllGuard
+    }
+}
+
+impl RolloutStats {
+    pub fn global() -> Arc<Self> {
+        ROLLOUT_STATS
+            .load_full()
+            .expect("rollout stats must be initialized before use")
+    }
+
+    fn log_model_answer_counts(&self) {
+        log_key_value_pair(
+            "model_answers (completed, context, eos, turns)",
+            format!(
+                "({}, {}, {}, {})",
+                self.model_answers_completed.load(Ordering::Relaxed),
+                self.model_answers_context_window_overflow
+                    .load(Ordering::Relaxed),
+                self.model_answers_only_eos.load(Ordering::Relaxed),
+                self.model_answers_too_many_turns.load(Ordering::Relaxed)
+            ),
+        );
+    }
+
+    fn log_trajectory_length(&self, trajectory_length: usize, is_correct: bool) {
+        let summary = self
+            .trajectory_length_stats
+            .write()
+            .update_and_get_summary(trajectory_length);
+        log_key_value_pair(
+            "trajectory_length (min, median, q3, max)",
+            condensed_distribution(&summary),
+        );
+        if is_correct {
+            let correct_summary = self
+                .correct_trajectory_length_stats
+                .write()
+                .update_and_get_summary(trajectory_length);
+            log_key_value_pair(
+                "correct_trajectory_length (min, median, q3, max)",
+                condensed_distribution(&correct_summary),
+            );
+        }
+    }
+
+    fn log_llm_calls_per_tree(&self, llm_calls_so_far: usize) {
+        let summary = self
+            .llm_call_stats
+            .write()
+            .update_and_get_summary(llm_calls_so_far);
+        log_key_value_pair(
+            "llm_calls_per_tree (min, median, q3, max)",
+            condensed_distribution(&summary),
+        );
+    }
+
+    fn log_tree_completion(&self, tree_correctness: TreeCorrectness) {
+        match tree_correctness {
+            TreeCorrectness::AllCorrect => {
+                self.num_all_correct_trees.fetch_add(1, Ordering::Relaxed);
+            }
+            TreeCorrectness::AllIncorrect => {
+                self.num_all_incorrect_trees.fetch_add(1, Ordering::Relaxed);
+            }
+            TreeCorrectness::Mixed => {}
+        }
+        let finished = self.num_finished_trees.fetch_add(1, Ordering::Relaxed) + 1;
+        let num_all_correct = self.num_all_correct_trees.load(Ordering::Relaxed);
+        let num_all_incorrect = self.num_all_incorrect_trees.load(Ordering::Relaxed);
+        let mixed = finished - num_all_correct - num_all_incorrect;
+        log_key_value_pair(
+            "trees_correctness (✓, ❌, mixed)",
+            format!("({num_all_correct}, {num_all_incorrect}, {mixed})"),
+        );
+        log_worker_progress(
+            "trees",
+            finished as f32 / self.total_trees_to_finish as f32,
+            format!(
+                "Num Trees Completed: {}/{}",
+                finished, self.total_trees_to_finish
+            ),
+        );
+    }
+
+    fn log_final_tree_correctness_summary(&self) {
+        let num_all_correct = self.num_all_correct_trees.load(Ordering::Relaxed);
+        let num_all_incorrect = self.num_all_incorrect_trees.load(Ordering::Relaxed);
+        let finished_trees = self.num_finished_trees.load(Ordering::Relaxed);
+        let mixed = finished_trees - num_all_correct - num_all_incorrect;
+        log_info(format!(
+            "rollout_all finished; trees_correctness (✓, ❌, mixed) = ({num_all_correct}, {num_all_incorrect}, {mixed})"
+        ));
+        log_key_value_pair(
+            "trees_correctness (✓, ❌, mixed)",
+            format!("({num_all_correct}, {num_all_incorrect}, {mixed})"),
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -296,35 +409,11 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
     action_store: ActionStoreAdapter<M, S>,
     llm_callable: M::Callable,
     client: Client,
-    shared_states: RolloutSharedStates,
-    _active_rollouts_guard: AtomicCountGuard,
     _permit: OwnedSemaphorePermit,
 ) -> Result<TreeCorrectness, StopRequestedError> {
-    let RolloutSharedStates {
-        python_tool_pool,
-        sglang_waiting_workers,
-        judge_waiting_workers,
-        tool_waiting_workers,
-        sqlite_waiting_workers,
-        stop_signal,
-        num_finished_branches,
-        num_correct_branches,
-        llm_call_stats,
-        trajectory_length_stats,
-        correct_trajectory_length_stats,
-        model_answers_completed,
-        model_answers_context_window_overflow,
-        model_answers_only_eos,
-        model_answers_too_many_turns,
-        num_active_rollouts,
-        total_llm_calls,
-        tool_calls_processed,
-        trajectories_per_tree,
-        total_trees_to_finish,
-        ..
-    } = shared_states;
-
-    let _ = num_active_rollouts;
+    let rollout_stats = RolloutStats::global();
+    let _active_rollouts_guard =
+        AtomicCountGuardRef::new(&rollout_stats.num_active_rollouts, "num_active_rollouts");
     let mut llm_calls_so_far = action_log
         .actions
         .iter()
@@ -336,28 +425,26 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
             break;
         }
         let action = tree
-            .produce_action_from_direct_tree(
-                &llm_callable,
-                client.clone(),
-                python_tool_pool.clone(),
-                sglang_waiting_workers.clone(),
-                judge_waiting_workers.clone(),
-                tool_waiting_workers.clone(),
-                stop_signal.clone(),
-            )
+            .produce_action_from_direct_tree(&llm_callable, client.clone())
             .await?;
-        // to do: put it to the to_action function
+
         match &action {
             DirectTreeAction::JudgeAnswer(correctness_judgment) => {
                 let num_correct = if correctness_judgment.is_correct {
-                    num_correct_branches.fetch_add(1, Ordering::SeqCst) + 1
+                    rollout_stats
+                        .num_correct_branches
+                        .fetch_add(1, Ordering::SeqCst)
+                        + 1
                 } else {
-                    num_correct_branches.load(Ordering::SeqCst)
+                    rollout_stats.num_correct_branches.load(Ordering::SeqCst)
                 };
-                let finished =
-                    num_finished_branches.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                let total_branches_to_finish =
-                    total_trees_to_finish.saturating_mul(trajectories_per_tree);
+                let finished = rollout_stats
+                    .num_finished_branches
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    + 1;
+                let total_branches_to_finish = rollout_stats
+                    .total_trees_to_finish
+                    .saturating_mul(rollout_stats.trajectories_per_tree);
                 log_worker_progress(
                     "branches",
                     finished as f32 / total_branches_to_finish as f32,
@@ -370,61 +457,37 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
                 log_key_value_pair("Rollout running accuracy", running_accuracy.to_string());
                 match &correctness_judgment.model_answer {
                     FinalAnswer::ModelProvided(_) => {
-                        let _ = model_answers_completed.fetch_add(1, Ordering::Relaxed) + 1;
-                        log_model_answer_counts(
-                            &model_answers_completed,
-                            &model_answers_context_window_overflow,
-                            &model_answers_only_eos,
-                            &model_answers_too_many_turns,
-                        );
-                    }
-                    FinalAnswer::Failure(FailureMode::ContextWindowOverflow) => {
-                        let _ = model_answers_context_window_overflow
+                        let _ = rollout_stats
+                            .model_answers_completed
                             .fetch_add(1, Ordering::Relaxed)
                             + 1;
-                        log_model_answer_counts(
-                            &model_answers_completed,
-                            &model_answers_context_window_overflow,
-                            &model_answers_only_eos,
-                            &model_answers_too_many_turns,
-                        );
+                        rollout_stats.log_model_answer_counts();
+                    }
+                    FinalAnswer::Failure(FailureMode::ContextWindowOverflow) => {
+                        let _ = rollout_stats
+                            .model_answers_context_window_overflow
+                            .fetch_add(1, Ordering::Relaxed)
+                            + 1;
+                        rollout_stats.log_model_answer_counts();
                     }
                     FinalAnswer::Failure(FailureMode::OnlyEos) => {
-                        let _ = model_answers_only_eos.fetch_add(1, Ordering::Relaxed) + 1;
-                        log_model_answer_counts(
-                            &model_answers_completed,
-                            &model_answers_context_window_overflow,
-                            &model_answers_only_eos,
-                            &model_answers_too_many_turns,
-                        );
+                        let _ = rollout_stats
+                            .model_answers_only_eos
+                            .fetch_add(1, Ordering::Relaxed)
+                            + 1;
+                        rollout_stats.log_model_answer_counts();
                     }
                     FinalAnswer::Failure(FailureMode::TooManyTurns) => {
-                        let _ = model_answers_too_many_turns.fetch_add(1, Ordering::Relaxed) + 1;
-                        log_model_answer_counts(
-                            &model_answers_completed,
-                            &model_answers_context_window_overflow,
-                            &model_answers_only_eos,
-                            &model_answers_too_many_turns,
-                        );
+                        let _ = rollout_stats
+                            .model_answers_too_many_turns
+                            .fetch_add(1, Ordering::Relaxed)
+                            + 1;
+                        rollout_stats.log_model_answer_counts();
                     }
                 }
                 if let Some(trajectory_length) = trajectory_length_being_judged(&tree) {
-                    let summary = trajectory_length_stats
-                        .write()
-                        .update_and_get_summary(trajectory_length);
-                    log_key_value_pair(
-                        "trajectory_length (min, median, q3, max)",
-                        condensed_distribution(&summary),
-                    );
-                    if correctness_judgment.is_correct {
-                        let correct_summary = correct_trajectory_length_stats
-                            .write()
-                            .update_and_get_summary(trajectory_length);
-                        log_key_value_pair(
-                            "correct_trajectory_length (min, median, q3, max)",
-                            condensed_distribution(&correct_summary),
-                        );
-                    }
+                    rollout_stats
+                        .log_trajectory_length(trajectory_length, correctness_judgment.is_correct);
                 }
             }
             _ => {}
@@ -433,19 +496,26 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
             &action,
             DirectTreeAction::AppendSegmentContent(SegmentContent::ToolResponse(_))
         ) {
-            let processed = tool_calls_processed.fetch_add(1, Ordering::Relaxed) + 1;
+            let processed = rollout_stats
+                .tool_calls_processed
+                .fetch_add(1, Ordering::Relaxed)
+                + 1;
             log_key_value_pair("tool_calls_processed", processed.to_string());
         }
         if action_is_llm_call(&action) {
             llm_calls_so_far += 1;
-            total_llm_calls.fetch_add(1, Ordering::Relaxed);
+            rollout_stats
+                .total_llm_calls
+                .fetch_add(1, Ordering::Relaxed);
         }
         let newest_action_index = action_log.actions.len();
         action_log.actions.push(action);
         {
             // add sqlite waiting worker guard
-            let _sqlite_waiting_guard =
-                AtomicCountGuard::new(sqlite_waiting_workers.clone(), "sqlite_waiting_workers");
+            let _sqlite_waiting_guard = AtomicCountGuardRef::new(
+                &rollout_stats.sqlite_waiting_workers,
+                "sqlite_waiting_workers",
+            );
             action_store
                 .append_action_at(
                     action_log.question.flat_id,
@@ -458,13 +528,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
     }
     let final_tree = DirectTree::<M, S>::from_action_log(&action_log);
     let tree_correctness = final_tree.get_correctness();
-    let summary = llm_call_stats
-        .write()
-        .update_and_get_summary(llm_calls_so_far);
-    log_key_value_pair(
-        "llm_calls_per_tree (min, median, q3, max)",
-        condensed_distribution(&summary),
-    );
+    rollout_stats.log_llm_calls_per_tree(llm_calls_so_far);
     Ok(tree_correctness)
 }
 
@@ -524,11 +588,11 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     let deadline = start_time + rollout_time_limit;
     let total_secs = rollout_time_limit_secs as f32;
 
-    let python_tool_pool = Arc::new(
-        PythonToolServerPool::new(max_python_processes)
+    if rollout_config.use_tool {
+        init_python_tool_pool(max_python_processes)
             .await
-            .expect("failed to initialize python tool server pool"),
-    );
+            .expect("failed to initialize python tool server pool");
+    }
     let llm_callable = M::Callable::from_inference_endpoint(client.clone(), &inference_endpoint);
     let dataset = open_hybrid_dataset::<S>();
 
@@ -566,84 +630,26 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
             question_keys.len().to_string(),
         );
     }
-    let stop_signal = Arc::new(AtomicBool::new(false));
-    let sglang_waiting_workers = Arc::new(AtomicUsize::new(0));
-    let judge_waiting_workers = Arc::new(AtomicUsize::new(0));
-    let tool_waiting_workers = Arc::new(AtomicUsize::new(0));
-    let sqlite_waiting_workers = Arc::new(AtomicUsize::new(0));
-    let num_finished_branches = Arc::new(AtomicUsize::new(0));
-    let num_finished_trees = Arc::new(AtomicUsize::new(0));
-    let num_correct_branches = Arc::new(AtomicUsize::new(0));
-    let num_all_correct_trees = Arc::new(AtomicUsize::new(0));
-    let num_all_incorrect_trees = Arc::new(AtomicUsize::new(0));
-    let num_active_rollouts = Arc::new(AtomicUsize::new(0));
-    let llm_call_stats = Arc::new(parking_lot::RwLock::new(DistributionStats::new()));
-    let trajectory_length_stats = Arc::new(parking_lot::RwLock::new(DistributionStats::new()));
-    let correct_trajectory_length_stats =
-        Arc::new(parking_lot::RwLock::new(DistributionStats::new()));
-    let total_llm_calls = Arc::new(AtomicUsize::new(0));
-    let tool_calls_processed = Arc::new(AtomicUsize::new(0));
-    let model_answers_completed = Arc::new(AtomicUsize::new(0));
-    let model_answers_context_window_overflow = Arc::new(AtomicUsize::new(0));
-    let model_answers_only_eos = Arc::new(AtomicUsize::new(0));
-    let model_answers_too_many_turns = Arc::new(AtomicUsize::new(0));
-    let total_trees_to_finish = question_keys.len();
-
-    let shared_states = RolloutSharedStates {
-        python_tool_pool,
-        sglang_waiting_workers,
-        judge_waiting_workers,
-        tool_waiting_workers,
-        sqlite_waiting_workers,
-        stop_signal,
-        num_finished_branches,
-        num_finished_trees,
-        num_correct_branches,
-        num_all_correct_trees,
-        num_all_incorrect_trees,
-        model_answers_completed,
-        model_answers_context_window_overflow,
-        model_answers_only_eos,
-        model_answers_too_many_turns,
-        llm_call_stats,
-        trajectory_length_stats,
-        correct_trajectory_length_stats,
-        num_active_rollouts,
-        total_llm_calls,
-        tool_calls_processed,
-        trajectories_per_tree: rollout_config.max_num_total_trajectories,
-        total_trees_to_finish,
-    };
-
-    let progress_timer_handle = tokio::spawn(run_progress_timer(
-        start_time,
-        deadline,
-        total_secs,
-        shared_states.stop_signal.clone(),
-        shared_states.total_llm_calls.clone(),
-        shared_states.num_finished_trees.clone(),
-        shared_states.num_finished_branches.clone(),
-    ));
+    let _rollout_all_guard = RolloutAllGuard::new(
+        rollout_config.max_num_total_trajectories,
+        question_keys.len(),
+    );
+    let rollout_stats = RolloutStats::global();
+    let _progress_timer_handle = tokio::spawn(run_progress_timer(start_time, deadline, total_secs));
 
     let semaphore = Arc::new(Semaphore::new(max_rollout_concurrency));
     let mut join_set = JoinSet::new();
     let mut next_question_index = 0;
     let halfway_time = start_time + rollout_time_limit / 2;
     let mut did_set_halfway_threshold = false;
-    let mut halfway_question_queue_size = question_keys.len();
-    let extra_question_active_rollout_threshold = max_rollout_concurrency.min(20);
-    let mut entered_extra_question_phase = false;
 
     while next_question_index < question_keys.len() || !join_set.is_empty() {
         if S::IS_TRAINING && !did_set_halfway_threshold && Instant::now() >= halfway_time {
             did_set_halfway_threshold = true;
             let num_finished_branches_so_far =
-                shared_states.num_finished_branches.load(Ordering::Relaxed);
+                rollout_stats.num_finished_branches.load(Ordering::Relaxed);
             let num_extra_trees_to_finish =
-                num_finished_branches_so_far / shared_states.trajectories_per_tree;
-            halfway_question_queue_size = next_question_index
-                .saturating_add(num_extra_trees_to_finish)
-                .min(question_keys.len());
+                num_finished_branches_so_far / rollout_stats.trajectories_per_tree;
             log_key_value_pair(
                 "halfway_finished_total_branches",
                 num_finished_branches_so_far.to_string(),
@@ -652,46 +658,13 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
                 "halfway_extra_trees_to_finish",
                 num_extra_trees_to_finish.to_string(),
             );
-            log_key_value_pair(
-                "halfway_question_queue_size",
-                halfway_question_queue_size.to_string(),
-            );
         }
-
-        let finished_trees = shared_states.num_finished_trees.load(Ordering::Relaxed);
-        let in_extra_question_phase = S::IS_TRAINING
-            && did_set_halfway_threshold
-            && finished_trees >= halfway_question_queue_size;
-        if in_extra_question_phase && !entered_extra_question_phase {
-            entered_extra_question_phase = true;
-            log_key_value_pair(
-                "extra_question_active_rollout_threshold",
-                extra_question_active_rollout_threshold.to_string(),
-            );
-        }
-        let current_question_queue_limit = if in_extra_question_phase {
-            question_keys.len()
-        } else {
-            halfway_question_queue_size
-        };
-        let current_active_rollout_threshold = if in_extra_question_phase {
-            extra_question_active_rollout_threshold
-        } else {
-            max_rollout_concurrency
-        };
 
         tokio::select! {
-            permit_result = semaphore.clone().acquire_owned(), if next_question_index < current_question_queue_limit
-                && !shared_states.stop_signal.load(Ordering::Relaxed)
-                && shared_states.num_active_rollouts.load(Ordering::Relaxed) < current_active_rollout_threshold => {
+            permit_result = semaphore.clone().acquire_owned(), if next_question_index < question_keys.len()
+                && !ROLLOUT_STOP_SIGNAL.load(Ordering::Relaxed) => {
                 let permit = permit_result.expect("rollout semaphore should not be closed");
-                let Some(active_rollouts_guard) = AtomicCountGuard::try_new_with_max(
-                    shared_states.num_active_rollouts.clone(),
-                    "num_active_rollouts",
-                    current_active_rollout_threshold,
-                ) else {
-                    continue;
-                };
+
                 let question_key = question_keys[next_question_index];
                 next_question_index += 1;
                 let question = dataset
@@ -711,42 +684,13 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
                     action_store_adapter.clone(),
                     llm_callable.clone(),
                     client.clone(),
-                    shared_states.clone(),
-                    active_rollouts_guard,
                     permit,
                 ));
             }
             joined = join_set.join_next(), if !join_set.is_empty() => {
                 match joined.expect("join_set must have at least one task") {
                     Ok(Ok(tree_correctness)) => {
-                        match tree_correctness {
-                            TreeCorrectness::AllCorrect => {
-                                shared_states.num_all_correct_trees.fetch_add(1, Ordering::Relaxed);
-                            }
-                            TreeCorrectness::AllIncorrect => {
-                                shared_states.num_all_incorrect_trees.fetch_add(1, Ordering::Relaxed);
-                            }
-                            TreeCorrectness::Mixed => {}
-                        }
-                        let finished =
-                            shared_states.num_finished_trees.fetch_add(1, Ordering::Relaxed) + 1;
-                        let num_all_correct =
-                            shared_states.num_all_correct_trees.load(Ordering::Relaxed);
-                        let num_all_incorrect =
-                            shared_states.num_all_incorrect_trees.load(Ordering::Relaxed);
-                        let mixed = finished - num_all_correct - num_all_incorrect;
-                        log_key_value_pair(
-                            "trees_correctness (✓, ❌, mixed)",
-                            format!("({num_all_correct}, {num_all_incorrect}, {mixed})"),
-                        );
-                        log_worker_progress(
-                            "trees",
-                            finished as f32 / total_trees_to_finish as f32,
-                            format!(
-                                "Num Trees Completed: {}/{}",
-                                finished, total_trees_to_finish
-                            ),
-                        );
+                        rollout_stats.log_tree_completion(tree_correctness);
                     }
                     Ok(Err(StopRequestedError)) => {}
                     Err(join_err) => panic!("rollout task panicked: {join_err}"),
@@ -754,13 +698,13 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
             }
         }
 
-        if shared_states.stop_signal.load(Ordering::Relaxed) && join_set.is_empty() {
+        if ROLLOUT_STOP_SIGNAL.load(Ordering::Relaxed) && join_set.is_empty() {
             break;
         }
     }
 
-    shared_states.stop_signal.store(true, Ordering::Relaxed);
-    progress_timer_handle
+    ROLLOUT_STOP_SIGNAL.store(true, Ordering::Relaxed);
+    _progress_timer_handle
         .await
         .expect("progress timer task panicked");
     // restore the progress bars
@@ -768,28 +712,11 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     delete_worker_progress_bar("trees");
     log_master_progress(1.0, "Rollout: time up or all finished");
 
-    let num_all_correct = shared_states.num_all_correct_trees.load(Ordering::Relaxed);
-    let num_all_incorrect = shared_states
-        .num_all_incorrect_trees
-        .load(Ordering::Relaxed);
-    let finished_trees = shared_states.num_finished_trees.load(Ordering::Relaxed);
-    let mixed = finished_trees - num_all_correct - num_all_incorrect;
-    log_info(format!(
-        "Rollout_all finished; trees_correctness (✓, ❌, mixed) = ({num_all_correct}, {num_all_incorrect}, {mixed})"
-    ));
-    log_key_value_pair(
-        "trees_correctness (✓, ❌, mixed)",
-        format!("({num_all_correct}, {num_all_incorrect}, {mixed})"),
-    );
-    log_model_answer_counts(
-        &shared_states.model_answers_completed,
-        &shared_states.model_answers_context_window_overflow,
-        &shared_states.model_answers_only_eos,
-        &shared_states.model_answers_too_many_turns,
-    );
+    rollout_stats.log_final_tree_correctness_summary();
+    rollout_stats.log_model_answer_counts();
 
     let elapsed_secs = start_time.elapsed().as_secs_f32();
-    let total_llm_calls = shared_states.total_llm_calls.load(Ordering::Relaxed);
+    let total_llm_calls = rollout_stats.total_llm_calls.load(Ordering::Relaxed);
     let llm_call_throughput_per_sec = if elapsed_secs <= f32::EPSILON {
         0.0
     } else {
