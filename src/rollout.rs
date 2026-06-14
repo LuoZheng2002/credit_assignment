@@ -24,6 +24,7 @@ use crate::{
         hybrid_dataset::{DatasetSplit, open_hybrid_dataset},
         posterior_calculation_config::PosteriorCalculationConfig,
         rollout_config::DirectRolloutConfig,
+        trajectory::{FailureMode, FinalAnswer},
         tree::{DirectTree, SegmentContent, TreeCorrectness},
         tree_action::DirectTreeAction,
         tree_action_log::{ActionStoreAdapter, open_action_logs},
@@ -99,6 +100,24 @@ fn action_is_llm_call<M: LlmModelMarker>(action: &DirectTreeAction<M>) -> bool {
         action,
         DirectTreeAction::AppendSegmentContent(SegmentContent::ReasoningOrToolCall { .. })
     )
+}
+
+fn log_model_answer_counts(
+    completed: &Arc<AtomicUsize>,
+    context_window_overflow: &Arc<AtomicUsize>,
+    only_eos: &Arc<AtomicUsize>,
+    too_many_turns: &Arc<AtomicUsize>,
+) {
+    log_key_value_pair(
+        "model_answers (completed, context, eos, turns)",
+        format!(
+            "({}, {}, {}, {})",
+            completed.load(Ordering::Relaxed),
+            context_window_overflow.load(Ordering::Relaxed),
+            only_eos.load(Ordering::Relaxed),
+            too_many_turns.load(Ordering::Relaxed)
+        ),
+    );
 }
 
 fn trajectory_length_being_judged<M: LlmModelMarker, S: DatasetSplit>(
@@ -255,6 +274,10 @@ pub struct RolloutSharedStates {
     num_correct_branches: Arc<AtomicUsize>,
     num_all_correct_trees: Arc<AtomicUsize>,
     num_all_incorrect_trees: Arc<AtomicUsize>,
+    model_answers_completed: Arc<AtomicUsize>,
+    model_answers_context_window_overflow: Arc<AtomicUsize>,
+    model_answers_only_eos: Arc<AtomicUsize>,
+    model_answers_too_many_turns: Arc<AtomicUsize>,
     llm_call_stats: Arc<parking_lot::RwLock<DistributionStats>>,
     trajectory_length_stats: Arc<parking_lot::RwLock<DistributionStats>>,
     correct_trajectory_length_stats: Arc<parking_lot::RwLock<DistributionStats>>,
@@ -289,6 +312,10 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
         llm_call_stats,
         trajectory_length_stats,
         correct_trajectory_length_stats,
+        model_answers_completed,
+        model_answers_context_window_overflow,
+        model_answers_only_eos,
+        model_answers_too_many_turns,
         num_active_rollouts,
         total_llm_calls,
         tool_calls_processed,
@@ -341,6 +368,46 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
                 );
                 let running_accuracy = num_correct as f32 / finished as f32;
                 log_key_value_pair("Rollout running accuracy", running_accuracy.to_string());
+                match &correctness_judgment.model_answer {
+                    FinalAnswer::ModelProvided(_) => {
+                        let _ = model_answers_completed.fetch_add(1, Ordering::Relaxed) + 1;
+                        log_model_answer_counts(
+                            &model_answers_completed,
+                            &model_answers_context_window_overflow,
+                            &model_answers_only_eos,
+                            &model_answers_too_many_turns,
+                        );
+                    }
+                    FinalAnswer::Failure(FailureMode::ContextWindowOverflow) => {
+                        let _ = model_answers_context_window_overflow
+                            .fetch_add(1, Ordering::Relaxed)
+                            + 1;
+                        log_model_answer_counts(
+                            &model_answers_completed,
+                            &model_answers_context_window_overflow,
+                            &model_answers_only_eos,
+                            &model_answers_too_many_turns,
+                        );
+                    }
+                    FinalAnswer::Failure(FailureMode::OnlyEos) => {
+                        let _ = model_answers_only_eos.fetch_add(1, Ordering::Relaxed) + 1;
+                        log_model_answer_counts(
+                            &model_answers_completed,
+                            &model_answers_context_window_overflow,
+                            &model_answers_only_eos,
+                            &model_answers_too_many_turns,
+                        );
+                    }
+                    FinalAnswer::Failure(FailureMode::TooManyTurns) => {
+                        let _ = model_answers_too_many_turns.fetch_add(1, Ordering::Relaxed) + 1;
+                        log_model_answer_counts(
+                            &model_answers_completed,
+                            &model_answers_context_window_overflow,
+                            &model_answers_only_eos,
+                            &model_answers_too_many_turns,
+                        );
+                    }
+                }
                 if let Some(trajectory_length) = trajectory_length_being_judged(&tree) {
                     let summary = trajectory_length_stats
                         .write()
@@ -516,6 +583,10 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         Arc::new(parking_lot::RwLock::new(DistributionStats::new()));
     let total_llm_calls = Arc::new(AtomicUsize::new(0));
     let tool_calls_processed = Arc::new(AtomicUsize::new(0));
+    let model_answers_completed = Arc::new(AtomicUsize::new(0));
+    let model_answers_context_window_overflow = Arc::new(AtomicUsize::new(0));
+    let model_answers_only_eos = Arc::new(AtomicUsize::new(0));
+    let model_answers_too_many_turns = Arc::new(AtomicUsize::new(0));
     let total_trees_to_finish = question_keys.len();
 
     let shared_states = RolloutSharedStates {
@@ -530,6 +601,10 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         num_correct_branches,
         num_all_correct_trees,
         num_all_incorrect_trees,
+        model_answers_completed,
+        model_answers_context_window_overflow,
+        model_answers_only_eos,
+        model_answers_too_many_turns,
         llm_call_stats,
         trajectory_length_stats,
         correct_trajectory_length_stats,
@@ -705,6 +780,12 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     log_key_value_pair(
         "trees_correctness (✓, ❌, mixed)",
         format!("({num_all_correct}, {num_all_incorrect}, {mixed})"),
+    );
+    log_model_answer_counts(
+        &shared_states.model_answers_completed,
+        &shared_states.model_answers_context_window_overflow,
+        &shared_states.model_answers_only_eos,
+        &shared_states.model_answers_too_many_turns,
     );
 
     let elapsed_secs = start_time.elapsed().as_secs_f32();

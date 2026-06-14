@@ -1,4 +1,5 @@
 import json
+import os
 import signal
 import subprocess
 import threading
@@ -13,6 +14,8 @@ REGION = "us-west"
 
 ORCHESTRATOR_CONFIG_RELATIVE_PATH = Path("src_py/modal/orchestrator_config.json")
 MODAL_RUNTIME_IGNORE_PATH = ".modalignore"
+CARGO_NET_RETRY = "10"
+CARGO_HTTP_TIMEOUT = "60"
 
 
 def _extract_required_cli_arg(cli_args: list[str], flag_name: str) -> str:
@@ -262,6 +265,11 @@ def _run_orchestrator_subprocess(cli_args: list[str]) -> dict[str, Any]:
         child = subprocess.Popen(
             cmd,
             cwd="/workspace",
+            env={
+                **os.environ,
+                "CARGO_NET_RETRY": CARGO_NET_RETRY,
+                "CARGO_HTTP_TIMEOUT": CARGO_HTTP_TIMEOUT,
+            },
         )
         assert child is not None
         while child.poll() is None:

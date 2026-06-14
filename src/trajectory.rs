@@ -19,17 +19,34 @@ use crate::{
 
 const CONTEXT_LENGTH_SAFETY_MARGIN: usize = 10;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FailureMode {
+    ContextWindowOverflow,
+    OnlyEos,
+    TooManyTurns,
+}
+
+impl FailureMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            FailureMode::ContextWindowOverflow => "context window overflow",
+            FailureMode::OnlyEos => "only eos",
+            FailureMode::TooManyTurns => "too many turns",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FinalAnswer {
     ModelProvided(String),
-    Failure(String),
+    Failure(FailureMode),
 }
 
 impl FinalAnswer {
     pub fn model_answer_text(&self) -> &str {
         match self {
             FinalAnswer::ModelProvided(text) => text,
-            FinalAnswer::Failure(text) => text,
+            FinalAnswer::Failure(mode) => mode.label(),
         }
     }
 }
@@ -59,10 +76,7 @@ impl<M: LlmModelMarker> DirectTrajectory<M> {
                 "Trajectory context length exceeded, submitting answer. trajectory_length={}, limit={}",
                 trajectory_length, context_length
             ));
-            return Some(FinalAnswer::Failure(format!(
-                "Context length exceeded (trajectory_length={}, limit={}).",
-                trajectory_length, context_length
-            )));
+            return Some(FinalAnswer::Failure(FailureMode::ContextWindowOverflow));
         }
 
         let last_content = self
@@ -76,35 +90,18 @@ impl<M: LlmModelMarker> DirectTrajectory<M> {
         let mut final_answer: Option<FinalAnswer> = None;
         let eos_token_id = <M::Tokenizer as MyTokenizer<M>>::eos_token_id();
         if tokens.tokens.len() == 1 && tokens.tokens[0] == eos_token_id {
-            final_answer = Some(FinalAnswer::Failure(
-                "Model returned only EOS token.".to_string(),
-            ));
+            final_answer = Some(FinalAnswer::Failure(FailureMode::OnlyEos));
         }
 
         if let Some(boxed_content) = extract_boxed_content(&tokens.decode()) {
             final_answer = Some(FinalAnswer::ModelProvided(boxed_content));
         }
-        // check for problematic repetition
-        // if final_answer.is_none() {
-        //     let mut all_tokens: Vec<i32> = vec![];
-        //     for content in &self.trajectory_contents {
-        //         all_tokens.extend_from_slice(content.tokens());
-        //     }
-        //     if has_problematic_repetition(&all_tokens) {
-        //         final_answer = Some(FinalAnswer::Failure(
-        //             "Generation has problematic repetition.".to_string(),
-        //         ));
-        //     }
-        // }
 
         if final_answer.is_none() {
             let number_of_turn = self.trajectory_contents.len();
             let limit = 20;
             if number_of_turn > limit {
-                final_answer = Some(FinalAnswer::Failure(format!(
-                    "Number of turn exceeded (number_of_turn={}, limit={})",
-                    number_of_turn, limit
-                )));
+                final_answer = Some(FinalAnswer::Failure(FailureMode::TooManyTurns));
             }
         }
         final_answer
