@@ -38,3 +38,10 @@ results/
 results_version_tracking/
 logs/
 modal_downloads
+
+# Exclude runtime-written config from Docker build context while keeping it in the
+# Modal runtime mount via .modalignore.
+src_py/modal/orchestrator_config.json
+src_py/modal/orchestrator_config.lock
+src_py/modal/test_config.json
+src_py/modal/test_config.lock

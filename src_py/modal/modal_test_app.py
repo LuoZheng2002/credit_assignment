@@ -16,30 +16,6 @@ TEST_CONFIG_RELATIVE_PATH = Path("src_py/modal/test_config.json")
 TEST_CONFIG_ABSOLUTE_PATH = Path("/workspace") / TEST_CONFIG_RELATIVE_PATH
 MODAL_RUNTIME_IGNORE_PATH = ".modalignore"
 
-MODAL_BUILD_CONTEXT_IGNORE = modal.FilePatternMatcher(
-    "*",
-    "!Dockerfile.modal-mirror",
-    "!pyproject.toml",
-    "!uv.lock",
-    "!Cargo.toml",
-    "!Cargo.lock",
-    "!README.md",
-    "!research-utility",
-    "!research-utility/**",
-    "!pyprojects/sglang",
-    "!pyprojects/sglang/pyproject.toml",
-    "!pyprojects/sglang/uv.lock",
-    "**/.venv/",
-    "**/.venv/**",
-    "**/__pycache__/",
-    "**/__pycache__/**",
-    "**/*.pyc",
-    "target/",
-    "results/",
-    "results_version_tracking/",
-    "logs/",
-)
-
 
 def _test_app_name(model_cli_name: str, config_nickname: str) -> str:
     return f"credit-assignment-test-{model_cli_name}-{config_nickname}"
@@ -349,7 +325,6 @@ test_image = (
     modal.Image.from_dockerfile(
         "Dockerfile.modal-mirror",
         context_dir=str(_repo_root()),
-        ignore=MODAL_BUILD_CONTEXT_IGNORE,
     )
     .env(
         {

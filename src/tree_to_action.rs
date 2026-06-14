@@ -743,16 +743,18 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
     let mut response = None;
     let mut last_error: Option<String> = None;
     for trial in 1..=3 {
-        let _num_sglang_waiting_workers_guard = AtomicCountGuard::new(
-            sglang_waiting_workers.clone(),
-            "sglang_waiting_workers".to_string(),
-        );
         if stop_signal.load(Ordering::Relaxed) {
             return Err(StopRequestedError);
         }
-        let generation_result = llm_callable
-            .generate_tokens_with_logprobs(prompt_tokens.clone(), use_tool, temperature, true)
-            .await;
+        let generation_result = {
+            let _num_sglang_waiting_workers_guard = AtomicCountGuard::new(
+                sglang_waiting_workers.clone(),
+                "sglang_waiting_workers".to_string(),
+            );
+            llm_callable
+                .generate_tokens_with_logprobs(prompt_tokens.clone(), use_tool, temperature, true)
+                .await
+        };
         match generation_result {
             Ok(result) => {
                 response = Some(result);

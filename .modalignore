@@ -31,10 +31,15 @@
 # Re-exclude generated artifacts that can appear inside allowlisted trees.
 **/.venv/
 **/.venv/**
+pyprojects/sglang/.venv/
+pyprojects/sglang/.venv/**
 **/__pycache__/
 **/__pycache__/**
 **/*.pyc
-target/
+**/target/
+**/target/**
+research-utility/target/
+research-utility/target/**
 results/
 results_version_tracking/
 logs/

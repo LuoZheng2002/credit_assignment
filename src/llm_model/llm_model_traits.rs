@@ -65,11 +65,7 @@ pub trait LlmCallable<M: LlmModelMarker>: Clone + Send + Sync {
         _passes_in_stop: bool,
         _temperature: f32,
         _trim_eos: bool,
-    ) -> Result<TokenArrayWithLogprob<M>, String> {
-        panic!(
-            "generate_tokens_with_logprobs is only implemented for callables that support logprobs"
-        )
-    }
+    ) -> Result<TokenArrayWithLogprob<M>, String>;
 }
 
 pub(crate) fn trim_tail_eos_if_needed<M: LlmModelMarker>(

@@ -146,6 +146,8 @@ async fn run_progress_timer(
     total_secs: f32,
     stop_signal: Arc<AtomicBool>,
     total_llm_calls: Arc<AtomicUsize>,
+    num_finished_trees: Arc<AtomicUsize>,
+    num_finished_branches: Arc<AtomicUsize>,
 ) {
     let log_time_progress = |now: Instant| {
         let elapsed_secs = (now - start_time).as_secs_f32().min(total_secs);
@@ -159,21 +161,36 @@ async fn run_progress_timer(
     let mut next_throughput_log_time = start_time;
     let throughput_window = Duration::from_secs(5);
     let throughput_log_interval = Duration::from_millis(500);
+    let segment_count = 8usize;
+    let mut next_segment_to_log = 1usize;
     let mut llm_call_samples: VecDeque<(Instant, usize)> = VecDeque::new();
     loop {
         if stop_signal.load(Ordering::Relaxed) {
             break;
         }
         let now = Instant::now();
-        if now >= deadline {
-            stop_signal.store(true, Ordering::Relaxed);
-            break;
-        }
         if now >= next_progress_log_time {
             log_time_progress(now);
             // If the runtime was blocked for a while, avoid "catch-up" bursts by
             // scheduling from the current time rather than replaying missed ticks.
             next_progress_log_time = now + progress_log_interval;
+        }
+
+        while next_segment_to_log <= segment_count {
+            let segment_elapsed_secs =
+                total_secs * (next_segment_to_log as f32) / segment_count as f32;
+            let segment_deadline = start_time + Duration::from_secs_f32(segment_elapsed_secs);
+            if now < segment_deadline {
+                break;
+            }
+            let elapsed_secs = (now - start_time).as_secs_f32().min(total_secs);
+            let finished_trees = num_finished_trees.load(Ordering::Relaxed);
+            let finished_branches = num_finished_branches.load(Ordering::Relaxed);
+            log_info(format!(
+                "Rollout time segment {}/{} reached: elapsed={elapsed_secs:.1}s/{total_secs:.1}s, finished_trees={}, finished_branches={}",
+                next_segment_to_log, segment_count, finished_trees, finished_branches,
+            ));
+            next_segment_to_log += 1;
         }
 
         if now >= next_throughput_log_time {
@@ -205,6 +222,11 @@ async fn run_progress_timer(
             );
             // Same strategy as progress logging: skip missed intervals.
             next_throughput_log_time = now + throughput_log_interval;
+        }
+
+        if now >= deadline {
+            stop_signal.store(true, Ordering::Relaxed);
+            break;
         }
 
         let wake_time = std::cmp::min(
@@ -524,6 +546,8 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         total_secs,
         shared_states.stop_signal.clone(),
         shared_states.total_llm_calls.clone(),
+        shared_states.num_finished_trees.clone(),
+        shared_states.num_finished_branches.clone(),
     ));
 
     let semaphore = Arc::new(Semaphore::new(max_rollout_concurrency));

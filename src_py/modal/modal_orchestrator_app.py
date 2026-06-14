@@ -14,30 +14,6 @@ REGION = "us-west"
 ORCHESTRATOR_CONFIG_RELATIVE_PATH = Path("src_py/modal/orchestrator_config.json")
 MODAL_RUNTIME_IGNORE_PATH = ".modalignore"
 
-MODAL_BUILD_CONTEXT_IGNORE = modal.FilePatternMatcher(
-    "*",
-    "!Dockerfile.modal-mirror",
-    "!pyproject.toml",
-    "!uv.lock",
-    "!Cargo.toml",
-    "!Cargo.lock",
-    "!README.md",
-    "!research-utility",
-    "!research-utility/**",
-    "!pyprojects/sglang",
-    "!pyprojects/sglang/pyproject.toml",
-    "!pyprojects/sglang/uv.lock",
-    "**/.venv/",
-    "**/.venv/**",
-    "**/__pycache__/",
-    "**/__pycache__/**",
-    "**/*.pyc",
-    "target/",
-    "results/",
-    "results_version_tracking/",
-    "logs/",
-)
-
 
 def _extract_required_cli_arg(cli_args: list[str], flag_name: str) -> str:
     index = 0
@@ -315,7 +291,6 @@ orchestrator_image = (
     modal.Image.from_dockerfile(
         "Dockerfile.modal-mirror",
         context_dir=str(_repo_root()),
-        ignore=MODAL_BUILD_CONTEXT_IGNORE,
     )
     .env(
         {
@@ -337,6 +312,7 @@ app = modal.App(name=APP_NAME)
 @app.cls(
     image=orchestrator_image,
     gpu=GPU,
+    cpu=8.0,
     region=REGION,
     startup_timeout=20 * MINUTES,
     min_containers=0,
