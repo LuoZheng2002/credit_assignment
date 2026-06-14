@@ -302,7 +302,7 @@ orchestrator_image = (
     )
     .env(
         {
-            "PYTHONPATH": "/workspace",
+            "PYTHONPATH": "/workspace:/workspace/research-utility/src_py",
         }
     )
     .add_local_dir(

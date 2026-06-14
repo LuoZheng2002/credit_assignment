@@ -9,23 +9,16 @@
 !README.md
 !.env
 
-!src/
-!src/**
-!src_py/
-!src_py/**
-!config/
-!config/**
-!tokenizers/
-!tokenizers/**
-!research-utility/
-!research-utility/**
-!datasets/
-!datasets/**
-
+# Keep only dependency manifests in the Docker build context; project source is
+# provided to Modal separately at runtime via .modalignore.
 !pyprojects/
 !pyprojects/sglang/
 !pyprojects/sglang/pyproject.toml
 !pyprojects/sglang/uv.lock
+!research-utility/
+!research-utility/pyproject.toml
+!research-utility/Cargo.toml
+!research-utility/Cargo.lock
 
 # Re-exclude generated artifacts that can appear inside allowlisted trees.
 **/.venv/

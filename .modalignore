@@ -10,6 +10,8 @@
 !README.md
 !.env
 
+# Upload live source and runtime inputs to Modal so source changes do not force
+# an image rebuild.
 !src/
 !src/**
 !src_py/
@@ -18,10 +20,17 @@
 !config/**
 !tokenizers/
 !tokenizers/**
-!research-utility/
-!research-utility/**
 !datasets/
 !datasets/**
+
+!research-utility/
+!research-utility/Cargo.toml
+!research-utility/Cargo.lock
+!research-utility/pyproject.toml
+!research-utility/src/
+!research-utility/src/**
+!research-utility/src_py/
+!research-utility/src_py/**
 
 !pyprojects/
 !pyprojects/sglang/

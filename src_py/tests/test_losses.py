@@ -126,6 +126,48 @@ class TestAdvantageWeightedLoss(unittest.TestCase):
                 advantage_clip=3.0,
             )
 
+    def test_rejects_nan_or_inf_logits(self) -> None:
+        labels = torch.tensor([[IGNORE_LABEL, 0]], dtype=torch.long)
+        advantages = torch.tensor([[0.0, 1.0]], dtype=torch.float32)
+
+        for value, nan_count, inf_count in [
+            (float("nan"), 1, 0),
+            (float("inf"), 0, 1),
+            (float("-inf"), 0, 1),
+        ]:
+            logits = torch.tensor([[[value, 1.0], [0.0, 1.0]]], dtype=torch.float32)
+            with self.assertRaises(AssertionError) as context:
+                compute_advantage_weighted_causal_lm_loss(
+                    logits=logits,
+                    labels=labels,
+                    advantages=advantages,
+                    advantage_clip=3.0,
+                )
+            self.assertIn("logits must be finite", str(context.exception))
+            self.assertIn(f"nan_count={nan_count}", str(context.exception))
+            self.assertIn(f"inf_count={inf_count}", str(context.exception))
+
+    def test_rejects_nan_or_inf_advantages(self) -> None:
+        logits = torch.tensor([[[0.0, 1.0], [0.5, -0.5]]], dtype=torch.float32)
+        labels = torch.tensor([[IGNORE_LABEL, 0]], dtype=torch.long)
+
+        for value, nan_count, inf_count in [
+            (float("nan"), 1, 0),
+            (float("inf"), 0, 1),
+            (float("-inf"), 0, 1),
+        ]:
+            advantages = torch.tensor([[0.0, value]], dtype=torch.float32)
+            with self.assertRaises(AssertionError) as context:
+                compute_advantage_weighted_causal_lm_loss(
+                    logits=logits,
+                    labels=labels,
+                    advantages=advantages,
+                    advantage_clip=3.0,
+                )
+            self.assertIn("advantages must be finite", str(context.exception))
+            self.assertIn(f"nan_count={nan_count}", str(context.exception))
+            self.assertIn(f"inf_count={inf_count}", str(context.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

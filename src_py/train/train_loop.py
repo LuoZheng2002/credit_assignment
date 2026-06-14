@@ -13,6 +13,7 @@ import torch
 
 from ..tui_logging import (
     _tui_delete_worker_bar,
+    _tui_error,
     _tui_info,
     _tui_key_value,
     _tui_master_progress,
@@ -107,6 +108,19 @@ def _tensor_diagnostic_fragment(name: str, tensor: torch.Tensor | None) -> str:
         else "x".join(str(int(dim)) for dim in tensor.shape)
     )
     return f"{name}_shape={shape} {name}_dtype={tensor.dtype}"
+
+
+_NONFINITE_TENSOR_CODES = {
+    "logits": 1,
+    "advantages": 2,
+    "loss": 3,
+    "token_losses": 3,
+    "weighted_loss": 3,
+}
+
+
+def _nonfinite_tensor_code(tensor_name: str) -> int:
+    return _NONFINITE_TENSOR_CODES.get(tensor_name, 0)
 
 
 def _is_primary_rank() -> bool:
@@ -837,55 +851,25 @@ def _run_unified_loop(
             batch_token_length = max(
                 sample.input_length for sample in step_batch.samples
             )
-            if _is_primary_rank():
-                _tui_warning(
-                    "nonfinite_logits=1 "
-                    f"batch_index={step_batch.batch_index} "
-                    f"batch_token_length={batch_token_length} "
-                    f"next_batch_size={(adaptive_state.next_batch_size if requested_batch_size <= 1 else reduced_batch_size)} "
-                    f"will_retry={1 if requested_batch_size > 1 else 0}"
-                )
-            should_skip_sample = requested_batch_size <= 1
-            if should_skip_sample:
-                skipped_samples = (
-                    requested_batch_size * world_size
-                    if is_distributed
-                    else requested_batch_size
-                )
-                if _is_primary_rank():
-                    _tui_warning(
-                        "nonfinite_logits_at_batch_size_1=1 "
-                        f"skipped_samples={skipped_samples} "
-                        f"sample_index={global_sample_cursor}"
-                    )
-                    eng._log_json_line(
-                        logs_path,
-                        {
-                            "step": global_step,
-                            "iteration": iteration_index,
-                            "batch_index": step_batch.batch_index,
-                            "nonfinite_logits": 1,
-                            "nonfinite_logits_skipped_sample": 1,
-                            "skipped_samples": skipped_samples,
-                            "next_batch_size": adaptive_state.next_batch_size,
-                            "next_batch_size_float": adaptive_state.next_batch_size_float,
-                        },
-                    )
-                global_sample_cursor += skipped_samples
-            elif _is_primary_rank():
-                adaptive_state = AdaptiveBatchState(
-                    next_batch_size=reduced_batch_size,
-                    next_batch_size_float=float(reduced_batch_size),
-                    velocity=0.0,
-                    throughput_ema=adaptive_state.throughput_ema,
-                    best_throughput_ema=adaptive_state.best_throughput_ema,
-                    memory_utilization_ema=adaptive_state.memory_utilization_ema,
-                    previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-                )
-            if is_distributed:
-                adaptive_state = _broadcast_adaptive_state_distributed(
-                    adaptive_state=adaptive_state
-                )
+            nonfinite_tensor_name, nonfinite_nan_count, nonfinite_inf_count = (
+                eng._parse_nonfinite_tensor_exception(exc)
+            )
+            next_batch_size = (
+                adaptive_state.next_batch_size
+                if requested_batch_size <= 1
+                else reduced_batch_size
+            )
+            _tui_error(
+                f"rank={rank} "
+                "nonfinite=1 "
+                f"nonfinite_tensor={nonfinite_tensor_name} "
+                f"nonfinite_nan_count={nonfinite_nan_count} "
+                f"nonfinite_inf_count={nonfinite_inf_count} "
+                f"batch_index={step_batch.batch_index} "
+                f"batch_token_length={batch_token_length} "
+                f"next_batch_size={next_batch_size} "
+                f"sample_index={global_sample_cursor}"
+            )
             if _is_primary_rank():
                 eng._log_json_line(
                     logs_path,
@@ -893,14 +877,24 @@ def _run_unified_loop(
                         "step": global_step,
                         "iteration": iteration_index,
                         "batch_index": step_batch.batch_index,
-                        "nonfinite_logits": 1,
-                        "next_batch_size": adaptive_state.next_batch_size,
+                        "nonfinite": 1,
+                        "nonfinite_abort": 1,
+                        "nonfinite_tensor_code": _nonfinite_tensor_code(
+                            nonfinite_tensor_name
+                        ),
+                        "nonfinite_nan_count": nonfinite_nan_count,
+                        "nonfinite_inf_count": nonfinite_inf_count,
+                        "next_batch_size": next_batch_size,
                         "next_batch_size_float": adaptive_state.next_batch_size_float,
                     },
                 )
             if torch.cuda.is_available() and device.type == "cuda":
                 torch.cuda.synchronize(device=device)
-            continue
+            raise RuntimeError(
+                f"nonfinite tensor detected: tensor={nonfinite_tensor_name} "
+                f"nan_count={nonfinite_nan_count} inf_count={nonfinite_inf_count} "
+                f"batch_index={step_batch.batch_index}"
+            ) from exc
 
         step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
         throughput_samples_per_sec = float(len(step_batch.samples)) / step_elapsed_sec

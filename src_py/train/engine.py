@@ -5,6 +5,7 @@ import gc
 import json
 import os
 import random
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -206,11 +207,31 @@ def _is_cuda_oom_exception(exc: BaseException) -> bool:
     return "out of memory" in message and "cuda" in message
 
 
-def _is_nonfinite_logits_exception(exc: BaseException) -> bool:
+_NONFINITE_TENSOR_EXCEPTION_RE = re.compile(
+    r"^(?P<tensor>[a-z_]+) must be finite: nan_count=(?P<nan>\d+) inf_count=(?P<inf>\d+)$"
+)
+
+
+def _parse_nonfinite_tensor_exception(
+    exc: BaseException,
+) -> tuple[str, int, int] | None:
     if not isinstance(exc, (AssertionError, RuntimeError)):
-        return False
-    message = str(exc).lower()
-    return "must be finite" in message
+        return None
+    message = str(exc).strip().lower()
+    match = _NONFINITE_TENSOR_EXCEPTION_RE.match(message)
+    if match is not None:
+        return (
+            match.group("tensor"),
+            int(match.group("nan")),
+            int(match.group("inf")),
+        )
+    if "must be finite" in message:
+        return ("unknown", 0, 0)
+    return None
+
+
+def _is_nonfinite_logits_exception(exc: BaseException) -> bool:
+    return _parse_nonfinite_tensor_exception(exc) is not None
 
 
 def _print_cuda_oom_stderr(

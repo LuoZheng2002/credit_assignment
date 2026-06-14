@@ -48,6 +48,20 @@ def _global_mean_std(values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return mean.squeeze(0), std.squeeze(0)
 
 
+def _tensor_nonfinite_counts(tensor: torch.Tensor) -> tuple[int, int]:
+    tensor_fp32 = tensor.to(torch.float32)
+    nan_count = int(torch.isnan(tensor_fp32).sum().item())
+    inf_count = int(torch.isinf(tensor_fp32).sum().item())
+    return nan_count, inf_count
+
+
+def _assert_tensor_finite(tensor: torch.Tensor, tensor_name: str) -> None:
+    nan_count, inf_count = _tensor_nonfinite_counts(tensor)
+    assert nan_count == 0 and inf_count == 0, (
+        f"{tensor_name} must be finite: nan_count={nan_count} inf_count={inf_count}"
+    )
+
+
 def _global_weighted_mean(
     local_sum: torch.Tensor, local_count: torch.Tensor
 ) -> torch.Tensor:
@@ -84,6 +98,9 @@ def compute_advantage_weighted_causal_lm_loss(
     shifted_labels = labels[:, 1:].contiguous()
     shifted_advantages = advantages[:, 1:].contiguous()
 
+    _assert_tensor_finite(shifted_logits, "logits")
+    _assert_tensor_finite(shifted_advantages, "advantages")
+
     token_losses = F.cross_entropy(
         shifted_logits.view(-1, vocab_size),
         shifted_labels.view(-1),
@@ -97,6 +114,8 @@ def compute_advantage_weighted_causal_lm_loss(
         "batch must contain at least one supervised token"
     )
 
+    _assert_tensor_finite(token_losses, "token_losses")
+
     supervised_count_fp = supervised_count.to(token_losses.dtype)
     raw_supervised_advantages = shifted_advantages.masked_select(supervised_mask)
     advantage_mean, advantage_std = _global_mean_std(raw_supervised_advantages)
@@ -109,7 +128,7 @@ def compute_advantage_weighted_causal_lm_loss(
         token_losses.masked_select(supervised_mask).to(torch.float32)
         * per_token_advantages
     ).sum() / supervised_count_fp
-    assert torch.isfinite(weighted_loss), "weighted loss must be finite"
+    _assert_tensor_finite(weighted_loss, "weighted_loss")
 
     local_batch_count = torch.tensor(
         float(batch_size), device=logits.device, dtype=torch.float32

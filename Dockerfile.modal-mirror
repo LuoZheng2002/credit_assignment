@@ -38,22 +38,33 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.3 /uv /uvx /usr/local/bin/
 
 WORKDIR /workspace
 
-# Copy dependency manifests and local path dependencies first for better cache reuse.
+# Copy only dependency manifests so source changes do not invalidate the image.
 COPY pyproject.toml uv.lock ./
 COPY Cargo.toml Cargo.lock ./
 COPY pyprojects/sglang/pyproject.toml ./pyprojects/sglang/pyproject.toml
-COPY research-utility ./research-utility
+COPY pyprojects/sglang/uv.lock ./pyprojects/sglang/uv.lock
+COPY research-utility/pyproject.toml ./research-utility/pyproject.toml
+COPY research-utility/Cargo.toml ./research-utility/Cargo.toml
+COPY research-utility/Cargo.lock ./research-utility/Cargo.lock
 
-# Root python env (./.venv) and SGLang python env (./pyprojects/sglang/.venv).
-RUN uv sync
-RUN uv sync --project pyprojects/sglang
+# Bake third-party Python dependencies into the image without baking local source
+# trees; Modal uploads the source separately at runtime via .modalignore.
+RUN uv sync --frozen --no-install-project --no-install-package research-utility
+RUN uv sync --frozen --project pyprojects/sglang --no-install-project
 
-# Copy the full repository contents that are allowed by .dockerignore,
-# including datasets/ and any other runtime inputs.
-COPY . .
+# Pre-populate the Cargo registry and git cache without compiling project targets.
+# Cargo requires target files to exist when parsing a manifest, so create tiny
+# stubs here instead of copying the real Rust source into the image.
+RUN mkdir -p src research-utility/src \
+    && printf 'pub fn _dependency_prefetch_stub() {}\n' > src/lib.rs \
+    && printf 'fn main() {}\n' > src/main.rs \
+    && printf 'pub fn _dependency_prefetch_stub() {}\n' > research-utility/src/lib.rs \
+    && printf 'fn main() {}\n' > research-utility/src/main.rs
+RUN cargo fetch --locked --manifest-path Cargo.toml
+RUN cargo fetch --locked --manifest-path research-utility/Cargo.toml
 
 ENV VIRTUAL_ENV=/workspace/.venv
 ENV PATH=${VIRTUAL_ENV}/bin:${PATH}
-ENV PYTHONPATH=/workspace
+ENV PYTHONPATH=/workspace:/workspace/research-utility/src_py
 
 CMD ["bash"]
