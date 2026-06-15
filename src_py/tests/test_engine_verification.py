@@ -1,8 +1,11 @@
+import os
 import unittest
+from unittest import mock
 
 from src_py.train.batch_dataset import ResolvedTrainingBatch
 from src_py.train.data_sqlite import QuestionNodeId, TrainingSampleTokenized
 from src_py.train.engine import (
+    _resolve_attention_backend_from_env,
     _resolve_pad_token_id,
     _shard_batches_for_rank,
     _verify_tokenizer_model_match,
@@ -27,6 +30,44 @@ def _build_sample(
 
 
 class TestEngineTokenizerVerification(unittest.TestCase):
+    def test_resolve_attention_backend_defaults_to_kernels_flash_attn2(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TRAIN_ATTENTION_BACKEND", None)
+            self.assertEqual(
+                "kernels-community/flash-attn2",
+                _resolve_attention_backend_from_env(),
+            )
+
+    def test_resolve_attention_backend_honors_sdpa(self) -> None:
+        with mock.patch.dict(
+            os.environ, {"TRAIN_ATTENTION_BACKEND": "sdpa"}, clear=False
+        ):
+            self.assertEqual("sdpa", _resolve_attention_backend_from_env())
+
+    def test_resolve_attention_backend_honors_eager(self) -> None:
+        with mock.patch.dict(
+            os.environ, {"TRAIN_ATTENTION_BACKEND": "eager"}, clear=False
+        ):
+            self.assertEqual("eager", _resolve_attention_backend_from_env())
+
+    def test_resolve_attention_backend_honors_kernels_flash_attn2(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"TRAIN_ATTENTION_BACKEND": "kernels-community/flash-attn2"},
+            clear=False,
+        ):
+            self.assertEqual(
+                "kernels-community/flash-attn2",
+                _resolve_attention_backend_from_env(),
+            )
+
+    def test_resolve_attention_backend_rejects_unknown_value(self) -> None:
+        with mock.patch.dict(
+            os.environ, {"TRAIN_ATTENTION_BACKEND": "flash"}, clear=False
+        ):
+            with self.assertRaises(AssertionError):
+                _resolve_attention_backend_from_env()
+
     def test_resolve_pad_token_id_prefers_defined_pad(self) -> None:
         self.assertEqual(
             7, _resolve_pad_token_id(tokenizer_pad_token_id=7, tokenizer_eos_token_id=2)

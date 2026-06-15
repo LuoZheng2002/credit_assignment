@@ -11,6 +11,7 @@ openai
 pandas
 deepspeed
 peft
+kernels>=0.12.0,<0.13
 pydantic
 pydantic-settings
 python-dotenv

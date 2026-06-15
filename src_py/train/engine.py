@@ -7,6 +7,7 @@ import os
 import random
 import re
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -132,6 +133,146 @@ def _log_json_line(log_path: Path, payload: dict[str, float | int]) -> None:
         handle.write(json.dumps(payload) + "\n")
 
 
+def _tensor_nonfinite_counts(tensor: torch.Tensor) -> tuple[int, int]:
+    tensor_fp32 = tensor.to(torch.float32)
+    nan_count = int(torch.isnan(tensor_fp32).sum().item())
+    inf_count = int(torch.isinf(tensor_fp32).sum().item())
+    return nan_count, inf_count
+
+
+def _format_tensor_shape(tensor: torch.Tensor) -> str:
+    if tensor.ndim == 0:
+        return "scalar"
+    return "x".join(str(int(dim)) for dim in tensor.shape)
+
+
+def _iter_nested_tensors(value: Any, path: str) -> list[tuple[str, torch.Tensor]]:
+    if isinstance(value, torch.Tensor):
+        return [(path, value)]
+    if isinstance(value, Mapping):
+        tensors: list[tuple[str, torch.Tensor]] = []
+        for key, nested_value in value.items():
+            tensors.extend(_iter_nested_tensors(nested_value, f"{path}.{key}"))
+        return tensors
+    if isinstance(value, (list, tuple)):
+        tensors = []
+        for index, nested_value in enumerate(value):
+            tensors.extend(_iter_nested_tensors(nested_value, f"{path}[{index}]"))
+        return tensors
+    to_tuple = getattr(value, "to_tuple", None)
+    if callable(to_tuple):
+        try:
+            tuple_value = to_tuple()
+        except Exception:
+            return []
+        return _iter_nested_tensors(tuple_value, path)
+    return []
+
+
+def _first_nonfinite_tensor_summary(value: Any, path: str) -> str | None:
+    for tensor_path, tensor in _iter_nested_tensors(value, path):
+        nan_count, inf_count = _tensor_nonfinite_counts(tensor)
+        if nan_count == 0 and inf_count == 0:
+            continue
+        return (
+            f"path={tensor_path} shape={_format_tensor_shape(tensor)} "
+            f"dtype={tensor.dtype} nan_count={nan_count} inf_count={inf_count}"
+        )
+    return None
+
+
+def _summarize_forward_inputs(
+    input_ids: torch.Tensor, attention_mask: torch.Tensor
+) -> str:
+    input_ids_min = int(input_ids.min().item())
+    input_ids_max = int(input_ids.max().item())
+    attention_mask_min = int(attention_mask.min().item())
+    attention_mask_max = int(attention_mask.max().item())
+    attention_mask_nonzero = int(attention_mask.count_nonzero().item())
+    return (
+        f"input_ids_shape={_format_tensor_shape(input_ids)} "
+        f"input_ids_dtype={input_ids.dtype} "
+        f"input_ids_min={input_ids_min} input_ids_max={input_ids_max} "
+        f"attention_mask_shape={_format_tensor_shape(attention_mask)} "
+        f"attention_mask_dtype={attention_mask.dtype} "
+        f"attention_mask_min={attention_mask_min} attention_mask_max={attention_mask_max} "
+        f"attention_mask_nonzero={attention_mask_nonzero}"
+    )
+
+
+def trace_first_nonfinite_forward_module(
+    model_engine: torch.nn.Module, input_ids: torch.Tensor, attention_mask: torch.Tensor
+) -> str:
+    module_names = {
+        module: (name if len(name) > 0 else "<root>")
+        for name, module in model_engine.named_modules()
+    }
+    pre_hook_summaries: dict[torch.nn.Module, str | None] = {}
+    first_nonfinite_output: dict[str, str] | None = None
+    hook_handles: list[Any] = []
+
+    def _pre_hook(module: torch.nn.Module, inputs: tuple[Any, ...]) -> None:
+        pre_hook_summaries[module] = _first_nonfinite_tensor_summary(inputs, "input")
+
+    def _post_hook(
+        module: torch.nn.Module, inputs: tuple[Any, ...], output: Any
+    ) -> None:
+        nonlocal first_nonfinite_output
+        if first_nonfinite_output is not None:
+            return
+        output_summary = _first_nonfinite_tensor_summary(output, "output")
+        if output_summary is None:
+            return
+        first_nonfinite_output = {
+            "module_name": module_names.get(module, "<unknown>"),
+            "module_type": type(module).__name__,
+            "input_summary": pre_hook_summaries.get(module) or "all_finite",
+            "output_summary": output_summary,
+        }
+
+    for module in module_names.keys():
+        hook_handles.append(module.register_forward_pre_hook(_pre_hook))
+        hook_handles.append(module.register_forward_hook(_post_hook))
+
+    try:
+        with torch.no_grad():
+            model_engine(
+                input_ids=input_ids, attention_mask=attention_mask, use_cache=False
+            )
+    except Exception as exc:
+        replay_error = f"forward_replay_error_type={type(exc).__name__}"
+        if first_nonfinite_output is None:
+            return (
+                "nonfinite_forward_trace=1 status=replay_failed_before_detection "
+                f"{replay_error} {_summarize_forward_inputs(input_ids, attention_mask)}"
+            )
+        return (
+            "nonfinite_forward_trace=1 status=replay_failed_after_detection "
+            f"module_name={first_nonfinite_output['module_name']} "
+            f"module_type={first_nonfinite_output['module_type']} "
+            f"module_input={first_nonfinite_output['input_summary']} "
+            f"module_output={first_nonfinite_output['output_summary']} "
+            f"{replay_error} {_summarize_forward_inputs(input_ids, attention_mask)}"
+        )
+    finally:
+        for handle in hook_handles:
+            handle.remove()
+
+    if first_nonfinite_output is None:
+        return (
+            "nonfinite_forward_trace=1 status=no_nonfinite_module_found "
+            f"{_summarize_forward_inputs(input_ids, attention_mask)}"
+        )
+    return (
+        "nonfinite_forward_trace=1 status=first_nonfinite_output "
+        f"module_name={first_nonfinite_output['module_name']} "
+        f"module_type={first_nonfinite_output['module_type']} "
+        f"module_input={first_nonfinite_output['input_summary']} "
+        f"module_output={first_nonfinite_output['output_summary']} "
+        f"{_summarize_forward_inputs(input_ids, attention_mask)}"
+    )
+
+
 def _forward_logits(
     model_engine: torch.nn.Module, input_ids: torch.Tensor, attention_mask: torch.Tensor
 ) -> torch.Tensor:
@@ -144,6 +285,26 @@ def _forward_logits(
     return logits
 
 
+def _resolve_attention_backend_from_env() -> str:
+    raw_value = os.environ.get("TRAIN_ATTENTION_BACKEND")
+    if raw_value is None:
+        return "kernels-community/flash-attn2"
+    normalized = raw_value.strip()
+    if len(normalized) == 0:
+        return "kernels-community/flash-attn2"
+    normalized_lower = normalized.lower()
+    assert normalized_lower in {
+        "eager",
+        "sdpa",
+        "flash_attention_2",
+        "kernels-community/flash-attn2",
+    }, (
+        "TRAIN_ATTENTION_BACKEND must be one of: eager, sdpa, flash_attention_2, "
+        "kernels-community/flash-attn2"
+    )
+    return normalized_lower
+
+
 def _load_causal_lm_with_attention(
     model_path: str, device: torch.device
 ) -> tuple[torch.nn.Module, str]:
@@ -152,30 +313,25 @@ def _load_causal_lm_with_attention(
     load_kwargs = {
         "dtype": torch.bfloat16,
     }
-    backend = "sdpa"
+    requested_backend = _resolve_attention_backend_from_env()
     try:
         loaded_model: Any = AutoModelForCausalLM.from_pretrained(
             model_path,
-            attn_implementation=backend,
+            attn_implementation=requested_backend,
             **load_kwargs,
         )
-        model = cast(torch.nn.Module, loaded_model.to(device))
-        return model, backend
     except Exception as exc:
         _release_step_memory(device)
         if _is_primary_rank():
             _tui_warning(
                 "attention_backend_request_failed=1 "
-                f"requested_backend={backend} "
+                f"requested_backend={requested_backend} "
                 f"error_type={type(exc).__name__}"
             )
+        raise
 
-    fallback_loaded_model: Any = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        **load_kwargs,
-    )
-    model = cast(torch.nn.Module, fallback_loaded_model.to(device))
-    return model, "eager"
+    model = cast(torch.nn.Module, loaded_model.to(device))
+    return model, requested_backend
 
 
 def _get_rank_world_size() -> tuple[int, int]:
@@ -208,7 +364,7 @@ def _is_cuda_oom_exception(exc: BaseException) -> bool:
 
 
 _NONFINITE_TENSOR_EXCEPTION_RE = re.compile(
-    r"^(?P<tensor>[a-z_]+) must be finite: nan_count=(?P<nan>\d+) inf_count=(?P<inf>\d+)$"
+    r"^(?P<tensor>[a-z_]+) must be finite: nan_count=(?P<nan>\d+) inf_count=(?P<inf>\d+)(?: .*)?$"
 )
 
 

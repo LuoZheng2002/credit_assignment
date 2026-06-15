@@ -19,6 +19,7 @@ dependencies = [
     "scipy>=1.17.1",
     "numexpr>=2.14.1",
     "flash-linear-attention",
+    "kernels>=0.12.0,<0.13",
     # "causal-conv1d",
     "jsonargparse>=4.42.0",
     "modal>=1.4.4.dev21",

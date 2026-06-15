@@ -116,6 +116,9 @@ _NONFINITE_TENSOR_CODES = {
     "loss": 3,
     "token_losses": 3,
     "weighted_loss": 3,
+    "gradients": 4,
+    "grad_norm": 4,
+    "optimizer_state": 5,
 }
 
 
@@ -129,6 +132,316 @@ def _is_primary_rank() -> bool:
         or (not torch.distributed.is_initialized())
         or torch.distributed.get_rank() == 0
     )
+
+
+def _tensor_nonfinite_counts(tensor: torch.Tensor) -> tuple[int, int]:
+    tensor_fp32 = tensor.to(torch.float32)
+    nan_count = int(torch.isnan(tensor_fp32).sum().item())
+    inf_count = int(torch.isinf(tensor_fp32).sum().item())
+    return nan_count, inf_count
+
+
+def _format_tensor_shape(tensor: torch.Tensor) -> str:
+    if tensor.ndim == 0:
+        return "scalar"
+    return "x".join(str(int(dim)) for dim in tensor.shape)
+
+
+def _iter_nested_tensors(value: Any, path: str) -> list[tuple[str, torch.Tensor]]:
+    if isinstance(value, torch.Tensor):
+        return [(path, value)]
+    if isinstance(value, dict):
+        tensors: list[tuple[str, torch.Tensor]] = []
+        for key, nested_value in value.items():
+            tensors.extend(_iter_nested_tensors(nested_value, f"{path}.{key}"))
+        return tensors
+    if isinstance(value, (list, tuple)):
+        tensors = []
+        for index, nested_value in enumerate(value):
+            tensors.extend(_iter_nested_tensors(nested_value, f"{path}[{index}]"))
+        return tensors
+    to_tuple = getattr(value, "to_tuple", None)
+    if callable(to_tuple):
+        try:
+            tuple_value = to_tuple()
+        except Exception:
+            return []
+        return _iter_nested_tensors(tuple_value, path)
+    return []
+
+
+def _first_nonfinite_tensor_summary(value: Any, path: str) -> str | None:
+    for tensor_path, tensor in _iter_nested_tensors(value, path):
+        nan_count, inf_count = _tensor_nonfinite_counts(tensor)
+        if nan_count == 0 and inf_count == 0:
+            continue
+        return (
+            f"path={tensor_path} shape={_format_tensor_shape(tensor)} "
+            f"dtype={tensor.dtype} nan_count={nan_count} inf_count={inf_count}"
+        )
+    return None
+
+
+def _summarize_backward_inputs(
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    labels: torch.Tensor,
+    advantages: torch.Tensor,
+) -> str:
+    return (
+        f"input_ids_shape={_format_tensor_shape(input_ids)} "
+        f"attention_mask_shape={_format_tensor_shape(attention_mask)} "
+        f"labels_shape={_format_tensor_shape(labels)} "
+        f"advantages_shape={_format_tensor_shape(advantages)}"
+    )
+
+
+def trace_first_nonfinite_backward_signal(
+    *,
+    model: torch.nn.Module,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    labels: torch.Tensor,
+    advantages: torch.Tensor,
+    advantage_clip: float,
+    grad_accum_steps: int,
+) -> str:
+    module_names = {
+        module: (name if len(name) > 0 else "<root>")
+        for name, module in model.named_modules()
+    }
+    first_nonfinite_module: dict[str, str] | None = None
+    first_nonfinite_parameter: dict[str, str] | None = None
+    hook_handles: list[Any] = []
+
+    def _module_backward_hook(
+        module: torch.nn.Module,
+        grad_input: Any,
+        grad_output: Any,
+    ) -> Any:
+        nonlocal first_nonfinite_module
+        if first_nonfinite_module is not None:
+            return
+        grad_input_summary = _first_nonfinite_tensor_summary(grad_input, "grad_input")
+        grad_output_summary = _first_nonfinite_tensor_summary(
+            grad_output, "grad_output"
+        )
+        if grad_input_summary is None and grad_output_summary is None:
+            return
+        first_nonfinite_module = {
+            "module_name": module_names.get(module, "<unknown>"),
+            "module_type": type(module).__name__,
+            "grad_input": grad_input_summary or "all_finite",
+            "grad_output": grad_output_summary or "all_finite",
+        }
+
+    def _make_parameter_hook(parameter_name: str):
+        def _parameter_hook(gradient: torch.Tensor) -> torch.Tensor:
+            nonlocal first_nonfinite_parameter
+            if first_nonfinite_parameter is None:
+                gradient_summary = _first_nonfinite_tensor_summary(gradient, "grad")
+                if gradient_summary is not None:
+                    first_nonfinite_parameter = {
+                        "parameter_name": parameter_name,
+                        "gradient": gradient_summary,
+                    }
+            return gradient
+
+        return _parameter_hook
+
+    for module in module_names.keys():
+        hook_handles.append(module.register_full_backward_hook(_module_backward_hook))
+    for parameter_name, parameter in model.named_parameters():
+        if parameter.requires_grad:
+            hook_handles.append(
+                parameter.register_hook(_make_parameter_hook(parameter_name))
+            )
+
+    try:
+        outputs = model(
+            input_ids=input_ids, attention_mask=attention_mask, use_cache=False
+        )
+        logits: Any = None
+        if hasattr(outputs, "logits"):
+            logits = outputs.logits
+        elif isinstance(outputs, dict) and "logits" in outputs:
+            logits = outputs["logits"]
+        assert isinstance(logits, torch.Tensor), (
+            "model forward output must contain tensor logits"
+        )
+        loss_output = compute_advantage_weighted_causal_lm_loss(
+            logits=logits,
+            labels=labels,
+            advantages=advantages,
+            advantage_clip=advantage_clip,
+        )
+        replay_loss = loss_output.loss / grad_accum_steps
+        replay_loss.backward()
+    except Exception as exc:
+        detail_parts = [
+            "nonfinite_backward_trace=1",
+            "status=replay_failed",
+            f"error_type={type(exc).__name__}",
+        ]
+        if first_nonfinite_module is not None:
+            detail_parts.extend(
+                [
+                    f"module_name={first_nonfinite_module['module_name']}",
+                    f"module_type={first_nonfinite_module['module_type']}",
+                    f"module_grad_input={first_nonfinite_module['grad_input']}",
+                    f"module_grad_output={first_nonfinite_module['grad_output']}",
+                ]
+            )
+        if first_nonfinite_parameter is not None:
+            detail_parts.extend(
+                [
+                    f"parameter_name={first_nonfinite_parameter['parameter_name']}",
+                    f"parameter_grad={first_nonfinite_parameter['gradient']}",
+                ]
+            )
+        detail_parts.append(
+            _summarize_backward_inputs(input_ids, attention_mask, labels, advantages)
+        )
+        return " ".join(detail_parts)
+    finally:
+        for handle in hook_handles:
+            handle.remove()
+
+    detail_parts = ["nonfinite_backward_trace=1"]
+    if first_nonfinite_module is None and first_nonfinite_parameter is None:
+        detail_parts.extend(
+            [
+                "status=no_nonfinite_backward_signal_found",
+                _summarize_backward_inputs(
+                    input_ids, attention_mask, labels, advantages
+                ),
+            ]
+        )
+        return " ".join(detail_parts)
+
+    detail_parts.append("status=first_nonfinite_backward_signal")
+    if first_nonfinite_module is not None:
+        detail_parts.extend(
+            [
+                f"module_name={first_nonfinite_module['module_name']}",
+                f"module_type={first_nonfinite_module['module_type']}",
+                f"module_grad_input={first_nonfinite_module['grad_input']}",
+                f"module_grad_output={first_nonfinite_module['grad_output']}",
+            ]
+        )
+    if first_nonfinite_parameter is not None:
+        detail_parts.extend(
+            [
+                f"parameter_name={first_nonfinite_parameter['parameter_name']}",
+                f"parameter_grad={first_nonfinite_parameter['gradient']}",
+            ]
+        )
+    detail_parts.append(
+        _summarize_backward_inputs(input_ids, attention_mask, labels, advantages)
+    )
+    return " ".join(detail_parts)
+
+
+def _assert_gradient_tensors_finite(model: torch.nn.Module) -> None:
+    total_nan_count = 0
+    total_inf_count = 0
+    first_nonfinite_detail: str | None = None
+    for parameter_name, parameter in model.named_parameters():
+        gradient = parameter.grad
+        if gradient is None:
+            continue
+        nan_count, inf_count = _tensor_nonfinite_counts(gradient)
+        total_nan_count += nan_count
+        total_inf_count += inf_count
+        if first_nonfinite_detail is None and (nan_count > 0 or inf_count > 0):
+            shape = (
+                "scalar"
+                if gradient.ndim == 0
+                else "x".join(str(int(dim)) for dim in gradient.shape)
+            )
+            first_nonfinite_detail = (
+                f"first_nonfinite=parameter:{parameter_name} "
+                f"shape={shape} dtype={gradient.dtype}"
+            )
+    assert total_nan_count == 0 and total_inf_count == 0, (
+        f"gradients must be finite: nan_count={total_nan_count} inf_count={total_inf_count}"
+        + (f" {first_nonfinite_detail}" if first_nonfinite_detail is not None else "")
+    )
+
+
+def _assert_scalar_finite(value: float, tensor_name: str, detail: str) -> None:
+    nan_count = 1 if math.isnan(value) else 0
+    inf_count = 1 if math.isinf(value) else 0
+    assert nan_count == 0 and inf_count == 0, (
+        f"{tensor_name} must be finite: nan_count={nan_count} inf_count={inf_count} {detail}"
+    )
+
+
+def _assert_optimizer_state_finite(
+    model: torch.nn.Module, optimizer: torch.optim.Optimizer
+) -> None:
+    parameter_names = {
+        id(parameter): parameter_name
+        for parameter_name, parameter in model.named_parameters()
+    }
+    total_nan_count = 0
+    total_inf_count = 0
+    first_nonfinite_detail: str | None = None
+    for parameter, state in optimizer.state.items():
+        parameter_name = parameter_names.get(id(parameter), "<unknown>")
+        assert isinstance(state, dict), "optimizer state entries must be dictionaries"
+        for state_key, state_value in state.items():
+            if isinstance(state_value, torch.Tensor):
+                nan_count, inf_count = _tensor_nonfinite_counts(state_value)
+                total_nan_count += nan_count
+                total_inf_count += inf_count
+                if first_nonfinite_detail is None and (nan_count > 0 or inf_count > 0):
+                    shape = (
+                        "scalar"
+                        if state_value.ndim == 0
+                        else "x".join(str(int(dim)) for dim in state_value.shape)
+                    )
+                    first_nonfinite_detail = (
+                        f"first_nonfinite=parameter:{parameter_name} "
+                        f"state_key={state_key} shape={shape} dtype={state_value.dtype}"
+                    )
+            elif isinstance(state_value, (float, int)):
+                numeric_value = float(state_value)
+                if not math.isfinite(numeric_value):
+                    total_nan_count += 1 if math.isnan(numeric_value) else 0
+                    total_inf_count += 1 if math.isinf(numeric_value) else 0
+                    if first_nonfinite_detail is None:
+                        first_nonfinite_detail = (
+                            f"first_nonfinite=parameter:{parameter_name} state_key={state_key} "
+                            f"value={numeric_value}"
+                        )
+    assert total_nan_count == 0 and total_inf_count == 0, (
+        f"optimizer_state must be finite: nan_count={total_nan_count} inf_count={total_inf_count}"
+        + (f" {first_nonfinite_detail}" if first_nonfinite_detail is not None else "")
+    )
+
+
+def _assert_pre_step_finite(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    clipped_grad_norm: float | None,
+) -> None:
+    _assert_gradient_tensors_finite(model)
+    if clipped_grad_norm is not None:
+        _assert_scalar_finite(
+            clipped_grad_norm,
+            "grad_norm",
+            f"value={clipped_grad_norm}",
+        )
+    _assert_optimizer_state_finite(model, optimizer)
+
+
+def _extract_nonfinite_trace_suffix(message: str) -> str:
+    for marker in [" nonfinite_backward_trace=1", " nonfinite_forward_trace=1"]:
+        marker_index = message.find(marker)
+        if marker_index >= 0:
+            return message[marker_index:]
+    return ""
 
 
 def _init_training_loop_clock(
@@ -241,6 +554,7 @@ def _flush_partial_gradients(
         current_lr = float(optimizer.param_groups[0]["lr"])
         return accumulation_step, global_step, None, current_lr
     clipped_grad_norm = _maybe_clip_gradients(model=model, max_grad_norm=max_grad_norm)
+    _assert_pre_step_finite(model, optimizer, clipped_grad_norm)
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
     next_global_step = global_step + 1
@@ -726,6 +1040,39 @@ def _run_unified_loop(
                 )
                 loss = loss_output.loss / config.grad_accum_steps
                 loss.backward()
+                try:
+                    _assert_gradient_tensors_finite(model)
+                except AssertionError as grad_exc:
+                    nonfinite_details = eng._parse_nonfinite_tensor_exception(grad_exc)
+                    if nonfinite_details is None:
+                        raise
+                    optimizer.zero_grad(set_to_none=True)
+                    eng._release_step_memory(device)
+                    nonfinite_backward_trace = None
+                    try:
+                        nonfinite_backward_trace = (
+                            trace_first_nonfinite_backward_signal(
+                                model=model,
+                                input_ids=input_ids,
+                                attention_mask=attention_mask,
+                                labels=labels,
+                                advantages=advantages,
+                                advantage_clip=config.advantage_clip,
+                                grad_accum_steps=config.grad_accum_steps,
+                            )
+                        )
+                    except Exception as trace_exc:
+                        nonfinite_backward_trace = (
+                            "nonfinite_backward_trace=1 status=diagnostic_failed "
+                            f"error_type={type(trace_exc).__name__}"
+                        )
+                    finally:
+                        optimizer.zero_grad(set_to_none=True)
+                    raise AssertionError(
+                        f"{grad_exc} accumulation_micro_step={accumulation_step + 1} "
+                        f"batch_index={step_batch.batch_index} sample_index={global_sample_cursor}"
+                        f" {nonfinite_backward_trace}"
+                    ) from grad_exc
         except (RuntimeError, AssertionError) as exc:
             if eng._is_cuda_oom_exception(exc):
                 collated = None
@@ -838,6 +1185,33 @@ def _run_unified_loop(
                     )
                 raise
 
+            nonfinite_tensor_name, nonfinite_nan_count, nonfinite_inf_count = (
+                eng._parse_nonfinite_tensor_exception(exc)
+            )
+            nonfinite_forward_trace = None
+            if (
+                nonfinite_tensor_name == "logits"
+                and input_ids is not None
+                and attention_mask is not None
+            ):
+                logits = None
+                loss_output = None
+                loss = None
+                collated = None
+                labels = None
+                advantages = None
+                eng._release_step_memory(device)
+                try:
+                    nonfinite_forward_trace = eng.trace_first_nonfinite_forward_module(
+                        model_engine=model,
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                    )
+                except Exception as trace_exc:
+                    nonfinite_forward_trace = (
+                        "nonfinite_forward_trace=1 status=diagnostic_failed "
+                        f"error_type={type(trace_exc).__name__}"
+                    )
             collated = None
             input_ids = None
             labels = None
@@ -851,14 +1225,14 @@ def _run_unified_loop(
             batch_token_length = max(
                 sample.input_length for sample in step_batch.samples
             )
-            nonfinite_tensor_name, nonfinite_nan_count, nonfinite_inf_count = (
-                eng._parse_nonfinite_tensor_exception(exc)
-            )
             next_batch_size = (
                 adaptive_state.next_batch_size
                 if requested_batch_size <= 1
                 else reduced_batch_size
             )
+            nonfinite_trace_extra = _extract_nonfinite_trace_suffix(str(exc))
+            if nonfinite_forward_trace is not None:
+                nonfinite_trace_extra = f" {nonfinite_forward_trace}"
             _tui_error(
                 f"rank={rank} "
                 "nonfinite=1 "
@@ -869,6 +1243,7 @@ def _run_unified_loop(
                 f"batch_token_length={batch_token_length} "
                 f"next_batch_size={next_batch_size} "
                 f"sample_index={global_sample_cursor}"
+                f"{nonfinite_trace_extra}"
             )
             if _is_primary_rank():
                 eng._log_json_line(
@@ -894,6 +1269,7 @@ def _run_unified_loop(
                 f"nonfinite tensor detected: tensor={nonfinite_tensor_name} "
                 f"nan_count={nonfinite_nan_count} inf_count={nonfinite_inf_count} "
                 f"batch_index={step_batch.batch_index}"
+                f"{nonfinite_trace_extra}"
             ) from exc
 
         step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
@@ -983,10 +1359,86 @@ def _run_unified_loop(
                 clipped_grad_norm = _maybe_clip_gradients(
                     model=model, max_grad_norm=max_grad_norm
                 )
+                _assert_pre_step_finite(model, optimizer, clipped_grad_norm)
                 optimizer.step()
-            except RuntimeError as exc:
-                if not eng._is_cuda_oom_exception(exc):
+            except (RuntimeError, AssertionError) as exc:
+                if isinstance(exc, RuntimeError) and (
+                    not eng._is_cuda_oom_exception(exc)
+                ):
                     raise
+                if isinstance(exc, AssertionError):
+                    nonfinite_details = eng._parse_nonfinite_tensor_exception(exc)
+                    if nonfinite_details is None:
+                        raise
+                    nonfinite_tensor_name, nonfinite_nan_count, nonfinite_inf_count = (
+                        nonfinite_details
+                    )
+                    nonfinite_backward_trace = None
+                    if (
+                        nonfinite_tensor_name in {"gradients", "grad_norm"}
+                        and input_ids is not None
+                        and attention_mask is not None
+                        and labels is not None
+                        and advantages is not None
+                    ):
+                        optimizer.zero_grad(set_to_none=True)
+                        eng._release_step_memory(device)
+                        try:
+                            nonfinite_backward_trace = (
+                                trace_first_nonfinite_backward_signal(
+                                    model=model,
+                                    input_ids=input_ids,
+                                    attention_mask=attention_mask,
+                                    labels=labels,
+                                    advantages=advantages,
+                                    advantage_clip=config.advantage_clip,
+                                    grad_accum_steps=config.grad_accum_steps,
+                                )
+                            )
+                        except Exception as trace_exc:
+                            nonfinite_backward_trace = (
+                                "nonfinite_backward_trace=1 status=diagnostic_failed "
+                                f"error_type={type(trace_exc).__name__}"
+                            )
+                        finally:
+                            optimizer.zero_grad(set_to_none=True)
+                    nonfinite_trace_extra = _extract_nonfinite_trace_suffix(str(exc))
+                    if nonfinite_backward_trace is not None:
+                        nonfinite_trace_extra = f" {nonfinite_backward_trace}"
+                    _tui_error(
+                        f"rank={rank} nonfinite=1 "
+                        f"nonfinite_tensor={nonfinite_tensor_name} "
+                        f"nonfinite_nan_count={nonfinite_nan_count} "
+                        f"nonfinite_inf_count={nonfinite_inf_count} "
+                        f"batch_index={step_batch.batch_index} "
+                        f"sample_index={global_sample_cursor} "
+                        f"step={global_step} iteration={iteration_index}"
+                        f"{nonfinite_trace_extra}"
+                    )
+                    if _is_primary_rank():
+                        eng._log_json_line(
+                            logs_path,
+                            {
+                                "step": global_step,
+                                "iteration": iteration_index,
+                                "batch_index": step_batch.batch_index,
+                                "nonfinite": 1,
+                                "nonfinite_abort": 1,
+                                "nonfinite_tensor_code": _nonfinite_tensor_code(
+                                    nonfinite_tensor_name
+                                ),
+                                "nonfinite_nan_count": nonfinite_nan_count,
+                                "nonfinite_inf_count": nonfinite_inf_count,
+                                "next_batch_size": adaptive_state.next_batch_size,
+                                "next_batch_size_float": adaptive_state.next_batch_size_float,
+                            },
+                        )
+                    raise RuntimeError(
+                        f"nonfinite tensor detected before optimizer step: tensor={nonfinite_tensor_name} "
+                        f"nan_count={nonfinite_nan_count} inf_count={nonfinite_inf_count} "
+                        f"batch_index={step_batch.batch_index}"
+                        f"{nonfinite_trace_extra}"
+                    ) from exc
                 clipped_grad_norm = None
                 eng._print_cuda_oom_diagnostics_stderr(
                     rank=rank,
