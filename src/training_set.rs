@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use ordered_float::NotNan;
-use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
 use research_utility::{
     progress_tui_logger::{log_info, log_key_value_pair, log_master_progress, log_warning},
     sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
@@ -13,14 +12,14 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::direct_tool::hybrid_dataset::{QuestionFlatId, Training, open_hybrid_dataset};
-use crate::direct_tool::tree_action::DirectTreeAction;
+
 use crate::{
     direct_tool::{
         hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
         posterior_calculation_config::PosteriorCalculationConfig,
         rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         tree::{DirectTree, SegmentContent, SegmentId, TreeCorrectness},
-        tree_action_log::{DirectTreeActionLog, open_action_logs},
+        tree_action_log::{ActionLogStore, DirectTreeActionLog, open_action_logs},
     },
     jinja_directories::{
         training_trajectories_path_from_template, training_trajectories_stats_path_from_template,
@@ -234,7 +233,7 @@ fn supervised_content_advantage_stats<M: LlmModelMarker>(
 pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     question_store: SqliteStore<QuestionFlatId<Training>, HybridDatasetQuestion<Training>>,
     // action_log_store: DirectTreeActionLogStore<M>,
-    action_store: SqliteTableArrayStore<QuestionFlatId<Training>, DirectTreeAction<M>>,
+    action_store: ActionLogStore<M, Training>,
     rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
     training_trajectory_store: SqliteStore<usize, DirectTrainingTrajectory<M>>,
@@ -324,7 +323,7 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
     // action_log_store: &ActionStoreAdapter<M>,
     // action_log_store: DirectTreeActionLogStore<M>,
     question_store: SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>>,
-    action_store: SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>,
+    action_store: ActionLogStore<M, S>,
     rollout_config: DirectRolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
     cumulative_avg_abs_advantage_cutoff: f32,
@@ -332,7 +331,7 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
 ) -> (
     TrainingTrajectorySelectionOutput<S>,
     SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>>,
-    SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>,
+    ActionLogStore<M, S>,
 ) {
     // let mut keys = action_log_store.metadata_store.get_keys().unwrap();
     let mut keys = action_store.get_keys().unwrap();
@@ -412,7 +411,7 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
 
 async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
     question_store: SqliteStore<QuestionFlatId<Training>, HybridDatasetQuestion<Training>>,
-    action_store: SqliteTableArrayStore<QuestionFlatId<Training>, DirectTreeAction<M>>,
+    action_store: ActionLogStore<M, Training>,
     training_trajectory_store: SqliteStore<usize, DirectTrainingTrajectory<M>>,
     rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,

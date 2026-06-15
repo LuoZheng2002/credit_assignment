@@ -12,11 +12,10 @@ use crate::direct_tool::hybrid_dataset::{
     DatasetSplit, DatasetSplitEnum, HybridDatasetQuestion, QuestionFlatId, Testing, Training,
     Validation, open_hybrid_dataset,
 };
-use crate::direct_tool::tree_action::DirectTreeAction;
 use crate::direct_tool::{
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     rollout_config::DirectRolloutConfig,
-    tree_action_log::DirectTreeActionLog,
+    tree_action_log::{ActionLogStore, DirectTreeActionLog},
 };
 use crate::json_toml_utils::read_json;
 use crate::llm_model::{
@@ -30,7 +29,6 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use research_utility::sqlite_store::SqliteStore;
-use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use self::context::parse_action_logs_context;
@@ -48,7 +46,7 @@ struct App<M: LlmModelMarker, S: DatasetSplit> {
     rollout_config: DirectRolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
     question_store: SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>>,
-    action_store: SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>,
+    action_store: ActionLogStore<M, S>,
     entry_keys: Vec<QuestionFlatId<S>>,
     entry_cache: Vec<EntryLoadState<M, S>>,
     entry_load_tx: UnboundedSender<EntryLoadResult<M, S>>,
@@ -85,13 +83,10 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
     ) -> Self {
         let (entry_load_tx, entry_load_rx) = unbounded_channel();
         let question_store = open_hybrid_dataset::<S>();
-        let action_store =
-            SqliteTableArrayStore::<QuestionFlatId<S>, DirectTreeAction<M>>::initialize_if_missing(
-                &action_logs_path,
-            )
+        let action_store = ActionLogStore::<M, S>::initialize_if_missing(&action_logs_path)
             .unwrap_or_else(|e| {
                 panic!(
-                    "Failed to open direct action log sqlite table array store at {}: {}",
+                    "Failed to open direct action log store at {}: {}",
                     action_logs_path.display(),
                     e
                 )
@@ -176,7 +171,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
                 })
             }
             Err(error) => EntryLoadState::Failed(format!(
-                "Failed to load question key {} from sqlite store: {}",
+                "Failed to load question key {} from action log store: {}",
                 key.0, error
             )),
         };
