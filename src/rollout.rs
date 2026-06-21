@@ -157,6 +157,8 @@ async fn run_progress_timer(start_time: Instant, deadline: Instant, total_secs: 
     let mut next_throughput_log_time = start_time;
     let throughput_window = Duration::from_secs(5);
     let throughput_log_interval = Duration::from_millis(500);
+    let database_commit_interval = Duration::from_secs(20 * 60);
+    let mut next_database_commit_request_time = start_time + database_commit_interval;
     let segment_count = 8usize;
     let mut next_segment_to_log = 1usize;
     let mut llm_call_samples: VecDeque<(Instant, usize)> = VecDeque::new();
@@ -187,6 +189,13 @@ async fn run_progress_timer(start_time: Instant, deadline: Instant, total_secs: 
                 next_segment_to_log, segment_count, finished_trees, finished_branches,
             ));
             next_segment_to_log += 1;
+        }
+
+        if now >= next_database_commit_request_time {
+            rollout_stats
+                .database_commit_after_next_write
+                .store(true, Ordering::Relaxed);
+            next_database_commit_request_time = now + database_commit_interval;
         }
 
         if now >= next_throughput_log_time {
@@ -227,7 +236,10 @@ async fn run_progress_timer(start_time: Instant, deadline: Instant, total_secs: 
 
         let wake_time = std::cmp::min(
             std::cmp::min(
-                std::cmp::min(next_progress_log_time, next_throughput_log_time),
+                std::cmp::min(
+                    next_progress_log_time,
+                    std::cmp::min(next_throughput_log_time, next_database_commit_request_time),
+                ),
                 deadline,
             ),
             Instant::now() + Duration::from_millis(100),
@@ -245,7 +257,7 @@ pub struct RolloutStats {
     pub(crate) sglang_waiting_workers: AtomicUsize,
     pub(crate) judge_waiting_workers: AtomicUsize,
     pub(crate) tool_waiting_workers: AtomicUsize,
-    pub(crate) sqlite_waiting_workers: AtomicUsize,
+    pub(crate) database_waiting_workers: AtomicUsize,
     pub(crate) num_finished_branches: AtomicUsize,
     pub(crate) num_finished_trees: AtomicUsize,
     pub(crate) num_correct_branches: AtomicUsize,
@@ -255,9 +267,11 @@ pub struct RolloutStats {
     pub(crate) model_answers_context_window_overflow: AtomicUsize,
     pub(crate) model_answers_only_eos: AtomicUsize,
     pub(crate) model_answers_too_many_turns: AtomicUsize,
-    pub(crate) llm_call_stats: parking_lot::RwLock<DistributionStats>,
-    pub(crate) trajectory_length_stats: parking_lot::RwLock<DistributionStats>,
-    pub(crate) correct_trajectory_length_stats: parking_lot::RwLock<DistributionStats>,
+    pub(crate) database_commit_after_next_write: AtomicBool,
+    pub(crate) database_commit_count: AtomicUsize,
+    pub(crate) llm_call_stats: tokio::sync::Mutex<DistributionStats>,
+    pub(crate) trajectory_length_stats: tokio::sync::Mutex<DistributionStats>,
+    pub(crate) correct_trajectory_length_stats: tokio::sync::Mutex<DistributionStats>,
     pub(crate) num_active_rollouts: AtomicUsize,
     pub(crate) total_llm_calls: AtomicUsize,
     pub(crate) tool_calls_processed: AtomicUsize,
@@ -281,7 +295,7 @@ impl RolloutAllGuard {
             sglang_waiting_workers: AtomicUsize::new(0),
             judge_waiting_workers: AtomicUsize::new(0),
             tool_waiting_workers: AtomicUsize::new(0),
-            sqlite_waiting_workers: AtomicUsize::new(0),
+            database_waiting_workers: AtomicUsize::new(0),
             num_finished_branches: AtomicUsize::new(0),
             num_finished_trees: AtomicUsize::new(0),
             num_correct_branches: AtomicUsize::new(0),
@@ -291,9 +305,11 @@ impl RolloutAllGuard {
             model_answers_context_window_overflow: AtomicUsize::new(0),
             model_answers_only_eos: AtomicUsize::new(0),
             model_answers_too_many_turns: AtomicUsize::new(0),
-            llm_call_stats: parking_lot::RwLock::new(DistributionStats::new()),
-            trajectory_length_stats: parking_lot::RwLock::new(DistributionStats::new()),
-            correct_trajectory_length_stats: parking_lot::RwLock::new(DistributionStats::new()),
+            database_commit_after_next_write: AtomicBool::new(false),
+            database_commit_count: AtomicUsize::new(0),
+            llm_call_stats: tokio::sync::Mutex::new(DistributionStats::new()),
+            trajectory_length_stats: tokio::sync::Mutex::new(DistributionStats::new()),
+            correct_trajectory_length_stats: tokio::sync::Mutex::new(DistributionStats::new()),
             num_active_rollouts: AtomicUsize::new(0),
             total_llm_calls: AtomicUsize::new(0),
             tool_calls_processed: AtomicUsize::new(0),
@@ -301,6 +317,7 @@ impl RolloutAllGuard {
             total_trees_to_finish,
         });
         ROLLOUT_STATS.store(Some(stats));
+        log_key_value_pair("database_commit_count", "0");
         RolloutAllGuard
     }
 }
@@ -326,10 +343,11 @@ impl RolloutStats {
         );
     }
 
-    fn log_trajectory_length(&self, trajectory_length: usize, is_correct: bool) {
+    async fn log_trajectory_length(&self, trajectory_length: usize, is_correct: bool) {
         let summary = self
             .trajectory_length_stats
-            .write()
+            .lock()
+            .await
             .update_and_get_summary(trajectory_length);
         log_key_value_pair(
             "trajectory_length (min, median, q3, max)",
@@ -338,7 +356,8 @@ impl RolloutStats {
         if is_correct {
             let correct_summary = self
                 .correct_trajectory_length_stats
-                .write()
+                .lock()
+                .await
                 .update_and_get_summary(trajectory_length);
             log_key_value_pair(
                 "correct_trajectory_length (min, median, q3, max)",
@@ -347,10 +366,11 @@ impl RolloutStats {
         }
     }
 
-    fn log_llm_calls_per_tree(&self, llm_calls_so_far: usize) {
+    async fn log_llm_calls_per_tree(&self, llm_calls_so_far: usize) {
         let summary = self
             .llm_call_stats
-            .write()
+            .lock()
+            .await
             .update_and_get_summary(llm_calls_so_far);
         log_key_value_pair(
             "llm_calls_per_tree (min, median, q3, max)",
@@ -384,6 +404,11 @@ impl RolloutStats {
                 finished, self.total_trees_to_finish
             ),
         );
+    }
+
+    fn log_database_commit(&self) {
+        let committed = self.database_commit_count.fetch_add(1, Ordering::Relaxed) + 1;
+        log_key_value_pair("database_commit_count", committed.to_string());
     }
 
     fn log_final_tree_correctness_summary(&self) {
@@ -487,7 +512,8 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
                 }
                 if let Some(trajectory_length) = trajectory_length_being_judged(&tree) {
                     rollout_stats
-                        .log_trajectory_length(trajectory_length, correctness_judgment.is_correct);
+                        .log_trajectory_length(trajectory_length, correctness_judgment.is_correct)
+                        .await;
                 }
             }
             _ => {}
@@ -511,24 +537,30 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
         let newest_action_index = action_log.actions.len();
         action_log.actions.push(action);
         {
-            // add sqlite waiting worker guard
-            let _sqlite_waiting_guard = AtomicCountGuardRef::new(
-                &rollout_stats.sqlite_waiting_workers,
-                "sqlite_waiting_workers",
+            let _database_waiting_guard = AtomicCountGuardRef::new(
+                &rollout_stats.database_waiting_workers,
+                "database_waiting_workers",
             );
-            action_store
+            let commit_after_write = rollout_stats
+                .database_commit_after_next_write
+                .swap(false, Ordering::Relaxed);
+            let did_commit = action_store
                 .append_action_at(
                     action_log.question.flat_id,
                     newest_action_index,
                     action_log.actions.last().unwrap(),
+                    commit_after_write,
                 )
                 .await
                 .unwrap();
+            if did_commit {
+                rollout_stats.log_database_commit();
+            }
         }
     }
     let final_tree = DirectTree::<M, S>::from_action_log(&action_log);
     let tree_correctness = final_tree.get_correctness();
-    rollout_stats.log_llm_calls_per_tree(llm_calls_so_far);
+    rollout_stats.log_llm_calls_per_tree(llm_calls_so_far).await;
     Ok(tree_correctness)
 }
 
@@ -596,15 +628,14 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     let llm_callable = M::Callable::from_inference_endpoint(client.clone(), &inference_endpoint);
     let dataset = open_hybrid_dataset::<S>();
 
-    // let DirectTreeActionLogStore {
-    //     metadata_store,
-    //     action_store,
-    //     _phantom,
-    // } = DirectTreeActionLogStore::<M>::initialize_if_missing(
-    //     action_logs_file_path::<M, S>(&config_nickname, epoch),
-    // );
     let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
+    log_info(format!(
+        "rollout_all: creating ActionStoreAdapter for config={config_nickname}, epoch={epoch}"
+    ));
     let action_store_adapter = ActionStoreAdapter::new(action_store);
+    log_info(format!(
+        "rollout_all: ActionStoreAdapter created for config={config_nickname}, epoch={epoch}"
+    ));
     let mut question_keys = dataset.get_keys().unwrap();
     // sort by question id to ensure deterministic order
     question_keys.sort();
@@ -701,6 +732,10 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         if ROLLOUT_STOP_SIGNAL.load(Ordering::Relaxed) && join_set.is_empty() {
             break;
         }
+    }
+
+    if action_store_adapter.commit_pending().await.unwrap() {
+        rollout_stats.log_database_commit();
     }
 
     ROLLOUT_STOP_SIGNAL.store(true, Ordering::Relaxed);

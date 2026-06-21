@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStderr, ChildStdin, ChildStdout, Command},
-    sync::{Mutex, mpsc},
+    sync::mpsc,
     task::JoinHandle,
     time::timeout,
 };
@@ -102,7 +102,7 @@ struct PythonToolServerWorker {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
-    stderr_tail: Arc<Mutex<VecDeque<String>>>,
+    stderr_tail: Arc<tokio::sync::Mutex<VecDeque<String>>>,
     stderr_task: JoinHandle<()>,
 }
 
@@ -111,9 +111,9 @@ struct PythonToolServerSlot {
 }
 
 pub struct PythonToolServerPool {
-    slots: Vec<Arc<Mutex<PythonToolServerSlot>>>,
+    slots: Vec<Arc<tokio::sync::Mutex<PythonToolServerSlot>>>,
     available_sender: mpsc::UnboundedSender<usize>,
-    available_receiver: Mutex<mpsc::UnboundedReceiver<usize>>,
+    available_receiver: tokio::sync::Mutex<mpsc::UnboundedReceiver<usize>>,
 }
 
 static PYTHON_TOOL_POOL: OnceLock<Arc<PythonToolServerPool>> = OnceLock::new();
@@ -146,7 +146,7 @@ impl PythonToolServerPool {
                     worker_id, error
                 )
             })?;
-            slots.push(Arc::new(Mutex::new(PythonToolServerSlot {
+            slots.push(Arc::new(tokio::sync::Mutex::new(PythonToolServerSlot {
                 worker: Some(worker),
             })));
             available_sender
@@ -157,7 +157,7 @@ impl PythonToolServerPool {
         Ok(Self {
             slots,
             available_sender,
-            available_receiver: Mutex::new(available_receiver),
+            available_receiver: tokio::sync::Mutex::new(available_receiver),
         })
     }
 
@@ -386,7 +386,7 @@ async fn spawn_python_tool_server_worker() -> Result<PythonToolServerWorker, Str
         .take()
         .ok_or_else(|| "Failed to capture persistent python tool server stderr".to_string())?;
 
-    let stderr_tail = Arc::new(Mutex::new(VecDeque::with_capacity(
+    let stderr_tail = Arc::new(tokio::sync::Mutex::new(VecDeque::with_capacity(
         PYTHON_TOOL_STDERR_TAIL_LINES,
     )));
     let mut stderr_task = tokio::spawn(drain_stderr(stderr, stderr_tail.clone()));
@@ -449,7 +449,7 @@ async fn spawn_python_tool_server_worker() -> Result<PythonToolServerWorker, Str
     }
 }
 
-async fn drain_stderr(stderr: ChildStderr, stderr_tail: Arc<Mutex<VecDeque<String>>>) {
+async fn drain_stderr(stderr: ChildStderr, stderr_tail: Arc<tokio::sync::Mutex<VecDeque<String>>>) {
     let mut reader = BufReader::new(stderr);
     loop {
         let mut line = String::new();
@@ -495,7 +495,9 @@ async fn read_json_line(stdout: &mut BufReader<ChildStdout>) -> Result<String, S
     Ok(line)
 }
 
-async fn stderr_context_from_tail(stderr_tail: &Arc<Mutex<VecDeque<String>>>) -> String {
+async fn stderr_context_from_tail(
+    stderr_tail: &Arc<tokio::sync::Mutex<VecDeque<String>>>,
+) -> String {
     let stderr_tail = stderr_tail.lock().await;
     if stderr_tail.is_empty() {
         String::new()

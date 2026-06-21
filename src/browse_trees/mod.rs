@@ -42,7 +42,6 @@ struct HomePageLoadRequest {
 struct App<M: LlmModelMarker, S: DatasetSplit> {
     _model_marker: PhantomData<M>,
     override_hyperparameters: Option<PosteriorHyperparameters>,
-    // action_log_store: DirectTreeActionLogStore<M>,
     rollout_config: DirectRolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
     question_store: SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>>,
@@ -76,7 +75,6 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
         rollout_config: DirectRolloutConfig<S>,
         posterior_calculation_config: PosteriorCalculationConfig,
         _epoch: usize,
-        // action_log_store: DirectTreeActionLogStore<M>,
         // entry_keys: Vec<usize>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
         action_logs_path: PathBuf,

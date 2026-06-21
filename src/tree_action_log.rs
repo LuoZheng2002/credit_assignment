@@ -1,10 +1,13 @@
 use redb::{
     Database, Key as RedbKey, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable,
     ReadableTable, TableDefinition, TableError as RedbTableError, TypeName, Value as RedbValue,
+    WriteTransaction,
 };
-use research_utility::sqlite_table_array_store::SqliteTableArrayStore;
+use research_utility::{
+    progress_tui_logger::log_info, sqlite_table_array_store::SqliteTableArrayStore,
+};
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, fs, marker::PhantomData, path::PathBuf};
+use std::{cmp::Ordering, fs, marker::PhantomData, path::PathBuf, sync::Arc};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
@@ -14,7 +17,7 @@ use crate::{
         rollout_config::DirectRolloutConfig,
         tree_action::DirectTreeAction,
     },
-    jinja_directories::action_logs_path_from_template,
+    jinja_directories::{ActionLogPathBackend, action_logs_path_from_template},
     llm_model::LlmModelMarker,
 };
 
@@ -39,8 +42,13 @@ pub struct ActionLogStore<M: LlmModelMarker, S: DatasetSplit> {
 }
 
 impl<M: LlmModelMarker, S: DatasetSplit> ActionLogStore<M, S> {
+    pub const DEFAULT_BACKEND: ActionLogPathBackend = ActionLogPathBackend::Redb;
+
     pub fn initialize_if_missing(db_path: impl Into<PathBuf>) -> Result<Self, String> {
-        Self::initialize_redb_if_missing(db_path)
+        match Self::DEFAULT_BACKEND {
+            ActionLogPathBackend::Sqlite => Self::initialize_sqlite_if_missing(db_path),
+            ActionLogPathBackend::Redb => Self::initialize_redb_if_missing(db_path),
+        }
     }
 
     pub fn initialize_sqlite_if_missing(db_path: impl Into<PathBuf>) -> Result<Self, String> {
@@ -106,16 +114,19 @@ impl<M: LlmModelMarker, S: DatasetSplit> ActionLogStore<M, S> {
     }
 }
 
-pub struct DirectTreeActionLogStore<M: LlmModelMarker, S: DatasetSplit> {
-    // pub metadata_store: SqliteStore<usize, DirectTreeActionLogMetadata>,
-    pub action_store: ActionLogStore<M, S>,
-    pub _phantom: PhantomData<M>,
+#[derive(Clone)]
+pub struct ActionStoreAdapter<M: LlmModelMarker, S: DatasetSplit> {
+    backend: ActionStoreAdapterBackend<M, S>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ActionStoreAdapter<M: LlmModelMarker, S: DatasetSplit> {
-    request_tx: mpsc::UnboundedSender<StoreRequest<M, S>>,
-    _phantom: PhantomData<(M, S)>,
+#[derive(Clone)]
+enum ActionStoreAdapterBackend<M: LlmModelMarker, S: DatasetSplit> {
+    SqliteWorker {
+        request_tx: mpsc::UnboundedSender<StoreRequest<M, S>>,
+    },
+    RedbInline {
+        state: Arc<tokio::sync::RwLock<RedbInlineActionStoreState<M, S>>>,
+    },
 }
 
 enum StoreRequest<M: LlmModelMarker, S: DatasetSplit> {
@@ -127,21 +138,31 @@ enum StoreRequest<M: LlmModelMarker, S: DatasetSplit> {
         key: QuestionFlatId<S>,
         action_index: usize,
         action: DirectTreeAction<M>,
-        response_tx: oneshot::Sender<Result<(), String>>,
+        response_tx: oneshot::Sender<Result<bool, String>>,
     },
 }
 impl<M: LlmModelMarker, S: DatasetSplit> ActionStoreAdapter<M, S> {
     pub fn new(store: ActionLogStore<M, S>) -> Self {
-        let (request_tx, request_rx) = mpsc::unbounded_channel();
-        Self::spawn_worker(store, request_rx);
-        Self {
-            request_tx,
-            _phantom: PhantomData,
+        match store.backend {
+            ActionLogStoreBackend::Sqlite(store) => {
+                let (request_tx, request_rx) = mpsc::unbounded_channel();
+                Self::spawn_sqlite_worker(store, request_rx);
+                Self {
+                    backend: ActionStoreAdapterBackend::SqliteWorker { request_tx },
+                }
+            }
+            ActionLogStoreBackend::Redb(store) => Self {
+                backend: ActionStoreAdapterBackend::RedbInline {
+                    state: Arc::new(tokio::sync::RwLock::new(RedbInlineActionStoreState::new(
+                        store,
+                    ))),
+                },
+            },
         }
     }
 
-    fn spawn_worker(
-        store: ActionLogStore<M, S>,
+    fn spawn_sqlite_worker(
+        store: SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>,
         mut request_rx: mpsc::UnboundedReceiver<StoreRequest<M, S>>,
     ) {
         std::thread::Builder::new()
@@ -164,7 +185,8 @@ impl<M: LlmModelMarker, S: DatasetSplit> ActionStoreAdapter<M, S> {
                                 action,
                                 response_tx,
                             } => {
-                                let result = store.append_at(key, action_index, &action);
+                                let result =
+                                    store.append_at(key, action_index, &action).map(|_| false);
                                 let _ = response_tx.send(result);
                             }
                         }
@@ -178,13 +200,20 @@ impl<M: LlmModelMarker, S: DatasetSplit> ActionStoreAdapter<M, S> {
         &self,
         key: QuestionFlatId<S>,
     ) -> Result<Vec<DirectTreeAction<M>>, String> {
-        let (response_tx, response_rx) = oneshot::channel();
-        self.request_tx
-            .send(StoreRequest::GetOrInitActions { key, response_tx })
-            .map_err(|_| "direct action log store worker has shut down".to_string())?;
-        response_rx
-            .await
-            .map_err(|_| "direct action log store worker response dropped".to_string())?
+        match &self.backend {
+            ActionStoreAdapterBackend::SqliteWorker { request_tx } => {
+                let (response_tx, response_rx) = oneshot::channel();
+                request_tx
+                    .send(StoreRequest::GetOrInitActions { key, response_tx })
+                    .map_err(|_| "direct action log store worker has shut down".to_string())?;
+                response_rx
+                    .await
+                    .map_err(|_| "direct action log store worker response dropped".to_string())?
+            }
+            ActionStoreAdapterBackend::RedbInline { state } => {
+                state.write().await.get_or_init_actions(key)
+            }
+        }
     }
 
     pub async fn append_action_at(
@@ -192,19 +221,36 @@ impl<M: LlmModelMarker, S: DatasetSplit> ActionStoreAdapter<M, S> {
         key: QuestionFlatId<S>,
         action_index: usize,
         action: &DirectTreeAction<M>,
-    ) -> Result<(), String> {
-        let (response_tx, response_rx) = oneshot::channel();
-        self.request_tx
-            .send(StoreRequest::AppendActionAt {
-                key,
-                action_index,
-                action: action.clone(),
-                response_tx,
-            })
-            .map_err(|_| "direct action log store worker has shut down".to_string())?;
-        response_rx
-            .await
-            .map_err(|_| "direct action log store worker response dropped".to_string())?
+        commit_after_write: bool,
+    ) -> Result<bool, String> {
+        match &self.backend {
+            ActionStoreAdapterBackend::SqliteWorker { request_tx } => {
+                let (response_tx, response_rx) = oneshot::channel();
+                request_tx
+                    .send(StoreRequest::AppendActionAt {
+                        key,
+                        action_index,
+                        action: action.clone(),
+                        response_tx,
+                    })
+                    .map_err(|_| "direct action log store worker has shut down".to_string())?;
+                let _did_commit = response_rx
+                    .await
+                    .map_err(|_| "direct action log store worker response dropped".to_string())??;
+                Ok(false)
+            }
+            ActionStoreAdapterBackend::RedbInline { state } => state
+                .write()
+                .await
+                .append_action_at(key, action_index, action, commit_after_write),
+        }
+    }
+
+    pub async fn commit_pending(&self) -> Result<bool, String> {
+        match &self.backend {
+            ActionStoreAdapterBackend::SqliteWorker { .. } => Ok(false),
+            ActionStoreAdapterBackend::RedbInline { state } => state.write().await.commit_pending(),
+        }
     }
 }
 
@@ -321,6 +367,108 @@ struct RedbActionLogStore<M: LlmModelMarker, S: DatasetSplit> {
     _phantom: PhantomData<(M, S)>,
 }
 
+// Redb batching model: keep one live write transaction open, apply writes directly into it,
+// and only call commit() on timed flushes or at the end of rollout_all().
+struct RedbInlineActionStoreState<M: LlmModelMarker, S: DatasetSplit> {
+    store: RedbActionLogStore<M, S>,
+    write_txn: Option<WriteTransaction>,
+    has_pending_writes: bool,
+}
+
+impl<M: LlmModelMarker, S: DatasetSplit> RedbInlineActionStoreState<M, S> {
+    fn new(store: RedbActionLogStore<M, S>) -> Self {
+        log_info(format!(
+            "RedbInlineActionStoreState::new: acquiring write transaction lock on {}",
+            store.db_path.display()
+        ));
+        let write_txn = store
+            .begin_write_txn()
+            .unwrap_or_else(|err| panic!("failed to initialize redb write transaction: {err}"));
+        log_info(format!(
+            "RedbInlineActionStoreState::new: write transaction lock acquired on {}",
+            store.db_path.display()
+        ));
+        Self {
+            store,
+            write_txn: Some(write_txn),
+            has_pending_writes: false,
+        }
+    }
+
+    fn current_write_txn(&self) -> Result<&WriteTransaction, String> {
+        self.write_txn
+            .as_ref()
+            .ok_or_else(|| "redb write transaction is not initialized".to_string())
+    }
+
+    fn get_or_init_actions(
+        &mut self,
+        key: QuestionFlatId<S>,
+    ) -> Result<Vec<DirectTreeAction<M>>, String> {
+        let (actions, did_write) = self.store.load_or_init_table_sorted_in_write_txn(
+            self.current_write_txn()?,
+            key,
+            Vec::new,
+        )?;
+        self.has_pending_writes |= did_write;
+        Ok(actions)
+    }
+
+    fn append_action_at(
+        &mut self,
+        key: QuestionFlatId<S>,
+        action_index: usize,
+        action: &DirectTreeAction<M>,
+        commit_after_write: bool,
+    ) -> Result<bool, String> {
+        let did_write = self.store.append_at_in_write_txn(
+            self.current_write_txn()?,
+            key,
+            action_index,
+            action,
+        )?;
+        self.has_pending_writes |= did_write;
+        if commit_after_write {
+            self.commit_pending()
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn commit_pending(&mut self) -> Result<bool, String> {
+        if !self.has_pending_writes {
+            return Ok(false);
+        }
+        let write_txn = self
+            .write_txn
+            .take()
+            .ok_or_else(|| "redb write transaction is not initialized".to_string())?;
+        self.store.commit_write_txn(write_txn)?;
+        self.write_txn = Some(self.store.begin_write_txn()?);
+        self.has_pending_writes = false;
+        Ok(true)
+    }
+}
+
+impl<M: LlmModelMarker, S: DatasetSplit> Drop for RedbInlineActionStoreState<M, S> {
+    fn drop(&mut self) {
+        log_info(format!(
+            "RedbInlineActionStoreState::drop: releasing write transaction lock on {}",
+            self.store.db_path.display()
+        ));
+        // Explicitly abort the write transaction to release the file lock.
+        // redb's WriteTransaction::drop does call abort_inner(), but only when
+        // the transaction hasn't been completed and the thread isn't panicking.
+        // Explicitly dropping here ensures the lock is released promptly and
+        // avoids any edge cases where the lock might persist.
+        drop(self.write_txn.take());
+        log_info(format!(
+            "RedbInlineActionStoreState::drop: write transaction lock released on {}",
+            self.store.db_path.display()
+        ));
+    }
+}
+
 impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
     fn initialize_if_missing(db_path: impl Into<PathBuf>) -> Result<Self, String> {
         let db_path = db_path.into();
@@ -392,6 +540,13 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
         &self,
         table_key: QuestionFlatId<S>,
     ) -> Result<Vec<DirectTreeAction<M>>, String> {
+        self.load_table_state(table_key).map(|(_, actions)| actions)
+    }
+
+    fn load_table_state(
+        &self,
+        table_key: QuestionFlatId<S>,
+    ) -> Result<(bool, Vec<DirectTreeAction<M>>), String> {
         let key_u64 = question_flat_id_to_u64(table_key)?;
         let read_txn = self.db.begin_read().map_err(|e| {
             format!(
@@ -402,7 +557,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
         })?;
         let initialized_keys = match read_txn.open_table(initialized_keys_table_def()) {
             Ok(table) => table,
-            Err(RedbTableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(RedbTableError::TableDoesNotExist(_)) => return Ok((false, Vec::new())),
             Err(e) => {
                 return Err(format!(
                     "Failed to open redb initialized keys table at {}: {}",
@@ -411,7 +566,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
                 ));
             }
         };
-        if initialized_keys
+        let exists = initialized_keys
             .get(key_u64)
             .map_err(|e| {
                 format!(
@@ -421,14 +576,14 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
                     e
                 )
             })?
-            .is_none()
-        {
-            return Ok(Vec::new());
+            .is_some();
+        if !exists {
+            return Ok((false, Vec::new()));
         }
 
         let action_rows = match read_txn.open_multimap_table(action_rows_table_def::<M>()) {
             Ok(table) => table,
-            Err(RedbTableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(RedbTableError::TableDoesNotExist(_)) => return Ok((true, Vec::new())),
             Err(e) => {
                 return Err(format!(
                     "Failed to open redb action rows table at {}: {}",
@@ -459,7 +614,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
             let row = value.value();
             actions.push(row.action);
         }
-        Ok(actions)
+        Ok((true, actions))
     }
 
     fn load_or_init_table_sorted<F>(
@@ -470,14 +625,59 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
     where
         F: FnOnce() -> Vec<(usize, DirectTreeAction<M>)>,
     {
-        let key_u64 = question_flat_id_to_u64(table_key)?;
-        let write_txn = self.db.begin_write().map_err(|e| {
+        let write_txn = self.begin_write_txn()?;
+        let (actions, did_write) =
+            self.load_or_init_table_sorted_in_write_txn(&write_txn, table_key, initialize_rows)?;
+        if did_write {
+            self.commit_write_txn(write_txn)?;
+        }
+        Ok(actions)
+    }
+
+    fn append_at(
+        &self,
+        table_key: QuestionFlatId<S>,
+        row_index: usize,
+        value: &DirectTreeAction<M>,
+    ) -> Result<(), String> {
+        let write_txn = self.begin_write_txn()?;
+        let did_write = self.append_at_in_write_txn(&write_txn, table_key, row_index, value)?;
+        if did_write {
+            self.commit_write_txn(write_txn)?;
+        }
+        Ok(())
+    }
+
+    fn begin_write_txn(&self) -> Result<WriteTransaction, String> {
+        self.db.begin_write().map_err(|e| {
             format!(
                 "Failed to begin redb write transaction at {}: {}",
                 self.db_path.display(),
                 e
             )
-        })?;
+        })
+    }
+
+    fn commit_write_txn(&self, write_txn: WriteTransaction) -> Result<(), String> {
+        write_txn.commit().map_err(|e| {
+            format!(
+                "Failed to commit redb action transaction at {}: {}",
+                self.db_path.display(),
+                e
+            )
+        })
+    }
+
+    fn load_or_init_table_sorted_in_write_txn<F>(
+        &self,
+        write_txn: &WriteTransaction,
+        table_key: QuestionFlatId<S>,
+        initialize_rows: F,
+    ) -> Result<(Vec<DirectTreeAction<M>>, bool), String>
+    where
+        F: FnOnce() -> Vec<(usize, DirectTreeAction<M>)>,
+    {
+        let key_u64 = question_flat_id_to_u64(table_key)?;
         let key_exists = {
             let initialized_keys =
                 write_txn
@@ -502,6 +702,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
                 .is_some()
         };
 
+        let mut did_write = false;
         if !key_exists {
             {
                 let mut initialized_keys = write_txn
@@ -533,8 +734,10 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
                         )
                     })?;
                 for (row_index, value) in initialize_rows() {
-                    self.insert_row_checked(&action_rows, key_u64, row_index, &value)?;
-                    action_rows.insert(key_u64, &StoredActionRow::from_row_index_and_action(row_index, &value)?).map_err(|e| {
+                    action_rows.insert(
+                        key_u64,
+                        &StoredActionRow::from_row_index_and_action(row_index, &value)?,
+                    ).map_err(|e| {
                         format!(
                             "Failed to insert redb action row for key {} row_index {} at {}: {}",
                             key_u64,
@@ -545,32 +748,50 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
                     })?;
                 }
             }
-            write_txn.commit().map_err(|e| {
+            did_write = true;
+        }
+
+        let action_rows = write_txn
+            .open_multimap_table(action_rows_table_def::<M>())
+            .map_err(|e| {
                 format!(
-                    "Failed to commit redb initialization transaction at {}: {}",
+                    "Failed to open redb action rows table at {}: {}",
                     self.db_path.display(),
                     e
                 )
             })?;
-        }
-
-        self.load_table_sorted(table_key)
-    }
-
-    fn append_at(
-        &self,
-        table_key: QuestionFlatId<S>,
-        row_index: usize,
-        value: &DirectTreeAction<M>,
-    ) -> Result<(), String> {
-        let key_u64 = question_flat_id_to_u64(table_key)?;
-        let write_txn = self.db.begin_write().map_err(|e| {
+        let mut actions = Vec::new();
+        let values = action_rows.get(key_u64).map_err(|e| {
             format!(
-                "Failed to begin redb write transaction at {}: {}",
+                "Failed to fetch redb action rows for key {} at {}: {}",
+                key_u64,
                 self.db_path.display(),
                 e
             )
         })?;
+        for value in values {
+            let value = value.map_err(|e| {
+                format!(
+                    "Failed to decode redb action row for key {} at {}: {}",
+                    key_u64,
+                    self.db_path.display(),
+                    e
+                )
+            })?;
+            actions.push(value.value().action);
+        }
+        Ok((actions, did_write))
+    }
+
+    fn append_at_in_write_txn(
+        &self,
+        write_txn: &WriteTransaction,
+        table_key: QuestionFlatId<S>,
+        row_index: usize,
+        value: &DirectTreeAction<M>,
+    ) -> Result<bool, String> {
+        let key_u64 = question_flat_id_to_u64(table_key)?;
+        let mut did_write = false;
         {
             let mut initialized_keys =
                 write_txn
@@ -602,47 +823,18 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
                         e
                     )
                 })?;
+                did_write = true;
             }
         }
-        {
-            let mut action_rows = write_txn
-                .open_multimap_table(action_rows_table_def::<M>())
-                .map_err(|e| {
-                    format!(
-                        "Failed to open redb action rows table at {}: {}",
-                        self.db_path.display(),
-                        e
-                    )
-                })?;
-            let row = StoredActionRow::from_row_index_and_action(row_index, value)?;
-            self.insert_row_checked(&action_rows, key_u64, row_index, value)?;
-            action_rows.insert(key_u64, &row).map_err(|e| {
+        let mut action_rows = write_txn
+            .open_multimap_table(action_rows_table_def::<M>())
+            .map_err(|e| {
                 format!(
-                    "Failed to insert redb action row for key {} row_index {} at {}: {}",
-                    key_u64,
-                    row_index,
+                    "Failed to open redb action rows table at {}: {}",
                     self.db_path.display(),
                     e
                 )
             })?;
-        }
-        write_txn.commit().map_err(|e| {
-            format!(
-                "Failed to commit redb action append transaction at {}: {}",
-                self.db_path.display(),
-                e
-            )
-        })?;
-        Ok(())
-    }
-
-    fn insert_row_checked(
-        &self,
-        action_rows: &impl ReadableMultimapTable<u64, StoredActionRow<M>>,
-        key_u64: u64,
-        row_index: usize,
-        value: &DirectTreeAction<M>,
-    ) -> Result<(), String> {
         let candidate = StoredActionRow::from_row_index_and_action(row_index, value)?;
         let candidate_bytes = candidate.encode();
         let values = action_rows.get(key_u64).map_err(|e| {
@@ -667,7 +859,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
                 Ordering::Less => continue,
                 Ordering::Equal => {
                     if existing_row.encode() == candidate_bytes {
-                        return Ok(());
+                        return Ok(did_write);
                     }
                     return Err(format!(
                         "Conflicting payload at row_index {} for key {} in redb action log store {}",
@@ -679,7 +871,16 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
                 Ordering::Greater => break,
             }
         }
-        Ok(())
+        action_rows.insert(key_u64, &candidate).map_err(|e| {
+            format!(
+                "Failed to insert redb action row for key {} row_index {} at {}: {}",
+                key_u64,
+                row_index,
+                self.db_path.display(),
+                e
+            )
+        })?;
+        Ok(true)
     }
 }
 
@@ -702,12 +903,24 @@ fn question_flat_id_from_u64<S: DatasetSplit>(value: u64) -> Result<QuestionFlat
     Ok(QuestionFlatId(usize_value, PhantomData))
 }
 
+pub fn action_logs_file_path_for_backend<M: LlmModelMarker, S: DatasetSplit>(
+    config_nickname: &str,
+    epoch: usize,
+    backend: ActionLogPathBackend,
+) -> String {
+    action_logs_path_from_template::<S>(M::CLI_NAME, config_nickname, epoch, backend)
+        .unwrap_or_else(|err| panic!("Failed to resolve action logs path: {}", err))
+}
+
 pub fn action_logs_file_path<M: LlmModelMarker, S: DatasetSplit>(
     config_nickname: &str,
     epoch: usize,
 ) -> String {
-    action_logs_path_from_template::<S>(M::CLI_NAME, config_nickname, epoch)
-        .unwrap_or_else(|err| panic!("Failed to resolve action logs path: {}", err))
+    action_logs_file_path_for_backend::<M, S>(
+        config_nickname,
+        epoch,
+        ActionLogStore::<M, S>::DEFAULT_BACKEND,
+    )
 }
 
 pub fn open_action_logs<M: LlmModelMarker, S: DatasetSplit>(

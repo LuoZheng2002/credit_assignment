@@ -1,4 +1,4 @@
-use research_utility::progress_tui_logger::log_master_progress;
+use research_utility::progress_tui_logger::{log_info, log_master_progress};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::{sync::Semaphore, task::JoinSet};
 
@@ -115,7 +115,13 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
     progress_bar_label: &str,
 ) -> AccuracyStats {
     let question_store = open_hybrid_dataset::<S>();
+    log_info(format!(
+        "get_accuracy: opening action logs for config={config_nickname}, epoch={epoch}"
+    ));
     let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
+    log_info(format!(
+        "get_accuracy: action logs opened for config={config_nickname}, epoch={epoch}"
+    ));
     let mut keys = action_store.get_keys().unwrap();
     keys.sort();
 

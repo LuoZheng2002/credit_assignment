@@ -4,7 +4,7 @@ use std::{
     future::Future,
     io::BufReader,
     path::{Path, PathBuf},
-    sync::{OnceLock, RwLock},
+    sync::OnceLock,
 };
 
 pub fn read_json<T: DeserializeOwned>(path: impl AsRef<Path>) -> Result<T, String> {
@@ -128,10 +128,10 @@ pub fn extract_boxed_content(text: &str) -> Option<String> {
 //         .map_err(|err| err.clone())
 // }
 
-static STORAGE_MOUNT_DIR: OnceLock<RwLock<String>> = OnceLock::new();
+static STORAGE_MOUNT_DIR: OnceLock<std::sync::RwLock<String>> = OnceLock::new();
 
-fn mount_dir_lock() -> &'static RwLock<String> {
-    STORAGE_MOUNT_DIR.get_or_init(|| RwLock::new(String::new()))
+fn mount_dir_lock() -> &'static std::sync::RwLock<String> {
+    STORAGE_MOUNT_DIR.get_or_init(|| std::sync::RwLock::new(String::new()))
 }
 
 fn _normalize_non_empty_dir(raw: &str, arg_name: &str) -> Result<String, String> {

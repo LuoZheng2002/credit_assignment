@@ -232,7 +232,6 @@ fn supervised_content_advantage_stats<M: LlmModelMarker>(
 
 pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     question_store: SqliteStore<QuestionFlatId<Training>, HybridDatasetQuestion<Training>>,
-    // action_log_store: DirectTreeActionLogStore<M>,
     action_store: ActionLogStore<M, Training>,
     rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
@@ -320,8 +319,6 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
 }
 
 async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: DatasetSplit>(
-    // action_log_store: &ActionStoreAdapter<M>,
-    // action_log_store: DirectTreeActionLogStore<M>,
     question_store: SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>>,
     action_store: ActionLogStore<M, S>,
     rollout_config: DirectRolloutConfig<S>,
