@@ -1,16 +1,11 @@
-use std::{
-    collections::VecDeque,
-    process::Stdio,
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{collections::VecDeque, process::Stdio, sync::Arc, time::Duration};
 
 use research_utility::progress_tui_logger::log_warning;
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStderr, ChildStdin, ChildStdout, Command},
-    sync::mpsc,
+    sync::{OnceCell, mpsc},
     task::JoinHandle,
     time::timeout,
 };
@@ -111,18 +106,31 @@ struct PythonToolServerSlot {
 }
 
 pub struct PythonToolServerPool {
+    max_python_processes: usize,
     slots: Vec<Arc<tokio::sync::Mutex<PythonToolServerSlot>>>,
     available_sender: mpsc::UnboundedSender<usize>,
     available_receiver: tokio::sync::Mutex<mpsc::UnboundedReceiver<usize>>,
 }
 
-static PYTHON_TOOL_POOL: OnceLock<Arc<PythonToolServerPool>> = OnceLock::new();
+static PYTHON_TOOL_POOL: OnceCell<Arc<PythonToolServerPool>> = OnceCell::const_new();
 
 pub async fn init_python_tool_pool(max_python_processes: usize) -> Result<(), String> {
-    let pool = Arc::new(PythonToolServerPool::new(max_python_processes).await?);
-    PYTHON_TOOL_POOL
-        .set(pool)
-        .map_err(|_| "python tool pool was already initialized".to_string())
+    let pool = PYTHON_TOOL_POOL
+        .get_or_try_init(|| async move {
+            Ok::<Arc<PythonToolServerPool>, String>(Arc::new(
+                PythonToolServerPool::new(max_python_processes).await?,
+            ))
+        })
+        .await?;
+
+    if pool.max_python_processes != max_python_processes {
+        log_warning(format!(
+            "python tool pool already initialized with max_python_processes={}, ignoring requested {}",
+            pool.max_python_processes, max_python_processes
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn python_tool_pool() -> &'static Arc<PythonToolServerPool> {
@@ -155,6 +163,7 @@ impl PythonToolServerPool {
         }
 
         Ok(Self {
+            max_python_processes,
             slots,
             available_sender,
             available_receiver: tokio::sync::Mutex::new(available_receiver),

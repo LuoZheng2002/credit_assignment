@@ -25,7 +25,7 @@ use credit_assignment::{
     utils::configure_mount_dir,
 };
 use research_utility::progress_tui_logger::{
-    ProgressTuiLogger, log_error, log_exit_hint, log_info, log_window_name
+    ProgressTuiLogger, log_error, log_exit_hint, log_info, log_window_name,
 };
 
 #[derive(Parser, Debug)]
@@ -91,7 +91,7 @@ fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
     })
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
     std::panic::set_hook(Box::new(|info| {
         eprintln!("panic occurred: {}", info);

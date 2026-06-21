@@ -13,7 +13,7 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --training-time 600 \
     --training-rollout-time-limit-secs 600 \
     --validation-rollout-time-limit-secs 1200 \
-    --max-python-processes 4 \
+    --max-python-processes 2 \
     --num-gpus 1 \
     --mount-dir "/volume" \
     --keep-action-logs true \
