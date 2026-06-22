@@ -27,12 +27,12 @@ pub(super) fn parse_action_logs_context(
             )
         })?;
     let dataset_split = match file_name {
-        "action_logs_training.sqlite" => DatasetSplitEnum::Training,
-        "action_logs_validation.sqlite" => DatasetSplitEnum::Validation,
-        "action_logs_testing.sqlite" => DatasetSplitEnum::Testing,
+        "action_logs_training" => DatasetSplitEnum::Training,
+        "action_logs_validation" => DatasetSplitEnum::Validation,
+        "action_logs_testing" => DatasetSplitEnum::Testing,
         other => {
             return Err(format!(
-                "Unsupported action logs file name {}. Expected action_logs_training.sqlite, action_logs_validation.sqlite, or action_logs_testing.sqlite",
+                "Unsupported action logs file name {}. Expected action_logs_training, action_logs_validation, or action_logs_testing",
                 other
             ));
         }

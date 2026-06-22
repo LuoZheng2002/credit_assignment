@@ -40,7 +40,7 @@ The `--model-cli-name` options can be found in `src/llm_model/llm_model_name.rs`
 2. Run `bash tui.sh [tui_log.bin path]`
 
 ## Browse the action logs that form the trees
-1. Locate the action log files in medium files folder. For example: `modal_downloads/qwen2.5-7b/std/medium_files/qwen2.5-7b/std/epoch_0/action_logs_training.sqlite` and `modal_downloads/qwen2.5-7b/std/medium_files/qwen2.5-7b/std/epoch_0/action_logs_validation.sqlite`.
+1. Locate the action log files in medium files folder. For example: `modal_downloads/qwen2.5-7b/std/medium_files/qwen2.5-7b/std/epoch_0/action_logs_training` and `modal_downloads/qwen2.5-7b/std/medium_files/qwen2.5-7b/std/epoch_0/action_logs_validation`.
 2. Run `cargo run --bin bin_browse_trees -- --action-logs-path [action log files path]`
 
 ## Things to check for

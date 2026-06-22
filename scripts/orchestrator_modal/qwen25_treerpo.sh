@@ -9,10 +9,10 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
     --num-iterations-limit 3 \
     --advantage-calculation-policy tree-rpo-win-rate \
-    --training-config-common-path config/training/common_ddp.toml \
+    --training-config-common-path config/training/common_lora.toml \
     --training-time 600 \
     --training-rollout-time-limit-secs 600 \
-    --validation-rollout-time-limit-secs 1200 \
+    --validation-rollout-time-limit-secs 600 \
     --max-python-processes 4 \
     --num-gpus 1 \
     --mount-dir "/volume" \

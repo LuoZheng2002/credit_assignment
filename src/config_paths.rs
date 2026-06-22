@@ -31,7 +31,7 @@ pub fn config_paths_file_path_from_action_logs_path(
         .and_then(Path::parent)
         .ok_or_else(|| {
             format!(
-                "Action logs path {} must look like .../epoch_<n>/action_logs_<split>.sqlite",
+                "Action logs path {} must look like .../epoch_<n>/action_logs_<split>",
                 action_logs_path.display()
             )
         })?;

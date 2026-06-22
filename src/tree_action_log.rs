@@ -3,12 +3,9 @@ use redb::{
     ReadableTable, TableDefinition, TableError as RedbTableError, TypeName, Value as RedbValue,
     WriteTransaction,
 };
-use research_utility::{
-    progress_tui_logger::log_info, sqlite_table_array_store::SqliteTableArrayStore,
-};
+use research_utility::progress_tui_logger::log_info;
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, fs, marker::PhantomData, path::PathBuf, sync::Arc};
-use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     direct_tool::{
@@ -17,7 +14,7 @@ use crate::{
         rollout_config::DirectRolloutConfig,
         tree_action::DirectTreeAction,
     },
-    jinja_directories::{ActionLogPathBackend, action_logs_path_from_template},
+    jinja_directories::action_logs_path_from_template,
     llm_model::LlmModelMarker,
 };
 
@@ -32,55 +29,24 @@ pub struct DirectTreeActionLog<M: LlmModelMarker, S: DatasetSplit> {
     pub actions: Vec<DirectTreeAction<M>>,
 }
 
-enum ActionLogStoreBackend<M: LlmModelMarker, S: DatasetSplit> {
-    Sqlite(SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>),
-    Redb(RedbActionLogStore<M, S>),
-}
-
 pub struct ActionLogStore<M: LlmModelMarker, S: DatasetSplit> {
-    backend: ActionLogStoreBackend<M, S>,
+    store: RedbActionLogStore<M, S>,
 }
 
 impl<M: LlmModelMarker, S: DatasetSplit> ActionLogStore<M, S> {
-    pub const DEFAULT_BACKEND: ActionLogPathBackend = ActionLogPathBackend::Redb;
-
     pub fn initialize_if_missing(db_path: impl Into<PathBuf>) -> Result<Self, String> {
-        match Self::DEFAULT_BACKEND {
-            ActionLogPathBackend::Sqlite => Self::initialize_sqlite_if_missing(db_path),
-            ActionLogPathBackend::Redb => Self::initialize_redb_if_missing(db_path),
-        }
-    }
-
-    pub fn initialize_sqlite_if_missing(db_path: impl Into<PathBuf>) -> Result<Self, String> {
-        SqliteTableArrayStore::<QuestionFlatId<S>, DirectTreeAction<M>>::initialize_if_missing(
-            db_path,
-        )
-        .map(|inner| Self {
-            backend: ActionLogStoreBackend::Sqlite(inner),
-        })
-    }
-
-    pub fn initialize_redb_if_missing(db_path: impl Into<PathBuf>) -> Result<Self, String> {
-        RedbActionLogStore::<M, S>::initialize_if_missing(db_path).map(|inner| Self {
-            backend: ActionLogStoreBackend::Redb(inner),
-        })
+        RedbActionLogStore::<M, S>::initialize_if_missing(db_path).map(|store| Self { store })
     }
 
     pub fn get_keys(&self) -> Result<Vec<QuestionFlatId<S>>, String> {
-        match &self.backend {
-            ActionLogStoreBackend::Sqlite(store) => store.get_keys(),
-            ActionLogStoreBackend::Redb(store) => store.get_keys(),
-        }
+        self.store.get_keys()
     }
 
     pub fn load_table_sorted(
         &self,
         table_key: QuestionFlatId<S>,
     ) -> Result<Vec<DirectTreeAction<M>>, String> {
-        match &self.backend {
-            ActionLogStoreBackend::Sqlite(store) => store.load_table_sorted(table_key),
-            ActionLogStoreBackend::Redb(store) => store.load_table_sorted(table_key),
-        }
+        self.store.load_table_sorted(table_key)
     }
 
     pub fn load_or_init_table_sorted<F>(
@@ -91,14 +57,8 @@ impl<M: LlmModelMarker, S: DatasetSplit> ActionLogStore<M, S> {
     where
         F: FnOnce() -> Vec<(usize, DirectTreeAction<M>)>,
     {
-        match &self.backend {
-            ActionLogStoreBackend::Sqlite(store) => {
-                store.load_or_init_table_sorted(table_key, initialize_rows)
-            }
-            ActionLogStoreBackend::Redb(store) => {
-                store.load_or_init_table_sorted(table_key, initialize_rows)
-            }
-        }
+        self.store
+            .load_or_init_table_sorted(table_key, initialize_rows)
     }
 
     pub fn append_at(
@@ -107,10 +67,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> ActionLogStore<M, S> {
         row_index: usize,
         value: &DirectTreeAction<M>,
     ) -> Result<(), String> {
-        match &self.backend {
-            ActionLogStoreBackend::Sqlite(store) => store.append_at(table_key, row_index, value),
-            ActionLogStoreBackend::Redb(store) => store.append_at(table_key, row_index, value),
-        }
+        self.store.append_at(table_key, row_index, value)
     }
 }
 
@@ -121,79 +78,20 @@ pub struct ActionStoreAdapter<M: LlmModelMarker, S: DatasetSplit> {
 
 #[derive(Clone)]
 enum ActionStoreAdapterBackend<M: LlmModelMarker, S: DatasetSplit> {
-    SqliteWorker {
-        request_tx: mpsc::UnboundedSender<StoreRequest<M, S>>,
-    },
     RedbInline {
         state: Arc<tokio::sync::RwLock<RedbInlineActionStoreState<M, S>>>,
     },
 }
 
-enum StoreRequest<M: LlmModelMarker, S: DatasetSplit> {
-    GetOrInitActions {
-        key: QuestionFlatId<S>,
-        response_tx: oneshot::Sender<Result<Vec<DirectTreeAction<M>>, String>>,
-    },
-    AppendActionAt {
-        key: QuestionFlatId<S>,
-        action_index: usize,
-        action: DirectTreeAction<M>,
-        response_tx: oneshot::Sender<Result<bool, String>>,
-    },
-}
 impl<M: LlmModelMarker, S: DatasetSplit> ActionStoreAdapter<M, S> {
     pub fn new(store: ActionLogStore<M, S>) -> Self {
-        match store.backend {
-            ActionLogStoreBackend::Sqlite(store) => {
-                let (request_tx, request_rx) = mpsc::unbounded_channel();
-                Self::spawn_sqlite_worker(store, request_rx);
-                Self {
-                    backend: ActionStoreAdapterBackend::SqliteWorker { request_tx },
-                }
-            }
-            ActionLogStoreBackend::Redb(store) => Self {
-                backend: ActionStoreAdapterBackend::RedbInline {
-                    state: Arc::new(tokio::sync::RwLock::new(RedbInlineActionStoreState::new(
-                        store,
-                    ))),
-                },
+        Self {
+            backend: ActionStoreAdapterBackend::RedbInline {
+                state: Arc::new(tokio::sync::RwLock::new(RedbInlineActionStoreState::new(
+                    store.store,
+                ))),
             },
         }
-    }
-
-    fn spawn_sqlite_worker(
-        store: SqliteTableArrayStore<QuestionFlatId<S>, DirectTreeAction<M>>,
-        mut request_rx: mpsc::UnboundedReceiver<StoreRequest<M, S>>,
-    ) {
-        std::thread::Builder::new()
-            .name("direct_action_log_store_worker".to_string())
-            .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("failed to initialize direct action log store worker runtime");
-                runtime.block_on(async move {
-                    while let Some(request) = request_rx.recv().await {
-                        match request {
-                            StoreRequest::GetOrInitActions { key, response_tx } => {
-                                let result = store.load_or_init_table_sorted(key, Vec::new);
-                                let _ = response_tx.send(result);
-                            }
-                            StoreRequest::AppendActionAt {
-                                key,
-                                action_index,
-                                action,
-                                response_tx,
-                            } => {
-                                let result =
-                                    store.append_at(key, action_index, &action).map(|_| false);
-                                let _ = response_tx.send(result);
-                            }
-                        }
-                    }
-                });
-            })
-            .expect("failed to spawn direct action log store worker thread");
     }
 
     pub async fn get_or_init_actions(
@@ -201,15 +99,6 @@ impl<M: LlmModelMarker, S: DatasetSplit> ActionStoreAdapter<M, S> {
         key: QuestionFlatId<S>,
     ) -> Result<Vec<DirectTreeAction<M>>, String> {
         match &self.backend {
-            ActionStoreAdapterBackend::SqliteWorker { request_tx } => {
-                let (response_tx, response_rx) = oneshot::channel();
-                request_tx
-                    .send(StoreRequest::GetOrInitActions { key, response_tx })
-                    .map_err(|_| "direct action log store worker has shut down".to_string())?;
-                response_rx
-                    .await
-                    .map_err(|_| "direct action log store worker response dropped".to_string())?
-            }
             ActionStoreAdapterBackend::RedbInline { state } => {
                 state.write().await.get_or_init_actions(key)
             }
@@ -224,21 +113,6 @@ impl<M: LlmModelMarker, S: DatasetSplit> ActionStoreAdapter<M, S> {
         commit_after_write: bool,
     ) -> Result<bool, String> {
         match &self.backend {
-            ActionStoreAdapterBackend::SqliteWorker { request_tx } => {
-                let (response_tx, response_rx) = oneshot::channel();
-                request_tx
-                    .send(StoreRequest::AppendActionAt {
-                        key,
-                        action_index,
-                        action: action.clone(),
-                        response_tx,
-                    })
-                    .map_err(|_| "direct action log store worker has shut down".to_string())?;
-                let _did_commit = response_rx
-                    .await
-                    .map_err(|_| "direct action log store worker response dropped".to_string())??;
-                Ok(false)
-            }
             ActionStoreAdapterBackend::RedbInline { state } => state
                 .write()
                 .await
@@ -248,7 +122,6 @@ impl<M: LlmModelMarker, S: DatasetSplit> ActionStoreAdapter<M, S> {
 
     pub async fn commit_pending(&self) -> Result<bool, String> {
         match &self.backend {
-            ActionStoreAdapterBackend::SqliteWorker { .. } => Ok(false),
             ActionStoreAdapterBackend::RedbInline { state } => state.write().await.commit_pending(),
         }
     }
@@ -903,24 +776,12 @@ fn question_flat_id_from_u64<S: DatasetSplit>(value: u64) -> Result<QuestionFlat
     Ok(QuestionFlatId(usize_value, PhantomData))
 }
 
-pub fn action_logs_file_path_for_backend<M: LlmModelMarker, S: DatasetSplit>(
-    config_nickname: &str,
-    epoch: usize,
-    backend: ActionLogPathBackend,
-) -> String {
-    action_logs_path_from_template::<S>(M::CLI_NAME, config_nickname, epoch, backend)
-        .unwrap_or_else(|err| panic!("Failed to resolve action logs path: {}", err))
-}
-
 pub fn action_logs_file_path<M: LlmModelMarker, S: DatasetSplit>(
     config_nickname: &str,
     epoch: usize,
 ) -> String {
-    action_logs_file_path_for_backend::<M, S>(
-        config_nickname,
-        epoch,
-        ActionLogStore::<M, S>::DEFAULT_BACKEND,
-    )
+    action_logs_path_from_template::<S>(M::CLI_NAME, config_nickname, epoch)
+        .unwrap_or_else(|err| panic!("Failed to resolve action logs path: {}", err))
 }
 
 pub fn open_action_logs<M: LlmModelMarker, S: DatasetSplit>(

@@ -2,7 +2,7 @@ mod context;
 mod tree_render;
 
 use std::error::Error;
-use std::io::Stdout;
+use std::io::{self, Stdout};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -22,7 +22,14 @@ use crate::llm_model::{
     Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03, Qwen3_4B,
     Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
 };
-use crossterm::event::{self, Event, KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::cursor::Show;
+use crossterm::event::{
+    self, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind,
+};
+use crossterm::execute;
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -991,21 +998,15 @@ fn run_app<M: LlmModelMarker, S: DatasetSplit>(
     Ok(())
 }
 
-async fn run_model_app<'a, M: LlmModelMarker, S: DatasetSplit>(
-    run_model_app_args: RunModelAppArgs<'a, S>,
+async fn run_model_app<M: LlmModelMarker, S: DatasetSplit>(
+    config_nickname: String,
+    rollout_config: DirectRolloutConfig<S>,
+    posterior_calculation_config: PosteriorCalculationConfig,
+    epoch: usize,
+    override_hyperparameters: Option<PosteriorHyperparameters>,
+    action_logs_path: PathBuf,
 ) -> Result<(), Box<dyn Error>> {
-    let RunModelAppArgs {
-        terminal,
-        config_nickname,
-        rollout_config,
-        posterior_calculation_config,
-        epoch,
-        override_hyperparameters,
-        action_logs_path,
-    } = run_model_app_args;
-    // let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
-    // let mut keys = action_store.get_keys().unwrap();
-    // keys.sort();
+    println!("Loading keys...");
     let app = App::<M, S>::new(
         config_nickname,
         rollout_config,
@@ -1015,24 +1016,31 @@ async fn run_model_app<'a, M: LlmModelMarker, S: DatasetSplit>(
         action_logs_path,
     )
     .await;
-    run_app::<M, S>(terminal, app)
-}
+    println!("Keys loaded.");
 
-struct RunModelAppArgs<'a, S: DatasetSplit> {
-    terminal: &'a mut Terminal<CrosstermBackend<Stdout>>,
-    config_nickname: String,
-    rollout_config: DirectRolloutConfig<S>,
-    posterior_calculation_config: PosteriorCalculationConfig,
-    epoch: usize, // the epoch index
-    override_hyperparameters: Option<PosteriorHyperparameters>,
-    action_logs_path: PathBuf,
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let result = run_app::<M, S>(&mut terminal, app);
+
+    let _ = disable_raw_mode();
+    let mut stderr = io::stderr();
+    let _ = execute!(
+        stderr,
+        LeaveAlternateScreen,
+        crossterm::event::DisableMouseCapture,
+        Show
+    );
+    result
 }
 
 macro_rules! run_model_app_for_model_and_split {
     (
         $model_name:expr,
         $dataset_split:expr,
-        $terminal:expr,
         $config_nickname:expr,
         $rollout_config_path:expr,
         $posterior_calculation_config:expr,
@@ -1044,7 +1052,6 @@ macro_rules! run_model_app_for_model_and_split {
     ) => {{
         let model_name = $model_name;
         let dataset_split = $dataset_split;
-        let terminal = $terminal;
         let config_nickname = $config_nickname;
         let rollout_config_path = $rollout_config_path;
         let posterior_calculation_config = $posterior_calculation_config;
@@ -1054,19 +1061,22 @@ macro_rules! run_model_app_for_model_and_split {
 
         macro_rules! run_model_for_split {
             ($rollout_config:expr, $inner_split_ty:ty) => {{
-                let run_model_app_args = RunModelAppArgs {
-                    terminal,
-                    config_nickname: config_nickname.to_string(),
-                    rollout_config: $rollout_config,
-                    posterior_calculation_config: (*posterior_calculation_config).clone(),
-                    epoch,
-                    override_hyperparameters: (*override_hyperparameters).clone(),
-                    action_logs_path: action_logs_path.to_path_buf(),
-                };
+                let config_nickname = config_nickname.to_string();
+                let rollout_config = $rollout_config;
+                let posterior_calculation_config = (*posterior_calculation_config).clone();
+                let override_hyperparameters = (*override_hyperparameters).clone();
+                let action_logs_path = action_logs_path.to_path_buf();
                 match model_name {
                     $(
                         $model_enum => {
-                            run_model_app::<$model_ty, $inner_split_ty>(run_model_app_args).await
+                            run_model_app::<$model_ty, $inner_split_ty>(
+                                config_nickname,
+                                rollout_config,
+                                posterior_calculation_config,
+                                epoch,
+                                override_hyperparameters,
+                                action_logs_path,
+                            ).await
                         }
                     )+
                 }
@@ -1088,7 +1098,6 @@ macro_rules! run_model_app_for_model_and_split {
 async fn run_with_resolved_context(
     model: LlmModelName,
     dataset_split: DatasetSplitEnum,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     config_nickname: String,
     rollout_config_path: String,
     posterior_calculation_config: PosteriorCalculationConfig,
@@ -1096,10 +1105,9 @@ async fn run_with_resolved_context(
     override_hyperparameters: Option<PosteriorHyperparameters>,
     action_logs_path: PathBuf,
 ) -> Result<(), Box<dyn Error>> {
-    let result = run_model_app_for_model_and_split!(
+    run_model_app_for_model_and_split!(
         model,
         dataset_split,
-        terminal,
         &config_nickname,
         &rollout_config_path,
         &posterior_calculation_config,
@@ -1117,13 +1125,11 @@ async fn run_with_resolved_context(
         DatasetSplitEnum::Training, Training,
         DatasetSplitEnum::Validation, Validation,
         DatasetSplitEnum::Testing, Testing
-    );
-    result
+    )
 }
 
 pub async fn run(
     action_logs_path: impl AsRef<Path>,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     override_hyperparameters: Option<PosteriorHyperparameters>,
 ) -> Result<(), Box<dyn Error>> {
     let action_logs_path = action_logs_path.as_ref();
@@ -1164,7 +1170,6 @@ pub async fn run(
     run_with_resolved_context(
         context.model,
         context.dataset_split,
-        terminal,
         context.config_nickname,
         rollout_config_path,
         posterior_calculation_config,

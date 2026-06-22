@@ -5,12 +5,6 @@ use std::sync::LazyLock;
 use crate::direct_tool::hybrid_dataset::DatasetSplit;
 use crate::utils::{load_jinja_template_environment, mount_dir};
 
-const ACTION_LOGS_TRAINING_PATH_SQLITE_TEMPLATE_PATH: &str =
-    "config/directories/action_logs_training_path_sqlite.jinja";
-const ACTION_LOGS_VALIDATION_PATH_SQLITE_TEMPLATE_PATH: &str =
-    "config/directories/action_logs_validation_path_sqlite.jinja";
-const ACTION_LOGS_TESTING_PATH_SQLITE_TEMPLATE_PATH: &str =
-    "config/directories/action_logs_testing_path_sqlite.jinja";
 const ACTION_LOGS_TRAINING_PATH_REDB_TEMPLATE_PATH: &str =
     "config/directories/action_logs_training_path_redb.jinja";
 const ACTION_LOGS_VALIDATION_PATH_REDB_TEMPLATE_PATH: &str =
@@ -33,33 +27,6 @@ const TRAINING_SUMMARY_PARENT_DIR_TEMPLATE_PATH: &str =
 const TRAINING_WRAPPER_LOG_PATH_TEMPLATE_PATH: &str =
     "config/directories/training_wrapper_log_path.jinja";
 const TUI_LOG_PATH_TEMPLATE_PATH: &str = "config/directories/tui_log_path.jinja";
-
-static ACTION_LOGS_TRAINING_PATH_SQLITE_TEMPLATE_ENVIRONMENT: LazyLock<
-    Result<minijinja::Environment<'static>, String>,
-> = LazyLock::new(|| {
-    load_jinja_template_environment(
-        ACTION_LOGS_TRAINING_PATH_SQLITE_TEMPLATE_PATH,
-        "action_logs_training_path_sqlite",
-    )
-});
-
-static ACTION_LOGS_VALIDATION_PATH_SQLITE_TEMPLATE_ENVIRONMENT: LazyLock<
-    Result<minijinja::Environment<'static>, String>,
-> = LazyLock::new(|| {
-    load_jinja_template_environment(
-        ACTION_LOGS_VALIDATION_PATH_SQLITE_TEMPLATE_PATH,
-        "action_logs_validation_path_sqlite",
-    )
-});
-
-static ACTION_LOGS_TESTING_PATH_SQLITE_TEMPLATE_ENVIRONMENT: LazyLock<
-    Result<minijinja::Environment<'static>, String>,
-> = LazyLock::new(|| {
-    load_jinja_template_environment(
-        ACTION_LOGS_TESTING_PATH_SQLITE_TEMPLATE_PATH,
-        "action_logs_testing_path_sqlite",
-    )
-});
 
 static ACTION_LOGS_TRAINING_PATH_REDB_TEMPLATE_ENVIRONMENT: LazyLock<
     Result<minijinja::Environment<'static>, String>,
@@ -246,62 +213,34 @@ fn render_training_trajectories_template(
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActionLogPathBackend {
-    Sqlite,
-    Redb,
-}
-
 pub fn action_logs_path_from_template<S: DatasetSplit>(
     model_cli_name: &str,
     config_nickname: &str,
     epoch: usize,
-    backend: ActionLogPathBackend,
 ) -> Result<String, String> {
-    match (S::dataset_file_postfix().as_str(), backend) {
-        ("train", ActionLogPathBackend::Sqlite) => render_epoch_template(
-            &ACTION_LOGS_TRAINING_PATH_SQLITE_TEMPLATE_ENVIRONMENT,
-            "action_logs_training_path_sqlite",
-            model_cli_name,
-            config_nickname,
-            epoch,
-        ),
-        ("val", ActionLogPathBackend::Sqlite) => render_epoch_template(
-            &ACTION_LOGS_VALIDATION_PATH_SQLITE_TEMPLATE_ENVIRONMENT,
-            "action_logs_validation_path_sqlite",
-            model_cli_name,
-            config_nickname,
-            epoch,
-        ),
-        ("test", ActionLogPathBackend::Sqlite) => render_epoch_template(
-            &ACTION_LOGS_TESTING_PATH_SQLITE_TEMPLATE_ENVIRONMENT,
-            "action_logs_testing_path_sqlite",
-            model_cli_name,
-            config_nickname,
-            epoch,
-        ),
-        ("train", ActionLogPathBackend::Redb) => render_epoch_template(
+    match S::dataset_file_postfix().as_str() {
+        "train" => render_epoch_template(
             &ACTION_LOGS_TRAINING_PATH_REDB_TEMPLATE_ENVIRONMENT,
             "action_logs_training_path_redb",
             model_cli_name,
             config_nickname,
             epoch,
         ),
-        ("val", ActionLogPathBackend::Redb) => render_epoch_template(
+        "val" => render_epoch_template(
             &ACTION_LOGS_VALIDATION_PATH_REDB_TEMPLATE_ENVIRONMENT,
             "action_logs_validation_path_redb",
             model_cli_name,
             config_nickname,
             epoch,
         ),
-        ("test", ActionLogPathBackend::Redb) => render_epoch_template(
+        "test" => render_epoch_template(
             &ACTION_LOGS_TESTING_PATH_REDB_TEMPLATE_ENVIRONMENT,
             "action_logs_testing_path_redb",
             model_cli_name,
             config_nickname,
             epoch,
         ),
-        (other, _) => Err(format!("Unsupported dataset split postfix: {}", other)),
+        other => Err(format!("Unsupported dataset split postfix: {}", other)),
     }
 }
 

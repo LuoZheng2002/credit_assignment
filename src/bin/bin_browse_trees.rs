@@ -7,18 +7,20 @@ use credit_assignment::browse_trees;
 use credit_assignment::direct_tool::posterior_calculation_config::PosteriorHyperparameters;
 use credit_assignment::json_toml_utils::read_json;
 use crossterm::cursor::Show;
-use crossterm::event::EnableMouseCapture;
 use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Interactively browse rollout session logs")]
+#[command(
+    author,
+    version,
+    about = "Interactively browse redb rollout session logs"
+)]
 struct Args {
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Path to a redb action log file, such as .../epoch_<n>/action_logs_training"
+    )]
     action_logs_path: String,
     #[arg(long)]
     override_hyperparameters_path: Option<String>,
@@ -57,13 +59,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let override_hyperparameters = override_hyperparameters_path
         .map(|path| read_json::<PosteriorHyperparameters>(path).unwrap());
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let result = browse_trees::run(action_logs_path, &mut terminal, override_hyperparameters).await;
+    let result = browse_trees::run(action_logs_path, override_hyperparameters).await;
 
     let _ = disable_raw_mode();
     let mut stderr = io::stderr();
