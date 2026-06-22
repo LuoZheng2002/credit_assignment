@@ -5,7 +5,14 @@ use redb::{
 };
 use research_utility::progress_tui_logger::log_info;
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, fs, marker::PhantomData, path::PathBuf, sync::Arc};
+use std::{
+    cmp::Ordering,
+    collections::BTreeMap,
+    fs::{self, File, OpenOptions},
+    io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
+    marker::PhantomData,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     direct_tool::{
@@ -30,23 +37,67 @@ pub struct DirectTreeActionLog<M: LlmModelMarker, S: DatasetSplit> {
 }
 
 pub struct ActionLogStore<M: LlmModelMarker, S: DatasetSplit> {
-    store: RedbActionLogStore<M, S>,
+    backend: ActionLogStoreBackend<M, S>,
+}
+
+#[allow(dead_code)]
+enum ActionLogStoreBackend<M: LlmModelMarker, S: DatasetSplit> {
+    Redb(RedbActionLogStore<M, S>),
+    ExtSort(ExtSortActionLogStore<M, S>),
 }
 
 impl<M: LlmModelMarker, S: DatasetSplit> ActionLogStore<M, S> {
     pub fn initialize_if_missing(db_path: impl Into<PathBuf>) -> Result<Self, String> {
-        RedbActionLogStore::<M, S>::initialize_if_missing(db_path).map(|store| Self { store })
+        ExtSortActionLogStore::<M, S>::initialize_if_missing(db_path).map(|store| Self {
+            backend: ActionLogStoreBackend::ExtSort(store),
+        })
     }
 
     pub fn get_keys(&self) -> Result<Vec<QuestionFlatId<S>>, String> {
-        self.store.get_keys()
+        match &self.backend {
+            ActionLogStoreBackend::Redb(store) => store.get_keys(),
+            ActionLogStoreBackend::ExtSort(store) => store.get_keys(),
+        }
+    }
+
+    pub fn load_action_log(
+        &self,
+        question_flat_id: QuestionFlatId<S>,
+    ) -> Result<Vec<DirectTreeAction<M>>, String> {
+        match &self.backend {
+            ActionLogStoreBackend::Redb(store) => store.load_action_log(question_flat_id),
+            ActionLogStoreBackend::ExtSort(store) => store.load_action_log(question_flat_id),
+        }
+    }
+
+    pub fn append(
+        &self,
+        question_flat_id: QuestionFlatId<S>,
+        action_index: usize,
+        value: &DirectTreeAction<M>,
+    ) -> Result<(), String> {
+        match &self.backend {
+            ActionLogStoreBackend::Redb(store) => {
+                store.append(question_flat_id, action_index, value)
+            }
+            ActionLogStoreBackend::ExtSort(store) => {
+                store.append(question_flat_id, action_index, value)
+            }
+        }
+    }
+
+    pub fn sort(&self) -> Result<(), String> {
+        match &self.backend {
+            ActionLogStoreBackend::Redb(store) => store.sort(),
+            ActionLogStoreBackend::ExtSort(store) => store.sort(),
+        }
     }
 
     pub fn load_table_sorted(
         &self,
         table_key: QuestionFlatId<S>,
     ) -> Result<Vec<DirectTreeAction<M>>, String> {
-        self.store.load_table_sorted(table_key)
+        self.load_action_log(table_key)
     }
 
     pub fn load_or_init_table_sorted<F>(
@@ -57,8 +108,14 @@ impl<M: LlmModelMarker, S: DatasetSplit> ActionLogStore<M, S> {
     where
         F: FnOnce() -> Vec<(usize, DirectTreeAction<M>)>,
     {
-        self.store
-            .load_or_init_table_sorted(table_key, initialize_rows)
+        match &self.backend {
+            ActionLogStoreBackend::Redb(store) => {
+                store.load_or_init_table_sorted(table_key, initialize_rows)
+            }
+            ActionLogStoreBackend::ExtSort(store) => {
+                store.load_or_init_table_sorted(table_key, initialize_rows)
+            }
+        }
     }
 
     pub fn append_at(
@@ -67,63 +124,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> ActionLogStore<M, S> {
         row_index: usize,
         value: &DirectTreeAction<M>,
     ) -> Result<(), String> {
-        self.store.append_at(table_key, row_index, value)
-    }
-}
-
-#[derive(Clone)]
-pub struct ActionStoreAdapter<M: LlmModelMarker, S: DatasetSplit> {
-    backend: ActionStoreAdapterBackend<M, S>,
-}
-
-#[derive(Clone)]
-enum ActionStoreAdapterBackend<M: LlmModelMarker, S: DatasetSplit> {
-    RedbInline {
-        state: Arc<tokio::sync::RwLock<RedbInlineActionStoreState<M, S>>>,
-    },
-}
-
-impl<M: LlmModelMarker, S: DatasetSplit> ActionStoreAdapter<M, S> {
-    pub fn new(store: ActionLogStore<M, S>) -> Self {
-        Self {
-            backend: ActionStoreAdapterBackend::RedbInline {
-                state: Arc::new(tokio::sync::RwLock::new(RedbInlineActionStoreState::new(
-                    store.store,
-                ))),
-            },
-        }
-    }
-
-    pub async fn get_or_init_actions(
-        &self,
-        key: QuestionFlatId<S>,
-    ) -> Result<Vec<DirectTreeAction<M>>, String> {
-        match &self.backend {
-            ActionStoreAdapterBackend::RedbInline { state } => {
-                state.write().await.get_or_init_actions(key)
-            }
-        }
-    }
-
-    pub async fn append_action_at(
-        &self,
-        key: QuestionFlatId<S>,
-        action_index: usize,
-        action: &DirectTreeAction<M>,
-        commit_after_write: bool,
-    ) -> Result<bool, String> {
-        match &self.backend {
-            ActionStoreAdapterBackend::RedbInline { state } => state
-                .write()
-                .await
-                .append_action_at(key, action_index, action, commit_after_write),
-        }
-    }
-
-    pub async fn commit_pending(&self) -> Result<bool, String> {
-        match &self.backend {
-            ActionStoreAdapterBackend::RedbInline { state } => state.write().await.commit_pending(),
-        }
+        self.append(table_key, row_index, value)
     }
 }
 
@@ -242,12 +243,14 @@ struct RedbActionLogStore<M: LlmModelMarker, S: DatasetSplit> {
 
 // Redb batching model: keep one live write transaction open, apply writes directly into it,
 // and only call commit() on timed flushes or at the end of rollout_all().
+#[allow(dead_code)]
 struct RedbInlineActionStoreState<M: LlmModelMarker, S: DatasetSplit> {
     store: RedbActionLogStore<M, S>,
     write_txn: Option<WriteTransaction>,
     has_pending_writes: bool,
 }
 
+#[allow(dead_code)]
 impl<M: LlmModelMarker, S: DatasetSplit> RedbInlineActionStoreState<M, S> {
     fn new(store: RedbActionLogStore<M, S>) -> Self {
         log_info(format!(
@@ -342,6 +345,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> Drop for RedbInlineActionStoreState<M, 
     }
 }
 
+#[allow(dead_code)]
 impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
     fn initialize_if_missing(db_path: impl Into<PathBuf>) -> Result<Self, String> {
         let db_path = db_path.into();
@@ -414,6 +418,13 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
         table_key: QuestionFlatId<S>,
     ) -> Result<Vec<DirectTreeAction<M>>, String> {
         self.load_table_state(table_key).map(|(_, actions)| actions)
+    }
+
+    fn load_action_log(
+        &self,
+        table_key: QuestionFlatId<S>,
+    ) -> Result<Vec<DirectTreeAction<M>>, String> {
+        self.load_table_sorted(table_key)
     }
 
     fn load_table_state(
@@ -518,6 +529,19 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
         if did_write {
             self.commit_write_txn(write_txn)?;
         }
+        Ok(())
+    }
+
+    fn append(
+        &self,
+        table_key: QuestionFlatId<S>,
+        row_index: usize,
+        value: &DirectTreeAction<M>,
+    ) -> Result<(), String> {
+        self.append_at(table_key, row_index, value)
+    }
+
+    fn sort(&self) -> Result<(), String> {
         Ok(())
     }
 
@@ -755,6 +779,659 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
         })?;
         Ok(true)
     }
+}
+
+#[allow(dead_code)]
+struct ExtSortActionLogStore<M: LlmModelMarker, S: DatasetSplit> {
+    base_path: PathBuf,
+    storage_dir: PathBuf,
+    _phantom: PhantomData<(M, S)>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "", deserialize = ""))]
+struct ExtSortActionRow<M: LlmModelMarker> {
+    question_flat_id: u64,
+    row_index: u64,
+    action: DirectTreeAction<M>,
+}
+
+impl<M: LlmModelMarker> ExtSortActionRow<M> {
+    fn from_row_index_and_action(
+        question_flat_id: u64,
+        row_index: usize,
+        action: &DirectTreeAction<M>,
+    ) -> Result<Self, String> {
+        let row_index = u64::try_from(row_index)
+            .map_err(|_| format!("row index {row_index} does not fit into u64"))?;
+        Ok(Self {
+            question_flat_id,
+            row_index,
+            action: action.clone(),
+        })
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let payload = rmp_serde::to_vec_named(&self.action)
+            .unwrap_or_else(|e| panic!("failed to serialize DirectTreeAction for extsort: {e}"));
+        let mut bytes = Vec::with_capacity(24 + payload.len());
+        bytes.extend_from_slice(&self.question_flat_id.to_be_bytes());
+        bytes.extend_from_slice(&self.row_index.to_be_bytes());
+        bytes.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    fn decode(reader: &mut impl Read) -> std::io::Result<Self> {
+        let mut question_flat_id_bytes = [0u8; 8];
+        reader.read_exact(&mut question_flat_id_bytes)?;
+        let mut row_index_bytes = [0u8; 8];
+        reader.read_exact(&mut row_index_bytes)?;
+        let mut payload_len_bytes = [0u8; 8];
+        reader.read_exact(&mut payload_len_bytes)?;
+        let payload_len = u64::from_be_bytes(payload_len_bytes) as usize;
+        let mut payload = vec![0u8; payload_len];
+        reader.read_exact(&mut payload)?;
+        let action = rmp_serde::from_slice(&payload).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("failed to deserialize DirectTreeAction from extsort: {e}"),
+            )
+        })?;
+        Ok(Self {
+            question_flat_id: u64::from_be_bytes(question_flat_id_bytes),
+            row_index: u64::from_be_bytes(row_index_bytes),
+            action,
+        })
+    }
+}
+
+impl<M: LlmModelMarker> extsort::Sortable for ExtSortActionRow<M> {
+    fn encode<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        let bytes = self.encode();
+        writer.write_all(&bytes)
+    }
+
+    fn decode<R: Read>(reader: &mut R) -> std::io::Result<Self> {
+        Self::decode(reader)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ExtSortKeyRecord {
+    question_flat_id: u64,
+}
+
+impl ExtSortKeyRecord {
+    fn encode(&self) -> [u8; 8] {
+        self.question_flat_id.to_be_bytes()
+    }
+
+    fn decode(reader: &mut impl Read) -> std::io::Result<Option<Self>> {
+        let mut bytes = [0u8; 8];
+        match reader.read_exact(&mut bytes) {
+            Ok(()) => Ok(Some(Self {
+                question_flat_id: u64::from_be_bytes(bytes),
+            })),
+            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ExtSortIndexRecord {
+    question_flat_id: u64,
+    start_offset: u64,
+    action_count: u64,
+}
+
+impl ExtSortIndexRecord {
+    fn encode(&self) -> [u8; 24] {
+        let mut bytes = [0u8; 24];
+        bytes[..8].copy_from_slice(&self.question_flat_id.to_be_bytes());
+        bytes[8..16].copy_from_slice(&self.start_offset.to_be_bytes());
+        bytes[16..24].copy_from_slice(&self.action_count.to_be_bytes());
+        bytes
+    }
+
+    fn decode(reader: &mut impl Read) -> std::io::Result<Option<Self>> {
+        let mut bytes = [0u8; 24];
+        match reader.read_exact(&mut bytes) {
+            Ok(()) => Ok(Some(Self {
+                question_flat_id: u64::from_be_bytes(bytes[..8].try_into().unwrap()),
+                start_offset: u64::from_be_bytes(bytes[8..16].try_into().unwrap()),
+                action_count: u64::from_be_bytes(bytes[16..24].try_into().unwrap()),
+            })),
+            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
+    fn initialize_if_missing(db_path: impl Into<PathBuf>) -> Result<Self, String> {
+        let base_path = db_path.into();
+        if let Some(parent) = base_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "Failed to create parent directory for extsort action log store at {}: {}",
+                    base_path.display(),
+                    e
+                )
+            })?;
+        }
+        let storage_dir = extsort_storage_dir(&base_path);
+        fs::create_dir_all(&storage_dir).map_err(|e| {
+            format!(
+                "Failed to create extsort action log storage directory at {}: {}",
+                storage_dir.display(),
+                e
+            )
+        })?;
+        Ok(Self {
+            base_path,
+            storage_dir,
+            _phantom: PhantomData,
+        })
+    }
+
+    fn get_keys(&self) -> Result<Vec<QuestionFlatId<S>>, String> {
+        let index = self.read_index_map()?;
+        index.into_keys().map(question_flat_id_from_u64).collect()
+    }
+
+    fn load_action_log(
+        &self,
+        table_key: QuestionFlatId<S>,
+    ) -> Result<Vec<DirectTreeAction<M>>, String> {
+        let key_u64 = question_flat_id_to_u64(table_key)?;
+        let index = self.read_index_map()?;
+        let Some(entry) = index.get(&key_u64) else {
+            if self.file_len(self.pending_actions_path())? == 0 {
+                return Ok(Vec::new());
+            }
+            return Err(format!(
+                "Action store at {} is not sorted; call sort() before reading",
+                self.base_path.display()
+            ));
+        };
+        let file = File::open(self.sorted_actions_path()).map_err(|e| {
+            format!(
+                "Failed to open extsort actions file at {}: {}",
+                self.sorted_actions_path().display(),
+                e
+            )
+        })?;
+        let mut reader = BufReader::new(file);
+        reader
+            .seek(SeekFrom::Start(entry.start_offset))
+            .map_err(|e| {
+                format!(
+                    "Failed to seek extsort actions file at {}: {}",
+                    self.sorted_actions_path().display(),
+                    e
+                )
+            })?;
+        let mut actions = Vec::with_capacity(entry.action_count as usize);
+        for expected_index in 0..entry.action_count {
+            let row = ExtSortActionRow::decode(&mut reader).map_err(|e| {
+                format!(
+                    "Failed to decode extsort action row for key {} at {}: {}",
+                    key_u64,
+                    self.sorted_actions_path().display(),
+                    e
+                )
+            })?;
+            assert_eq!(
+                row.question_flat_id, key_u64,
+                "load_action_log must read a contiguous block for one question_flat_id"
+            );
+            assert_eq!(
+                row.row_index, expected_index,
+                "action indices must be sequential starting at 0 for question_flat_id {}",
+                key_u64
+            );
+            actions.push(row.action);
+        }
+        let mut next_header = [0u8; 8];
+        match reader.read_exact(&mut next_header) {
+            Ok(()) => {
+                let next_key = u64::from_be_bytes(next_header);
+                assert_ne!(
+                    next_key, key_u64,
+                    "load_action_log must stop before the next question_flat_id"
+                );
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {}
+            Err(err) => {
+                return Err(format!(
+                    "Failed to probe for the next extsort action row at {}: {}",
+                    self.sorted_actions_path().display(),
+                    err
+                ));
+            }
+        }
+        Ok(actions)
+    }
+
+    fn load_or_init_table_sorted<F>(
+        &self,
+        table_key: QuestionFlatId<S>,
+        initialize_rows: F,
+    ) -> Result<Vec<DirectTreeAction<M>>, String>
+    where
+        F: FnOnce() -> Vec<(usize, DirectTreeAction<M>)>,
+    {
+        let key_u64 = question_flat_id_to_u64(table_key)?;
+        if self.key_exists(key_u64)? {
+            return self.load_action_log(table_key);
+        }
+
+        self.append_initialized_key(key_u64)?;
+        let mut initialized_rows = initialize_rows();
+        initialized_rows.sort_by_key(|(row_index, _)| *row_index);
+        let actions = initialized_rows
+            .iter()
+            .map(|(_, action)| action.clone())
+            .collect::<Vec<_>>();
+        for (row_index, action) in initialized_rows {
+            self.append_action_row(key_u64, row_index, &action)?;
+        }
+        Ok(actions)
+    }
+
+    fn append(
+        &self,
+        table_key: QuestionFlatId<S>,
+        row_index: usize,
+        value: &DirectTreeAction<M>,
+    ) -> Result<(), String> {
+        let key_u64 = question_flat_id_to_u64(table_key)?;
+        self.append_action_row(key_u64, row_index, value)
+    }
+
+    fn sort(&self) -> Result<(), String> {
+        let source_len = self.file_len(self.pending_actions_path())?;
+        let marker_len = self.read_sorted_source_len()?;
+        if marker_len == Some(source_len)
+            && self.sorted_actions_path().exists()
+            && self.index_path().exists()
+        {
+            return Ok(());
+        }
+
+        log_info("Sorting action store...".to_string());
+        let pending_rows = self.read_pending_action_rows()?;
+        let sorter = extsort::ExternalSorter::new();
+        let sorted_iter = sorter
+            .sort_by_key(pending_rows, |row| (row.question_flat_id, row.row_index))
+            .map_err(|e| {
+                format!(
+                    "Failed to external-sort action rows for extsort action log store at {}: {}",
+                    self.base_path.display(),
+                    e
+                )
+            })?;
+        let sorted_rows = sorted_iter
+            .collect::<std::io::Result<Vec<_>>>()
+            .map_err(|e| {
+                format!(
+                    "Failed to collect sorted extsort action rows for store at {}: {}",
+                    self.base_path.display(),
+                    e
+                )
+            })?;
+
+        let sorted_actions_file = File::create(self.sorted_actions_path()).map_err(|e| {
+            format!(
+                "Failed to create sorted extsort actions file at {}: {}",
+                self.sorted_actions_path().display(),
+                e
+            )
+        })?;
+        let index_file = File::create(self.index_path()).map_err(|e| {
+            format!(
+                "Failed to create extsort index file at {}: {}",
+                self.index_path().display(),
+                e
+            )
+        })?;
+        let mut actions_writer = BufWriter::new(sorted_actions_file);
+        let mut index_writer = BufWriter::new(index_file);
+        let mut rows_iter = sorted_rows.into_iter().peekable();
+        let mut current_offset = 0u64;
+        while let Some(first_row) = rows_iter.peek() {
+            let key = first_row.question_flat_id;
+            let start_offset = current_offset;
+            let mut action_count = 0u64;
+            let mut expected_index = 0u64;
+            while let Some(row) = rows_iter.peek() {
+                if row.question_flat_id != key {
+                    break;
+                }
+                let row = rows_iter.next().expect("peeked row must exist");
+                assert_eq!(
+                    row.row_index, expected_index,
+                    "action indices must be sequential for question_flat_id {}",
+                    key
+                );
+                let encoded = row.encode();
+                current_offset +=
+                    u64::try_from(encoded.len()).expect("encoded row length must fit in u64");
+                actions_writer.write_all(&encoded).map_err(|e| {
+                    format!(
+                        "Failed to write sorted extsort action row at {}: {}",
+                        self.sorted_actions_path().display(),
+                        e
+                    )
+                })?;
+                action_count += 1;
+                expected_index += 1;
+            }
+            index_writer
+                .write_all(
+                    &ExtSortIndexRecord {
+                        question_flat_id: key,
+                        start_offset,
+                        action_count,
+                    }
+                    .encode(),
+                )
+                .map_err(|e| {
+                    format!(
+                        "Failed to write extsort index entry at {}: {}",
+                        self.index_path().display(),
+                        e
+                    )
+                })?;
+        }
+
+        actions_writer.flush().map_err(|e| {
+            format!(
+                "Failed to flush sorted extsort actions file at {}: {}",
+                self.sorted_actions_path().display(),
+                e
+            )
+        })?;
+        index_writer.flush().map_err(|e| {
+            format!(
+                "Failed to flush extsort index file at {}: {}",
+                self.index_path().display(),
+                e
+            )
+        })?;
+        self.write_sorted_source_len(source_len)?;
+        log_info("Action store sorted.".to_string());
+        Ok(())
+    }
+
+    fn key_exists(&self, key_u64: u64) -> Result<bool, String> {
+        if self
+            .read_index_keys()?
+            .into_iter()
+            .any(|key| key == key_u64)
+        {
+            return Ok(true);
+        }
+        Ok(self
+            .read_pending_keys()?
+            .into_iter()
+            .any(|key| key == key_u64))
+    }
+
+    fn append_initialized_key(&self, key_u64: u64) -> Result<(), String> {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.pending_keys_path())
+            .map_err(|e| {
+                format!(
+                    "Failed to open pending extsort keys file at {}: {}",
+                    self.pending_keys_path().display(),
+                    e
+                )
+            })?;
+        let mut writer = BufWriter::new(file);
+        writer
+            .write_all(
+                &ExtSortKeyRecord {
+                    question_flat_id: key_u64,
+                }
+                .encode(),
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to append extsort initialized key {} at {}: {}",
+                    key_u64,
+                    self.pending_keys_path().display(),
+                    e
+                )
+            })?;
+        writer.flush().map_err(|e| {
+            format!(
+                "Failed to flush extsort pending keys file at {}: {}",
+                self.pending_keys_path().display(),
+                e
+            )
+        })
+    }
+
+    fn append_action_row(
+        &self,
+        key_u64: u64,
+        row_index: usize,
+        value: &DirectTreeAction<M>,
+    ) -> Result<(), String> {
+        let row = ExtSortActionRow::from_row_index_and_action(key_u64, row_index, value)?;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.pending_actions_path())
+            .map_err(|e| {
+                format!(
+                    "Failed to open pending extsort actions file at {}: {}",
+                    self.pending_actions_path().display(),
+                    e
+                )
+            })?;
+        let mut writer = BufWriter::new(file);
+        writer.write_all(&row.encode()).map_err(|e| {
+            format!(
+                "Failed to append extsort action row for key {} row_index {} at {}: {}",
+                key_u64,
+                row_index,
+                self.pending_actions_path().display(),
+                e
+            )
+        })?;
+        writer.flush().map_err(|e| {
+            format!(
+                "Failed to flush pending extsort actions file at {}: {}",
+                self.pending_actions_path().display(),
+                e
+            )
+        })
+    }
+
+    fn read_pending_keys(&self) -> Result<Vec<u64>, String> {
+        let mut keys = Vec::new();
+        let path = self.pending_keys_path();
+        if !path.exists() {
+            return Ok(keys);
+        }
+        let file = File::open(&path).map_err(|e| {
+            format!(
+                "Failed to open pending extsort keys file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        let mut reader = BufReader::new(file);
+        while let Some(record) = ExtSortKeyRecord::decode(&mut reader).map_err(|e| {
+            format!(
+                "Failed to decode pending extsort key record at {}: {}",
+                path.display(),
+                e
+            )
+        })? {
+            keys.push(record.question_flat_id);
+        }
+        Ok(keys)
+    }
+
+    fn read_index_keys(&self) -> Result<Vec<u64>, String> {
+        let mut keys = Vec::new();
+        let path = self.index_path();
+        if !path.exists() {
+            return Ok(keys);
+        }
+        let file = File::open(&path).map_err(|e| {
+            format!(
+                "Failed to open extsort index file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        let mut reader = BufReader::new(file);
+        while let Some(record) = ExtSortIndexRecord::decode(&mut reader).map_err(|e| {
+            format!(
+                "Failed to decode extsort index record at {}: {}",
+                path.display(),
+                e
+            )
+        })? {
+            keys.push(record.question_flat_id);
+        }
+        Ok(keys)
+    }
+
+    fn read_index_map(&self) -> Result<BTreeMap<u64, ExtSortIndexRecord>, String> {
+        let mut index = BTreeMap::new();
+        let path = self.index_path();
+        if !path.exists() {
+            return Ok(index);
+        }
+        let file = File::open(&path).map_err(|e| {
+            format!(
+                "Failed to open extsort index file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        let mut reader = BufReader::new(file);
+        while let Some(record) = ExtSortIndexRecord::decode(&mut reader).map_err(|e| {
+            format!(
+                "Failed to decode extsort index record at {}: {}",
+                path.display(),
+                e
+            )
+        })? {
+            index.insert(record.question_flat_id, record);
+        }
+        Ok(index)
+    }
+
+    fn read_pending_action_rows(&self) -> Result<Vec<ExtSortActionRow<M>>, String> {
+        let mut rows = Vec::new();
+        let path = self.pending_actions_path();
+        if !path.exists() {
+            return Ok(rows);
+        }
+        let file = File::open(&path).map_err(|e| {
+            format!(
+                "Failed to open pending extsort actions file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        let mut reader = BufReader::new(file);
+        loop {
+            match ExtSortActionRow::decode(&mut reader) {
+                Ok(row) => rows.push(row),
+                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(err) => {
+                    return Err(format!(
+                        "Failed to decode pending extsort action row at {}: {}",
+                        path.display(),
+                        err
+                    ));
+                }
+            }
+        }
+        Ok(rows)
+    }
+
+    fn file_len(&self, path: PathBuf) -> Result<u64, String> {
+        match fs::metadata(&path) {
+            Ok(metadata) => Ok(metadata.len()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(err) => Err(format!("Failed to stat {}: {}", path.display(), err)),
+        }
+    }
+
+    fn read_sorted_source_len(&self) -> Result<Option<u64>, String> {
+        let path = self.sorted_source_len_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let contents = fs::read_to_string(&path).map_err(|e| {
+            format!(
+                "Failed to read sorted source length marker at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        let trimmed = contents.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        trimmed.parse::<u64>().map(Some).map_err(|e| {
+            format!(
+                "Failed to parse sorted source length marker at {}: {}",
+                path.display(),
+                e
+            )
+        })
+    }
+
+    fn write_sorted_source_len(&self, len: u64) -> Result<(), String> {
+        fs::write(self.sorted_source_len_path(), len.to_string()).map_err(|e| {
+            format!(
+                "Failed to write sorted source length marker at {}: {}",
+                self.sorted_source_len_path().display(),
+                e
+            )
+        })
+    }
+
+    fn pending_actions_path(&self) -> PathBuf {
+        self.storage_dir.join("pending_actions.bin")
+    }
+
+    fn pending_keys_path(&self) -> PathBuf {
+        self.storage_dir.join("pending_keys.bin")
+    }
+
+    fn sorted_actions_path(&self) -> PathBuf {
+        self.storage_dir.join("sorted_actions.bin")
+    }
+
+    fn index_path(&self) -> PathBuf {
+        self.storage_dir.join("sorted_index.bin")
+    }
+
+    fn sorted_source_len_path(&self) -> PathBuf {
+        self.storage_dir.join("sorted_source_len.txt")
+    }
+}
+
+#[allow(dead_code)]
+fn extsort_storage_dir(base_path: &Path) -> PathBuf {
+    let mut storage_dir = base_path.to_path_buf();
+    storage_dir.set_extension("extsort");
+    storage_dir
 }
 
 fn initialized_keys_table_def() -> TableDefinition<'static, u64, u8> {

@@ -96,6 +96,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
                     e
                 )
             });
+        action_store.sort().unwrap();
         let mut entry_keys = action_store.get_keys().unwrap();
         entry_keys.sort_by_key(|key| key.0);
         let entry_cache = std::iter::repeat_with(|| EntryLoadState::Unloaded)
@@ -156,7 +157,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
         }
         self.entry_cache[index] = EntryLoadState::Loading;
         let key = self.entry_keys[index];
-        let state = match self.action_store.load_table_sorted(key) {
+        let state = match self.action_store.load_action_log(key) {
             Ok(actions) => {
                 let question = self.question_store.get(key).unwrap().unwrap();
                 let action_log = DirectTreeActionLog {

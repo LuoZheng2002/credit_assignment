@@ -20,7 +20,7 @@ use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep_until};
 
 use crate::atomic_count_guard::AtomicCountGuardRef;
-use crate::direct_tool::tree_action_log::DirectTreeActionLog;
+use crate::direct_tool::tree_action_log::{ActionLogStore, DirectTreeActionLog, open_action_logs};
 use crate::{
     direct_tool::{
         hybrid_dataset::{DatasetSplit, open_hybrid_dataset},
@@ -29,7 +29,6 @@ use crate::{
         trajectory::{FailureMode, FinalAnswer},
         tree::{DirectTree, SegmentContent, TreeCorrectness},
         tree_action::DirectTreeAction,
-        tree_action_log::{ActionStoreAdapter, open_action_logs},
         tree_status::{
             DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus,
             TrunkSubStatus,
@@ -431,7 +430,7 @@ pub struct StopRequestedError;
 
 async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
     mut action_log: DirectTreeActionLog<M, S>,
-    action_store: ActionStoreAdapter<M, S>,
+    action_store: Arc<tokio::sync::Mutex<ActionLogStore<M, S>>>,
     llm_callable: M::Callable,
     client: Client,
     _permit: OwnedSemaphorePermit,
@@ -544,16 +543,19 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
             let commit_after_write = rollout_stats
                 .database_commit_after_next_write
                 .swap(false, Ordering::Relaxed);
-            let did_commit = action_store
-                .append_action_at(
-                    action_log.question.flat_id,
-                    newest_action_index,
-                    action_log.actions.last().unwrap(),
-                    commit_after_write,
-                )
-                .await
-                .unwrap();
-            if did_commit {
+            let _ = commit_after_write;
+            let _did_commit = {
+                let store = action_store.lock().await;
+                store
+                    .append(
+                        action_log.question.flat_id,
+                        newest_action_index,
+                        action_log.actions.last().unwrap(),
+                    )
+                    .unwrap();
+                false
+            };
+            if _did_commit {
                 rollout_stats.log_database_commit();
             }
         }
@@ -628,14 +630,14 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     let llm_callable = M::Callable::from_inference_endpoint(client.clone(), &inference_endpoint);
     let dataset = open_hybrid_dataset::<S>();
 
-    let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
-    log_info(format!(
-        "rollout_all: creating ActionStoreAdapter for config={config_nickname}, epoch={epoch}"
-    ));
-    let action_store_adapter = ActionStoreAdapter::new(action_store);
-    log_info(format!(
-        "rollout_all: ActionStoreAdapter created for config={config_nickname}, epoch={epoch}"
-    ));
+    let action_store = Arc::new(tokio::sync::Mutex::new(open_action_logs::<M, S>(
+        &config_nickname,
+        epoch,
+    )));
+    {
+        let store = action_store.lock().await;
+        store.sort().unwrap();
+    }
     let mut question_keys = dataset.get_keys().unwrap();
     // sort by question id to ensure deterministic order
     question_keys.sort();
@@ -702,7 +704,10 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
                     .get(question_key)
                     .unwrap()
                     .expect("question key from rollout queue must exist");
-                let actions = action_store_adapter.get_or_init_actions(question_key).await.unwrap();
+                let actions = {
+                    let store = action_store.lock().await;
+                    store.load_action_log(question_key).unwrap()
+                };
 
                 let action_log = DirectTreeActionLog {
                     question: question.clone(),
@@ -712,7 +717,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
                 };
                 join_set.spawn(rollout::<M, S>(
                     action_log,
-                    action_store_adapter.clone(),
+                    action_store.clone(),
                     llm_callable.clone(),
                     client.clone(),
                     permit,
@@ -734,8 +739,9 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         }
     }
 
-    if action_store_adapter.commit_pending().await.unwrap() {
-        rollout_stats.log_database_commit();
+    {
+        let store = action_store.lock().await;
+        store.sort().unwrap();
     }
 
     ROLLOUT_STOP_SIGNAL.store(true, Ordering::Relaxed);

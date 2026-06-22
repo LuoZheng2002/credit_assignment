@@ -11,15 +11,11 @@ use crossterm::execute;
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 
 #[derive(Parser, Debug)]
-#[command(
-    author,
-    version,
-    about = "Interactively browse redb rollout session logs"
-)]
+#[command(author, version, about = "Interactively browse rollout session logs")]
 struct Args {
     #[arg(
         long,
-        help = "Path to a redb action log file, such as .../epoch_<n>/action_logs_training"
+        help = "Path to an action log file, such as .../epoch_<n>/action_logs_training"
     )]
     action_logs_path: String,
     #[arg(long)]

@@ -119,6 +119,7 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
         "get_accuracy: opening action logs for config={config_nickname}, epoch={epoch}"
     ));
     let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
+    action_store.sort().unwrap();
     log_info(format!(
         "get_accuracy: action logs opened for config={config_nickname}, epoch={epoch}"
     ));
@@ -151,7 +152,7 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
 
                 let question = question_store.get(key).unwrap().unwrap();
                 let dataset_name = dataset_bucket_name(&question.dataset_name).to_string();
-                let actions = action_store.load_table_sorted(key).unwrap();
+                let actions = action_store.load_action_log(key).unwrap();
                 let action_log = DirectTreeActionLog {
                     question,
                     rollout_config: rollout_config.clone(),
@@ -230,6 +231,7 @@ pub async fn get_per_question_accuracies<M: LlmModelMarker, S: DatasetSplit>(
 ) -> Vec<Option<f32>> {
     let question_store = open_hybrid_dataset::<S>();
     let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
+    action_store.sort().unwrap();
     let mut keys = action_store.get_keys().unwrap();
     keys.sort();
 
@@ -256,7 +258,7 @@ pub async fn get_per_question_accuracies<M: LlmModelMarker, S: DatasetSplit>(
                 next_key_index += 1;
 
                 let question = question_store.get(key).unwrap().unwrap();
-                let actions = action_store.load_table_sorted(key).unwrap();
+                let actions = action_store.load_action_log(key).unwrap();
                 let action_log = DirectTreeActionLog {
                     question,
                     rollout_config: rollout_config.clone(),
@@ -333,6 +335,7 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
 ) -> TestAccuracyResult {
     let question_store = open_hybrid_dataset::<S>();
     let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
+    action_store.sort().unwrap();
     let mut keys = action_store.get_keys().unwrap();
     keys.sort();
 
@@ -360,7 +363,7 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
 
                 let question = question_store.get(key).unwrap().unwrap();
                 let dataset_name = question.dataset_name.clone();
-                let actions = action_store.load_table_sorted(key).unwrap();
+                let actions = action_store.load_action_log(key).unwrap();
                 let action_log = DirectTreeActionLog {
                     question,
                     rollout_config: rollout_config.clone(),

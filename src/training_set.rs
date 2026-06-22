@@ -244,7 +244,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         cumulative_avg_abs_advantage_cutoff > 0.0 && cumulative_avg_abs_advantage_cutoff <= 1.0,
         "cumulative_avg_abs_advantage_cutoff must be in (0.0, 1.0]"
     );
-    // let action_log_store = ActionStoreAdapter::new(action_store);
+    action_store.sort().unwrap();
     let (selection_output, question_store, action_store) =
         select_training_trajectories_from_rollout_logs::<M, Training>(
             question_store,
@@ -351,7 +351,7 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
                 next_sample_index += 1;
                 // let action_log = action_log_store.get(key).unwrap().unwrap();
                 let question = question_store.get(key).unwrap().unwrap();
-                let actions = action_store.load_table_sorted(key).unwrap();
+                let actions = action_store.load_action_log(key).unwrap();
                 let action_log = DirectTreeActionLog {
                     question,
                     rollout_config: rollout_config.clone(),
@@ -457,7 +457,7 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                 let key = question_flat_id;
                 // let action_log = action_log_store.get(*key).unwrap().unwrap();
                 let question = question_store.get(key).unwrap().unwrap();
-                let actions = action_store.load_table_sorted(key).unwrap();
+                let actions = action_store.load_action_log(key).unwrap();
                 let action_log = DirectTreeActionLog{
                     question,
                     rollout_config: rollout_config.clone(),
