@@ -5,12 +5,12 @@ use std::sync::LazyLock;
 use crate::direct_tool::hybrid_dataset::DatasetSplit;
 use crate::utils::{load_jinja_template_environment, mount_dir};
 
-const ACTION_LOGS_TRAINING_PATH_REDB_TEMPLATE_PATH: &str =
-    "config/directories/action_logs_training_path_redb.jinja";
-const ACTION_LOGS_VALIDATION_PATH_REDB_TEMPLATE_PATH: &str =
-    "config/directories/action_logs_validation_path_redb.jinja";
-const ACTION_LOGS_TESTING_PATH_REDB_TEMPLATE_PATH: &str =
-    "config/directories/action_logs_testing_path_redb.jinja";
+const ACTION_LOGS_TRAINING_PATH_EXTSORT_TEMPLATE_PATH: &str =
+    "config/directories/action_logs_training_path_extsort.jinja";
+const ACTION_LOGS_VALIDATION_PATH_EXTSORT_TEMPLATE_PATH: &str =
+    "config/directories/action_logs_validation_path_extsort.jinja";
+const ACTION_LOGS_TESTING_PATH_EXTSORT_TEMPLATE_PATH: &str =
+    "config/directories/action_logs_testing_path_extsort.jinja";
 const INFERENCE_WRAPPER_LOG_PATH_TEMPLATE_PATH: &str =
     "config/directories/inference_wrapper_log_path.jinja";
 const MODEL_PARENT_DIR_TEMPLATE_PATH: &str = "config/directories/model_parent_dir.jinja";
@@ -28,30 +28,30 @@ const TRAINING_WRAPPER_LOG_PATH_TEMPLATE_PATH: &str =
     "config/directories/training_wrapper_log_path.jinja";
 const TUI_LOG_PATH_TEMPLATE_PATH: &str = "config/directories/tui_log_path.jinja";
 
-static ACTION_LOGS_TRAINING_PATH_REDB_TEMPLATE_ENVIRONMENT: LazyLock<
+static ACTION_LOGS_TRAINING_PATH_EXTSORT_TEMPLATE_ENVIRONMENT: LazyLock<
     Result<minijinja::Environment<'static>, String>,
 > = LazyLock::new(|| {
     load_jinja_template_environment(
-        ACTION_LOGS_TRAINING_PATH_REDB_TEMPLATE_PATH,
-        "action_logs_training_path_redb",
+        ACTION_LOGS_TRAINING_PATH_EXTSORT_TEMPLATE_PATH,
+        "action_logs_training_path_extsort",
     )
 });
 
-static ACTION_LOGS_VALIDATION_PATH_REDB_TEMPLATE_ENVIRONMENT: LazyLock<
+static ACTION_LOGS_VALIDATION_PATH_EXTSORT_TEMPLATE_ENVIRONMENT: LazyLock<
     Result<minijinja::Environment<'static>, String>,
 > = LazyLock::new(|| {
     load_jinja_template_environment(
-        ACTION_LOGS_VALIDATION_PATH_REDB_TEMPLATE_PATH,
-        "action_logs_validation_path_redb",
+        ACTION_LOGS_VALIDATION_PATH_EXTSORT_TEMPLATE_PATH,
+        "action_logs_validation_path_extsort",
     )
 });
 
-static ACTION_LOGS_TESTING_PATH_REDB_TEMPLATE_ENVIRONMENT: LazyLock<
+static ACTION_LOGS_TESTING_PATH_EXTSORT_TEMPLATE_ENVIRONMENT: LazyLock<
     Result<minijinja::Environment<'static>, String>,
 > = LazyLock::new(|| {
     load_jinja_template_environment(
-        ACTION_LOGS_TESTING_PATH_REDB_TEMPLATE_PATH,
-        "action_logs_testing_path_redb",
+        ACTION_LOGS_TESTING_PATH_EXTSORT_TEMPLATE_PATH,
+        "action_logs_testing_path_extsort",
     )
 });
 
@@ -220,22 +220,22 @@ pub fn action_logs_path_from_template<S: DatasetSplit>(
 ) -> Result<String, String> {
     match S::dataset_file_postfix().as_str() {
         "train" => render_epoch_template(
-            &ACTION_LOGS_TRAINING_PATH_REDB_TEMPLATE_ENVIRONMENT,
-            "action_logs_training_path_redb",
+            &ACTION_LOGS_TRAINING_PATH_EXTSORT_TEMPLATE_ENVIRONMENT,
+            "action_logs_training_path_extsort",
             model_cli_name,
             config_nickname,
             epoch,
         ),
         "val" => render_epoch_template(
-            &ACTION_LOGS_VALIDATION_PATH_REDB_TEMPLATE_ENVIRONMENT,
-            "action_logs_validation_path_redb",
+            &ACTION_LOGS_VALIDATION_PATH_EXTSORT_TEMPLATE_ENVIRONMENT,
+            "action_logs_validation_path_extsort",
             model_cli_name,
             config_nickname,
             epoch,
         ),
         "test" => render_epoch_template(
-            &ACTION_LOGS_TESTING_PATH_REDB_TEMPLATE_ENVIRONMENT,
-            "action_logs_testing_path_redb",
+            &ACTION_LOGS_TESTING_PATH_EXTSORT_TEMPLATE_ENVIRONMENT,
+            "action_logs_testing_path_extsort",
             model_cli_name,
             config_nickname,
             epoch,

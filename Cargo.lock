@@ -649,6 +649,7 @@ dependencies = [
  "async-trait",
  "atomic_refcell",
  "base64 0.22.1",
+ "bincode",
  "blake3",
  "clap",
  "crossterm",

@@ -3,7 +3,7 @@ use redb::{
     ReadableTable, TableDefinition, TableError as RedbTableError, TypeName, Value as RedbValue,
     WriteTransaction,
 };
-use research_utility::progress_tui_logger::log_info;
+use research_utility::progress_tui_logger::{log_info, log_warning};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
@@ -12,6 +12,8 @@ use std::{
     io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     marker::PhantomData,
     path::{Path, PathBuf},
+    sync::atomic::AtomicU64,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
@@ -27,6 +29,11 @@ use crate::{
 
 const INITIALIZED_KEYS_TABLE_NAME: &str = "initialized_keys";
 const ACTION_ROWS_TABLE_NAME: &str = "action_rows";
+const SORT_GENERATIONS_DIR_NAME: &str = "sorted_generations";
+const ACTIVE_SORT_GENERATION_FILE_NAME: &str = "sorted_generation.txt";
+const SORT_TEMP_FILE_PREFIX: &str = "sort_tmp_";
+
+static SORT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 pub struct DirectTreeActionLog<M: LlmModelMarker, S: DatasetSplit> {
@@ -67,6 +74,18 @@ impl<M: LlmModelMarker, S: DatasetSplit> ActionLogStore<M, S> {
         match &self.backend {
             ActionLogStoreBackend::Redb(store) => store.load_action_log(question_flat_id),
             ActionLogStoreBackend::ExtSort(store) => store.load_action_log(question_flat_id),
+        }
+    }
+
+    pub fn load_or_init_action_log(
+        &self,
+        question_flat_id: QuestionFlatId<S>,
+    ) -> Result<Vec<DirectTreeAction<M>>, String> {
+        match &self.backend {
+            ActionLogStoreBackend::Redb(store) => store.load_or_init_action_log(question_flat_id),
+            ActionLogStoreBackend::ExtSort(store) => {
+                store.load_or_init_action_log(question_flat_id)
+            }
         }
     }
 
@@ -421,6 +440,23 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
     }
 
     fn load_action_log(
+        &self,
+        table_key: QuestionFlatId<S>,
+    ) -> Result<Vec<DirectTreeAction<M>>, String> {
+        self.load_table_sorted(table_key).and_then(|actions| {
+            if actions.is_empty() {
+                Err(format!(
+                    "Action store at {} is missing key {}; a key is supposed to exist but no corresponding action is found",
+                    self.db_path.display(),
+                    question_flat_id_to_u64(table_key)?
+                ))
+            } else {
+                Ok(actions)
+            }
+        })
+    }
+
+    fn load_or_init_action_log(
         &self,
         table_key: QuestionFlatId<S>,
     ) -> Result<Vec<DirectTreeAction<M>>, String> {
@@ -788,37 +824,37 @@ struct ExtSortActionLogStore<M: LlmModelMarker, S: DatasetSplit> {
     _phantom: PhantomData<(M, S)>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(bound(serialize = "", deserialize = ""))]
-struct ExtSortActionRow<M: LlmModelMarker> {
+#[derive(Clone, Debug)]
+struct ExtSortActionRow {
     question_flat_id: u64,
     row_index: u64,
-    action: DirectTreeAction<M>,
+    action_payload: Vec<u8>,
 }
 
-impl<M: LlmModelMarker> ExtSortActionRow<M> {
-    fn from_row_index_and_action(
+impl ExtSortActionRow {
+    fn from_row_index_and_action<M: LlmModelMarker>(
         question_flat_id: u64,
         row_index: usize,
         action: &DirectTreeAction<M>,
     ) -> Result<Self, String> {
         let row_index = u64::try_from(row_index)
             .map_err(|_| format!("row index {row_index} does not fit into u64"))?;
+        let action_payload = bincode::serialize(action).unwrap_or_else(|e| {
+            panic!("failed to serialize DirectTreeAction for extsort with bincode: {e}")
+        });
         Ok(Self {
             question_flat_id,
             row_index,
-            action: action.clone(),
+            action_payload,
         })
     }
 
     fn encode(&self) -> Vec<u8> {
-        let payload = rmp_serde::to_vec_named(&self.action)
-            .unwrap_or_else(|e| panic!("failed to serialize DirectTreeAction for extsort: {e}"));
-        let mut bytes = Vec::with_capacity(24 + payload.len());
+        let mut bytes = Vec::with_capacity(24 + self.action_payload.len());
         bytes.extend_from_slice(&self.question_flat_id.to_be_bytes());
         bytes.extend_from_slice(&self.row_index.to_be_bytes());
-        bytes.extend_from_slice(&(payload.len() as u64).to_be_bytes());
-        bytes.extend_from_slice(&payload);
+        bytes.extend_from_slice(&(self.action_payload.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(&self.action_payload);
         bytes
     }
 
@@ -830,23 +866,23 @@ impl<M: LlmModelMarker> ExtSortActionRow<M> {
         let mut payload_len_bytes = [0u8; 8];
         reader.read_exact(&mut payload_len_bytes)?;
         let payload_len = u64::from_be_bytes(payload_len_bytes) as usize;
-        let mut payload = vec![0u8; payload_len];
-        reader.read_exact(&mut payload)?;
-        let action = rmp_serde::from_slice(&payload).map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("failed to deserialize DirectTreeAction from extsort: {e}"),
-            )
-        })?;
+        let mut action_payload = vec![0u8; payload_len];
+        reader.read_exact(&mut action_payload)?;
         Ok(Self {
             question_flat_id: u64::from_be_bytes(question_flat_id_bytes),
             row_index: u64::from_be_bytes(row_index_bytes),
-            action,
+            action_payload,
+        })
+    }
+
+    fn decode_action<M: LlmModelMarker>(&self) -> Result<DirectTreeAction<M>, String> {
+        bincode::deserialize(&self.action_payload).map_err(|e| {
+            format!("failed to deserialize DirectTreeAction from extsort bincode payload: {e}")
         })
     }
 }
 
-impl<M: LlmModelMarker> extsort::Sortable for ExtSortActionRow<M> {
+impl extsort::Sortable for ExtSortActionRow {
     fn encode<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
         let bytes = self.encode();
         writer.write_all(&bytes)
@@ -860,6 +896,19 @@ impl<M: LlmModelMarker> extsort::Sortable for ExtSortActionRow<M> {
 #[derive(Clone, Copy, Debug)]
 struct ExtSortKeyRecord {
     question_flat_id: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedSortArtifactPaths {
+    actions: PathBuf,
+    index: PathBuf,
+    source_len: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct SortGenerationCandidate {
+    token: String,
+    modified: SystemTime,
 }
 
 impl ExtSortKeyRecord {
@@ -930,11 +979,13 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
                 e
             )
         })?;
-        Ok(Self {
+        let store = Self {
             base_path,
             storage_dir,
             _phantom: PhantomData,
-        })
+        };
+        store.repair_sort_generation_state()?;
+        Ok(store)
     }
 
     fn get_keys(&self) -> Result<Vec<QuestionFlatId<S>>, String> {
@@ -947,20 +998,19 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
         table_key: QuestionFlatId<S>,
     ) -> Result<Vec<DirectTreeAction<M>>, String> {
         let key_u64 = question_flat_id_to_u64(table_key)?;
+        let paths = self.resolved_sort_artifact_paths()?;
         let index = self.read_index_map()?;
         let Some(entry) = index.get(&key_u64) else {
-            if self.file_len(self.pending_actions_path())? == 0 {
-                return Ok(Vec::new());
-            }
             return Err(format!(
-                "Action store at {} is not sorted; call sort() before reading",
-                self.base_path.display()
+                "Action store at {} is missing key {}; a key is supposed to exist but no corresponding action is found",
+                self.base_path.display(),
+                key_u64
             ));
         };
-        let file = File::open(self.sorted_actions_path()).map_err(|e| {
+        let file = File::open(&paths.actions).map_err(|e| {
             format!(
                 "Failed to open extsort actions file at {}: {}",
-                self.sorted_actions_path().display(),
+                paths.actions.display(),
                 e
             )
         })?;
@@ -970,7 +1020,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
             .map_err(|e| {
                 format!(
                     "Failed to seek extsort actions file at {}: {}",
-                    self.sorted_actions_path().display(),
+                    paths.actions.display(),
                     e
                 )
             })?;
@@ -980,7 +1030,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
                 format!(
                     "Failed to decode extsort action row for key {} at {}: {}",
                     key_u64,
-                    self.sorted_actions_path().display(),
+                    paths.actions.display(),
                     e
                 )
             })?;
@@ -993,7 +1043,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
                 "action indices must be sequential starting at 0 for question_flat_id {}",
                 key_u64
             );
-            actions.push(row.action);
+            actions.push(row.decode_action::<M>()?);
         }
         let mut next_header = [0u8; 8];
         match reader.read_exact(&mut next_header) {
@@ -1008,12 +1058,23 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
             Err(err) => {
                 return Err(format!(
                     "Failed to probe for the next extsort action row at {}: {}",
-                    self.sorted_actions_path().display(),
+                    paths.actions.display(),
                     err
                 ));
             }
         }
         Ok(actions)
+    }
+
+    fn load_or_init_action_log(
+        &self,
+        table_key: QuestionFlatId<S>,
+    ) -> Result<Vec<DirectTreeAction<M>>, String> {
+        let key_u64 = question_flat_id_to_u64(table_key)?;
+        if self.read_index_map()?.contains_key(&key_u64) {
+            return self.load_action_log(table_key);
+        }
+        Ok(Vec::new())
     }
 
     fn load_or_init_table_sorted<F>(
@@ -1054,11 +1115,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
 
     fn sort(&self) -> Result<(), String> {
         let source_len = self.file_len(self.pending_actions_path())?;
-        let marker_len = self.read_sorted_source_len()?;
-        if marker_len == Some(source_len)
-            && self.sorted_actions_path().exists()
-            && self.index_path().exists()
-        {
+        if self.is_current_generation_sorted_for_source_len(source_len)? {
             return Ok(());
         }
 
@@ -1084,17 +1141,32 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
                 )
             })?;
 
-        let sorted_actions_file = File::create(self.sorted_actions_path()).map_err(|e| {
+        let publish_token = self.new_sort_publish_token(source_len);
+        let generation_dir = self.sort_generation_dir(&publish_token);
+        fs::create_dir_all(&generation_dir).map_err(|e| {
             format!(
-                "Failed to create sorted extsort actions file at {}: {}",
-                self.sorted_actions_path().display(),
+                "Failed to create extsort generation directory at {}: {}",
+                generation_dir.display(),
                 e
             )
         })?;
-        let index_file = File::create(self.index_path()).map_err(|e| {
+
+        let sorted_actions_path = self.sorted_actions_path_for_generation(&publish_token);
+        let index_path = self.index_path_for_generation(&publish_token);
+        let source_len_path = self.sorted_source_len_path_for_generation(&publish_token);
+        let active_generation_temp_path = self.active_sort_generation_temp_path(&publish_token);
+
+        let sorted_actions_file = File::create(&sorted_actions_path).map_err(|e| {
+            format!(
+                "Failed to create sorted extsort actions file at {}: {}",
+                sorted_actions_path.display(),
+                e
+            )
+        })?;
+        let index_file = File::create(&index_path).map_err(|e| {
             format!(
                 "Failed to create extsort index file at {}: {}",
-                self.index_path().display(),
+                index_path.display(),
                 e
             )
         })?;
@@ -1123,7 +1195,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
                 actions_writer.write_all(&encoded).map_err(|e| {
                     format!(
                         "Failed to write sorted extsort action row at {}: {}",
-                        self.sorted_actions_path().display(),
+                        sorted_actions_path.display(),
                         e
                     )
                 })?;
@@ -1142,7 +1214,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
                 .map_err(|e| {
                     format!(
                         "Failed to write extsort index entry at {}: {}",
-                        self.index_path().display(),
+                        index_path.display(),
                         e
                     )
                 })?;
@@ -1151,18 +1223,53 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
         actions_writer.flush().map_err(|e| {
             format!(
                 "Failed to flush sorted extsort actions file at {}: {}",
-                self.sorted_actions_path().display(),
+                sorted_actions_path.display(),
+                e
+            )
+        })?;
+        actions_writer.get_ref().sync_all().map_err(|e| {
+            format!(
+                "Failed to sync sorted extsort actions file at {}: {}",
+                sorted_actions_path.display(),
                 e
             )
         })?;
         index_writer.flush().map_err(|e| {
             format!(
                 "Failed to flush extsort index file at {}: {}",
-                self.index_path().display(),
+                index_path.display(),
                 e
             )
         })?;
-        self.write_sorted_source_len(source_len)?;
+        index_writer.get_ref().sync_all().map_err(|e| {
+            format!(
+                "Failed to sync extsort index file at {}: {}",
+                index_path.display(),
+                e
+            )
+        })?;
+        self.write_sorted_source_len_to_path(&source_len_path, source_len)?;
+
+        let current_source_len = self.file_len(self.pending_actions_path())?;
+        if current_source_len != source_len {
+            let _ = self.remove_sort_generation(&generation_dir);
+            return Err(format!(
+                "Action store at {} changed while sorting: pending actions length was {} at start but {} before publish",
+                self.base_path.display(),
+                source_len,
+                current_source_len
+            ));
+        }
+
+        self.write_sort_generation_token_to_path(&active_generation_temp_path, &publish_token)?;
+        self.publish_sort_generation(&active_generation_temp_path)?;
+        if let Err(err) = self.cleanup_sort_artifacts(Some(&publish_token)) {
+            log_warning(format!(
+                "Completed extsort publish for {} but cleanup of obsolete artifacts failed: {}",
+                self.base_path.display(),
+                err
+            ));
+        }
         log_info("Action store sorted.".to_string());
         Ok(())
     }
@@ -1283,7 +1390,8 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
 
     fn read_index_keys(&self) -> Result<Vec<u64>, String> {
         let mut keys = Vec::new();
-        let path = self.index_path();
+        let paths = self.resolved_sort_artifact_paths()?;
+        let path = paths.index;
         if !path.exists() {
             return Ok(keys);
         }
@@ -1309,7 +1417,8 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
 
     fn read_index_map(&self) -> Result<BTreeMap<u64, ExtSortIndexRecord>, String> {
         let mut index = BTreeMap::new();
-        let path = self.index_path();
+        let paths = self.resolved_sort_artifact_paths()?;
+        let path = paths.index;
         if !path.exists() {
             return Ok(index);
         }
@@ -1333,7 +1442,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
         Ok(index)
     }
 
-    fn read_pending_action_rows(&self) -> Result<Vec<ExtSortActionRow<M>>, String> {
+    fn read_pending_action_rows(&self) -> Result<Vec<ExtSortActionRow>, String> {
         let mut rows = Vec::new();
         let path = self.pending_actions_path();
         if !path.exists() {
@@ -1372,7 +1481,8 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
     }
 
     fn read_sorted_source_len(&self) -> Result<Option<u64>, String> {
-        let path = self.sorted_source_len_path();
+        let paths = self.resolved_sort_artifact_paths()?;
+        let path = paths.source_len;
         if !path.exists() {
             return Ok(None);
         }
@@ -1397,13 +1507,444 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
     }
 
     fn write_sorted_source_len(&self, len: u64) -> Result<(), String> {
-        fs::write(self.sorted_source_len_path(), len.to_string()).map_err(|e| {
+        fs::write(self.legacy_sorted_source_len_path(), len.to_string()).map_err(|e| {
             format!(
                 "Failed to write sorted source length marker at {}: {}",
-                self.sorted_source_len_path().display(),
+                self.legacy_sorted_source_len_path().display(),
                 e
             )
         })
+    }
+
+    fn write_sorted_source_len_to_path(&self, path: &Path, len: u64) -> Result<(), String> {
+        let file = File::create(path).map_err(|e| {
+            format!(
+                "Failed to create sorted source length marker at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        let mut writer = BufWriter::new(file);
+        write!(writer, "{}", len).map_err(|e| {
+            format!(
+                "Failed to write sorted source length marker at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        writer.flush().map_err(|e| {
+            format!(
+                "Failed to flush sorted source length marker at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        writer.get_ref().sync_all().map_err(|e| {
+            format!(
+                "Failed to sync sorted source length marker at {}: {}",
+                path.display(),
+                e
+            )
+        })
+    }
+
+    fn write_sort_generation_token_to_path(&self, path: &Path, token: &str) -> Result<(), String> {
+        let file = File::create(path).map_err(|e| {
+            format!(
+                "Failed to create sorted generation marker at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        let mut writer = BufWriter::new(file);
+        write!(writer, "{}", token).map_err(|e| {
+            format!(
+                "Failed to write sorted generation marker at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        writer.flush().map_err(|e| {
+            format!(
+                "Failed to flush sorted generation marker at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        writer.get_ref().sync_all().map_err(|e| {
+            format!(
+                "Failed to sync sorted generation marker at {}: {}",
+                path.display(),
+                e
+            )
+        })
+    }
+
+    fn publish_sort_generation(&self, temp_generation_marker_path: &Path) -> Result<(), String> {
+        fs::rename(
+            temp_generation_marker_path,
+            self.active_sort_generation_path(),
+        )
+        .map_err(|e| {
+            format!(
+                "Failed to publish sorted generation marker from {} to {}: {}",
+                temp_generation_marker_path.display(),
+                self.active_sort_generation_path().display(),
+                e
+            )
+        })?;
+        self.sync_directory(&self.storage_dir)?;
+        Ok(())
+    }
+
+    fn remove_sort_generation(&self, generation_dir: &Path) -> Result<(), String> {
+        match fs::remove_dir_all(generation_dir) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(format!(
+                "Failed to remove sorted generation directory at {}: {}",
+                generation_dir.display(),
+                err
+            )),
+        }
+    }
+
+    fn read_active_sort_generation_token(&self) -> Result<Option<String>, String> {
+        let path = self.active_sort_generation_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let contents = fs::read_to_string(&path).map_err(|e| {
+            format!(
+                "Failed to read sorted generation marker at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        let token = contents.trim();
+        if token.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(token.to_string()))
+    }
+
+    fn is_current_generation_sorted_for_source_len(&self, source_len: u64) -> Result<bool, String> {
+        let Some(candidate) = self.resolve_current_sort_generation_candidate()? else {
+            return Ok(false);
+        };
+        let paths = self.sort_generation_artifact_paths(&candidate.token);
+        let marker_len = self.read_sorted_source_len_from_path(&paths.source_len)?;
+        Ok(marker_len == Some(source_len) && paths.actions.exists() && paths.index.exists())
+    }
+
+    fn resolved_sort_artifact_paths(&self) -> Result<ResolvedSortArtifactPaths, String> {
+        if let Some(candidate) = self.resolve_current_sort_generation_candidate()? {
+            let paths = self.sort_generation_artifact_paths(&candidate.token);
+            if !paths.actions.exists() || !paths.index.exists() || !paths.source_len.exists() {
+                return Err(format!(
+                    "Sorted generation {} is active for {} but the expected files are missing",
+                    candidate.token,
+                    self.storage_dir.display()
+                ));
+            }
+            return Ok(paths);
+        }
+        Ok(ResolvedSortArtifactPaths {
+            actions: self.legacy_sorted_actions_path(),
+            index: self.legacy_index_path(),
+            source_len: self.legacy_sorted_source_len_path(),
+        })
+    }
+
+    fn read_sorted_source_len_from_path(&self, path: &Path) -> Result<Option<u64>, String> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let contents = fs::read_to_string(path).map_err(|e| {
+            format!(
+                "Failed to read sorted source length marker at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        let trimmed = contents.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        trimmed.parse::<u64>().map(Some).map_err(|e| {
+            format!(
+                "Failed to parse sorted source length marker at {}: {}",
+                path.display(),
+                e
+            )
+        })
+    }
+
+    fn is_generation_complete(&self, token: &str) -> Result<bool, String> {
+        let paths = self.sort_generation_artifact_paths(token);
+        if !paths.actions.exists() || !paths.index.exists() || !paths.source_len.exists() {
+            return Ok(false);
+        }
+        Ok(self
+            .read_sorted_source_len_from_path(&paths.source_len)?
+            .is_some())
+    }
+
+    fn complete_generation_candidate(
+        &self,
+        token: &str,
+    ) -> Result<Option<SortGenerationCandidate>, String> {
+        if !self.is_generation_complete(token)? {
+            return Ok(None);
+        }
+        let generation_dir = self.sort_generation_dir(token);
+        let modified = fs::metadata(&generation_dir)
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        Ok(Some(SortGenerationCandidate {
+            token: token.to_string(),
+            modified,
+        }))
+    }
+
+    fn scan_latest_complete_generation_candidate(
+        &self,
+    ) -> Result<Option<SortGenerationCandidate>, String> {
+        let generations_dir = self.sort_generations_dir();
+        if !generations_dir.exists() {
+            return Ok(None);
+        }
+        let mut best: Option<SortGenerationCandidate> = None;
+        for entry in fs::read_dir(&generations_dir).map_err(|e| {
+            format!(
+                "Failed to read extsort generations directory at {}: {}",
+                generations_dir.display(),
+                e
+            )
+        })? {
+            let entry = entry.map_err(|e| {
+                format!(
+                    "Failed to read extsort generations directory entry at {}: {}",
+                    generations_dir.display(),
+                    e
+                )
+            })?;
+            if !entry
+                .file_type()
+                .map_err(|e| {
+                    format!(
+                        "Failed to inspect extsort generation entry at {}: {}",
+                        entry.path().display(),
+                        e
+                    )
+                })?
+                .is_dir()
+            {
+                continue;
+            }
+            let token = entry.file_name().to_string_lossy().to_string();
+            let Some(candidate) = self.complete_generation_candidate(&token)? else {
+                continue;
+            };
+            let replace = match &best {
+                None => true,
+                Some(current_best) => {
+                    candidate.modified > current_best.modified
+                        || (candidate.modified == current_best.modified
+                            && candidate.token > current_best.token)
+                }
+            };
+            if replace {
+                best = Some(candidate);
+            }
+        }
+        Ok(best)
+    }
+
+    fn resolve_current_sort_generation_candidate(
+        &self,
+    ) -> Result<Option<SortGenerationCandidate>, String> {
+        let active_candidate = match self.read_active_sort_generation_token()? {
+            Some(token) => self.complete_generation_candidate(&token)?,
+            None => None,
+        };
+        let latest_candidate = self.scan_latest_complete_generation_candidate()?;
+        Ok(match (active_candidate, latest_candidate) {
+            (Some(active), Some(latest))
+                if latest.modified > active.modified
+                    || (latest.modified == active.modified && latest.token > active.token) =>
+            {
+                Some(latest)
+            }
+            (Some(active), _) => Some(active),
+            (None, Some(latest)) => Some(latest),
+            (None, None) => None,
+        })
+    }
+
+    fn sync_directory(&self, path: &Path) -> Result<(), String> {
+        let file = File::open(path).map_err(|e| {
+            format!(
+                "Failed to open directory {} for syncing: {}",
+                path.display(),
+                e
+            )
+        })?;
+        file.sync_all()
+            .map_err(|e| format!("Failed to sync directory {}: {}", path.display(), e))
+    }
+
+    fn cleanup_sort_artifacts(&self, keep_token: Option<&str>) -> Result<(), String> {
+        let generations_dir = self.sort_generations_dir();
+        if generations_dir.exists() {
+            for entry in fs::read_dir(&generations_dir).map_err(|e| {
+                format!(
+                    "Failed to read extsort generations directory at {}: {}",
+                    generations_dir.display(),
+                    e
+                )
+            })? {
+                let entry = entry.map_err(|e| {
+                    format!(
+                        "Failed to read extsort generations directory entry at {}: {}",
+                        generations_dir.display(),
+                        e
+                    )
+                })?;
+                if !entry
+                    .file_type()
+                    .map_err(|e| {
+                        format!(
+                            "Failed to inspect extsort generation entry at {}: {}",
+                            entry.path().display(),
+                            e
+                        )
+                    })?
+                    .is_dir()
+                {
+                    continue;
+                }
+                let token = entry.file_name().to_string_lossy().to_string();
+                if keep_token.is_some_and(|keep| keep == token) {
+                    continue;
+                }
+                if let Err(err) = self.remove_sort_generation(&entry.path()) {
+                    log_warning(format!(
+                        "Failed to remove obsolete extsort generation {} at {}: {}",
+                        token,
+                        entry.path().display(),
+                        err
+                    ));
+                }
+            }
+            if let Err(err) = self.sync_directory(&generations_dir) {
+                log_warning(err);
+            }
+        }
+
+        if keep_token.is_some() {
+            for legacy_path in [
+                self.legacy_sorted_actions_path(),
+                self.legacy_index_path(),
+                self.legacy_sorted_source_len_path(),
+            ] {
+                if let Err(err) = fs::remove_file(&legacy_path) {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        log_warning(format!(
+                            "Failed to remove legacy extsort artifact at {}: {}",
+                            legacy_path.display(),
+                            err
+                        ));
+                    }
+                }
+            }
+        }
+
+        if let Err(err) = self.sync_directory(&self.storage_dir) {
+            log_warning(err);
+        }
+        Ok(())
+    }
+
+    fn repair_sort_generation_state(&self) -> Result<(), String> {
+        if let Some(candidate) = self.resolve_current_sort_generation_candidate()? {
+            let current_active = self.read_active_sort_generation_token()?;
+            if current_active.as_deref() != Some(candidate.token.as_str()) {
+                let temp_marker_path = self.active_sort_generation_temp_path(&candidate.token);
+                self.write_sort_generation_token_to_path(&temp_marker_path, &candidate.token)?;
+                self.publish_sort_generation(&temp_marker_path)?;
+            }
+            self.cleanup_sort_artifacts(Some(candidate.token.as_str()))?;
+            return Ok(());
+        }
+
+        self.cleanup_sort_artifacts(None)?;
+        Ok(())
+    }
+
+    fn sort_generations_dir(&self) -> PathBuf {
+        self.storage_dir.join(SORT_GENERATIONS_DIR_NAME)
+    }
+
+    fn active_sort_generation_path(&self) -> PathBuf {
+        self.storage_dir.join(ACTIVE_SORT_GENERATION_FILE_NAME)
+    }
+
+    fn active_sort_generation_temp_path(&self, token: &str) -> PathBuf {
+        self.storage_dir
+            .join(format!("{SORT_TEMP_FILE_PREFIX}{token}.active_generation"))
+    }
+
+    fn sort_generation_dir(&self, token: &str) -> PathBuf {
+        self.sort_generations_dir().join(token)
+    }
+
+    fn sort_generation_artifact_paths(&self, token: &str) -> ResolvedSortArtifactPaths {
+        let generation_dir = self.sort_generation_dir(token);
+        ResolvedSortArtifactPaths {
+            actions: generation_dir.join("sorted_actions.bin"),
+            index: generation_dir.join("sorted_index.bin"),
+            source_len: generation_dir.join("sorted_source_len.txt"),
+        }
+    }
+
+    fn sorted_actions_path_for_generation(&self, token: &str) -> PathBuf {
+        self.sort_generation_artifact_paths(token).actions
+    }
+
+    fn index_path_for_generation(&self, token: &str) -> PathBuf {
+        self.sort_generation_artifact_paths(token).index
+    }
+
+    fn sorted_source_len_path_for_generation(&self, token: &str) -> PathBuf {
+        self.sort_generation_artifact_paths(token).source_len
+    }
+
+    fn legacy_sorted_actions_path(&self) -> PathBuf {
+        self.storage_dir.join("sorted_actions.bin")
+    }
+
+    fn legacy_index_path(&self) -> PathBuf {
+        self.storage_dir.join("sorted_index.bin")
+    }
+
+    fn legacy_sorted_source_len_path(&self) -> PathBuf {
+        self.storage_dir.join("sorted_source_len.txt")
+    }
+
+    fn new_sort_publish_token(&self, source_len: u64) -> String {
+        let counter = SORT_TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let timestamp_millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        format!(
+            "{SORT_TEMP_FILE_PREFIX}{}_{}_{}_{}",
+            std::process::id(),
+            source_len,
+            timestamp_millis,
+            counter
+        )
     }
 
     fn pending_actions_path(&self) -> PathBuf {
@@ -1415,15 +1956,15 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
     }
 
     fn sorted_actions_path(&self) -> PathBuf {
-        self.storage_dir.join("sorted_actions.bin")
+        self.legacy_sorted_actions_path()
     }
 
     fn index_path(&self) -> PathBuf {
-        self.storage_dir.join("sorted_index.bin")
+        self.legacy_index_path()
     }
 
     fn sorted_source_len_path(&self) -> PathBuf {
-        self.storage_dir.join("sorted_source_len.txt")
+        self.legacy_sorted_source_len_path()
     }
 }
 

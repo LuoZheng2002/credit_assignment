@@ -15,7 +15,7 @@ use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 struct Args {
     #[arg(
         long,
-        help = "Path to an action log file, such as .../epoch_<n>/action_logs_training"
+        help = "Path to an extsort action log file or directory, such as .../epoch_<n>/action_logs_training.extsort"
     )]
     action_logs_path: String,
     #[arg(long)]

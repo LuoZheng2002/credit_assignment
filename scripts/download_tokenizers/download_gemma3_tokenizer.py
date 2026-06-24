@@ -1,9 +1,13 @@
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import _bootstrap  # noqa: F401
 from transformers import AutoTokenizer
 
-
-tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-4b-it", trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(
+    "google/gemma-3-4b-it", trust_remote_code=True
+)
 output_dir = Path("tokenizers/gemma3")
 tokenizer.save_pretrained(output_dir)
 

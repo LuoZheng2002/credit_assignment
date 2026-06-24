@@ -4,6 +4,7 @@ fastapi
 grpcio
 grpcio-tools
 httpx
+socksio
 jsonschema
 mcp
 numpy

@@ -22,17 +22,18 @@ pub(super) fn parse_action_logs_context(
         .and_then(|name| name.to_str())
         .ok_or_else(|| {
             format!(
-                "Action logs path {} must end with a UTF-8 file name",
+                "Action logs path {} must end with a UTF-8 file or directory name",
                 action_logs_path.display()
             )
         })?;
-    let dataset_split = match file_name {
+    let dataset_split_name = file_name.strip_suffix(".extsort").unwrap_or(file_name);
+    let dataset_split = match dataset_split_name {
         "action_logs_training" => DatasetSplitEnum::Training,
         "action_logs_validation" => DatasetSplitEnum::Validation,
         "action_logs_testing" => DatasetSplitEnum::Testing,
         other => {
             return Err(format!(
-                "Unsupported action logs file name {}. Expected action_logs_training, action_logs_validation, or action_logs_testing",
+                "Unsupported action logs file name {}. Expected action_logs_training[.extsort], action_logs_validation[.extsort], or action_logs_testing[.extsort]",
                 other
             ));
         }

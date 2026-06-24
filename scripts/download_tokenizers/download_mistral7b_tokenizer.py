@@ -1,7 +1,9 @@
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import _bootstrap  # noqa: F401
 from transformers import AutoTokenizer
-
 
 tokenizer = AutoTokenizer.from_pretrained(
     "mistralai/Mistral-7B-Instruct-v0.3", trust_remote_code=True

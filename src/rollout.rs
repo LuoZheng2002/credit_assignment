@@ -706,7 +706,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
                     .expect("question key from rollout queue must exist");
                 let actions = {
                     let store = action_store.lock().await;
-                    store.load_action_log(question_key).unwrap()
+                    store.load_or_init_action_log(question_key).unwrap()
                 };
 
                 let action_log = DirectTreeActionLog {
