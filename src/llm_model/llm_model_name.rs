@@ -59,7 +59,7 @@ impl LlmModelName {
         match self {
             LlmModelName::Gemma3_4b => "gemma-3-4b-it",
             LlmModelName::Llama31_8b => "llama-3.1-8b-instruct",
-            LlmModelName::Mistral7bInstructV03 => "mistral-7b-instruct-v0.3",
+            LlmModelName::Mistral7bInstructV03 => "mistral",
             LlmModelName::Qwen25_7b => "qwen2.5-7b",
             LlmModelName::Qwen3_06b => "qwen3-0.6b",
             LlmModelName::Qwen3_4b => "qwen3-4b",

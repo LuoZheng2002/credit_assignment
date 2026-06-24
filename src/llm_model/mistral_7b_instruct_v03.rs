@@ -94,7 +94,7 @@ impl LlmModelMarker for Mistral7BInstructV03 {
     type Tokenizer = Mistral7BInstructV03Tokenizer;
     type Callable = SglangLlmCallable<Self>;
 
-    const CLI_NAME: &'static str = "mistral-7b-instruct-v0.3";
+    const CLI_NAME: &'static str = "mistral";
     const API_NAME: &'static str = "mistralai/Mistral-7B-Instruct-v0.3";
     const MODEL_LABEL: &'static str = "Mistral-7B-Instruct-v0.3 model";
 }

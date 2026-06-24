@@ -1,5 +1,5 @@
 cargo run --bin bin_orchestrator -- \
-    --model-cli-name mistral-7b-instruct-v0.3 \
+    --model-cli-name mistral \
     --max-rollout-concurrency 300 \
     --config-nickname notool \
     --validation-rollout-config-path config/rollout_config_validation_notool.json \

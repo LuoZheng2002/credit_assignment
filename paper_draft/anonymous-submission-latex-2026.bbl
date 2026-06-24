@@ -1,0 +1,50 @@
+\begin{thebibliography}{7}
+\providecommand{\natexlab}[1]{#1}
+
+\bibitem[{Huang, Nguyen, and Zimmer(2025)}]{treeopo2025}
+Huang, B.; Nguyen, T.; and Zimmer, M. 2025.
+\newblock Tree-OPO: Off-policy Monte Carlo Tree-Guided Advantage Optimization
+  for Multistep Reasoning.
+\newblock ArXiv preprint.
+
+\bibitem[{Li et~al.(2025)Li, Gu, Wen, Li, Xing, Guo, Zheng, Zhou, Qu, Zhou,
+  Zhang, Shen, Liu, Lin, Yang, Zhang, and Huang}]{treepo2025}
+Li, Y.; Gu, Q.; Wen, Z.; Li, Z.; Xing, T.; Guo, S.; Zheng, T.; Zhou, X.; Qu,
+  X.; Zhou, W.; Zhang, Z.; Shen, W.; Liu, Q.; Lin, C.; Yang, J.; Zhang, G.; and
+  Huang, W. 2025.
+\newblock TreePO: Bridging the Gap of Policy Optimization and Efficacy and
+  Inference Efficiency with Heuristic Tree-based Modeling.
+\newblock arXiv:2508.17445.
+
+\bibitem[{Liang et~al.(2026)Liang, Zhou, Lu, Zhang, Mi, and Yu}]{cuts2026}
+Liang, Z.; Zhou, Y.; Lu, S.; Zhang, X.; Mi, H.; and Yu, D. 2026.
+\newblock Too Correct to Learn: Reinforcement Learning on Saturated Reasoning
+  Data.
+\newblock arXiv:2604.18493.
+
+\bibitem[{Schulman et~al.(2017)Schulman, Wolski, Dhariwal, Radford, and
+  Klimov}]{ppo17}
+Schulman, J.; Wolski, F.; Dhariwal, P.; Radford, A.; and Klimov, O. 2017.
+\newblock Proximal Policy Optimization Algorithms.
+\newblock arXiv:1707.06347.
+
+\bibitem[{Tran, Yao, and Yu(2025)}]{tempo2025}
+Tran, H.; Yao, Z.; and Yu, H. 2025.
+\newblock Exploiting Tree Structure for Credit Assignment in RL Training of
+  LLMs.
+\newblock TEMPO, arXiv:2509.18314.
+
+\bibitem[{Wang et~al.(2026)Wang, Ma, Wang, Ji, Yang, Chen, Wang, and
+  Chu}]{appo2026}
+Wang, X.; Ma, Z.; Wang, Y.; Ji, Y.; Yang, S.; Chen, G.; Wang, P.; and Chu, X.
+  2026.
+\newblock APPO: Agentic Procedural Policy Optimization.
+\newblock arXiv:2606.12384.
+
+\bibitem[{Yang et~al.(2025)Yang, Guo, Huang, Liang, Wang, and
+  Tang}]{treerpo2025}
+Yang, Z.; Guo, Z.; Huang, Y.; Liang, X.; Wang, Y.; and Tang, J. 2025.
+\newblock TreeRPO: Tree Relative Policy Optimization.
+\newblock arXiv:2506.05183.
+
+\end{thebibliography}

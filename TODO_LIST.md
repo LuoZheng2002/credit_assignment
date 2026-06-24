@@ -41,3 +41,10 @@ Going to add model answer, correct answer and judgment metadata to training traj
 
 TODO: add a config field purpose: Purpose (Training, Validation, Testing) to rollout trajectories; 
 TODO: add potential ablation variants configuration, like which strategy to use for calculating advantage, branching strategy, etc.
+
+
+
+We need AI to help us to read the training trajectories, and see where the problem lies.
+
+We need automatic downloading and inspecting. Only download if the corresponding file does not exist.
+

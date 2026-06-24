@@ -266,7 +266,6 @@ Test set construction:
 1. **Fine-grained credit assignment (vs. GRPO):** replace segment-level scoring with group-relative rollout advantage.
 2. **Branch-point guidance (vs. TEMPO-style natural divergence):** remove explicit branch-point selection and rely on spontaneous divergence across rollouts.
 3. **MAP credit model (vs. TreeRPO):** replace MAP-based segment scoring with leaf-dominant heuristic advantage assignment.
-4. **Optional baseline (TreePO):** compare against subgroup-relative segment advantages among shared-prefix trajectories.
 5. **Branching budget sensitivity:** vary the number of branches per tree (e.g., low/medium/high expansion budgets) to quantify the trade-off between sample efficiency, segment utilization, and downstream pass@1.
 6. **Whether uses tools**
 
