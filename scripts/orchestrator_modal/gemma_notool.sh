@@ -1,5 +1,5 @@
 uv run -m src_py.modal.launch_modal_orchestration \
-    --model-cli-name gemma-3-4b-it \
+    --model-cli-name gemma \
     --max-rollout-concurrency 300 \
     --config-nickname notool \
     --validation-rollout-config-path config/rollout_config_validation_notool.json \

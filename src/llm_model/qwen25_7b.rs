@@ -87,7 +87,7 @@ impl LlmModelMarker for Qwen25_7B {
     type Tokenizer = Qwen25Tokenizer;
     type Callable = SglangLlmCallable<Self>;
 
-    const CLI_NAME: &'static str = "qwen2.5-7b";
+    const CLI_NAME: &'static str = "qwen25";
     const API_NAME: &'static str = "Qwen/Qwen2.5-7B-Instruct";
     const MODEL_LABEL: &'static str = "Qwen2.5-7B model";
 }

@@ -29,7 +29,7 @@ def _load_train_config(
 ) -> TrainConfig:
     training_trajectory_sqlite_path = Path(launch_args.training_trajectory_sqlite_path)
     assert training_trajectory_sqlite_path.exists(), (
-        f"training trajectory sqlite not found: {training_trajectory_sqlite_path}"
+        f"training trajectory file not found: {training_trajectory_sqlite_path}"
     )
 
     model_parent_dir_path = Path(request.model_parent_dir)

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import torch
 
-from .data_sqlite import TrainingSampleTokenized
+from .data_msgpack import TrainingSampleTokenized
 
 IGNORE_LABEL = -100
 

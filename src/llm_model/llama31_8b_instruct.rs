@@ -97,7 +97,7 @@ impl LlmModelMarker for Llama31_8BInstruct {
     type Tokenizer = Llama31_8BInstructTokenizer;
     type Callable = SglangLlmCallable<Self>;
 
-    const CLI_NAME: &'static str = "llama-3.1-8b-instruct";
+    const CLI_NAME: &'static str = "llama";
     const API_NAME: &'static str = "meta-llama/Llama-3.1-8B-Instruct";
     const MODEL_LABEL: &'static str = "Llama-3.1-8B-Instruct model";
 }

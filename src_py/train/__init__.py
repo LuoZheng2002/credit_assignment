@@ -1,6 +1,6 @@
 from .batch_dataset import ResolvedTrainingBatch, load_resolved_training_batches
 from .collator import CollatedTrainingBatch, collate_training_samples
-from .data_sqlite import (
+from .data_msgpack import (
     QuestionNodeId,
     TrainingSampleTokenized,
     iter_training_trajectories,

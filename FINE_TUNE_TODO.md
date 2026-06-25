@@ -41,7 +41,7 @@
 - [x] Configure ZeRO stage 3, bf16, grad clipping, optimizer/scheduler defaults.
 
 ### 3) Data ingestion from sqlite
-- [x] Implement `src_py/train/data_sqlite.py` to read `store_entries.payload_json`.
+- [x] Implement `src_py/train/data_msgpack.py` to read concatenated MsgPack training samples.
 - [x] Parse to a strict sample schema (`id`, `input_ids`, `labels`, `advantage`).
 - [ ] Add deterministic train/val split and shuffle with fixed seed.
 

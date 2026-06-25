@@ -1,5 +1,5 @@
 cargo run --bin bin_browse_direct_session -- \
-    --model gemma-3-4b-it \
+    --model gemma \
     --config-nickname notool \
     --rollout-config-path config/rollout_config_validation_notool.json \
     --epoch 0 \

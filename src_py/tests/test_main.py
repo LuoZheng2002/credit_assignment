@@ -55,8 +55,8 @@ class TestMain(unittest.TestCase):
 
     def test_load_train_config_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            trajectory_path = Path(tmp_dir) / "training_trajectories.sqlite"
-            trajectory_path.write_bytes(b"sqlite")
+            trajectory_path = Path(tmp_dir) / "training_trajectories.msgpack"
+            trajectory_path.write_bytes(b"msgpack")
             launch_args = TrainProcessLaunchArgs(
                 training_trajectory_sqlite_path=str(trajectory_path),
             )
@@ -83,8 +83,8 @@ class TestMain(unittest.TestCase):
 
     def test_load_train_config_uses_derived_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            trajectory_path = Path(tmp_dir) / "training_trajectories.sqlite"
-            trajectory_path.write_bytes(b"sqlite")
+            trajectory_path = Path(tmp_dir) / "training_trajectories.msgpack"
+            trajectory_path.write_bytes(b"msgpack")
             launch_args = TrainProcessLaunchArgs(
                 training_trajectory_sqlite_path=str(trajectory_path),
             )
@@ -101,7 +101,7 @@ class TestMain(unittest.TestCase):
 
     def test_load_train_config_requires_uploaded_sqlite(self) -> None:
         launch_args = TrainProcessLaunchArgs(
-            training_trajectory_sqlite_path="/tmp/missing_training_trajectories.sqlite",
+            training_trajectory_sqlite_path="/tmp/missing_training_trajectories.msgpack",
         )
         request = self._training_request(epoch=2)
         with self.assertRaises(AssertionError):
@@ -109,8 +109,8 @@ class TestMain(unittest.TestCase):
 
     def test_load_train_config_keeps_explicit_paths_when_hpc_root_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            trajectory_path = Path(tmp_dir) / "training_trajectories.sqlite"
-            trajectory_path.write_bytes(b"sqlite")
+            trajectory_path = Path(tmp_dir) / "training_trajectories.msgpack"
+            trajectory_path.write_bytes(b"msgpack")
             launch_args = TrainProcessLaunchArgs(
                 training_trajectory_sqlite_path=str(trajectory_path),
             )

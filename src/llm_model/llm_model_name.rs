@@ -57,12 +57,12 @@ impl<'de> Deserialize<'de> for LlmModelName {
 impl LlmModelName {
     pub fn cli_name(&self) -> &'static str {
         match self {
-            LlmModelName::Gemma3_4b => "gemma-3-4b-it",
-            LlmModelName::Llama31_8b => "llama-3.1-8b-instruct",
+            LlmModelName::Gemma3_4b => "gemma",
+            LlmModelName::Llama31_8b => "llama",
             LlmModelName::Mistral7bInstructV03 => "mistral",
-            LlmModelName::Qwen25_7b => "qwen2.5-7b",
+            LlmModelName::Qwen25_7b => "qwen25",
             LlmModelName::Qwen3_06b => "qwen3-0.6b",
-            LlmModelName::Qwen3_4b => "qwen3-4b",
+            LlmModelName::Qwen3_4b => "qwen34",
             LlmModelName::Qwen35_08b => "qwen3.5-0.8b",
             LlmModelName::Qwen35_4b => "qwen3.5-4b",
         }

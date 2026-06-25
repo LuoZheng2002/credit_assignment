@@ -1,6 +1,10 @@
-use std::backtrace::Backtrace;
-use std::error::Error;
-use std::io::{self, Stdout};
+use std::{
+    backtrace::Backtrace,
+    error::Error,
+    io::{self, Stdout},
+    path::PathBuf,
+    process::Stdio,
+};
 
 use clap::Parser;
 
@@ -37,7 +41,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui_core::buffer::Buffer;
-use research_utility::sqlite_store::SqliteStore;
+use tokio::process::Command;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Interactively browse training sets")]
@@ -52,6 +56,67 @@ struct Args {
     posterior_hyperparameters_path: String,
     #[arg(long)]
     epoch: usize, // the epoch index
+}
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn training_set_file_path(model_cli_name: &str, config_nickname: &str, epoch: usize) -> PathBuf {
+    repo_root()
+        .join("results")
+        .join("medium_files")
+        .join(model_cli_name)
+        .join(config_nickname)
+        .join(format!("epoch_{}", epoch))
+        .join("training_trajectories.msgpack")
+}
+
+fn training_set_stats_file_path(
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+) -> PathBuf {
+    repo_root()
+        .join("results")
+        .join("small_files")
+        .join(model_cli_name)
+        .join(config_nickname)
+        .join(format!("epoch_{}", epoch))
+        .join("training_trajectories_stats.json")
+}
+
+async fn download_training_set(
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+) -> Result<(), Box<dyn Error>> {
+    let mut command = Command::new("uv");
+    command
+        .arg("run")
+        .arg("python")
+        .arg("scripts/download_training_set.py")
+        .arg("--model-cli-name")
+        .arg(model_cli_name)
+        .arg("--config-nickname")
+        .arg(config_nickname)
+        .arg("--epoch")
+        .arg(epoch.to_string())
+        .current_dir(repo_root())
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    let status = command.status().await?;
+    if !status.success() {
+        return Err(format!(
+            "download_training_set.py failed with status {} while fetching training set for {}/{}/epoch_{}",
+            status, model_cli_name, config_nickname, epoch
+        )
+        .into());
+    }
+
+    Ok(())
 }
 
 struct ConversationRender {
@@ -84,7 +149,7 @@ impl PaneFocus {
 }
 
 struct App<M: LlmModelMarker> {
-    store: SqliteStore<usize, DirectTrainingTrajectory<M>>,
+    store: Vec<DirectTrainingTrajectory<M>>,
     keys: Vec<usize>,
     selected_index: usize,
     focus: PaneFocus,
@@ -104,7 +169,7 @@ struct App<M: LlmModelMarker> {
 
 impl<M: LlmModelMarker> App<M> {
     fn new(
-        store: SqliteStore<usize, DirectTrainingTrajectory<M>>,
+        store: Vec<DirectTrainingTrajectory<M>>,
         keys: Vec<usize>,
         statistics: Option<DirectTrainingSetStatistics>,
     ) -> Self {
@@ -145,8 +210,8 @@ impl<M: LlmModelMarker> App<M> {
         let trajectory = self
             .store
             .get(key)
-            .unwrap()
-            .expect("key from sqlite key set must exist");
+            .cloned()
+            .expect("key from training trajectory array must exist");
 
         let conversation_render = build_conversation_render::<M>(&trajectory);
         self.loaded = Some(LoadedTrajectory {
@@ -680,6 +745,21 @@ async fn main() {
         posterior_hyperparameters_path,
         epoch,
     } = Args::parse();
+
+    let model_cli_name = model.cli_name();
+    let training_set_path = training_set_file_path(&model_cli_name, &config_nickname, epoch);
+    let training_set_stats_path =
+        training_set_stats_file_path(&model_cli_name, &config_nickname, epoch);
+    if !training_set_path.is_file() || !training_set_stats_path.is_file() {
+        eprintln!(
+            "Missing training set artifacts for {}/{}/epoch_{}; downloading...",
+            model_cli_name, config_nickname, epoch
+        );
+        download_training_set(&model_cli_name, &config_nickname, epoch)
+            .await
+            .unwrap();
+    }
+
     let rollout_config: DirectRolloutConfig<Training> = read_json(rollout_config_path).unwrap();
     let posterior_hyperparameters =
         read_json::<PosteriorHyperparameters>(posterior_hyperparameters_path).unwrap();
@@ -720,8 +800,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         &posterior_calculation_config,
         epoch,
     );
-    let mut keys = training_set_store.get_keys().unwrap();
-    keys.sort();
+    let keys = (0..training_set_store.len()).collect::<Vec<usize>>();
     let statistics =
         read_json::<DirectTrainingSetStatistics>(training_trajectories_stats_file_path::<M>(
             &config_nickname,

@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import math
 import os
-import sqlite3
 from dataclasses import dataclass
 from typing import Iterator
 
-from research_utility import SqliteStore
+import msgpack
 
 
 @dataclass(frozen=True)
@@ -25,12 +24,11 @@ class TrainingSampleTokenized:
     model_official_name: str
 
 
-def _assert_sqlite_path_exists(sqlite_path: str) -> None:
-    assert os.path.isfile(sqlite_path), f"sqlite file not found: {sqlite_path}"
+def _assert_msgpack_path_exists(msgpack_path: str) -> None:
+    assert os.path.isfile(msgpack_path), f"msgpack file not found: {msgpack_path}"
 
 
 def _parse_payload_object(payload_obj: object, payload_kind: str) -> dict[str, object]:
-    # SqliteStore returns decoded Python values, so callers always parse objects.
     assert isinstance(payload_obj, dict), f"{payload_kind} payload must be a dictionary"
     return payload_obj
 
@@ -183,83 +181,74 @@ def _parse_direct_training_trajectory_payload(
     )
 
 
-def _read_store_entry_count(sqlite_path: str) -> int:
-    connection = sqlite3.connect(sqlite_path)
-    try:
-        cursor = connection.cursor()
-        row = cursor.execute(
-            "SELECT COUNT(*), MIN(CAST(id AS INTEGER)), MAX(CAST(id AS INTEGER)) FROM store_entries"
-        ).fetchone()
-    finally:
-        connection.close()
-
-    assert row is not None, "failed to query sqlite store_entries"
-    count = int(row[0])
-    if count == 0:
-        return 0
-
-    min_id = int(row[1])
-    max_id = int(row[2])
-    assert min_id == 0, f"trajectory ids must start at 0, got min id {min_id}"
-    assert max_id == count - 1, (
-        f"trajectory ids must be contiguous and end at count-1: max_id={max_id}, count={count}"
-    )
-    return count
+def _iter_msgpack_payloads(msgpack_path: str) -> Iterator[object]:
+    _assert_msgpack_path_exists(msgpack_path)
+    with open(msgpack_path, "rb") as file:
+        unpacker = msgpack.Unpacker(file, raw=False)
+        for payload in unpacker:
+            yield payload
 
 
 class LazyTrainingTrajectoryStore:
-    def __init__(self, sqlite_path: str, first_n_training_samples: int = 0):
-        _assert_sqlite_path_exists(sqlite_path)
+    def __init__(self, msgpack_path: str, first_n_training_samples: int = 0):
+        _assert_msgpack_path_exists(msgpack_path)
         assert first_n_training_samples >= 0, (
             "first_n_training_samples must be non-negative"
         )
 
-        self._store = SqliteStore[int, object](sqlite_path)
-        full_count = _read_store_entry_count(sqlite_path)
-        assert full_count > 0, "training trajectory database must be non-empty"
+        self._msgpack_path = msgpack_path
+        self._offsets: list[int] = []
+        with open(msgpack_path, "rb") as file:
+            unpacker = msgpack.Unpacker(file, raw=False)
+            start_offset = 0
+            for _payload in unpacker:
+                self._offsets.append(start_offset)
+                start_offset = unpacker.tell()
+        self._sample_count = len(self._offsets)
+        assert self._sample_count > 0, "training trajectory data must be non-empty"
         if first_n_training_samples > 0:
-            self.sample_count = min(full_count, first_n_training_samples)
+            self.sample_count = min(self._sample_count, first_n_training_samples)
         else:
-            self.sample_count = full_count
+            self.sample_count = self._sample_count
 
     def close(self) -> None:
-        self._store.close()
+        return None
+
+    def _load_payload_at_offset(self, offset: int) -> object:
+        with open(self._msgpack_path, "rb") as file:
+            file.seek(offset)
+            unpacker = msgpack.Unpacker(file, raw=False)
+            try:
+                return next(unpacker)
+            except StopIteration as error:
+                raise AssertionError(
+                    f"trajectory index must be contiguous: missing payload at byte offset {offset}"
+                ) from error
 
     def get_sample(self, trajectory_id: int) -> TrainingSampleTokenized:
         assert trajectory_id >= 0, "trajectory_id must be non-negative"
         assert trajectory_id < self.sample_count, "trajectory_id out of bounds"
+        assert trajectory_id < len(self._offsets), "trajectory_id out of bounds"
 
-        payload = self._store.get(trajectory_id)
-        assert payload is not None, (
-            f"trajectory index must be contiguous: expected {trajectory_id}, got missing id {trajectory_id}"
-        )
+        payload = self._load_payload_at_offset(self._offsets[trajectory_id])
         return _parse_direct_training_trajectory_payload(
             trajectory_id=trajectory_id, payload=payload
         )
 
 
-def iter_tokenized_samples(sqlite_path: str) -> Iterator[TrainingSampleTokenized]:
-    _assert_sqlite_path_exists(sqlite_path)
-    store = SqliteStore[str, object](sqlite_path)
-    try:
-        for payload in store.load_all():
-            yield _parse_tokenized_payload(payload)
-    finally:
-        store.close()
+def iter_tokenized_samples(msgpack_path: str) -> Iterator[TrainingSampleTokenized]:
+    for payload in _iter_msgpack_payloads(msgpack_path):
+        yield _parse_tokenized_payload(payload)
 
 
-def load_tokenized_samples(sqlite_path: str) -> list[TrainingSampleTokenized]:
-    return list(iter_tokenized_samples(sqlite_path))
+def load_tokenized_samples(msgpack_path: str) -> list[TrainingSampleTokenized]:
+    return list(iter_tokenized_samples(msgpack_path))
 
 
-def iter_training_trajectories(sqlite_path: str) -> Iterator[TrainingSampleTokenized]:
-    store = LazyTrainingTrajectoryStore(sqlite_path)
-    try:
-        for trajectory_id in range(store.sample_count):
-            yield store.get_sample(trajectory_id)
-    finally:
-        store.close()
+def iter_training_trajectories(msgpack_path: str) -> Iterator[TrainingSampleTokenized]:
+    for trajectory_id, payload in enumerate(_iter_msgpack_payloads(msgpack_path)):
+        yield _parse_direct_training_trajectory_payload(trajectory_id, payload)
 
 
-def load_training_trajectories(sqlite_path: str) -> list[TrainingSampleTokenized]:
-    return list(iter_training_trajectories(sqlite_path))
+def load_training_trajectories(msgpack_path: str) -> list[TrainingSampleTokenized]:
+    return list(iter_training_trajectories(msgpack_path))

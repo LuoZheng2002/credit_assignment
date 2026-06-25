@@ -940,15 +940,7 @@ impl Orchestrator {
             &self.posterior_calculation_config,
             epoch,
         );
-        let num_training_samples = training_trajectory_store
-            .get_keys()
-            .map_err(|err| {
-                format!(
-                    "Failed to read training trajectory keys for epoch {}: {}",
-                    epoch, err
-                )
-            })?
-            .len();
+        let num_training_samples = training_trajectory_store.len();
         let training_trajectory_sqlite_path = training_trajectories_file_path::<M>(
             &self.config_nickname,
             &self.training_set_rollout_config,

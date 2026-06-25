@@ -22,7 +22,7 @@ from ..tui_logging import (
 )
 from .batch_dataset import LazyResolvedBatchLoader, ResolvedTrainingBatch
 from .collator import IGNORE_LABEL, collate_training_samples
-from .data_sqlite import TrainingSampleTokenized
+from .data_msgpack import TrainingSampleTokenized
 from .losses import compute_advantage_weighted_causal_lm_loss
 from .training_plan import assert_supported_training_plan
 

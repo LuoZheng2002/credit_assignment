@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
-
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, Cursor, Read, Write};
 use std::sync::Arc;
 
 use ordered_float::NotNan;
 use research_utility::{
     progress_tui_logger::{log_info, log_key_value_pair, log_master_progress, log_warning},
-    sqlite_store::{SqliteBusyRetryConfig, SqliteStore},
+    sqlite_store::SqliteStore,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
@@ -237,7 +238,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     action_store: ActionLogStore<M, Training>,
     rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
-    training_trajectory_store: SqliteStore<usize, DirectTrainingTrajectory<M>>,
+    training_trajectories_file_path: String,
     cumulative_avg_abs_advantage_cutoff: f32,
     statistics_file_path: String,
     advantage_calculation_policy: AdvantageCalculationPolicy,
@@ -263,16 +264,21 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         total_trajectories,
         average_absolute_advantage_cutoff,
     } = selection_output;
-    let adopted_trajectories = materialize_selected_training_trajectories::<M>(
+    let training_trajectories = materialize_selected_training_trajectories::<M>(
         question_store,
         action_store,
-        training_trajectory_store,
         rollout_config,
         posterior_calculation_config,
         selected_metadata,
         advantage_calculation_policy,
     )
     .await;
+    let adopted_trajectories = training_trajectories.len();
+    write_training_trajectories_msgpack_file(
+        &training_trajectories_file_path,
+        &training_trajectories,
+    )
+    .unwrap();
 
     let max_average_absolute_advantage = *all_average_absolute_advantages.first().unwrap_or(&0.0);
     let min_average_absolute_advantage = *all_average_absolute_advantages.last().unwrap_or(&0.0);
@@ -411,12 +417,11 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
 async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
     question_store: SqliteStore<QuestionFlatId<Training>, HybridDatasetQuestion<Training>>,
     action_store: ActionLogStore<M, Training>,
-    training_trajectory_store: SqliteStore<usize, DirectTrainingTrajectory<M>>,
     rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
     mut selected_metadata: Vec<TrajectoryMetadata<Training>>,
     advantage_calculation_policy: AdvantageCalculationPolicy,
-) -> usize {
+) -> Vec<DirectTrainingTrajectory<M>> {
     selected_metadata.sort_by(|a, b| {
         b.trajectory_token_length
             .cmp(&a.trajectory_token_length)
@@ -449,6 +454,8 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
     let mut join_set = JoinSet::new();
     let mut finished_trajectories = 0usize;
     let tolerance = 10.0 * f32::EPSILON;
+    let mut outputs_by_index: Vec<Option<DirectTrainingTrajectory<M>>> =
+        vec![None; adopted_trajectories];
     while !grouped_metadata.is_empty() || !join_set.is_empty() {
         tokio::select! {
             permit_result = semaphore.clone().acquire_owned(), if !grouped_metadata.is_empty() => {
@@ -457,7 +464,6 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                     .pop_first()
                     .expect("grouped metadata should be non-empty");
                 let key = question_flat_id;
-                // let action_log = action_log_store.get(*key).unwrap().unwrap();
                 let question = question_store.get(key).unwrap().unwrap();
                 let actions = action_store.load_action_log(key).unwrap();
                 let action_log = DirectTreeActionLog{
@@ -558,9 +564,13 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                 match joined.expect("join_set must have at least one task") {
                     Ok(trajectories) => {
                         for (output_index, trajectory) in trajectories {
-                            training_trajectory_store
-                                .upsert(output_index, &trajectory, SqliteBusyRetryConfig::none())
-                                .unwrap();
+                            assert!(
+                                output_index < outputs_by_index.len(),
+                                "trajectory output index {} out of bounds for {} selected trajectories",
+                                output_index,
+                                outputs_by_index.len(),
+                            );
+                            outputs_by_index[output_index] = Some(trajectory);
                             finished_trajectories += 1;
                             let progress = 0.5
                                 + 0.5 * (finished_trajectories as f32 / adopted_trajectories as f32);
@@ -574,7 +584,59 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
     }
     log_master_progress(1.0, "Phase 2/2: Selected Trajectories Materialized");
 
-    adopted_trajectories
+    outputs_by_index
+        .into_iter()
+        .enumerate()
+        .map(|(output_index, trajectory)| {
+            trajectory.unwrap_or_else(|| {
+                panic!("trajectory output {} was not materialized", output_index)
+            })
+        })
+        .collect()
+}
+
+fn write_training_trajectories_msgpack_file<M: LlmModelMarker>(
+    file_path: &str,
+    trajectories: &[DirectTrainingTrajectory<M>],
+) -> Result<(), String> {
+    let path = std::path::Path::new(file_path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "Failed to create training trajectories parent dir {}: {}",
+                parent.display(),
+                err
+            )
+        })?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|err| {
+            format!(
+                "Failed to create training trajectories msgpack file {}: {}",
+                path.display(),
+                err
+            )
+        })?;
+    for trajectory in trajectories {
+        let bytes = rmp_serde::to_vec_named(trajectory).map_err(|err| {
+            format!(
+                "Failed to serialize training trajectory for msgpack file {}: {}",
+                path.display(),
+                err
+            )
+        })?;
+        file.write_all(&bytes).map_err(|err| {
+            format!(
+                "Failed to append training trajectory to msgpack file {}: {}",
+                path.display(),
+                err
+            )
+        })?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -842,61 +904,32 @@ pub struct DirectTrainingTrajectory<M: LlmModelMarker> {
     pub _phantom: std::marker::PhantomData<M>,
 }
 
-fn training_trajectories_short_hash(
-    config_nickname: &str,
-    rollout_config: &DirectRolloutConfig<Training>,
-    posterior_calculation_config: &PosteriorCalculationConfig,
-    epoch: usize,
-) -> String {
-    let serialized = serde_json::to_vec(&(
-        &config_nickname,
-        rollout_config,
-        posterior_calculation_config,
-        &epoch,
-    ))
-    .unwrap();
-    let hash = blake3::hash(&serialized);
-    hex::encode(&hash.as_bytes()[..4])
-}
-
 pub fn training_trajectories_file_path<M: LlmModelMarker>(
     config_nickname: &str,
-    rollout_config: &DirectRolloutConfig<Training>,
-    posterior_calculation_config: &PosteriorCalculationConfig,
+    _rollout_config: &DirectRolloutConfig<Training>,
+    _posterior_calculation_config: &PosteriorCalculationConfig,
     epoch: usize,
 ) -> String {
-    let hash = training_trajectories_short_hash(
-        config_nickname,
-        rollout_config,
-        posterior_calculation_config,
-        epoch,
-    );
-    training_trajectories_path_from_template(M::CLI_NAME, config_nickname, epoch, &hash)
+    training_trajectories_path_from_template(M::CLI_NAME, config_nickname, epoch)
         .unwrap_or_else(|err| {
             panic!(
-                "failed to render training trajectories path for model_cli_name={}, config_nickname={}, epoch={}, hash={}: {}",
-                M::CLI_NAME, config_nickname, epoch, hash, err
+                "failed to render training trajectories path for model_cli_name={}, config_nickname={}, epoch={}: {}",
+                M::CLI_NAME, config_nickname, epoch, err
             )
         })
 }
 
 pub fn training_trajectories_stats_file_path<M: LlmModelMarker>(
     config_nickname: &str,
-    rollout_config: &DirectRolloutConfig<Training>,
-    posterior_calculation_config: &PosteriorCalculationConfig,
+    _rollout_config: &DirectRolloutConfig<Training>,
+    _posterior_calculation_config: &PosteriorCalculationConfig,
     epoch: usize,
 ) -> String {
-    let hash = training_trajectories_short_hash(
-        config_nickname,
-        rollout_config,
-        posterior_calculation_config,
-        epoch,
-    );
-    training_trajectories_stats_path_from_template(M::CLI_NAME, config_nickname, epoch, &hash)
+    training_trajectories_stats_path_from_template(M::CLI_NAME, config_nickname, epoch)
         .unwrap_or_else(|err| {
             panic!(
-                "failed to render training trajectories stats path for model_cli_name={}, config_nickname={}, epoch={}, hash={}: {}",
-                M::CLI_NAME, config_nickname, epoch, hash, err
+                "failed to render training trajectories stats path for model_cli_name={}, config_nickname={}, epoch={}: {}",
+                M::CLI_NAME, config_nickname, epoch, err
             )
         })
 }
@@ -906,28 +939,43 @@ pub fn open_training_trajectories<M: LlmModelMarker>(
     rollout_config: &DirectRolloutConfig<Training>,
     posterior_calculation_config: &PosteriorCalculationConfig,
     epoch: usize,
-) -> SqliteStore<usize, DirectTrainingTrajectory<M>> {
-    SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(
-        training_trajectories_file_path::<M>(
-            config_nickname,
-            rollout_config,
-            posterior_calculation_config,
-            epoch,
-        ),
-        false,
-    )
-    .unwrap_or_else(|e| {
+) -> Vec<DirectTrainingTrajectory<M>> {
+    let file_path = training_trajectories_file_path::<M>(
+        config_nickname,
+        rollout_config,
+        posterior_calculation_config,
+        epoch,
+    );
+    let file = File::open(&file_path).unwrap_or_else(|e| {
         panic!(
-            "Failed to open training trajectories sqlite store at {}: {}",
-            training_trajectories_file_path::<M>(
-                config_nickname,
-                rollout_config,
-                posterior_calculation_config,
-                epoch,
-            ),
-            e
+            "Failed to open training trajectories msgpack file at {}: {}",
+            file_path, e
         )
-    })
+    });
+    let mut bytes = Vec::new();
+    BufReader::new(file)
+        .read_to_end(&mut bytes)
+        .unwrap_or_else(|e| {
+            panic!(
+                "Failed to read training trajectories msgpack file at {}: {}",
+                file_path, e
+            )
+        });
+    let mut cursor = Cursor::new(bytes.as_slice());
+    let mut trajectories = Vec::new();
+    let total_len = bytes.len() as u64;
+    while cursor.position() < total_len {
+        let mut deserializer = rmp_serde::Deserializer::new(&mut cursor);
+        let trajectory = DirectTrainingTrajectory::<M>::deserialize(&mut deserializer)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Failed to deserialize training trajectory from msgpack file at {}: {}",
+                    file_path, e
+                )
+            });
+        trajectories.push(trajectory);
+    }
+    trajectories
 }
 
 pub async fn generate_training_trajectories<M: LlmModelMarker>(
@@ -937,7 +985,7 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
     epoch: usize,
     cumulative_avg_abs_advantage_cutoff: f32,
     advantage_calculation_policy: AdvantageCalculationPolicy,
-) -> SqliteStore<usize, DirectTrainingTrajectory<M>> {
+) {
     let file_path = training_trajectories_file_path::<M>(
         config_nickname,
         &rollout_config,
@@ -953,14 +1001,6 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
         &posterior_calculation_config,
         epoch,
     );
-    let training_trajectory_store =
-        SqliteStore::<usize, DirectTrainingTrajectory<M>>::initialize(file_path.clone())
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Failed to initialize training trajectories sqlite store at {}: {}",
-                    file_path, e
-                )
-            });
     let dataset_store = open_hybrid_dataset::<Training>();
     let action_store = open_action_logs::<M, Training>(config_nickname, epoch);
     action_store
@@ -974,13 +1014,11 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
         action_store,
         rollout_config,
         posterior_calculation_config,
-        training_trajectory_store,
+        file_path,
         cumulative_avg_abs_advantage_cutoff,
         stats_file_path,
         advantage_calculation_policy,
     )
     .await;
     log_info("Finished generating training trajectories file.");
-    SqliteStore::<usize, DirectTrainingTrajectory<M>>::assume_initialized(file_path, false)
-        .unwrap_or_else(|e| panic!("Failed to reopen training trajectories sqlite store: {}", e))
 }

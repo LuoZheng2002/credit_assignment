@@ -1,7 +1,7 @@
 import unittest
 
 from src_py.train.collator import IGNORE_LABEL, collate_training_samples
-from src_py.train.data_sqlite import QuestionNodeId, TrainingSampleTokenized
+from src_py.train.data_msgpack import QuestionNodeId, TrainingSampleTokenized
 
 
 class TestCollator(unittest.TestCase):

@@ -19,9 +19,9 @@ const MODEL_METRICS_PATH_TEMPLATE_PATH: &str = "config/directories/model_metrics
 const PROGRESS_SAVE_PATH_TEMPLATE_PATH: &str = "config/directories/progress_save_path.jinja";
 const TEST_ACCURACY_PATH_TEMPLATE_PATH: &str = "config/directories/test_accuracy_path.jinja";
 const TRAINING_TRAJECTORIES_PATH_TEMPLATE_PATH: &str =
-    "config/directories/training_trajectories_path.jinja";
+    "config/directories/training_trajectories_msgpack_path.jinja";
 const TRAINING_TRAJECTORIES_STATS_PATH_TEMPLATE_PATH: &str =
-    "config/directories/training_trajectories_stats_path.jinja";
+    "config/directories/training_trajectories_stats_msgpack_path.jinja";
 const TRAINING_SUMMARY_PARENT_DIR_TEMPLATE_PATH: &str =
     "config/directories/training_summary_parent_dir.jinja";
 const TRAINING_WRAPPER_LOG_PATH_TEMPLATE_PATH: &str =
@@ -197,7 +197,6 @@ fn render_training_trajectories_template(
     model_cli_name: &str,
     config_nickname: &str,
     epoch: usize,
-    hash: &str,
 ) -> Result<String, String> {
     let mount_dir = mount_dir()?;
     render_template(
@@ -208,7 +207,6 @@ fn render_training_trajectories_template(
             "model_cli_name": model_cli_name,
             "config_nickname": config_nickname,
             "epoch": epoch,
-            "hash": hash,
         }),
     )
 }
@@ -328,7 +326,6 @@ pub fn training_trajectories_path_from_template(
     model_cli_name: &str,
     config_nickname: &str,
     epoch: usize,
-    hash: &str,
 ) -> Result<String, String> {
     render_training_trajectories_template(
         &TRAINING_TRAJECTORIES_PATH_TEMPLATE_ENVIRONMENT,
@@ -336,7 +333,6 @@ pub fn training_trajectories_path_from_template(
         model_cli_name,
         config_nickname,
         epoch,
-        hash,
     )
 }
 
@@ -344,7 +340,6 @@ pub fn training_trajectories_stats_path_from_template(
     model_cli_name: &str,
     config_nickname: &str,
     epoch: usize,
-    hash: &str,
 ) -> Result<String, String> {
     render_training_trajectories_template(
         &TRAINING_TRAJECTORIES_STATS_PATH_TEMPLATE_ENVIRONMENT,
@@ -352,7 +347,6 @@ pub fn training_trajectories_stats_path_from_template(
         model_cli_name,
         config_nickname,
         epoch,
-        hash,
     )
 }
 

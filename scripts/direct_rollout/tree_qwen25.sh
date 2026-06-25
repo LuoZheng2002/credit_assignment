@@ -1,5 +1,5 @@
 RUST_BACKTRACE=1 cargo run --bin bin_direct_tree -- \
-    --model-cli-name qwen2.5-7b \
+    --model-cli-name qwen25 \
     --qwen-api-backend sglang \
     --qwen-sglang-port 30000 \
     --max-concurrent-requests 200 \
@@ -9,4 +9,3 @@ RUST_BACKTRACE=1 cargo run --bin bin_direct_tree -- \
     --tui-server-port 7878 \
     --ui false \
     --first-n-samples 15000
-

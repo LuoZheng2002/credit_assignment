@@ -1,9 +1,9 @@
 uv run -m src_py.modal.launch_modal_orchestration \
-    --model-cli-name llama-3.1-8b-instruct \
+    --model-cli-name gemma \
     --max-rollout-concurrency 300 \
-    --config-nickname notool \
+    --config-nickname grpo_notool \
     --validation-rollout-config-path config/rollout_config_validation_notool.json \
-    --training-rollout-config-path config/rollout_config_training_notool.json \
+    --training-rollout-config-path config/rollout_config_training_grpo_notool.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --num-total-epochs 10 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \

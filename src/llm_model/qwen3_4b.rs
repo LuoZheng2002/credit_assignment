@@ -75,7 +75,7 @@ impl LlmModelMarker for Qwen3_4B {
     type Tokenizer = Qwen3_4BTokenizer;
     type Callable = SglangLlmCallable<Self>;
 
-    const CLI_NAME: &'static str = "qwen3-4b";
+    const CLI_NAME: &'static str = "qwen34";
     const API_NAME: &'static str = "Qwen/Qwen3-4B";
     const MODEL_LABEL: &'static str = "Qwen3-4B model";
 }

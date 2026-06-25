@@ -105,7 +105,7 @@ impl LlmModelMarker for Gemma3_4BIt {
     type Tokenizer = Gemma3_4BItTokenizer;
     type Callable = SglangLlmCallable<Self>;
 
-    const CLI_NAME: &'static str = "gemma-3-4b-it";
+    const CLI_NAME: &'static str = "gemma";
     const API_NAME: &'static str = "google/gemma-3-4b-it";
     const MODEL_LABEL: &'static str = "Gemma-3-4B-IT model";
 }

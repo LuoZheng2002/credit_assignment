@@ -3,7 +3,7 @@ import unittest
 from unittest import mock
 
 from src_py.train.batch_dataset import ResolvedTrainingBatch
-from src_py.train.data_sqlite import QuestionNodeId, TrainingSampleTokenized
+from src_py.train.data_msgpack import QuestionNodeId, TrainingSampleTokenized
 from src_py.train.engine import (
     _resolve_attention_backend_from_env,
     _resolve_pad_token_id,

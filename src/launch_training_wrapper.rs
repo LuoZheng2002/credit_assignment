@@ -22,7 +22,7 @@ pub async fn run_training_wrapper_and_wait(
     assert!(num_gpus > 0, "num_gpus must be positive");
     if !Path::new(trajectory_sqlite_path).is_file() {
         return Err(format!(
-            "training trajectory sqlite path does not exist: {}",
+            "training trajectory file does not exist: {}",
             trajectory_sqlite_path
         ));
     }

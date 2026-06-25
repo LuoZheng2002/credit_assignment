@@ -1,5 +1,5 @@
 uv run -m src_py.modal.launch_modal_orchestration \
-    --model-cli-name llama-3.1-8b-instruct \
+    --model-cli-name llama \
     --max-rollout-concurrency 300 \
     --config-nickname grpo_notool \
     --validation-rollout-config-path config/rollout_config_validation_notool.json \

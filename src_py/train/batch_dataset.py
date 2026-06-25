@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .data_sqlite import (
+from .data_msgpack import (
     LazyTrainingTrajectoryStore,
     QuestionNodeId,
     TrainingSampleTokenized,
@@ -36,7 +36,9 @@ def load_resolved_training_batches(
 ) -> list[ResolvedTrainingBatch]:
     assert batch_size > 0, "batch_size must be positive"
     assert len(model_official_name.strip()) > 0, "model_official_name cannot be empty"
-    assert first_n_training_samples >= 0, "first_n_training_samples must be non-negative"
+    assert first_n_training_samples >= 0, (
+        "first_n_training_samples must be non-negative"
+    )
 
     trajectories: list[TrainingSampleTokenized] = []
     tokenized_by_id: dict[tuple[int, int], TrainingSampleTokenized] = {}
@@ -44,14 +46,19 @@ def load_resolved_training_batches(
     for sample in iter_training_trajectories(training_trajectory_sqlite_path):
         key = _question_node_key(sample.id)
         assert key not in tokenized_by_id, f"duplicate sample id detected: {sample.id}"
-        assert sample.input_length <= previous_input_length or previous_input_length == -1, (
+        assert (
+            sample.input_length <= previous_input_length or previous_input_length == -1
+        ), (
             "training trajectories must be sorted by input_ids length in descending order"
         )
         previous_input_length = sample.input_length
         tokenized_by_id[key] = sample
         trajectories.append(sample)
 
-        if first_n_training_samples > 0 and len(trajectories) == first_n_training_samples:
+        if (
+            first_n_training_samples > 0
+            and len(trajectories) == first_n_training_samples
+        ):
             break
 
     assert len(trajectories) > 0, "training trajectory database must be non-empty"
@@ -65,7 +72,9 @@ def load_resolved_training_batches(
         ids: list[QuestionNodeId] = []
         for sample in resolved_samples:
             key = _question_node_key(sample.id)
-            assert key in tokenized_by_id, f"missing tokenized sample for id: {sample.id}"
+            assert key in tokenized_by_id, (
+                f"missing tokenized sample for id: {sample.id}"
+            )
             ids.append(sample.id)
             seen_ids.add(key)
 
@@ -92,9 +101,11 @@ class LazyResolvedBatchLoader:
         model_official_name: str,
         first_n_training_samples: int,
     ):
-        assert len(model_official_name.strip()) > 0, "model_official_name cannot be empty"
+        assert len(model_official_name.strip()) > 0, (
+            "model_official_name cannot be empty"
+        )
         self._store = LazyTrainingTrajectoryStore(
-            sqlite_path=training_trajectory_sqlite_path,
+            msgpack_path=training_trajectory_sqlite_path,
             first_n_training_samples=first_n_training_samples,
         )
         self.sample_count = self._store.sample_count
@@ -108,7 +119,9 @@ class LazyResolvedBatchLoader:
         assert sample_index < self.sample_count, "sample_index out of range"
         return self._store.get_sample(sample_index)
 
-    def resolve_batch(self, sample_index: int, batch_size: int, batch_index: int) -> LazyBatchWindow:
+    def resolve_batch(
+        self, sample_index: int, batch_size: int, batch_index: int
+    ) -> LazyBatchWindow:
         assert sample_index >= 0, "sample_index must be non-negative"
         assert sample_index < self.sample_count, "sample_index out of range"
         assert batch_size > 0, "batch_size must be positive"
