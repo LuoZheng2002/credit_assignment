@@ -74,6 +74,11 @@ def main() -> int:
             f"modal volume get failed with exit code {result.returncode}"
         )
 
+    if not local_destination.exists():
+        raise RuntimeError(
+            f"modal volume get completed but the expected action log path is still missing: {local_destination}"
+        )
+
     print(
         (
             f"Downloaded {remote_source} from volume "

@@ -170,14 +170,22 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::CollectingSegmentContents {
                 cumulative_content_array,
             }) => {
-                self.produce_collecting_segment_action(cumulative_content_array, None, llm_callable)
-                    .await?
+                let target_segment_id = self
+                    .root_segment_id
+                    .expect("Root segment id must exist when creating trunk trajectory");
+                self.produce_collecting_segment_action(
+                    target_segment_id,
+                    cumulative_content_array,
+                    None,
+                    llm_callable,
+                )
+                .await?
             }
             DirectTreeStatus::WorkingOnGuidedBranching(
                 GuidedBranchingSubStatus::CollectingSegmentContents {
                     cumulative_content_array,
+                    parent_segment_id,
                     new_branch_start_token,
-                    ..
                 },
             ) => {
                 // Inject the branch-start token only on the first generation step of the new branch.
@@ -185,6 +193,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     .is_empty()
                     .then_some(*new_branch_start_token);
                 self.produce_collecting_segment_action(
+                    *parent_segment_id,
                     cumulative_content_array,
                     generation_start_token,
                     llm_callable,
@@ -196,8 +205,16 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     cumulative_content_array,
                 },
             ) => {
-                self.produce_collecting_segment_action(cumulative_content_array, None, llm_callable)
-                    .await?
+                let target_segment_id = self.root_segment_id.expect(
+                    "Root segment id must exist when creating spontaneous-branch source trajectory",
+                );
+                self.produce_collecting_segment_action(
+                    target_segment_id,
+                    cumulative_content_array,
+                    None,
+                    llm_callable,
+                )
+                .await?
             }
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::JudgingSegment {
                 final_answer,
@@ -290,13 +307,11 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
 
     async fn produce_collecting_segment_action(
         &self,
+        target_segment_id: SegmentId,
         cumulative_content_array: &[SegmentContent<M>],
         new_branch_start_token: Option<i32>,
         llm_callable: &M::Callable,
     ) -> Result<DirectTreeAction<M>, StopRequestedError> {
-        let target_segment_id = self.root_segment_id.expect(
-            "Root segment id must exist when creating trunk trajectory or spontaneous branch",
-        );
         let trajectory = self.get_trajectory(target_segment_id, cumulative_content_array);
         match trajectory.try_get_answer(self.action_log.rollout_config.use_tool) {
             Some(final_answer) => Ok(SubmitAnswer(final_answer)),

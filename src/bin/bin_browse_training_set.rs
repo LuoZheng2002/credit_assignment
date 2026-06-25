@@ -750,7 +750,7 @@ async fn main() {
     let training_set_path = training_set_file_path(&model_cli_name, &config_nickname, epoch);
     let training_set_stats_path =
         training_set_stats_file_path(&model_cli_name, &config_nickname, epoch);
-    if !training_set_path.is_file() || !training_set_stats_path.is_file() {
+    if !training_set_path.exists() || !training_set_stats_path.exists() {
         eprintln!(
             "Missing training set artifacts for {}/{}/epoch_{}; downloading...",
             model_cli_name, config_nickname, epoch

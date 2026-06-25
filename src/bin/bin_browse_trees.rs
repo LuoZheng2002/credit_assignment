@@ -111,9 +111,9 @@ async fn download_action_logs(
         .into());
     }
 
-    if !destination.is_file() {
+    if !destination.exists() {
         return Err(format!(
-            "download_action_logs.py completed but the expected action log file is still missing: {}",
+            "download_action_logs.py completed but the expected action log path is still missing: {}",
             destination.display()
         )
         .into());
@@ -157,7 +157,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let action_logs_path = action_logs_path(&model_cli_name, &config_nickname, epoch, split);
 
-    if !action_logs_path.is_file() {
+    if !action_logs_path.exists() {
         eprintln!(
             "Missing action logs for {}/{}/epoch_{} ({:?}); downloading...",
             model_cli_name, config_nickname, epoch, split
