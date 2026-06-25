@@ -20,7 +20,9 @@ use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep_until};
 
 use crate::atomic_count_guard::AtomicCountGuardRef;
-use crate::direct_tool::tree_action_log::{ActionLogStore, DirectTreeActionLog, open_action_logs};
+use crate::direct_tool::tree_action_log::{
+    ActionLogConfigBundle, ActionLogStore, DirectTreeActionLog, open_action_logs,
+};
 use crate::{
     direct_tool::{
         hybrid_dataset::{DatasetSplit, open_hybrid_dataset},
@@ -636,6 +638,12 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     )));
     {
         let store = action_store.lock().await;
+        store
+            .write_config_bundle_if_missing(&ActionLogConfigBundle {
+                rollout_config: rollout_config.clone(),
+                posterior_calculation_config: posterior_calculation_config.clone(),
+            })
+            .unwrap();
         store.sort().unwrap();
     }
     let mut question_keys = dataset.get_keys().unwrap();

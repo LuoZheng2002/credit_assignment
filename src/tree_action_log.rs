@@ -24,6 +24,7 @@ use crate::{
         tree_action::DirectTreeAction,
     },
     jinja_directories::action_logs_path_from_template,
+    json_toml_utils::write_json,
     llm_model::LlmModelMarker,
 };
 
@@ -35,12 +36,31 @@ const SORT_TEMP_FILE_PREFIX: &str = "sort_tmp_";
 
 static SORT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+fn action_log_config_bundle_path(base_path: &Path) -> PathBuf {
+    if base_path.extension().and_then(|ext| ext.to_str()) == Some("extsort") {
+        base_path.join("config_bundle.json")
+    } else {
+        base_path.with_extension("config_bundle.json")
+    }
+}
+
+pub fn action_log_config_bundle_file_path(action_logs_path: impl AsRef<Path>) -> PathBuf {
+    action_log_config_bundle_path(action_logs_path.as_ref())
+}
+
 #[derive(Clone)]
 pub struct DirectTreeActionLog<M: LlmModelMarker, S: DatasetSplit> {
     pub question: HybridDatasetQuestion<S>,
     pub rollout_config: DirectRolloutConfig<S>,
     pub posterior_calculation_config: PosteriorCalculationConfig,
     pub actions: Vec<DirectTreeAction<M>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "", deserialize = ""))]
+pub struct ActionLogConfigBundle<S: DatasetSplit> {
+    pub rollout_config: DirectRolloutConfig<S>,
+    pub posterior_calculation_config: PosteriorCalculationConfig,
 }
 
 pub struct ActionLogStore<M: LlmModelMarker, S: DatasetSplit> {
@@ -58,6 +78,20 @@ impl<M: LlmModelMarker, S: DatasetSplit> ActionLogStore<M, S> {
         ExtSortActionLogStore::<M, S>::initialize_if_missing(db_path).map(|store| Self {
             backend: ActionLogStoreBackend::ExtSort(store),
         })
+    }
+
+    pub fn write_config_bundle_if_missing(
+        &self,
+        config_bundle: &ActionLogConfigBundle<S>,
+    ) -> Result<(), String> {
+        match &self.backend {
+            ActionLogStoreBackend::Redb(store) => {
+                store.write_config_bundle_if_missing(config_bundle)
+            }
+            ActionLogStoreBackend::ExtSort(store) => {
+                store.write_config_bundle_if_missing(config_bundle)
+            }
+        }
     }
 
     pub fn get_keys(&self) -> Result<Vec<QuestionFlatId<S>>, String> {
@@ -389,6 +423,17 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
             db,
             _phantom: PhantomData,
         })
+    }
+
+    fn write_config_bundle_if_missing(
+        &self,
+        config_bundle: &ActionLogConfigBundle<S>,
+    ) -> Result<(), String> {
+        let bundle_path = action_log_config_bundle_path(&self.db_path);
+        if bundle_path.exists() {
+            return Ok(());
+        }
+        write_json(bundle_path, config_bundle)
     }
 
     fn get_keys(&self) -> Result<Vec<QuestionFlatId<S>>, String> {
@@ -986,6 +1031,17 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
         };
         store.repair_sort_generation_state()?;
         Ok(store)
+    }
+
+    fn write_config_bundle_if_missing(
+        &self,
+        config_bundle: &ActionLogConfigBundle<S>,
+    ) -> Result<(), String> {
+        let bundle_path = action_log_config_bundle_path(&self.base_path);
+        if bundle_path.exists() {
+            return Ok(());
+        }
+        write_json(bundle_path, config_bundle)
     }
 
     fn get_keys(&self) -> Result<Vec<QuestionFlatId<S>>, String> {

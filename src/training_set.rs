@@ -19,7 +19,9 @@ use crate::{
         posterior_calculation_config::PosteriorCalculationConfig,
         rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         tree::{DirectTree, SegmentContent, SegmentId, TreeCorrectness},
-        tree_action_log::{ActionLogStore, DirectTreeActionLog, open_action_logs},
+        tree_action_log::{
+            ActionLogConfigBundle, ActionLogStore, DirectTreeActionLog, open_action_logs,
+        },
     },
     jinja_directories::{
         training_trajectories_path_from_template, training_trajectories_stats_path_from_template,
@@ -961,6 +963,12 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
             });
     let dataset_store = open_hybrid_dataset::<Training>();
     let action_store = open_action_logs::<M, Training>(config_nickname, epoch);
+    action_store
+        .write_config_bundle_if_missing(&ActionLogConfigBundle {
+            rollout_config: rollout_config.clone(),
+            posterior_calculation_config: posterior_calculation_config.clone(),
+        })
+        .unwrap();
     rollout_logs_to_training_trajectories::<M>(
         dataset_store,
         action_store,

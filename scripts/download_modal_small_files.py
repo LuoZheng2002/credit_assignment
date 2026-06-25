@@ -9,6 +9,7 @@ import _bootstrap  # noqa: F401
 
 from src_py.modal.modal_experiment_paths import (
     experiment_local_small_files_dir,
+    experiment_remote_small_files_dir,
     experiment_service_state_volume_name,
 )
 
@@ -40,6 +41,9 @@ def main() -> int:
         repo_root, args.model_cli_name, args.config_nickname
     )
     destination_parent = local_destination.parent
+    remote_source = experiment_remote_small_files_dir(
+        args.model_cli_name, args.config_nickname
+    )
 
     _reset_local_destination(local_destination)
     destination_parent.mkdir(parents=True, exist_ok=True)
@@ -52,7 +56,7 @@ def main() -> int:
         "get",
         "--force",
         service_state_volume_name,
-        "small_files",
+        remote_source,
         str(destination_parent),
     ]
     result = subprocess.run(command, cwd=str(repo_root), check=False)
@@ -62,7 +66,7 @@ def main() -> int:
         )
 
     print(
-        f"Downloaded small_files from volume '{service_state_volume_name}' to {local_destination}",
+        f"Downloaded {remote_source} from volume '{service_state_volume_name}' to {local_destination}",
         flush=True,
     )
     return 0

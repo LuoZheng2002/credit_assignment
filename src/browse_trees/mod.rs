@@ -15,7 +15,10 @@ use crate::direct_tool::hybrid_dataset::{
 use crate::direct_tool::{
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     rollout_config::DirectRolloutConfig,
-    tree_action_log::{ActionLogStore, DirectTreeActionLog},
+    tree_action_log::{
+        ActionLogConfigBundle, ActionLogStore, DirectTreeActionLog,
+        action_log_config_bundle_file_path,
+    },
 };
 use crate::json_toml_utils::read_json;
 use crate::llm_model::{
@@ -1038,58 +1041,113 @@ async fn run_model_app<M: LlmModelMarker, S: DatasetSplit>(
     result
 }
 
+fn load_action_log_config_bundle<S: DatasetSplit>(
+    action_logs_path: &Path,
+) -> Result<ActionLogConfigBundle<S>, io::Error> {
+    let config_bundle_path = action_log_config_bundle_file_path(action_logs_path);
+    if config_bundle_path.exists() {
+        return read_json(&config_bundle_path).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Failed to read action log config bundle file {}: {}",
+                    config_bundle_path.display(),
+                    err
+                ),
+            )
+        });
+    }
+
+    let config_paths_path = config_paths_file_path_from_action_logs_path(action_logs_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let config_paths: ConfigPaths = read_json(&config_paths_path).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Failed to read config paths file {}: {}",
+                config_paths_path.display(),
+                err
+            ),
+        )
+    })?;
+
+    let rollout_config_path = match S::dataset_file_postfix().as_str() {
+        "train" => config_paths.training_rollout_config_path,
+        "val" => config_paths.validation_rollout_config_path,
+        "test" => config_paths.testing_rollout_config_path,
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Unsupported dataset split postfix: {}", other),
+            ));
+        }
+    };
+    let rollout_config =
+        read_json::<DirectRolloutConfig<S>>(&rollout_config_path).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Failed to read rollout config file {}: {}",
+                    rollout_config_path, err
+                ),
+            )
+        })?;
+    let posterior_hyperparameters =
+        read_json::<PosteriorHyperparameters>(&config_paths.posterior_hyperparameters_path)
+            .map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Failed to read posterior hyperparameters file {}: {}",
+                        config_paths.posterior_hyperparameters_path, err
+                    ),
+                )
+            })?;
+
+    Ok(ActionLogConfigBundle {
+        rollout_config,
+        posterior_calculation_config: PosteriorCalculationConfig {
+            hyperparameters: posterior_hyperparameters,
+        },
+    })
+}
+
 macro_rules! run_model_app_for_model_and_split {
     (
         $model_name:expr,
-        $dataset_split:expr,
         $config_nickname:expr,
-        $rollout_config_path:expr,
+        $rollout_config:expr,
         $posterior_calculation_config:expr,
         $epoch:expr,
         $override_hyperparameters:expr,
-        $action_logs_path:expr;
-        $( $model_enum:path, $model_ty:ty ),+ $(,)?;
-        $( $split_enum:path, $split_ty:ty ),+ $(,)?
+        $action_logs_path:expr,
+        $split_ty:ty;
+        $( $model_enum:path, $model_ty:ty ),+ $(,)?
     ) => {{
         let model_name = $model_name;
-        let dataset_split = $dataset_split;
         let config_nickname = $config_nickname;
-        let rollout_config_path = $rollout_config_path;
+        let rollout_config = $rollout_config;
         let posterior_calculation_config = $posterior_calculation_config;
         let epoch = $epoch;
         let override_hyperparameters = $override_hyperparameters;
         let action_logs_path = $action_logs_path;
 
-        macro_rules! run_model_for_split {
-            ($rollout_config:expr, $inner_split_ty:ty) => {{
-                let config_nickname = config_nickname.to_string();
-                let rollout_config = $rollout_config;
-                let posterior_calculation_config = (*posterior_calculation_config).clone();
-                let override_hyperparameters = (*override_hyperparameters).clone();
-                let action_logs_path = action_logs_path.to_path_buf();
-                match model_name {
-                    $(
-                        $model_enum => {
-                            run_model_app::<$model_ty, $inner_split_ty>(
-                                config_nickname,
-                                rollout_config,
-                                posterior_calculation_config,
-                                epoch,
-                                override_hyperparameters,
-                                action_logs_path,
-                            ).await
-                        }
-                    )+
-                }
-            }};
-        }
-
-        match dataset_split {
+        let config_nickname = config_nickname.to_string();
+        let rollout_config = rollout_config.clone();
+        let posterior_calculation_config = posterior_calculation_config.clone();
+        let override_hyperparameters = override_hyperparameters.clone();
+        let action_logs_path = action_logs_path.to_path_buf();
+        match model_name {
             $(
-                $split_enum => {
-                    let rollout_config: DirectRolloutConfig<$split_ty> =
-                        read_json(rollout_config_path).unwrap();
-                    run_model_for_split!(rollout_config, $split_ty)
+                $model_enum => {
+                    run_model_app::<$model_ty, $split_ty>(
+                        config_nickname,
+                        rollout_config,
+                        posterior_calculation_config,
+                        epoch,
+                        override_hyperparameters,
+                        action_logs_path,
+                    ).await
                 }
             )+
         }
@@ -1100,33 +1158,75 @@ async fn run_with_resolved_context(
     model: LlmModelName,
     dataset_split: DatasetSplitEnum,
     config_nickname: String,
-    rollout_config_path: String,
-    posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize,
     override_hyperparameters: Option<PosteriorHyperparameters>,
     action_logs_path: PathBuf,
 ) -> Result<(), Box<dyn Error>> {
-    run_model_app_for_model_and_split!(
-        model,
-        dataset_split,
-        &config_nickname,
-        &rollout_config_path,
-        &posterior_calculation_config,
-        epoch,
-        &override_hyperparameters,
-        &action_logs_path;
-        LlmModelName::Qwen25_7b, Qwen25_7B,
-        LlmModelName::Qwen3_06b, Qwen3_06B,
-        LlmModelName::Qwen3_4b, Qwen3_4B,
-        LlmModelName::Qwen35_4b, Qwen35_4B,
-        LlmModelName::Qwen35_08b, Qwen35_08B,
-        LlmModelName::Gemma3_4b, Gemma3_4BIt,
-        LlmModelName::Llama31_8b, Llama31_8BInstruct,
-        LlmModelName::Mistral7bInstructV03, Mistral7BInstructV03;
-        DatasetSplitEnum::Training, Training,
-        DatasetSplitEnum::Validation, Validation,
-        DatasetSplitEnum::Testing, Testing
-    )
+    match dataset_split {
+        DatasetSplitEnum::Training => {
+            let config_bundle = load_action_log_config_bundle::<Training>(&action_logs_path)?;
+            run_model_app_for_model_and_split!(
+                model,
+                &config_nickname,
+                config_bundle.rollout_config,
+                config_bundle.posterior_calculation_config,
+                epoch,
+                &override_hyperparameters,
+                &action_logs_path,
+                Training;
+                LlmModelName::Qwen25_7b, Qwen25_7B,
+                LlmModelName::Qwen3_06b, Qwen3_06B,
+                LlmModelName::Qwen3_4b, Qwen3_4B,
+                LlmModelName::Qwen35_4b, Qwen35_4B,
+                LlmModelName::Qwen35_08b, Qwen35_08B,
+                LlmModelName::Gemma3_4b, Gemma3_4BIt,
+                LlmModelName::Llama31_8b, Llama31_8BInstruct,
+                LlmModelName::Mistral7bInstructV03, Mistral7BInstructV03
+            )
+        }
+        DatasetSplitEnum::Validation => {
+            let config_bundle = load_action_log_config_bundle::<Validation>(&action_logs_path)?;
+            run_model_app_for_model_and_split!(
+                model,
+                &config_nickname,
+                config_bundle.rollout_config,
+                config_bundle.posterior_calculation_config,
+                epoch,
+                &override_hyperparameters,
+                &action_logs_path,
+                Validation;
+                LlmModelName::Qwen25_7b, Qwen25_7B,
+                LlmModelName::Qwen3_06b, Qwen3_06B,
+                LlmModelName::Qwen3_4b, Qwen3_4B,
+                LlmModelName::Qwen35_4b, Qwen35_4B,
+                LlmModelName::Qwen35_08b, Qwen35_08B,
+                LlmModelName::Gemma3_4b, Gemma3_4BIt,
+                LlmModelName::Llama31_8b, Llama31_8BInstruct,
+                LlmModelName::Mistral7bInstructV03, Mistral7BInstructV03
+            )
+        }
+        DatasetSplitEnum::Testing => {
+            let config_bundle = load_action_log_config_bundle::<Testing>(&action_logs_path)?;
+            run_model_app_for_model_and_split!(
+                model,
+                &config_nickname,
+                config_bundle.rollout_config,
+                config_bundle.posterior_calculation_config,
+                epoch,
+                &override_hyperparameters,
+                &action_logs_path,
+                Testing;
+                LlmModelName::Qwen25_7b, Qwen25_7B,
+                LlmModelName::Qwen3_06b, Qwen3_06B,
+                LlmModelName::Qwen3_4b, Qwen3_4B,
+                LlmModelName::Qwen35_4b, Qwen35_4B,
+                LlmModelName::Qwen35_08b, Qwen35_08B,
+                LlmModelName::Gemma3_4b, Gemma3_4BIt,
+                LlmModelName::Llama31_8b, Llama31_8BInstruct,
+                LlmModelName::Mistral7bInstructV03, Mistral7BInstructV03
+            )
+        }
+    }
 }
 
 pub async fn run(
@@ -1136,44 +1236,11 @@ pub async fn run(
     let action_logs_path = action_logs_path.as_ref();
     let context = parse_action_logs_context(action_logs_path)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
-    let config_paths_path = config_paths_file_path_from_action_logs_path(action_logs_path)
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
-    let config_paths: ConfigPaths = read_json(&config_paths_path).map_err(|err| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "Failed to read config paths file {}: {}",
-                config_paths_path.display(),
-                err
-            ),
-        )
-    })?;
-    let rollout_config_path = match context.dataset_split {
-        DatasetSplitEnum::Training => config_paths.training_rollout_config_path,
-        DatasetSplitEnum::Validation => config_paths.validation_rollout_config_path,
-        DatasetSplitEnum::Testing => config_paths.testing_rollout_config_path,
-    };
-    let posterior_hyperparameters =
-        read_json::<PosteriorHyperparameters>(&config_paths.posterior_hyperparameters_path)
-            .map_err(|err| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "Failed to read posterior hyperparameters file {}: {}",
-                        config_paths.posterior_hyperparameters_path, err
-                    ),
-                )
-            })?;
-    let posterior_calculation_config = PosteriorCalculationConfig {
-        hyperparameters: posterior_hyperparameters,
-    };
 
     run_with_resolved_context(
         context.model,
         context.dataset_split,
         context.config_nickname,
-        rollout_config_path,
-        posterior_calculation_config,
         context.epoch,
         override_hyperparameters,
         action_logs_path.to_path_buf(),

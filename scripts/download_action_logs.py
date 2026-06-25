@@ -8,7 +8,8 @@ from pathlib import Path
 import _bootstrap  # noqa: F401
 
 from src_py.modal.modal_experiment_paths import (
-    experiment_local_medium_files_dir,
+    action_logs_artifact_name,
+    experiment_local_action_logs_dir,
     experiment_service_state_volume_name,
 )
 
@@ -26,20 +27,32 @@ def _reset_local_destination(local_destination: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Download the Modal medium_files folder for a specific experiment"
+        description=(
+            "Download a specific Modal action log folder for a given experiment, epoch, and split"
+        )
     )
     parser.add_argument("--model-cli-name", required=True)
     parser.add_argument("--config-nickname", required=True)
+    parser.add_argument("--epoch", required=True, type=int)
+    parser.add_argument("--split", required=True, choices=["train", "validation"])
     args = parser.parse_args()
 
     repo_root = _repo_root()
     service_state_volume_name = experiment_service_state_volume_name(
         args.model_cli_name, args.config_nickname
     )
-    local_destination = experiment_local_medium_files_dir(
-        repo_root, args.model_cli_name, args.config_nickname
+    local_destination = experiment_local_action_logs_dir(
+        repo_root,
+        args.model_cli_name,
+        args.config_nickname,
+        args.epoch,
+        args.split,
     )
     destination_parent = local_destination.parent
+    remote_source = (
+        f"medium_files/{args.model_cli_name}/{args.config_nickname}/"
+        f"epoch_{args.epoch}/{action_logs_artifact_name(args.split)}"
+    )
 
     _reset_local_destination(local_destination)
     destination_parent.mkdir(parents=True, exist_ok=True)
@@ -52,7 +65,7 @@ def main() -> int:
         "get",
         "--force",
         service_state_volume_name,
-        "medium_files",
+        remote_source,
         str(destination_parent),
     ]
     result = subprocess.run(command, cwd=str(repo_root), check=False)
@@ -62,7 +75,10 @@ def main() -> int:
         )
 
     print(
-        f"Downloaded medium_files from volume '{service_state_volume_name}' to {local_destination}",
+        (
+            f"Downloaded {remote_source} from volume "
+            f"'{service_state_volume_name}' to {local_destination}"
+        ),
         flush=True,
     )
     return 0

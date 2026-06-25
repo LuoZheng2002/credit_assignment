@@ -22,7 +22,7 @@ There should be `small_files`, `medium_files`, and `large_files` directories.
 ## Downloading volume folders to local machine
 We have:
 - `scripts/download_modal_small_files.py`
-- `scripts/download_modal_medium_files.py`
+- `scripts/download_action_logs.py`
 - `scripts/download_modal_large_files.py`
 
 For example to download the small files folder, run:
@@ -36,12 +36,16 @@ The `--model-cli-name` options can be found in `src/llm_model/llm_model_name.rs`
 `--config-nickname` is the one in `scripts/orchestrator_modal` folder scripts.
 
 ## Replay the training progress
-1. Locate the downloaded small files folder. In it, there is a `tui_log.bin` file. For example: `modal_downloads/qwen2.5-7b/std/small_files/qwen2.5-7b/std/tui_log.bin`.
+1. Locate the downloaded small files folder. In it, there is a `tui_log.bin` file. For example: `results/small_files/qwen2.5-7b/std/tui_log.bin`.
 2. Run `bash tui.sh [tui_log.bin path]`
 
 ## Browse the action logs that form the trees
-1. Locate the action log files in medium files folder. For example: `modal_downloads/qwen2.5-7b/std/medium_files/qwen2.5-7b/std/epoch_0/action_logs_training` and `modal_downloads/qwen2.5-7b/std/medium_files/qwen2.5-7b/std/epoch_0/action_logs_validation`.
-2. Run `cargo run --bin bin_browse_trees -- --action-logs-path [action log files path]`
+1. Download a specific action log artifact. For example:
+   ```bash
+   uv run scripts/download_action_logs.py --model-cli-name qwen2.5-7b --config-nickname std --epoch 0 --split train
+   ```
+2. Locate the downloaded action log path, for example: `results/medium_files/qwen2.5-7b/std/epoch_0/action_logs_training.extsort` or `results/medium_files/qwen2.5-7b/std/epoch_0/action_logs_validation.extsort`.
+3. Run `cargo run --bin bin_browse_trees -- --action-logs-path [action log files path]`
 
 ## Things to check for
 1. llm_call_throughput_per_sec_5s_window, should be ideally around 20 for 1*H200.

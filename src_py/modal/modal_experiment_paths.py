@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 MAX_MODAL_OBJECT_NAME_LENGTH = 64
-LOCAL_MODAL_DOWNLOADS_DIR = Path("modal_downloads")
+LOCAL_RESULTS_DIR = Path("results")
 SERVICE_STATE_VOLUME_PREFIX = "credit-assignment"
 
 
@@ -50,37 +50,55 @@ def experiment_service_state_volume_name(
     )
 
 
+def experiment_remote_small_files_dir(model_cli_name: str, config_nickname: str) -> str:
+    return f"small_files/{model_cli_name}/{config_nickname}"
+
+
 def experiment_local_small_files_dir(
     repo_root: Path, model_cli_name: str, config_nickname: str
 ) -> Path:
     return (
-        repo_root
-        / LOCAL_MODAL_DOWNLOADS_DIR
-        / model_cli_name
-        / config_nickname
-        / "small_files"
+        repo_root / LOCAL_RESULTS_DIR / "small_files" / model_cli_name / config_nickname
     )
+
+
+def experiment_remote_large_files_dir(model_cli_name: str, config_nickname: str) -> str:
+    return f"large_files/{model_cli_name}/{config_nickname}"
 
 
 def experiment_local_large_files_dir(
     repo_root: Path, model_cli_name: str, config_nickname: str
 ) -> Path:
     return (
-        repo_root
-        / LOCAL_MODAL_DOWNLOADS_DIR
-        / model_cli_name
-        / config_nickname
-        / "large_files"
+        repo_root / LOCAL_RESULTS_DIR / "large_files" / model_cli_name / config_nickname
     )
 
 
 def experiment_local_medium_files_dir(
     repo_root: Path, model_cli_name: str, config_nickname: str
 ) -> Path:
+    return repo_root / LOCAL_RESULTS_DIR / "medium_files"
+
+
+def action_logs_artifact_name(split: str) -> str:
+    if split == "train":
+        return "action_logs_training.extsort"
+    if split == "validation":
+        return "action_logs_validation.extsort"
+    raise RuntimeError(f"unsupported split {split!r}; expected 'train' or 'validation'")
+
+
+def experiment_local_action_logs_dir(
+    repo_root: Path,
+    model_cli_name: str,
+    config_nickname: str,
+    epoch: int,
+    split: str,
+) -> Path:
     return (
-        repo_root
-        / LOCAL_MODAL_DOWNLOADS_DIR
+        experiment_local_medium_files_dir(repo_root, model_cli_name, config_nickname)
         / model_cli_name
         / config_nickname
-        / "medium_files"
+        / f"epoch_{epoch}"
+        / action_logs_artifact_name(split)
     )
