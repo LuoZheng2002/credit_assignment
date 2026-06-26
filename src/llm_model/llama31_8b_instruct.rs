@@ -3,15 +3,19 @@ use serde::Serialize;
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
-use crate::utils::load_jinja_template_environment;
+use crate::utils::{load_jinja_template_environment, load_tokenizer_from_local_or_hf};
 
 use super::sglang_model_shared::{
     decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id, wrap_python_response_xml,
 };
 use super::{LlmModelMarker, MyTokenizer, SglangLlmCallable, TokenArray};
 
-static LLAMA31_8B_INSTRUCT_TOKENIZER: LazyLock<Tokenizer> =
-    LazyLock::new(|| Tokenizer::from_pretrained(Llama31_8BInstruct::API_NAME, None).unwrap());
+static LLAMA31_8B_INSTRUCT_TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(|| {
+    load_tokenizer_from_local_or_hf(
+        "tokenizers/llama31/tokenizer.json",
+        Llama31_8BInstruct::API_NAME,
+    )
+});
 
 static LLAMA31_8B_INSTRUCT_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment<'static>> =
     LazyLock::new(|| {

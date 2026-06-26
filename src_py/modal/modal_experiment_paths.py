@@ -80,8 +80,12 @@ def experiment_local_medium_files_dir(
     return repo_root / LOCAL_RESULTS_DIR / "medium_files"
 
 
-def training_trajectories_file_name() -> str:
-    return "training_trajectories.msgpack"
+def training_trajectories_dir_name() -> str:
+    return "training_trajectories"
+
+
+def training_trajectories_msgpack_file_name() -> str:
+    return "trajectories.msgpack"
 
 
 def training_trajectories_stats_file_name() -> str:
@@ -93,7 +97,7 @@ def experiment_remote_training_trajectories_file_path(
 ) -> str:
     return (
         f"medium_files/{model_cli_name}/{config_nickname}/epoch_{epoch}/"
-        f"{training_trajectories_file_name()}"
+        f"{training_trajectories_dir_name()}"
     )
 
 
@@ -107,7 +111,7 @@ def experiment_local_training_trajectories_file_path(
         / model_cli_name
         / config_nickname
         / f"epoch_{epoch}"
-        / training_trajectories_file_name()
+        / training_trajectories_dir_name()
     )
 
 

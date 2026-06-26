@@ -1,9 +1,9 @@
 use minijinja::context;
 use serde::Serialize;
-use std::{env, sync::LazyLock};
+use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
-use crate::utils::load_jinja_template_environment;
+use crate::utils::{load_jinja_template_environment, load_tokenizer_from_local_or_hf};
 
 use super::sglang_model_shared::{
     decode_from_i32_ids, encode_to_i32_ids, token_to_i32_id, wrap_python_response_xml,
@@ -11,14 +11,7 @@ use super::sglang_model_shared::{
 use super::{LlmModelMarker, MyTokenizer, SglangLlmCallable, TokenArray};
 
 static GEMMA3_4B_IT_TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(|| {
-    let token = env::var("HF_TOKEN")
-        .ok()
-        .or_else(|| env::var("HUGGINGFACE_HUB_TOKEN").ok());
-    let params = tokenizers::FromPretrainedParameters {
-        token,
-        ..Default::default()
-    };
-    Tokenizer::from_pretrained(Gemma3_4BIt::API_NAME, Some(params)).unwrap()
+    load_tokenizer_from_local_or_hf("tokenizers/gemma3/tokenizer.json", Gemma3_4BIt::API_NAME)
 });
 
 static GEMMA3_4B_IT_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment<'static>> =

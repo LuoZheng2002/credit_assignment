@@ -2,7 +2,7 @@ use std::{
     backtrace::Backtrace,
     error::Error,
     io::{self, Stdout},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
 };
 
@@ -11,12 +11,13 @@ use clap::Parser;
 use credit_assignment::{
     direct_tool::{
         hybrid_dataset::Training,
-        posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-        rollout_config::DirectRolloutConfig,
         training_set::{
-            DirectTrainingSetStatistics, DirectTrainingTrajectory, open_training_trajectories,
-            training_trajectories_stats_file_path,
+            DirectTrainingSetStatistics, DirectTrainingTrajectory, TrainingTrajectoryConfigBundle,
+            open_training_trajectories,
         },
+    },
+    jinja_directories::{
+        training_trajectories_path_from_template, training_trajectories_stats_path_from_template,
     },
     json_toml_utils::read_json,
     llm_model::{
@@ -47,13 +48,9 @@ use tokio::process::Command;
 #[command(author, version, about = "Interactively browse training sets")]
 struct Args {
     #[arg(value_enum, short, long)]
-    model: LlmModelName,
+    model_cli_name: LlmModelName,
     #[arg(long)]
     config_nickname: String,
-    #[arg(long)]
-    rollout_config_path: String,
-    #[arg(long)]
-    posterior_hyperparameters_path: String,
     #[arg(long)]
     epoch: usize, // the epoch index
 }
@@ -63,27 +60,31 @@ fn repo_root() -> PathBuf {
 }
 
 fn training_set_file_path(model_cli_name: &str, config_nickname: &str, epoch: usize) -> PathBuf {
-    repo_root()
-        .join("results")
-        .join("medium_files")
-        .join(model_cli_name)
-        .join(config_nickname)
-        .join(format!("epoch_{}", epoch))
-        .join("training_trajectories.msgpack")
+    repo_root().join(
+        training_trajectories_path_from_template(model_cli_name, config_nickname, epoch)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "failed to render training trajectories path for model_cli_name={}, config_nickname={}, epoch={}: {}",
+                    model_cli_name, config_nickname, epoch, err
+                )
+            }),
+    )
 }
 
-fn training_set_stats_file_path(
-    model_cli_name: &str,
-    config_nickname: &str,
-    epoch: usize,
-) -> PathBuf {
-    repo_root()
-        .join("results")
-        .join("small_files")
-        .join(model_cli_name)
-        .join(config_nickname)
-        .join(format!("epoch_{}", epoch))
-        .join("training_trajectories_stats.json")
+fn training_set_config_bundle_file_path(training_set_path: &Path) -> Result<PathBuf, String> {
+    if training_set_path.is_dir() {
+        Ok(training_set_path.join("config_bundle.json"))
+    } else {
+        training_set_path
+            .parent()
+            .map(|parent| parent.join("config_bundle.json"))
+            .ok_or_else(|| {
+                format!(
+                    "Cannot derive config_bundle.json path from {}",
+                    training_set_path.display()
+                )
+            })
+    }
 }
 
 async fn download_training_set(
@@ -714,8 +715,6 @@ fn run_app<M: LlmModelMarker>(
 
 struct RunProgramArgs {
     config_nickname: String,
-    rollout_config: DirectRolloutConfig<Training>,
-    posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize, // the epoch index
 }
 
@@ -739,18 +738,29 @@ async fn main() {
     }));
     dotenvy::dotenv().ok();
     let Args {
-        model,
+        model_cli_name: model,
         config_nickname,
-        rollout_config_path,
-        posterior_hyperparameters_path,
         epoch,
     } = Args::parse();
 
     let model_cli_name = model.cli_name();
     let training_set_path = training_set_file_path(&model_cli_name, &config_nickname, epoch);
-    let training_set_stats_path =
-        training_set_stats_file_path(&model_cli_name, &config_nickname, epoch);
-    if !training_set_path.exists() || !training_set_stats_path.exists() {
+    let training_set_msgpack_path = training_set_path.join("trajectories.msgpack");
+    let training_set_stats_path = repo_root().join(
+        training_trajectories_stats_path_from_template(&model_cli_name, &config_nickname, epoch)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "failed to render training trajectories stats path for model_cli_name={}, config_nickname={}, epoch={}: {}",
+                    model_cli_name, config_nickname, epoch, err
+                )
+            }),
+    );
+    let training_set_config_bundle_path =
+        training_set_config_bundle_file_path(&training_set_path).unwrap();
+    if !training_set_msgpack_path.exists()
+        || !training_set_stats_path.exists()
+        || !training_set_config_bundle_path.exists()
+    {
         eprintln!(
             "Missing training set artifacts for {}/{}/epoch_{}; downloading...",
             model_cli_name, config_nickname, epoch
@@ -760,16 +770,11 @@ async fn main() {
             .unwrap();
     }
 
-    let rollout_config: DirectRolloutConfig<Training> = read_json(rollout_config_path).unwrap();
-    let posterior_hyperparameters =
-        read_json::<PosteriorHyperparameters>(posterior_hyperparameters_path).unwrap();
-    let posterior_calculation_config = PosteriorCalculationConfig {
-        hyperparameters: posterior_hyperparameters,
-    };
+    let _training_trajectory_config_bundle =
+        read_json::<TrainingTrajectoryConfigBundle<Training>>(&training_set_config_bundle_path)
+            .unwrap();
     let run_program_args = RunProgramArgs {
         config_nickname,
-        rollout_config,
-        posterior_calculation_config,
         epoch,
     };
     match model {
@@ -789,26 +794,20 @@ async fn main() {
 async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
     let RunProgramArgs {
         config_nickname,
-        rollout_config,
-        posterior_calculation_config,
         epoch,
-        ..
     } = run_program_args;
-    let training_set_store = open_training_trajectories::<M>(
-        &config_nickname,
-        &rollout_config,
-        &posterior_calculation_config,
-        epoch,
-    );
+    let training_set_store = open_training_trajectories::<M>(&config_nickname, epoch);
     let keys = (0..training_set_store.len()).collect::<Vec<usize>>();
-    let statistics =
-        read_json::<DirectTrainingSetStatistics>(training_trajectories_stats_file_path::<M>(
-            &config_nickname,
-            &rollout_config,
-            &posterior_calculation_config,
-            epoch,
-        ))
-        .ok();
+    let statistics = read_json::<DirectTrainingSetStatistics>(repo_root().join(
+        training_trajectories_stats_path_from_template(M::CLI_NAME, &config_nickname, epoch)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "failed to render training trajectories stats path for model_cli_name={}, config_nickname={}, epoch={}: {}",
+                    M::CLI_NAME, config_nickname, epoch, err
+                )
+            }),
+    ))
+    .ok();
 
     enable_raw_mode().unwrap();
     let mut stdout = io::stdout();

@@ -1,6 +1,8 @@
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
+use crate::utils::load_tokenizer_from_local_or_hf;
+
 use super::sglang_model_shared::{
     build_qwen3_python_response_turn_disable_thinking,
     build_qwen3_python_response_turn_enable_thinking, decode_from_i32_ids, encode_to_i32_ids,
@@ -8,8 +10,9 @@ use super::sglang_model_shared::{
 };
 use super::{LlmModelMarker, MyTokenizer, SglangLlmCallable, TokenArray};
 
-static QWEN3_4B_TOKENIZER: LazyLock<Tokenizer> =
-    LazyLock::new(|| Tokenizer::from_pretrained(Qwen3_4B::API_NAME, None).unwrap());
+static QWEN3_4B_TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(|| {
+    load_tokenizer_from_local_or_hf("tokenizers/qwen3/tokenizer.json", Qwen3_4B::API_NAME)
+});
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Qwen3_4B;

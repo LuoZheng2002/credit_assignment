@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Cursor, Read, Write};
+use std::path::Path;
 use std::sync::Arc;
 
 use ordered_float::NotNan;
@@ -640,6 +641,13 @@ fn write_training_trajectories_msgpack_file<M: LlmModelMarker>(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "", deserialize = ""))]
+pub struct TrainingTrajectoryConfigBundle<S: DatasetSplit> {
+    pub rollout_config: DirectRolloutConfig<S>,
+    pub posterior_calculation_config: PosteriorCalculationConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectTrainingSetStatistics {
     pub average_absolute_advantages_sorted: Vec<f32>, // sorted from high to low
     pub max_average_absolute_advantage: f32,
@@ -906,8 +914,6 @@ pub struct DirectTrainingTrajectory<M: LlmModelMarker> {
 
 pub fn training_trajectories_file_path<M: LlmModelMarker>(
     config_nickname: &str,
-    _rollout_config: &DirectRolloutConfig<Training>,
-    _posterior_calculation_config: &PosteriorCalculationConfig,
     epoch: usize,
 ) -> String {
     training_trajectories_path_from_template(M::CLI_NAME, config_nickname, epoch)
@@ -919,10 +925,34 @@ pub fn training_trajectories_file_path<M: LlmModelMarker>(
         })
 }
 
+pub fn training_trajectories_msgpack_file_path<M: LlmModelMarker>(
+    config_nickname: &str,
+    epoch: usize,
+) -> String {
+    Path::new(&training_trajectories_file_path::<M>(
+        config_nickname,
+        epoch,
+    ))
+    .join("trajectories.msgpack")
+    .to_string_lossy()
+    .into_owned()
+}
+
+pub fn training_trajectories_config_bundle_file_path<M: LlmModelMarker>(
+    config_nickname: &str,
+    epoch: usize,
+) -> String {
+    Path::new(&training_trajectories_file_path::<M>(
+        config_nickname,
+        epoch,
+    ))
+    .join("config_bundle.json")
+    .to_string_lossy()
+    .into_owned()
+}
+
 pub fn training_trajectories_stats_file_path<M: LlmModelMarker>(
     config_nickname: &str,
-    _rollout_config: &DirectRolloutConfig<Training>,
-    _posterior_calculation_config: &PosteriorCalculationConfig,
     epoch: usize,
 ) -> String {
     training_trajectories_stats_path_from_template(M::CLI_NAME, config_nickname, epoch)
@@ -936,16 +966,14 @@ pub fn training_trajectories_stats_file_path<M: LlmModelMarker>(
 
 pub fn open_training_trajectories<M: LlmModelMarker>(
     config_nickname: &str,
-    rollout_config: &DirectRolloutConfig<Training>,
-    posterior_calculation_config: &PosteriorCalculationConfig,
     epoch: usize,
 ) -> Vec<DirectTrainingTrajectory<M>> {
-    let file_path = training_trajectories_file_path::<M>(
-        config_nickname,
-        rollout_config,
-        posterior_calculation_config,
-        epoch,
-    );
+    let training_trajectories_path = training_trajectories_file_path::<M>(config_nickname, epoch);
+    let file_path = if Path::new(&training_trajectories_path).is_dir() {
+        training_trajectories_msgpack_file_path::<M>(config_nickname, epoch)
+    } else {
+        training_trajectories_path
+    };
     let file = File::open(&file_path).unwrap_or_else(|e| {
         panic!(
             "Failed to open training trajectories msgpack file at {}: {}",
@@ -986,21 +1014,24 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
     cumulative_avg_abs_advantage_cutoff: f32,
     advantage_calculation_policy: AdvantageCalculationPolicy,
 ) {
-    let file_path = training_trajectories_file_path::<M>(
-        config_nickname,
-        &rollout_config,
-        &posterior_calculation_config,
-        epoch,
-    );
-    if std::path::Path::new(&file_path).exists() {
+    let training_trajectories_path = training_trajectories_file_path::<M>(config_nickname, epoch);
+    let training_trajectories_path = Path::new(&training_trajectories_path);
+    std::fs::create_dir_all(training_trajectories_path).unwrap();
+    let file_path = training_trajectories_msgpack_file_path::<M>(config_nickname, epoch);
+    if Path::new(&file_path).exists() {
         std::fs::remove_file(&file_path).unwrap();
     }
-    let stats_file_path = training_trajectories_stats_file_path::<M>(
-        config_nickname,
-        &rollout_config,
-        &posterior_calculation_config,
-        epoch,
-    );
+    let stats_file_path = training_trajectories_stats_file_path::<M>(config_nickname, epoch);
+    let config_bundle_path =
+        training_trajectories_config_bundle_file_path::<M>(config_nickname, epoch);
+    write_json(
+        &config_bundle_path,
+        &TrainingTrajectoryConfigBundle {
+            rollout_config: rollout_config.clone(),
+            posterior_calculation_config: posterior_calculation_config.clone(),
+        },
+    )
+    .unwrap();
     let dataset_store = open_hybrid_dataset::<Training>();
     let action_store = open_action_logs::<M, Training>(config_nickname, epoch);
     action_store

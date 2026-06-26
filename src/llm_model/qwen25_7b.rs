@@ -3,7 +3,10 @@ use serde::Serialize;
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
-use crate::{token_array::TokenArray, utils::load_jinja_template_environment};
+use crate::{
+    token_array::TokenArray,
+    utils::{load_jinja_template_environment, load_tokenizer_from_local_or_hf},
+};
 
 use super::sglang_model_shared::{
     build_qwen25_python_response_turn_disable_thinking,
@@ -12,8 +15,9 @@ use super::sglang_model_shared::{
 };
 use super::{LlmModelMarker, MyTokenizer, SglangLlmCallable};
 
-static QWEN25_TOKENIZER: LazyLock<Tokenizer> =
-    LazyLock::new(|| Tokenizer::from_pretrained(Qwen25_7B::API_NAME, None).unwrap());
+static QWEN25_TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(|| {
+    load_tokenizer_from_local_or_hf("tokenizers/qwen25/tokenizer.json", Qwen25_7B::API_NAME)
+});
 
 static QWEN25_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment<'static>> =
     LazyLock::new(|| {

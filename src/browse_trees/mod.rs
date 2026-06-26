@@ -44,6 +44,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use self::context::parse_action_logs_context;
 use self::tree_render::*;
 
+const TREE_MOUSE_SCROLL_DEBOUNCE: Duration = Duration::from_millis(50);
+
 struct HomePageLoadRequest {
     page_start: usize,
     started_at: Instant,
@@ -77,6 +79,7 @@ struct App<M: LlmModelMarker, S: DatasetSplit> {
     conversation_max_scroll: usize,
     conversation_metrics: Option<PaneMetrics>,
     home_page_load_request: Option<HomePageLoadRequest>,
+    last_tree_scroll_at: Option<Instant>,
 }
 
 impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
@@ -131,6 +134,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
             conversation_max_scroll: 0,
             conversation_metrics: None,
             home_page_load_request: None,
+            last_tree_scroll_at: None,
             question_store,
             action_store,
         }
@@ -765,6 +769,18 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
         }
     }
 
+    fn should_process_tree_scroll(&mut self) -> bool {
+        let now = Instant::now();
+        if self
+            .last_tree_scroll_at
+            .is_some_and(|last| now.saturating_duration_since(last) < TREE_MOUSE_SCROLL_DEBOUNCE)
+        {
+            return false;
+        }
+        self.last_tree_scroll_at = Some(now);
+        true
+    }
+
     fn handle_tree_mouse(&mut self, mouse: MouseEvent) {
         if self.tree_page.is_none() {
             return;
@@ -811,27 +827,85 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
                     }
                 }
             }
-            MouseEventKind::ScrollUp => match self.tree_focus {
-                TreePaneFocus::Summary => self.scroll_summary_up(1),
-                TreePaneFocus::Conversation => self.scroll_conversation_up(1),
-                TreePaneFocus::Tree => {
-                    let entry_index = self
-                        .tree_page
-                        .as_ref()
-                        .expect("tree page must exist in tree mode")
-                        .entry_index;
-                    let Some(entry) = self.loaded_entry(entry_index).cloned() else {
-                        return;
-                    };
-                    let tree_page = self
-                        .tree_page
-                        .as_mut()
-                        .expect("tree page must exist in tree mode");
-                    match self.tree_scroll_mode {
-                        TreeScrollMode::Scaling => {
-                            let old_ratio = tree_page.width_division_ratio;
-                            let new_ratio = old_ratio.saturating_sub(1).max(1);
-                            if old_ratio != new_ratio {
+            MouseEventKind::ScrollUp => {
+                if !self.should_process_tree_scroll() {
+                    return;
+                }
+                match self.tree_focus {
+                    TreePaneFocus::Summary => self.scroll_summary_up(1),
+                    TreePaneFocus::Conversation => self.scroll_conversation_up(1),
+                    TreePaneFocus::Tree => {
+                        let entry_index = self
+                            .tree_page
+                            .as_ref()
+                            .expect("tree page must exist in tree mode")
+                            .entry_index;
+                        let Some(entry) = self.loaded_entry(entry_index).cloned() else {
+                            return;
+                        };
+                        let tree_page = self
+                            .tree_page
+                            .as_mut()
+                            .expect("tree page must exist in tree mode");
+                        match self.tree_scroll_mode {
+                            TreeScrollMode::Scaling => {
+                                let old_ratio = tree_page.width_division_ratio;
+                                let new_ratio = old_ratio.saturating_sub(1).max(1);
+                                if old_ratio != new_ratio {
+                                    self.tree_horizontal_scroll = scale_horizontal_scroll(
+                                        self.tree_horizontal_scroll,
+                                        old_ratio,
+                                        new_ratio,
+                                    );
+                                    tree_page.set_width_division_ratio(
+                                        &entry,
+                                        new_ratio,
+                                        self.override_hyperparameters.as_ref(),
+                                    );
+                                }
+                            }
+                            TreeScrollMode::Panning => {
+                                self.tree_horizontal_scroll =
+                                    self.tree_horizontal_scroll.saturating_sub(4);
+                            }
+                            TreeScrollMode::Evolution => {
+                                let next = tree_page.action_limit.saturating_sub(1);
+                                tree_page.set_action_limit(
+                                    &entry,
+                                    next,
+                                    self.override_hyperparameters.as_ref(),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if !self.should_process_tree_scroll() {
+                    return;
+                }
+                match self.tree_focus {
+                    TreePaneFocus::Summary => {
+                        self.summary_scroll = self.summary_scroll.saturating_add(1)
+                    }
+                    TreePaneFocus::Conversation => self.scroll_conversation_down(1),
+                    TreePaneFocus::Tree => {
+                        let entry_index = self
+                            .tree_page
+                            .as_ref()
+                            .expect("tree page must exist in tree mode")
+                            .entry_index;
+                        let Some(entry) = self.loaded_entry(entry_index).cloned() else {
+                            return;
+                        };
+                        let tree_page = self
+                            .tree_page
+                            .as_mut()
+                            .expect("tree page must exist in tree mode");
+                        match self.tree_scroll_mode {
+                            TreeScrollMode::Scaling => {
+                                let old_ratio = tree_page.width_division_ratio;
+                                let new_ratio = old_ratio.saturating_add(1);
                                 self.tree_horizontal_scroll = scale_horizontal_scroll(
                                     self.tree_horizontal_scroll,
                                     old_ratio,
@@ -843,70 +917,23 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
                                     self.override_hyperparameters.as_ref(),
                                 );
                             }
-                        }
-                        TreeScrollMode::Panning => {
-                            self.tree_horizontal_scroll =
-                                self.tree_horizontal_scroll.saturating_sub(4);
-                        }
-                        TreeScrollMode::Evolution => {
-                            let next = tree_page.action_limit.saturating_sub(1);
-                            tree_page.set_action_limit(
-                                &entry,
-                                next,
-                                self.override_hyperparameters.as_ref(),
-                            );
-                        }
-                    }
-                }
-            },
-            MouseEventKind::ScrollDown => match self.tree_focus {
-                TreePaneFocus::Summary => {
-                    self.summary_scroll = self.summary_scroll.saturating_add(1)
-                }
-                TreePaneFocus::Conversation => self.scroll_conversation_down(1),
-                TreePaneFocus::Tree => {
-                    let entry_index = self
-                        .tree_page
-                        .as_ref()
-                        .expect("tree page must exist in tree mode")
-                        .entry_index;
-                    let Some(entry) = self.loaded_entry(entry_index).cloned() else {
-                        return;
-                    };
-                    let tree_page = self
-                        .tree_page
-                        .as_mut()
-                        .expect("tree page must exist in tree mode");
-                    match self.tree_scroll_mode {
-                        TreeScrollMode::Scaling => {
-                            let old_ratio = tree_page.width_division_ratio;
-                            let new_ratio = old_ratio.saturating_add(1);
-                            self.tree_horizontal_scroll = scale_horizontal_scroll(
-                                self.tree_horizontal_scroll,
-                                old_ratio,
-                                new_ratio,
-                            );
-                            tree_page.set_width_division_ratio(
-                                &entry,
-                                new_ratio,
-                                self.override_hyperparameters.as_ref(),
-                            );
-                        }
-                        TreeScrollMode::Panning => {
-                            self.tree_horizontal_scroll =
-                                self.tree_horizontal_scroll.saturating_add(4);
-                        }
-                        TreeScrollMode::Evolution => {
-                            let next = (tree_page.action_limit + 1).min(tree_page.total_actions);
-                            tree_page.set_action_limit(
-                                &entry,
-                                next,
-                                self.override_hyperparameters.as_ref(),
-                            );
+                            TreeScrollMode::Panning => {
+                                self.tree_horizontal_scroll =
+                                    self.tree_horizontal_scroll.saturating_add(4);
+                            }
+                            TreeScrollMode::Evolution => {
+                                let next =
+                                    (tree_page.action_limit + 1).min(tree_page.total_actions);
+                                tree_page.set_action_limit(
+                                    &entry,
+                                    next,
+                                    self.override_hyperparameters.as_ref(),
+                                );
+                            }
                         }
                     }
                 }
-            },
+            }
             _ => {}
         }
     }

@@ -12,7 +12,8 @@ use crate::{
         rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
         training_set::{
             generate_training_trajectories, open_training_trajectories,
-            training_trajectories_file_path, training_trajectories_stats_file_path,
+            training_trajectories_file_path, training_trajectories_msgpack_file_path,
+            training_trajectories_stats_file_path,
         },
         tree_action_log::action_logs_file_path,
     },
@@ -708,7 +709,7 @@ impl Orchestrator {
     ) -> Result<(), String> {
         self.destroy_epoch_checkpoint_folder::<M>(epoch)?;
         self.destroy_epoch_rollout_action_logs::<M>(epoch)?;
-        self.destroy_epoch_training_trajectories::<M>(epoch)?;
+        self.destroy_previous_epoch_training_trajectories::<M>(epoch)?;
         self.cleanup_epoch_model_dir_if_not_best::<M>(epoch)?;
         Ok(())
     }
@@ -776,27 +777,28 @@ impl Orchestrator {
         Ok(())
     }
 
-    fn destroy_epoch_training_trajectories<M: LlmModelMarker>(
+    fn destroy_previous_epoch_training_trajectories<M: LlmModelMarker>(
         &self,
-        epoch: usize,
+        current_epoch: usize,
     ) -> Result<(), String> {
-        self.delete_file_if_exists(
-            &training_trajectories_file_path::<M>(
-                &self.config_nickname,
-                &self.training_set_rollout_config,
-                &self.posterior_calculation_config,
-                epoch,
+        let Some(previous_epoch) = current_epoch.checked_sub(1) else {
+            log_info("Keeping training trajectories for epoch 0");
+            return Ok(());
+        };
+
+        self.delete_dir_if_exists(
+            &training_trajectories_file_path::<M>(&self.config_nickname, previous_epoch),
+            &format!(
+                "training trajectories directory for previous epoch {}",
+                previous_epoch
             ),
-            &format!("training trajectories sqlite for epoch {}", epoch),
         )?;
         self.delete_file_if_exists(
-            &training_trajectories_stats_file_path::<M>(
-                &self.config_nickname,
-                &self.training_set_rollout_config,
-                &self.posterior_calculation_config,
-                epoch,
+            &training_trajectories_stats_file_path::<M>(&self.config_nickname, previous_epoch),
+            &format!(
+                "training trajectories stats for previous epoch {}",
+                previous_epoch
             ),
-            &format!("training trajectories stats for epoch {}", epoch),
         )?;
         Ok(())
     }
@@ -934,19 +936,11 @@ impl Orchestrator {
             epoch,
             self.inference_server_handle.is_some()
         ));
-        let training_trajectory_store = open_training_trajectories::<M>(
-            &self.config_nickname,
-            &self.training_set_rollout_config,
-            &self.posterior_calculation_config,
-            epoch,
-        );
+        let training_trajectory_store =
+            open_training_trajectories::<M>(&self.config_nickname, epoch);
         let num_training_samples = training_trajectory_store.len();
-        let training_trajectory_sqlite_path = training_trajectories_file_path::<M>(
-            &self.config_nickname,
-            &self.training_set_rollout_config,
-            &self.posterior_calculation_config,
-            epoch,
-        );
+        let training_trajectory_sqlite_path =
+            training_trajectories_msgpack_file_path::<M>(&self.config_nickname, epoch);
         let artifact_root_dir = storage_large_files_dir()?;
         let model_parent_dir =
             model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;

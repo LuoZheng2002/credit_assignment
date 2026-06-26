@@ -1,11 +1,13 @@
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
+    env,
     fs::{File, OpenOptions},
     future::Future,
     io::BufReader,
     path::{Path, PathBuf},
     sync::OnceLock,
 };
+use tokenizers::Tokenizer;
 
 pub fn read_json<T: DeserializeOwned>(path: impl AsRef<Path>) -> Result<T, String> {
     let file = File::open(path.as_ref())
@@ -64,6 +66,32 @@ pub fn load_jinja_template_environment(
     env.add_template_owned(template_name, template_source)
         .map_err(|err| format!("Failed to parse {} template: {}", template_name, err))?;
     Ok(env)
+}
+
+pub fn load_tokenizer_from_local_or_hf(local_tokenizer_path: &str, api_name: &str) -> Tokenizer {
+    if Path::new(local_tokenizer_path).exists() {
+        return Tokenizer::from_file(local_tokenizer_path).unwrap_or_else(|err| {
+            panic!(
+                "Failed to load local tokenizer from {}: {}",
+                local_tokenizer_path, err
+            )
+        });
+    }
+
+    let token = env::var("HF_TOKEN")
+        .ok()
+        .or_else(|| env::var("HUGGINGFACE_HUB_TOKEN").ok());
+    let params = tokenizers::FromPretrainedParameters {
+        token,
+        ..Default::default()
+    };
+
+    Tokenizer::from_pretrained(api_name, Some(params)).unwrap_or_else(|err| {
+        panic!(
+            "Failed to load tokenizer for {}. Looked for local file {} first, then fell back to Hugging Face: {}",
+            api_name, local_tokenizer_path, err
+        )
+    })
 }
 
 pub fn extract_boxed_content(text: &str) -> Option<String> {
