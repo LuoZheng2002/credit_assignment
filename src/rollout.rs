@@ -11,7 +11,7 @@ use kll_rs::KllFloatSketch;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use reqwest::Client;
 use research_utility::progress_tui_logger::{
-    delete_worker_progress_bar, log_info, log_key_value_pair, log_master_progress,
+    delete_worker_progress_bar, log_info, log_key_value_pair, log_master_progress, log_warning,
     log_worker_progress,
 };
 
@@ -19,11 +19,11 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep_until};
 
-use crate::atomic_count_guard::AtomicCountGuardRef;
-use crate::direct_tool::tree_action_log::{
-    ActionLogConfigBundle, ActionLogStore, DirectTreeActionLog, open_action_logs,
-};
 use crate::{
+    atomic_count_guard::AtomicCountGuardRef,
+    direct_tool::tree_action_log::{
+        ActionLogConfigBundle, ActionLogStore, DirectTreeActionLog, open_action_logs,
+    },
     direct_tool::{
         hybrid_dataset::{DatasetSplit, open_hybrid_dataset},
         posterior_calculation_config::PosteriorCalculationConfig,
@@ -37,6 +37,7 @@ use crate::{
         },
     },
     llm_model::{InferenceEndpoint, LlmCallable, LlmModelMarker},
+    model_answer_judgment_cache::commit_pending_writes_if_any,
     tool_call_python::init_python_tool_pool,
 };
 
@@ -160,6 +161,9 @@ async fn run_progress_timer(start_time: Instant, deadline: Instant, total_secs: 
     let throughput_log_interval = Duration::from_millis(500);
     let database_commit_interval = Duration::from_secs(20 * 60);
     let mut next_database_commit_request_time = start_time + database_commit_interval;
+    let model_answer_judgment_cache_commit_interval = Duration::from_secs(5 * 60);
+    let mut next_model_answer_judgment_cache_commit_time =
+        start_time + model_answer_judgment_cache_commit_interval;
     let segment_count = 8usize;
     let mut next_segment_to_log = 1usize;
     let mut llm_call_samples: VecDeque<(Instant, usize)> = VecDeque::new();
@@ -197,6 +201,17 @@ async fn run_progress_timer(start_time: Instant, deadline: Instant, total_secs: 
                 .database_commit_after_next_write
                 .store(true, Ordering::Relaxed);
             next_database_commit_request_time = now + database_commit_interval;
+        }
+
+        if now >= next_model_answer_judgment_cache_commit_time {
+            if let Err(error) = commit_pending_writes_if_any() {
+                log_warning(format!(
+                    "Failed to commit model answer judgment cache during rollout: {}",
+                    error
+                ));
+            }
+            next_model_answer_judgment_cache_commit_time =
+                now + model_answer_judgment_cache_commit_interval;
         }
 
         if now >= next_throughput_log_time {
@@ -241,9 +256,9 @@ async fn run_progress_timer(start_time: Instant, deadline: Instant, total_secs: 
                     next_progress_log_time,
                     std::cmp::min(next_throughput_log_time, next_database_commit_request_time),
                 ),
-                deadline,
+                std::cmp::min(next_model_answer_judgment_cache_commit_time, deadline),
             ),
-            Instant::now() + Duration::from_millis(100),
+            std::cmp::min(deadline, Instant::now() + Duration::from_millis(100)),
         );
         sleep_until(wake_time).await;
     }
@@ -268,6 +283,8 @@ pub struct RolloutStats {
     pub(crate) model_answers_context_window_overflow: AtomicUsize,
     pub(crate) model_answers_only_eos: AtomicUsize,
     pub(crate) model_answers_too_many_turns: AtomicUsize,
+    pub(crate) cache_hit_attempts: AtomicUsize,
+    pub(crate) cache_hit_count: AtomicUsize,
     pub(crate) database_commit_after_next_write: AtomicBool,
     pub(crate) database_commit_count: AtomicUsize,
     pub(crate) llm_call_stats: tokio::sync::Mutex<DistributionStats>,
@@ -306,6 +323,8 @@ impl RolloutAllGuard {
             model_answers_context_window_overflow: AtomicUsize::new(0),
             model_answers_only_eos: AtomicUsize::new(0),
             model_answers_too_many_turns: AtomicUsize::new(0),
+            cache_hit_attempts: AtomicUsize::new(0),
+            cache_hit_count: AtomicUsize::new(0),
             database_commit_after_next_write: AtomicBool::new(false),
             database_commit_count: AtomicUsize::new(0),
             llm_call_stats: tokio::sync::Mutex::new(DistributionStats::new()),
@@ -342,6 +361,27 @@ impl RolloutStats {
                 self.model_answers_too_many_turns.load(Ordering::Relaxed)
             ),
         );
+    }
+
+    pub(crate) fn reset_model_answer_judgment_cache_hit_rate(&self) {
+        self.cache_hit_attempts.store(0, Ordering::Relaxed);
+        self.cache_hit_count.store(0, Ordering::Relaxed);
+        log_key_value_pair("cache_hit_rate", "0.000000".to_string());
+    }
+
+    pub(crate) fn record_model_answer_judgment_cache_read_attempt(&self, cache_hit: bool) {
+        let attempts = self.cache_hit_attempts.fetch_add(1, Ordering::Relaxed) + 1;
+        let hits = if cache_hit {
+            self.cache_hit_count.fetch_add(1, Ordering::Relaxed) + 1
+        } else {
+            self.cache_hit_count.load(Ordering::Relaxed)
+        };
+        let cache_hit_rate = if attempts == 0 {
+            0.0
+        } else {
+            hits as f32 / attempts as f32
+        };
+        log_key_value_pair("cache_hit_rate", format!("{cache_hit_rate:.6}"));
     }
 
     async fn log_trajectory_length(&self, trajectory_length: usize, is_correct: bool) {
@@ -676,6 +716,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         question_keys.len(),
     );
     let rollout_stats = RolloutStats::global();
+    rollout_stats.reset_model_answer_judgment_cache_hit_rate();
     let _progress_timer_handle = tokio::spawn(run_progress_timer(start_time, deadline, total_secs));
 
     let semaphore = Arc::new(Semaphore::new(max_rollout_concurrency));
@@ -763,6 +804,13 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
 
     rollout_stats.log_final_tree_correctness_summary();
     rollout_stats.log_model_answer_counts();
+
+    if let Err(error) = commit_pending_writes_if_any() {
+        log_warning(format!(
+            "Failed to commit model answer judgment cache at the end of rollout_all: {}",
+            error
+        ));
+    }
 
     let elapsed_secs = start_time.elapsed().as_secs_f32();
     let total_llm_calls = rollout_stats.total_llm_calls.load(Ordering::Relaxed);

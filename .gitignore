@@ -17,6 +17,7 @@ log
 logs
 plots
 modal_downloads
+cache/
 
 .venv
 # Added by cargo

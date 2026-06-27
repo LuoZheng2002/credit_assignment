@@ -7,6 +7,7 @@ use tokio::time::{Duration, sleep};
 use crate::{
     atomic_count_guard::AtomicCountGuardRef,
     direct_tool::{rollout::RolloutStats, trajectory::FinalAnswer},
+    model_answer_judgment_cache::{get_cached_judgment, store_cached_judgment},
 };
 
 const OPENROUTER_CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
@@ -214,13 +215,56 @@ pub async fn judge_final_answer(
                 &rollout_stats.judge_waiting_workers,
                 "judge_waiting_workers".to_string(),
             );
-            judge_answer_task(
-                model_answer.clone(),
-                correct_answer.to_string(),
-                question.to_string(),
-                client,
-            )
-            .await
+
+            let cache_lookup = get_cached_judgment(question, model_answer.clone());
+            match cache_lookup {
+                Ok(Some(is_correct)) => {
+                    rollout_stats.record_model_answer_judgment_cache_read_attempt(true);
+                    is_correct
+                }
+                Ok(None) => {
+                    rollout_stats.record_model_answer_judgment_cache_read_attempt(false);
+                    let is_correct = judge_answer_task(
+                        model_answer.clone(),
+                        correct_answer.to_string(),
+                        question.to_string(),
+                        client,
+                    )
+                    .await;
+                    if let Err(error) =
+                        store_cached_judgment(question, model_answer.clone(), is_correct)
+                    {
+                        log_warning(format!(
+                            "Failed to store model answer judgment cache entry for question {:?}: {}",
+                            question, error
+                        ));
+                    }
+                    is_correct
+                }
+                Err(error) => {
+                    rollout_stats.record_model_answer_judgment_cache_read_attempt(false);
+                    log_warning(format!(
+                        "Failed to read model answer judgment cache entry for question {:?}: {}",
+                        question, error
+                    ));
+                    let is_correct = judge_answer_task(
+                        model_answer.clone(),
+                        correct_answer.to_string(),
+                        question.to_string(),
+                        client,
+                    )
+                    .await;
+                    if let Err(error) =
+                        store_cached_judgment(question, model_answer.clone(), is_correct)
+                    {
+                        log_warning(format!(
+                            "Failed to store model answer judgment cache entry for question {:?}: {}",
+                            question, error
+                        ));
+                    }
+                    is_correct
+                }
+            }
         }
         FinalAnswer::Failure(_error_message) => false,
     };

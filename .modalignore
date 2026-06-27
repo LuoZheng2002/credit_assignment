@@ -22,6 +22,8 @@
 !tokenizers/**
 !datasets/
 !datasets/**
+!cache/
+!cache/**
 
 !research-utility/
 !research-utility/Cargo.toml

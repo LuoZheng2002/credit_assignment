@@ -11,6 +11,7 @@ mod launch_backend_wrapper_shared;
 pub mod launch_inference_wrapper;
 pub mod launch_training_wrapper;
 pub mod llm_model;
+pub mod model_answer_judgment_cache;
 pub mod orchestrator;
 pub mod python_training_config;
 pub mod token_array;
