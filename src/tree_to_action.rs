@@ -28,6 +28,7 @@ use crate::{
 };
 
 const ENABLE_FORCED_NEW_BRANCH_START_TOKEN: bool = false;
+const UNCERTAINTY_CONSIDERED: bool = false;
 
 #[derive(Debug, Clone, Copy)]
 pub enum BranchingType {
@@ -110,7 +111,12 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     };
                     let branching_factor_penalty_multiplier =
                         Self::branching_factor_penalty_multiplier(child_segments.len());
-                    let branching_score = node_uncertainty_score
+                    let uncertainty_multiplier = if UNCERTAINTY_CONSIDERED {
+                        node_uncertainty_score
+                    } else {
+                        1.0
+                    };
+                    let branching_score = uncertainty_multiplier
                         * best_token_relative_probability
                         * branching_factor_penalty_multiplier;
                     TokenBranchingScore {
@@ -120,7 +126,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     }
                 } else {
                     // branching type is segment
-                    let segment_uncertainty_score = segment_uncertainty_scores
+                    let segment_uncertainty_score = *segment_uncertainty_scores
                         .get(segment_id)
                         .expect("Each segment must have an uncertainty score");
                     let reasoning_only_segment_length = reasoning_only_tokens.len();
@@ -140,7 +146,12 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                         second_half_length_after_split,
                         average_trunk_token_length,
                     );
-                    let branching_score = segment_uncertainty_score
+                    let uncertainty_multiplier = if UNCERTAINTY_CONSIDERED {
+                        segment_uncertainty_score
+                    } else {
+                        1.0
+                    };
+                    let branching_score = uncertainty_multiplier
                         * best_token_relative_probability
                         * segment_length_penalty_multiplier;
                     TokenBranchingScore {
