@@ -10,9 +10,9 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --num-iterations-limit 3 \
     --advantage-calculation-policy tree-mappo-posterior \
     --training-config-common-path config/training/common_lora.toml \
-    --training-time 600 \
-    --training-rollout-time-limit-secs 600 \
-    --validation-rollout-time-limit-secs 600 \
+    --training-time 1200 \
+    --training-rollout-time-limit-secs 1200 \
+    --validation-rollout-time-limit-secs 1200 \
     --max-python-processes 2 \
     --num-gpus 1 \
     --mount-dir "/volume" \

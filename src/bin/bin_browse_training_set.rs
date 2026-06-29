@@ -24,6 +24,7 @@ use credit_assignment::{
         Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
         MyTokenizer, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
+    utils::configure_mount_dir,
 };
 use crossterm::cursor::Show;
 use crossterm::event::{
@@ -742,6 +743,8 @@ async fn main() {
         config_nickname,
         epoch,
     } = Args::parse();
+    configure_mount_dir("results")
+        .unwrap_or_else(|err| panic!("failed to configure mount dir for local browsing: {}", err));
 
     let model_cli_name = model.cli_name();
     let training_set_path = training_set_file_path(&model_cli_name, &config_nickname, epoch);

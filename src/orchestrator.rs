@@ -781,25 +781,25 @@ impl Orchestrator {
         &self,
         current_epoch: usize,
     ) -> Result<(), String> {
-        let Some(previous_epoch) = current_epoch.checked_sub(1) else {
-            log_info("Keeping training trajectories for epoch 0");
+        if current_epoch <= 1 {
+            log_info(format!(
+                "Keeping training trajectories for epoch 0 and latest epoch {}",
+                current_epoch
+            ));
             return Ok(());
-        };
+        }
 
-        self.delete_dir_if_exists(
-            &training_trajectories_file_path::<M>(&self.config_nickname, previous_epoch),
-            &format!(
-                "training trajectories directory for previous epoch {}",
-                previous_epoch
-            ),
-        )?;
-        self.delete_file_if_exists(
-            &training_trajectories_stats_file_path::<M>(&self.config_nickname, previous_epoch),
-            &format!(
-                "training trajectories stats for previous epoch {}",
-                previous_epoch
-            ),
-        )?;
+        for epoch in 1..current_epoch {
+            self.delete_dir_if_exists(
+                &training_trajectories_file_path::<M>(&self.config_nickname, epoch),
+                &format!("training trajectories directory for epoch {}", epoch),
+            )?;
+            self.delete_file_if_exists(
+                &training_trajectories_stats_file_path::<M>(&self.config_nickname, epoch),
+                &format!("training trajectories stats for epoch {}", epoch),
+            )?;
+        }
+
         Ok(())
     }
 

@@ -9,6 +9,7 @@ use redb::{
     Database, Key as RedbKey, ReadableTable, TableDefinition, TableError as RedbTableError,
     TypeName, Value as RedbValue, WriteTransaction,
 };
+use research_utility::progress_tui_logger::log_info;
 
 const MODEL_ANSWER_JUDGMENT_CACHE_DB_PATH: &str = "cache/model_answer_judgment.redb";
 const MODEL_ANSWER_JUDGMENT_TABLE_NAME: &str = "model_answer_judgment_cache";
@@ -173,7 +174,7 @@ pub fn commit_pending_writes_if_any() -> Result<bool, String> {
 struct ModelAnswerJudgmentCacheStore {
     db_path: PathBuf,
     db: Database,
-    write_txn: WriteTransaction,
+    write_txn: Option<WriteTransaction>,
     has_pending_writes: bool,
 }
 
@@ -199,7 +200,7 @@ impl ModelAnswerJudgmentCacheStore {
         Ok(Self {
             db_path,
             db,
-            write_txn,
+            write_txn: Some(write_txn),
             has_pending_writes: false,
         })
     }
@@ -215,7 +216,9 @@ impl ModelAnswerJudgmentCacheStore {
     }
 
     fn current_write_txn(&self) -> &WriteTransaction {
-        &self.write_txn
+        self.write_txn
+            .as_ref()
+            .expect("model answer judgment cache write transaction must exist")
     }
 
     fn get_cached_judgment(
@@ -251,13 +254,18 @@ impl ModelAnswerJudgmentCacheStore {
         key: ModelAnswerJudgmentCacheKey,
         is_correct: bool,
     ) -> Result<(), String> {
-        let mut table = self.write_txn.open_table(cache_table_def()).map_err(|e| {
-            format!(
-                "Failed to open model answer judgment cache table for write at {}: {}",
-                self.db_path.display(),
-                e
-            )
-        })?;
+        let mut table = self
+            .write_txn
+            .as_ref()
+            .expect("model answer judgment cache write transaction must exist")
+            .open_table(cache_table_def())
+            .map_err(|e| {
+                format!(
+                    "Failed to open model answer judgment cache table for write at {}: {}",
+                    self.db_path.display(),
+                    e
+                )
+            })?;
         table.insert(key, u8::from(is_correct)).map_err(|e| {
             format!(
                 "Failed to insert model answer judgment cache entry at {}: {}",
@@ -274,19 +282,21 @@ impl ModelAnswerJudgmentCacheStore {
             return Ok(false);
         }
 
-        let replacement_txn = Self::begin_write_txn(&self.db, &self.db_path)?;
-        let write_txn = std::mem::replace(&mut self.write_txn, replacement_txn);
-        let commit_result = write_txn.commit().map_err(|e| {
+        log_info("Committing judgment cache...");
+        let write_txn = self
+            .write_txn
+            .take()
+            .expect("model answer judgment cache write transaction must exist");
+        write_txn.commit().map_err(|e| {
             format!(
                 "Failed to commit model answer judgment cache at {}: {}",
                 self.db_path.display(),
                 e
             )
-        });
+        })?;
         self.has_pending_writes = false;
-        match commit_result {
-            Ok(()) => Ok(true),
-            Err(error) => Err(error),
-        }
+        self.write_txn = Some(Self::begin_write_txn(&self.db, &self.db_path)?);
+        log_info("Judgment cache committed");
+        Ok(true)
     }
 }

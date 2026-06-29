@@ -13,6 +13,7 @@ use credit_assignment::{
         Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
         Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
+    utils::configure_mount_dir,
 };
 
 #[derive(Parser, Debug)]
@@ -55,6 +56,12 @@ async fn main() {
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
     } = Args::parse();
+    configure_mount_dir("results").unwrap_or_else(|err| {
+        panic!(
+            "failed to configure mount dir for local training-set generation: {}",
+            err
+        )
+    });
     let rollout_config: DirectRolloutConfig<Training> = read_json(rollout_config_path).unwrap();
     let posterior_hyperparameters =
         read_json::<PosteriorHyperparameters>(posterior_hyperparameters_path).unwrap();

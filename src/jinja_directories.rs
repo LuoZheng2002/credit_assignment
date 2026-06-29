@@ -198,11 +198,12 @@ fn render_training_trajectories_template(
     config_nickname: &str,
     epoch: usize,
 ) -> Result<String, String> {
+    let mount_dir = mount_dir()?;
     render_template(
         template_env,
         template_name,
         json!({
-            "mount_dir": "results",
+            "mount_dir": mount_dir,
             "model_cli_name": model_cli_name,
             "config_nickname": config_nickname,
             "epoch": epoch,

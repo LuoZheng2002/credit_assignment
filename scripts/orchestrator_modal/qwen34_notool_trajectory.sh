@@ -1,11 +1,11 @@
 uv run -m src_py.modal.launch_modal_orchestration \
-    --model-cli-name qwen25 \
+    --model-cli-name qwen34 \
     --max-rollout-concurrency 300 \
-    --config-nickname branch32 \
-    --validation-rollout-config-path config/rollout_config_validation_tool.json \
-    --training-rollout-config-path config/rollout_config_training_branch32.json \
+    --config-nickname notool_trajectory \
+    --validation-rollout-config-path config/rollout_config_validation_notool.json \
+    --training-rollout-config-path config/rollout_config_training_notool.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
-    --num-total-epochs 10 \
+    --num-total-epochs 1 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
     --num-iterations-limit 3 \
     --advantage-calculation-policy tree-mappo-posterior \
