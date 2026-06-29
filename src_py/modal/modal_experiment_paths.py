@@ -119,7 +119,7 @@ def experiment_remote_training_trajectories_stats_file_path(
     model_cli_name: str, config_nickname: str, epoch: int
 ) -> str:
     return (
-        f"small_files/{model_cli_name}/{config_nickname}/epoch_{epoch}/"
+        f"medium_files/{model_cli_name}/{config_nickname}/epoch_{epoch}/"
         f"{training_trajectories_stats_file_name()}"
     )
 
@@ -130,7 +130,7 @@ def experiment_local_training_trajectories_stats_file_path(
     return (
         repo_root
         / LOCAL_RESULTS_DIR
-        / "small_files"
+        / "medium_files"
         / model_cli_name
         / config_nickname
         / f"epoch_{epoch}"

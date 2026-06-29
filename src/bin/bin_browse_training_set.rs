@@ -4,6 +4,7 @@ use std::{
     io::{self, Stdout},
     path::{Path, PathBuf},
     process::Stdio,
+    time::{Duration, Instant},
 };
 
 use clap::Parser;
@@ -134,6 +135,7 @@ struct LoadedTrajectory<M: LlmModelMarker> {
 }
 
 const CONVERSATION_SCROLL_SENSITIVITY: usize = 4;
+const MOUSE_SCROLL_DEBOUNCE: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaneFocus {
@@ -167,6 +169,7 @@ struct App<M: LlmModelMarker> {
     jump_input: String,
     jump_input_active: bool,
     jump_status: Option<String>,
+    last_mouse_scroll_at: Option<Instant>,
 }
 
 impl<M: LlmModelMarker> App<M> {
@@ -192,6 +195,7 @@ impl<M: LlmModelMarker> App<M> {
             jump_input: String::new(),
             jump_input_active: false,
             jump_status: None,
+            last_mouse_scroll_at: None,
         }
     }
 
@@ -273,12 +277,18 @@ impl<M: LlmModelMarker> App<M> {
             ));
             if let Some(statistics) = &self.statistics {
                 text.push_str(&format!(
-                    "\n\n[training set stats] total: {}  adopted: {}\nmax avg absolute advantage: {:.6}  cutoff: {:.6}  min avg absolute advantage: {:.6}",
+                    "\n\n[training set stats] total: {}  adopted: {}\nmax avg absolute advantage: {:.6}  cutoff: {:.6}  min avg absolute advantage: {:.6}\nadv balance pre(+/-): {:.6} / {:.6}  mult(+/-): {:.6} / {:.6}  post(+/-): {:.6} / {:.6}",
                     statistics.total_trajectories,
                     statistics.adopted_trajectories,
                     statistics.max_average_absolute_advantage,
                     statistics.average_absolute_advantage_cutoff,
                     statistics.min_average_absolute_advantage,
+                    statistics.pre_balance_total_positive_advantage,
+                    statistics.pre_balance_total_negative_advantage_magnitude,
+                    statistics.positive_advantage_multiplier,
+                    statistics.negative_advantage_multiplier,
+                    statistics.post_balance_total_positive_advantage,
+                    statistics.post_balance_total_negative_advantage_magnitude,
                 ));
             }
             text
@@ -523,10 +533,32 @@ impl<M: LlmModelMarker> App<M> {
         }
 
         match mouse.kind {
-            MouseEventKind::ScrollUp => self.scroll_focused_up(1),
-            MouseEventKind::ScrollDown => self.scroll_focused_down(1),
+            MouseEventKind::ScrollUp => {
+                if !self.should_process_mouse_scroll() {
+                    return;
+                }
+                self.scroll_focused_up(1)
+            }
+            MouseEventKind::ScrollDown => {
+                if !self.should_process_mouse_scroll() {
+                    return;
+                }
+                self.scroll_focused_down(1)
+            }
             _ => {}
         }
+    }
+
+    fn should_process_mouse_scroll(&mut self) -> bool {
+        let now = Instant::now();
+        if self
+            .last_mouse_scroll_at
+            .is_some_and(|last| now.saturating_duration_since(last) < MOUSE_SCROLL_DEBOUNCE)
+        {
+            return false;
+        }
+        self.last_mouse_scroll_at = Some(now);
+        true
     }
 
     fn scroll_focused_up(&mut self, magnitude: usize) {
