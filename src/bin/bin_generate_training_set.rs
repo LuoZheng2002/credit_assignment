@@ -33,6 +33,8 @@ struct Args {
     cumulative_avg_abs_advantage_cutoff: f32,
     #[arg(long, value_enum)]
     advantage_calculation_policy: AdvantageCalculationPolicy,
+    #[arg(long)]
+    positive_advantage_only: bool,
 }
 
 #[tokio::main]
@@ -55,6 +57,7 @@ async fn main() {
         epoch,
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
+        positive_advantage_only,
     } = Args::parse();
     configure_mount_dir("results").unwrap_or_else(|err| {
         panic!(
@@ -75,6 +78,7 @@ async fn main() {
         epoch,
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
+        positive_advantage_only,
     };
     match model {
         LlmModelName::Gemma3_4b => run_program::<Gemma3_4BIt>(run_program_args).await,
@@ -97,6 +101,7 @@ struct RunProgramArgs {
     epoch: usize, // the epoch index
     cumulative_avg_abs_advantage_cutoff: f32,
     advantage_calculation_policy: AdvantageCalculationPolicy,
+    positive_advantage_only: bool,
 }
 
 async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
@@ -107,6 +112,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         epoch,
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
+        positive_advantage_only,
     } = run_program_args;
     generate_training_trajectories::<M>(
         &config_nickname,
@@ -115,6 +121,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         epoch,
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
+        positive_advantage_only,
     )
     .await;
 }

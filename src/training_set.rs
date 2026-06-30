@@ -232,6 +232,14 @@ fn compute_advantage_balance_multipliers(totals: AdvantagePolarityTotals) -> (f3
     }
 }
 
+fn clamp_negative_advantages_to_zero(segment_advantages: &mut BTreeMap<SegmentId, f32>) {
+    for advantage in segment_advantages.values_mut() {
+        if *advantage < 0.0 {
+            *advantage = 0.0;
+        }
+    }
+}
+
 fn balance_training_trajectory_advantages<M: LlmModelMarker>(
     trajectories: &mut [DirectTrainingTrajectory<M>],
 ) -> AdvantageBalancingResult {
@@ -320,6 +328,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     cumulative_avg_abs_advantage_cutoff: f32,
     statistics_file_path: String,
     advantage_calculation_policy: AdvantageCalculationPolicy,
+    positive_advantage_only: bool,
 ) {
     assert!(
         cumulative_avg_abs_advantage_cutoff > 0.0 && cumulative_avg_abs_advantage_cutoff <= 1.0,
@@ -334,6 +343,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
             posterior_calculation_config.clone(),
             cumulative_avg_abs_advantage_cutoff,
             advantage_calculation_policy,
+            positive_advantage_only,
         )
         .await;
     let TrainingTrajectorySelectionOutput {
@@ -349,10 +359,21 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         posterior_calculation_config,
         selected_metadata,
         advantage_calculation_policy,
+        positive_advantage_only,
     )
     .await;
     let adopted_trajectories = training_trajectories.len();
-    let advantage_balancing = balance_training_trajectory_advantages(&mut training_trajectories);
+    let advantage_balancing = if positive_advantage_only {
+        let totals = compute_advantage_polarity_totals(&training_trajectories);
+        AdvantageBalancingResult {
+            pre_balance: totals,
+            post_balance: totals,
+            positive_multiplier: 1.0,
+            negative_multiplier: 1.0,
+        }
+    } else {
+        balance_training_trajectory_advantages(&mut training_trajectories)
+    };
     write_training_trajectories_msgpack_file(
         &training_trajectories_file_path,
         &training_trajectories,
@@ -466,6 +487,7 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
     posterior_calculation_config: PosteriorCalculationConfig,
     cumulative_avg_abs_advantage_cutoff: f32,
     advantage_calculation_policy: AdvantageCalculationPolicy,
+    positive_advantage_only: bool,
 ) -> (
     TrainingTrajectorySelectionOutput<S>,
     BTreeMap<usize, HybridDatasetQuestion<S>>,
@@ -505,6 +527,7 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
                     let trajectory_summaries = action_log_to_candidate_summaries::<M, S>(
                         action_log,
                         advantage_calculation_policy,
+                        positive_advantage_only,
                     );
                     trajectory_summaries
                 });
@@ -554,6 +577,7 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
     posterior_calculation_config: PosteriorCalculationConfig,
     mut selected_metadata: Vec<TrajectoryMetadata<Training>>,
     advantage_calculation_policy: AdvantageCalculationPolicy,
+    positive_advantage_only: bool,
 ) -> Vec<DirectTrainingTrajectory<M>> {
     selected_metadata.sort_by(|a, b| {
         b.trajectory_token_length
@@ -622,6 +646,7 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                         action_log,
                         advantage_calculation_policy,
                         &selected_trajectory_indices,
+                        positive_advantage_only,
                     );
                     assert_eq!(
                         reconstructed_trajectories.len(),
@@ -903,6 +928,7 @@ fn zero_taken_segment_advantages(
 fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
     action_log: DirectTreeActionLog<M, S>,
     advantage_calculation_policy: AdvantageCalculationPolicy,
+    positive_advantage_only: bool,
 ) -> Vec<TrajectorySummary<S>> {
     let tree = DirectTree::from_action_log(&action_log);
     if !ALLOW_INCOMPLETE && !tree.completed() {
@@ -913,6 +939,9 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
     }
     let mut segment_advantages =
         initialize_training_segment_advantages(&tree, advantage_calculation_policy);
+    if positive_advantage_only {
+        clamp_negative_advantages_to_zero(&mut segment_advantages);
+    }
     let max_absolute_advantage = segment_advantages
         .values()
         .map(|advantage| advantage.abs())
@@ -942,6 +971,7 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
     action_log: DirectTreeActionLog<M, Training>,
     advantage_calculation_policy: AdvantageCalculationPolicy,
     selected_trajectory_indices: &BTreeSet<usize>,
+    positive_advantage_only: bool,
 ) -> Vec<(usize, DirectTrainingTrajectory<M>)> {
     if selected_trajectory_indices.is_empty() {
         return Vec::new();
@@ -955,6 +985,9 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
     }
     let mut segment_advantages =
         initialize_training_segment_advantages(&tree, advantage_calculation_policy);
+    if positive_advantage_only {
+        clamp_negative_advantages_to_zero(&mut segment_advantages);
+    }
     let max_selected_trajectory_index = *selected_trajectory_indices
         .iter()
         .max()
@@ -1142,6 +1175,7 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
     epoch: usize,
     cumulative_avg_abs_advantage_cutoff: f32,
     advantage_calculation_policy: AdvantageCalculationPolicy,
+    positive_advantage_only: bool,
 ) {
     let training_trajectories_path = training_trajectories_file_path::<M>(config_nickname, epoch);
     let training_trajectories_path = Path::new(&training_trajectories_path);
@@ -1183,6 +1217,7 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
         cumulative_avg_abs_advantage_cutoff,
         stats_file_path,
         advantage_calculation_policy,
+        positive_advantage_only,
     )
     .await;
     log_info("Finished generating training trajectories file.");

@@ -1535,7 +1535,7 @@ def train(config: TrainConfig) -> None:
         [parameter for parameter in model.parameters() if parameter.requires_grad],
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
-        betas=(0.9, 0.95),
+        betas=(0.9, 0.999),
     )
 
     if training_plan in {TRAINING_PLAN_LORA, TRAINING_PLAN_DDP} and world_size > 1:

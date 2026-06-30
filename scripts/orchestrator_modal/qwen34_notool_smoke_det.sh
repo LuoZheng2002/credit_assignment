@@ -16,5 +16,6 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --max-python-processes 4 \
     --num-gpus 1 \
     --mount-dir "/volume" \
+    --positive-advantage-only false \
     --keep-action-logs true \
     --ui true

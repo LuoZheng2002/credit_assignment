@@ -1,9 +1,9 @@
 uv run -m src_py.modal.launch_modal_orchestration \
     --model-cli-name qwen25 \
     --max-rollout-concurrency 300 \
-    --config-nickname branch32 \
-    --validation-rollout-config-path config/rollout_config_validation_tool.json \
-    --training-rollout-config-path config/rollout_config_training_branch32.json \
+    --config-nickname notool_positive \
+    --validation-rollout-config-path config/rollout_config_validation_notool.json \
+    --training-rollout-config-path config/rollout_config_training_notool.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --num-total-epochs 10 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
@@ -16,6 +16,6 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --max-python-processes 4 \
     --num-gpus 1 \
     --mount-dir "/volume" \
-    --positive-advantage-only false \
+    --positive-advantage-only true \
     --keep-action-logs true \
     --ui true

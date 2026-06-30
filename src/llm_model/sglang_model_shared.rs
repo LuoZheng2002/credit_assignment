@@ -206,6 +206,10 @@ impl<M: LlmModelMarker> SglangLlmCallable<M> {
             "top_logprobs_num": 8,
             "stream": false,
         });
+        if temperature > 0.0 {
+            body["sampling_params"]["sampling_seed"] =
+                serde_json::json!(rand::random_range(0..=i32::MAX));
+        }
         if passes_in_stop {
             body["sampling_params"]["stop"] = serde_json::json!(["```\n"]);
         }

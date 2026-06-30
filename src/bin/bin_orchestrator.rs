@@ -73,6 +73,8 @@ struct Args {
     ui: bool,
     #[arg(long, action = ArgAction::Set, default_value_t = true)]
     keep_action_logs: bool,
+    #[arg(long, action = ArgAction::Set)]
+    positive_advantage_only: bool,
 }
 
 fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
@@ -123,6 +125,7 @@ async fn main() {
         num_gpus,
         mount_dir,
         keep_action_logs,
+        positive_advantage_only,
     } = Args::parse();
     let process_title = format!("orchestrator_{}_{}", model_cli_name, config_nickname);
     set_title(&process_title);
@@ -228,6 +231,7 @@ async fn main() {
         keep_action_logs,
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
+        positive_advantage_only,
         training_config_common,
         training_time,
         num_iterations_limit,

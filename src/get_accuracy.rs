@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 const DEEPMATH_DATASET_NAME: &str = "deepmath";
 const MATH_DATASET_NAME: &str = "math";
-const METAMATHQA_DATASET_NAME: &str = "metamathqa";
+const NUMINAMATH_DATASET_NAME: &str = "numinamath";
 
 #[derive(Debug, Clone, Copy)]
 struct DatasetBucketStats {
@@ -49,8 +49,8 @@ pub struct AccuracyStats {
     pub deepmath_weighted_total_plays: f32,
     pub math_weighted_num_wins: f32,
     pub math_weighted_total_plays: f32,
-    pub metamathqa_weighted_num_wins: f32,
-    pub metamathqa_weighted_total_plays: f32,
+    pub numinamath_weighted_num_wins: f32,
+    pub numinamath_weighted_total_plays: f32,
 }
 
 impl AccuracyStats {
@@ -65,7 +65,7 @@ impl AccuracyStats {
     pub fn accuracy_tuple(&self) -> Option<(f32, f32, f32, f32)> {
         if self.deepmath_weighted_total_plays == 0.0
             || self.math_weighted_total_plays == 0.0
-            || self.metamathqa_weighted_total_plays == 0.0
+            || self.numinamath_weighted_total_plays == 0.0
         {
             return None;
         }
@@ -74,7 +74,7 @@ impl AccuracyStats {
             average_accuracy,
             self.deepmath_weighted_num_wins / self.deepmath_weighted_total_plays,
             self.math_weighted_num_wins / self.math_weighted_total_plays,
-            self.metamathqa_weighted_num_wins / self.metamathqa_weighted_total_plays,
+            self.numinamath_weighted_num_wins / self.numinamath_weighted_total_plays,
         ))
     }
 }
@@ -83,9 +83,9 @@ fn dataset_bucket_name(dataset_name: &str) -> &'static str {
     match dataset_name {
         DEEPMATH_DATASET_NAME => DEEPMATH_DATASET_NAME,
         MATH_DATASET_NAME => MATH_DATASET_NAME,
-        METAMATHQA_DATASET_NAME => METAMATHQA_DATASET_NAME,
+        NUMINAMATH_DATASET_NAME => NUMINAMATH_DATASET_NAME,
         _ => panic!(
-            "Unsupported dataset_name '{}' in get_accuracy; expected one of: deepmath, math, metamathqa",
+            "Unsupported dataset_name '{}' in get_accuracy; expected one of: deepmath, math, numinamath",
             dataset_name
         ),
     }
@@ -140,7 +140,7 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
     let mut num_trajectories_judged = 0usize;
     let mut deepmath_stats = DatasetBucketStats::new();
     let mut math_stats = DatasetBucketStats::new();
-    let mut metamathqa_stats = DatasetBucketStats::new();
+    let mut numinamath_stats = DatasetBucketStats::new();
 
     const MAX_CONCURRENT_TASKS: usize = 200;
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS));
@@ -189,8 +189,8 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
                                 MATH_DATASET_NAME => {
                                     math_stats.update(num_correct_trajectories, total_trajectories)
                                 }
-                                METAMATHQA_DATASET_NAME => {
-                                    metamathqa_stats.update(num_correct_trajectories, total_trajectories)
+                                NUMINAMATH_DATASET_NAME => {
+                                    numinamath_stats.update(num_correct_trajectories, total_trajectories)
                                 }
                                 _ => unreachable!(
                                     "dataset name was validated before task spawn"
@@ -222,8 +222,8 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
         deepmath_weighted_total_plays: deepmath_stats.weighted_total_plays,
         math_weighted_num_wins: math_stats.weighted_num_wins,
         math_weighted_total_plays: math_stats.weighted_total_plays,
-        metamathqa_weighted_num_wins: metamathqa_stats.weighted_num_wins,
-        metamathqa_weighted_total_plays: metamathqa_stats.weighted_total_plays,
+        numinamath_weighted_num_wins: numinamath_stats.weighted_num_wins,
+        numinamath_weighted_total_plays: numinamath_stats.weighted_total_plays,
     }
 }
 

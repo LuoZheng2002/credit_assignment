@@ -9,23 +9,40 @@ from __future__ import annotations
 import json
 import os
 import random
-import re
 from pathlib import Path
 from typing import Any
+
+
+def _normalize_proxy_env() -> None:
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        value = os.environ.get(key)
+        if value and value.startswith("socks://"):
+            os.environ[key] = "socks5://" + value[len("socks://") :]
+
+
+# Set before importing `datasets` so that huggingface_hub picks it up.
+_normalize_proxy_env()
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 from dotenv import load_dotenv
 
 from datasets import concatenate_datasets, load_dataset
 
-IN_DISTRIBUTION_DATASET_ORDER = ("deepmath", "math", "metamathqa")
+IN_DISTRIBUTION_DATASET_ORDER = ("deepmath", "math", "numinamath")
 EVALUATION_DATASET_ORDER = (
     "deepmath",
     "math",
-    "metamathqa",
+    "numinamath",
     "amc2023",
     "gaokao_math_2024",
     "collegemath",
-    "numinamath",
 )
 IN_DISTRIBUTION_DATASET_NAMES = set(IN_DISTRIBUTION_DATASET_ORDER)
 
@@ -46,22 +63,8 @@ MATH_CONFIGS = [
 ]
 
 
-def _normalize_proxy_env() -> None:
-    for key in (
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-    ):
-        value = os.environ.get(key)
-        if value and value.startswith("socks://"):
-            os.environ[key] = "socks5://" + value[len("socks://") :]
-
-
 def install_hf_token(repo_root: Path) -> None:
-    _normalize_proxy_env()
+    print(f"HF_ENDPOINT={os.environ['HF_ENDPOINT']}")
     env_file = repo_root / ".env"
     assert env_file.exists(), "Missing .env file; cannot load HF_TOKEN"
     load_dotenv(env_file, override=True)
@@ -108,22 +111,6 @@ def get_required_field(
     )
 
 
-def parse_metamathqa_final_answer(response: str) -> str:
-    boxed = extract_boxed_content(response)
-    if boxed:
-        return boxed
-
-    matches = re.findall(r"The answer is:\s*(.+)", response, flags=re.IGNORECASE)
-    if matches:
-        return matches[-1].strip()
-
-    lines = [line.strip() for line in response.splitlines() if line.strip()]
-    if lines:
-        return lines[-1]
-
-    return response.strip()
-
-
 def normalize_numeric_answer(value: Any) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
@@ -152,15 +139,12 @@ def load_deepmath_test() -> tuple[Any, str]:
         return load_deepmath_train(), "train"
 
 
-def load_metamathqa_train() -> Any:
-    return load_dataset("meta-math/MetaMathQA", split="train")
+def load_numinamath_train() -> Any:
+    return load_dataset("AI-MO/NuminaMath-CoT", split="train")
 
 
-def load_metamathqa_test() -> tuple[Any, str]:
-    try:
-        return load_dataset("meta-math/MetaMathQA", split="test"), "test"
-    except Exception:
-        return load_metamathqa_train(), "train"
+def load_numinamath_test() -> Any:
+    return load_dataset("AI-MO/NuminaMath-CoT", split="test")
 
 
 def load_amc2023_test() -> Any:
@@ -179,15 +163,11 @@ def load_collegemath_test() -> Any:
     return load_dataset("realtreetune/college_math", split="test")
 
 
-def load_numinamath_test() -> Any:
-    return load_dataset("AI-MO/NuminaMath-CoT", split="test")
-
-
 def load_in_distribution_datasets() -> dict[str, Any]:
     return {
         "deepmath": load_deepmath_train(),
         "math": load_math_split("train"),
-        "metamathqa": load_metamathqa_train(),
+        "numinamath": load_numinamath_train(),
     }
 
 
@@ -196,16 +176,14 @@ def load_evaluation_dataset(dataset_name: str) -> tuple[Any, str]:
         return load_deepmath_test()
     if dataset_name == "math":
         return load_math_split("test"), "test"
-    if dataset_name == "metamathqa":
-        return load_metamathqa_test()
+    if dataset_name == "numinamath":
+        return load_numinamath_test(), "test"
     if dataset_name == "amc2023":
         return load_amc2023_test(), "test"
     if dataset_name == "gaokao_math_2024":
         return load_gaokao_math_2024_test(), "test"
     if dataset_name == "collegemath":
         return load_collegemath_test(), "test"
-    if dataset_name == "numinamath":
-        return load_numinamath_test(), "test"
     raise AssertionError(f"Unknown dataset_name: {dataset_name}")
 
 
@@ -220,10 +198,10 @@ def normalize_entry(dataset_name: str, raw: dict[str, Any]) -> tuple[str, str]:
         solution = get_required_field(raw, dataset_name, ["solution"])
         return question, extract_boxed_content(solution) or solution.strip()
 
-    if dataset_name == "metamathqa":
-        question = get_required_field(raw, dataset_name, ["query", "original_question"])
-        response = get_required_field(raw, dataset_name, ["response"])
-        return question, parse_metamathqa_final_answer(response)
+    if dataset_name == "numinamath":
+        question = get_required_field(raw, dataset_name, ["problem"])
+        solution = get_required_field(raw, dataset_name, ["solution"])
+        return question, extract_boxed_content(solution) or solution.strip()
 
     if dataset_name == "amc2023":
         question = get_required_field(raw, dataset_name, ["question", "problem"])
@@ -240,11 +218,6 @@ def normalize_entry(dataset_name: str, raw: dict[str, Any]) -> tuple[str, str]:
         question = get_required_field(raw, dataset_name, ["question", "problem"])
         answer = get_required_field(raw, dataset_name, ["answer"])
         return question, answer.strip()
-
-    if dataset_name == "numinamath":
-        question = get_required_field(raw, dataset_name, ["problem"])
-        solution = get_required_field(raw, dataset_name, ["solution"])
-        return question, extract_boxed_content(solution) or solution.strip()
 
     raise AssertionError(f"Unknown dataset_name: {dataset_name}")
 

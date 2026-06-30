@@ -51,6 +51,7 @@ pub struct Orchestrator {
     // for training set generation
     pub cumulative_avg_abs_advantage_cutoff: f32,
     pub advantage_calculation_policy: AdvantageCalculationPolicy,
+    pub positive_advantage_only: bool,
     // for orchestration
     pub num_total_epochs: usize,
     // utilities
@@ -339,12 +340,12 @@ impl Orchestrator {
             accuracies.2.to_string(),
         );
         log_key_value_pair(
-            format!("epoch_{}_validation_accuracy_metamathqa", epoch),
+            format!("epoch_{}_validation_accuracy_numinamath", epoch),
             accuracies.3.to_string(),
         );
         self.save_progress::<M>();
         log_info(format!(
-            "Epoch {} validation accuracies (avg, deepmath, math, metamathqa): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
+            "Epoch {} validation accuracies (avg, deepmath, math, numinamath): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
             epoch,
             accuracy_tuple_to_string(accuracies),
             average_accuracy(accuracies),
@@ -385,12 +386,12 @@ impl Orchestrator {
             accuracies.2.to_string(),
         );
         log_key_value_pair(
-            format!("epoch_{}_training_rollout_accuracy_metamathqa", epoch),
+            format!("epoch_{}_training_rollout_accuracy_numinamath", epoch),
             accuracies.3.to_string(),
         );
         self.save_progress::<M>();
         log_info(format!(
-            "Epoch {} training rollout accuracies (avg, deepmath, math, metamathqa): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
+            "Epoch {} training rollout accuracies (avg, deepmath, math, numinamath): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
             epoch,
             accuracy_tuple_to_string(accuracies),
             average_accuracy(accuracies),
@@ -933,6 +934,7 @@ impl Orchestrator {
             epoch,
             self.cumulative_avg_abs_advantage_cutoff,
             self.advantage_calculation_policy,
+            self.positive_advantage_only,
         )
         .await;
         log_info("Finished generating training set");
