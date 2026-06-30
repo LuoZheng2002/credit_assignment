@@ -33,6 +33,8 @@ use crate::{
     utils::storage_large_files_dir,
 };
 
+const DETERMINISTIC_INFERENCE: bool = true;
+
 pub struct Orchestrator {
     // for rollout
     pub config_nickname: String,
@@ -190,6 +192,10 @@ impl Orchestrator {
     }
 
     pub async fn orchestrate<M: LlmModelMarker>(&mut self) -> Result<(), String> {
+        log_info(format!(
+            "SGLang deterministic inference enabled: {}",
+            DETERMINISTIC_INFERENCE
+        ));
         loop {
             let progress = self.progress.clone();
             let epoch = progress.epoch;
@@ -333,12 +339,12 @@ impl Orchestrator {
             accuracies.2.to_string(),
         );
         log_key_value_pair(
-            format!("epoch_{}_validation_accuracy_gsm8k", epoch),
+            format!("epoch_{}_validation_accuracy_metamathqa", epoch),
             accuracies.3.to_string(),
         );
         self.save_progress::<M>();
         log_info(format!(
-            "Epoch {} validation accuracies (avg, deepmath, math, gsm8k): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
+            "Epoch {} validation accuracies (avg, deepmath, math, metamathqa): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
             epoch,
             accuracy_tuple_to_string(accuracies),
             average_accuracy(accuracies),
@@ -379,12 +385,12 @@ impl Orchestrator {
             accuracies.2.to_string(),
         );
         log_key_value_pair(
-            format!("epoch_{}_training_rollout_accuracy_gsm8k", epoch),
+            format!("epoch_{}_training_rollout_accuracy_metamathqa", epoch),
             accuracies.3.to_string(),
         );
         self.save_progress::<M>();
         log_info(format!(
-            "Epoch {} training rollout accuracies (avg, deepmath, math, gsm8k): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
+            "Epoch {} training rollout accuracies (avg, deepmath, math, metamathqa): {} (avg {:.6}, weighted wins {:.4} over {} trees, {} trajectories)",
             epoch,
             accuracy_tuple_to_string(accuracies),
             average_accuracy(accuracies),
@@ -461,8 +467,9 @@ impl Orchestrator {
         let model_path = format!("{}/model", model_parent_dir);
 
         log_info(format!(
-            "Launching local inference wrapper for model {}",
-            M::CLI_NAME
+            "Launching local inference wrapper for model {} (deterministic_inference={})",
+            M::CLI_NAME,
+            DETERMINISTIC_INFERENCE
         ));
         let (sglang_port, process, listener_stop_signal, listener_handle) =
             launch_inference_wrapper_process(
@@ -473,6 +480,7 @@ impl Orchestrator {
                 M::API_NAME,
                 self.num_gpus,
                 self.inference_wrapper_log_path.as_ref(),
+                DETERMINISTIC_INFERENCE,
             )
             .await?;
         log_info(format!(

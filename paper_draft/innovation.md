@@ -1,3 +1,0 @@
-# Methodology
-See methodology.md
-

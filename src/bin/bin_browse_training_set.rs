@@ -74,7 +74,7 @@ fn training_set_file_path(model_cli_name: &str, config_nickname: &str, epoch: us
 }
 
 fn training_set_config_bundle_file_path(training_set_path: &Path) -> Result<PathBuf, String> {
-    if training_set_path.is_dir() {
+    if training_set_path.is_dir() || training_set_path.extension().is_none() {
         Ok(training_set_path.join("config_bundle.json"))
     } else {
         training_set_path

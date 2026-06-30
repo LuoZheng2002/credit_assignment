@@ -8,8 +8,10 @@ from pathlib import Path
 import _bootstrap  # noqa: F401
 
 from src_py.modal.modal_experiment_paths import (
+    experiment_local_training_trajectories_config_bundle_file_path,
     experiment_local_training_trajectories_file_path,
     experiment_local_training_trajectories_stats_file_path,
+    experiment_remote_training_trajectories_config_bundle_file_path,
     experiment_remote_training_trajectories_file_path,
     experiment_remote_training_trajectories_stats_file_path,
     experiment_service_state_volume_name,
@@ -106,6 +108,23 @@ def main() -> int:
         service_state_volume_name,
         training_trajectories_stats_remote,
         training_trajectories_stats_local,
+    )
+
+    training_trajectories_config_bundle_local = (
+        experiment_local_training_trajectories_config_bundle_file_path(
+            repo_root, args.model_cli_name, args.config_nickname, args.epoch
+        )
+    )
+    training_trajectories_config_bundle_remote = (
+        experiment_remote_training_trajectories_config_bundle_file_path(
+            args.model_cli_name, args.config_nickname, args.epoch
+        )
+    )
+    _download_volume_path(
+        repo_root,
+        service_state_volume_name,
+        training_trajectories_config_bundle_remote,
+        training_trajectories_config_bundle_local,
     )
 
     return 0

@@ -4,7 +4,7 @@ use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::{
     direct_tool::{
-        hybrid_dataset::{DatasetSplit, open_hybrid_dataset},
+        hybrid_dataset::{DatasetSplit, HybridDatasetQuestion, open_hybrid_dataset},
         posterior_calculation_config::PosteriorCalculationConfig,
         rollout_config::DirectRolloutConfig,
         tree::DirectTree,
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 const DEEPMATH_DATASET_NAME: &str = "deepmath";
 const MATH_DATASET_NAME: &str = "math";
-const GSM8K_DATASET_NAME: &str = "gsm8k";
+const METAMATHQA_DATASET_NAME: &str = "metamathqa";
 
 #[derive(Debug, Clone, Copy)]
 struct DatasetBucketStats {
@@ -49,8 +49,8 @@ pub struct AccuracyStats {
     pub deepmath_weighted_total_plays: f32,
     pub math_weighted_num_wins: f32,
     pub math_weighted_total_plays: f32,
-    pub gsm8k_weighted_num_wins: f32,
-    pub gsm8k_weighted_total_plays: f32,
+    pub metamathqa_weighted_num_wins: f32,
+    pub metamathqa_weighted_total_plays: f32,
 }
 
 impl AccuracyStats {
@@ -65,7 +65,7 @@ impl AccuracyStats {
     pub fn accuracy_tuple(&self) -> Option<(f32, f32, f32, f32)> {
         if self.deepmath_weighted_total_plays == 0.0
             || self.math_weighted_total_plays == 0.0
-            || self.gsm8k_weighted_total_plays == 0.0
+            || self.metamathqa_weighted_total_plays == 0.0
         {
             return None;
         }
@@ -74,7 +74,7 @@ impl AccuracyStats {
             average_accuracy,
             self.deepmath_weighted_num_wins / self.deepmath_weighted_total_plays,
             self.math_weighted_num_wins / self.math_weighted_total_plays,
-            self.gsm8k_weighted_num_wins / self.gsm8k_weighted_total_plays,
+            self.metamathqa_weighted_num_wins / self.metamathqa_weighted_total_plays,
         ))
     }
 }
@@ -83,9 +83,9 @@ fn dataset_bucket_name(dataset_name: &str) -> &'static str {
     match dataset_name {
         DEEPMATH_DATASET_NAME => DEEPMATH_DATASET_NAME,
         MATH_DATASET_NAME => MATH_DATASET_NAME,
-        GSM8K_DATASET_NAME => GSM8K_DATASET_NAME,
+        METAMATHQA_DATASET_NAME => METAMATHQA_DATASET_NAME,
         _ => panic!(
-            "Unsupported dataset_name '{}' in get_accuracy; expected one of: deepmath, math, gsm8k",
+            "Unsupported dataset_name '{}' in get_accuracy; expected one of: deepmath, math, metamathqa",
             dataset_name
         ),
     }
@@ -115,6 +115,11 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
     progress_bar_label: &str,
 ) -> AccuracyStats {
     let question_store = open_hybrid_dataset::<S>();
+    let question_map: BTreeMap<usize, HybridDatasetQuestion<S>> = question_store
+        .iter()
+        .expect("failed to iterate hybrid dataset")
+        .map(|r| r.expect("failed to read question from hybrid dataset"))
+        .collect();
     log_info(format!(
         "get_accuracy: opening action logs for config={config_nickname}, epoch={epoch}"
     ));
@@ -135,7 +140,7 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
     let mut num_trajectories_judged = 0usize;
     let mut deepmath_stats = DatasetBucketStats::new();
     let mut math_stats = DatasetBucketStats::new();
-    let mut gsm8k_stats = DatasetBucketStats::new();
+    let mut metamathqa_stats = DatasetBucketStats::new();
 
     const MAX_CONCURRENT_TASKS: usize = 200;
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS));
@@ -150,7 +155,7 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
                 let key = keys[next_key_index];
                 next_key_index += 1;
 
-                let question = question_store.get(key).unwrap().unwrap();
+                let question = question_map.get(&key.0).unwrap().clone();
                 let dataset_name = dataset_bucket_name(&question.dataset_name).to_string();
                 let actions = action_store.load_action_log(key).unwrap();
                 let action_log = DirectTreeActionLog {
@@ -184,8 +189,8 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
                                 MATH_DATASET_NAME => {
                                     math_stats.update(num_correct_trajectories, total_trajectories)
                                 }
-                                GSM8K_DATASET_NAME => {
-                                    gsm8k_stats.update(num_correct_trajectories, total_trajectories)
+                                METAMATHQA_DATASET_NAME => {
+                                    metamathqa_stats.update(num_correct_trajectories, total_trajectories)
                                 }
                                 _ => unreachable!(
                                     "dataset name was validated before task spawn"
@@ -217,8 +222,8 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
         deepmath_weighted_total_plays: deepmath_stats.weighted_total_plays,
         math_weighted_num_wins: math_stats.weighted_num_wins,
         math_weighted_total_plays: math_stats.weighted_total_plays,
-        gsm8k_weighted_num_wins: gsm8k_stats.weighted_num_wins,
-        gsm8k_weighted_total_plays: gsm8k_stats.weighted_total_plays,
+        metamathqa_weighted_num_wins: metamathqa_stats.weighted_num_wins,
+        metamathqa_weighted_total_plays: metamathqa_stats.weighted_total_plays,
     }
 }
 
@@ -230,6 +235,11 @@ pub async fn get_per_question_accuracies<M: LlmModelMarker, S: DatasetSplit>(
     progress_bar_label: &str,
 ) -> Vec<Option<f32>> {
     let question_store = open_hybrid_dataset::<S>();
+    let question_map: BTreeMap<usize, HybridDatasetQuestion<S>> = question_store
+        .iter()
+        .expect("failed to iterate hybrid dataset")
+        .map(|r| r.expect("failed to read question from hybrid dataset"))
+        .collect();
     let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
     action_store.sort().unwrap();
     let mut keys = action_store.get_keys().unwrap();
@@ -257,7 +267,7 @@ pub async fn get_per_question_accuracies<M: LlmModelMarker, S: DatasetSplit>(
                 let idx = next_key_index;
                 next_key_index += 1;
 
-                let question = question_store.get(key).unwrap().unwrap();
+                let question = question_map.get(&key.0).unwrap().clone();
                 let actions = action_store.load_action_log(key).unwrap();
                 let action_log = DirectTreeActionLog {
                     question,
@@ -334,6 +344,11 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
     max_num_trunks: usize,
 ) -> TestAccuracyResult {
     let question_store = open_hybrid_dataset::<S>();
+    let question_map: BTreeMap<usize, HybridDatasetQuestion<S>> = question_store
+        .iter()
+        .expect("failed to iterate hybrid dataset")
+        .map(|r| r.expect("failed to read question from hybrid dataset"))
+        .collect();
     let action_store = open_action_logs::<M, S>(&config_nickname, epoch);
     action_store.sort().unwrap();
     let mut keys = action_store.get_keys().unwrap();
@@ -361,7 +376,7 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
                 let key = keys[next_key_index];
                 next_key_index += 1;
 
-                let question = question_store.get(key).unwrap().unwrap();
+                let question = question_map.get(&key.0).unwrap().clone();
                 let dataset_name = question.dataset_name.clone();
                 let actions = action_store.load_action_log(key).unwrap();
                 let action_log = DirectTreeActionLog {

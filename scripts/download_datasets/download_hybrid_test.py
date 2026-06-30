@@ -1,7 +1,18 @@
-"""Build an aggregated test sqlite database from 6 datasets.
+"""Build `hybrid_test.jsonl` from in-distribution and OOD evaluation datasets.
 
-Datasets are concatenated in order: deepmath, math, gsm8k, aime24, aime25, amc23.
-The test set does not overlap with hybrid_train.sqlite or hybrid_val.sqlite.
+Dataset order:
+- deepmath
+- math
+- metamathqa
+- amc2023
+- gaokao_math_2024
+- collegemath
+- numinamath
+
+For datasets with a published test split, samples come from that test split.
+For datasets without a test split, samples come from non-overlapping train rows
+that start after the train+validation clearance reserved for the hybrid
+in-distribution datasets.
 """
 
 from __future__ import annotations
@@ -9,53 +20,23 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from research_utility import SqliteStore
-from test_set_sqlite_common import (
-    TRAINING_DATASET_NAMES,
+from hybrid_jsonl_common import (
+    DEFAULT_SAMPLE_SEED,
+    DEFAULT_TEST_SAMPLES_PER_DATASET,
+    DEFAULT_TRAIN_SAMPLES_PER_DATASET,
+    DEFAULT_VAL_SAMPLES_PER_DATASET,
+    EVALUATION_DATASET_ORDER,
+    IN_DISTRIBUTION_DATASET_NAMES,
     install_hf_token,
-    load_aime24_test,
-    load_aime25_test,
-    load_amc23_test,
-    load_deepmath_test,
-    load_gsm8k_test,
-    load_math_test,
+    load_evaluation_dataset,
     normalize_entry,
-    _sample_question_ids,
+    sample_question_ids,
+    write_jsonl_entries,
 )
-
-TRAIN_SAMPLES_PER_DATASET = 5_000
-VAL_SAMPLES_PER_DATASET = 1_000
-COMBINED_CLEARANCE = TRAIN_SAMPLES_PER_DATASET + VAL_SAMPLES_PER_DATASET
-MIN_SAMPLES = 1_000
-DEFAULT_SAMPLE_SEED = 42
-
-DATASET_ORDER = ("deepmath", "math", "gsm8k", "aime24", "aime25", "amc23")
-
-_DATASET_LOADERS = {
-    "math": load_math_test,
-    "gsm8k": load_gsm8k_test,
-    "aime24": load_aime24_test,
-    "aime25": load_aime25_test,
-    "amc23": load_amc23_test,
-}
-
-
-def _write_store_entries(db_path: Path, payload_rows: list[dict[str, object]]) -> None:
-    if db_path.exists():
-        db_path.unlink()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    store = SqliteStore[str, dict[str, object]](db_path)
-    try:
-        for row in payload_rows:
-            flat_id = row["flat_id"]
-            store.upsert(str(flat_id), row)
-    finally:
-        store.close()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Download and build hybrid_test.sqlite")
+    parser = argparse.ArgumentParser(description="Download and build hybrid_test.jsonl")
     parser.add_argument(
         "--sample-seed",
         type=int,
@@ -63,57 +44,95 @@ def main() -> None:
         help=f"Random seed for sampling (default: {DEFAULT_SAMPLE_SEED})",
     )
     parser.add_argument(
+        "--max-samples-per-dataset",
+        type=int,
+        default=DEFAULT_TEST_SAMPLES_PER_DATASET,
+        help=(
+            "Upper bound on evaluation rows per dataset "
+            f"(default: {DEFAULT_TEST_SAMPLES_PER_DATASET})"
+        ),
+    )
+    parser.add_argument(
+        "--train-samples-per-dataset",
+        type=int,
+        default=DEFAULT_TRAIN_SAMPLES_PER_DATASET,
+        help=(
+            "Number of in-distribution training samples already reserved per dataset "
+            f"(default: {DEFAULT_TRAIN_SAMPLES_PER_DATASET})"
+        ),
+    )
+    parser.add_argument(
+        "--val-samples-per-dataset",
+        type=int,
+        default=DEFAULT_VAL_SAMPLES_PER_DATASET,
+        help=(
+            "Number of in-distribution validation samples already reserved per dataset "
+            f"(default: {DEFAULT_VAL_SAMPLES_PER_DATASET})"
+        ),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="Output sqlite path (default: <repo>/datasets/hybrid_test.sqlite)",
+        help="Output JSONL path (default: <repo>/datasets/hybrid_test.jsonl)",
     )
     args = parser.parse_args()
+
+    assert args.max_samples_per_dataset > 0, (
+        "--max-samples-per-dataset must be positive"
+    )
+    assert args.train_samples_per_dataset >= 0, (
+        "--train-samples-per-dataset must be non-negative"
+    )
+    assert args.val_samples_per_dataset >= 0, (
+        "--val-samples-per-dataset must be non-negative"
+    )
 
     repo_root = Path(__file__).resolve().parents[2]
     install_hf_token(repo_root)
 
-    output_path = args.output or (repo_root / "datasets" / "hybrid_test.sqlite")
+    output_path = args.output or (repo_root / "datasets" / "hybrid_test.jsonl")
+    combined_clearance = args.train_samples_per_dataset + args.val_samples_per_dataset
 
     all_rows: list[dict[str, object]] = []
     flat_id = 0
     offsets: dict[str, int] = {}
     counts: dict[str, int] = {}
 
-    for dataset_name in DATASET_ORDER:
+    for dataset_name in EVALUATION_DATASET_ORDER:
         offsets[dataset_name] = flat_id
-
-        if dataset_name == "deepmath":
-            dataset, source_split = load_deepmath_test()
-        else:
-            dataset = _DATASET_LOADERS[dataset_name]()
-            source_split = "test"
-
+        dataset, source_split = load_evaluation_dataset(dataset_name)
         num_rows = dataset.num_rows
-        target_count = min(num_rows, MIN_SAMPLES)
+        assert num_rows > 0, f"{dataset_name} split must be non-empty"
 
-        clearance_override = None
-        if source_split == "train" and dataset_name in TRAINING_DATASET_NAMES:
-            clearance_override = COMBINED_CLEARANCE
+        start_question_id = 0
+        if source_split == "train" and dataset_name in IN_DISTRIBUTION_DATASET_NAMES:
+            assert num_rows > combined_clearance, (
+                f"{dataset_name} has {num_rows} train rows, but {combined_clearance} are reserved for "
+                "hybrid_train and hybrid_val, leaving no non-overlapping rows for hybrid_test"
+            )
+            start_question_id = combined_clearance
+            available_rows = num_rows - start_question_id
+        else:
+            available_rows = num_rows
 
-        question_ids = _sample_question_ids(
-            dataset_name,
-            num_rows,
-            target_count,
-            source_split,
-            args.sample_seed,
-            clearance_override=clearance_override,
+        target_count = min(available_rows, args.max_samples_per_dataset)
+        question_ids = sample_question_ids(
+            start_question_id=start_question_id,
+            num_rows=num_rows,
+            target_count=target_count,
+            sample_seed=args.sample_seed,
         )
 
         dataset_rows = 0
-        for qid in question_ids:
-            raw = dataset[qid]
+        for question_id in question_ids:
+            raw = dataset[question_id]
             question, correct_answer = normalize_entry(dataset_name, raw)
             all_rows.append(
                 {
                     "flat_id": flat_id,
                     "dataset_name": dataset_name,
-                    "question_id": qid,
+                    "question_id": question_id,
                     "question": question,
                     "correct_answer": correct_answer,
                 }
@@ -123,12 +142,14 @@ def main() -> None:
 
         counts[dataset_name] = dataset_rows
 
-    _write_store_entries(output_path, all_rows)
+    write_jsonl_entries(output_path, all_rows)
 
     print(f"Wrote {len(all_rows)} rows to {output_path.resolve()}")
     print()
-    for dataset_name in DATASET_ORDER:
-        print(f"  {dataset_name}: {counts[dataset_name]} samples (offset={offsets[dataset_name]})")
+    for dataset_name in EVALUATION_DATASET_ORDER:
+        print(
+            f"  {dataset_name}: {counts[dataset_name]} samples (offset={offsets[dataset_name]})"
+        )
 
 
 if __name__ == "__main__":

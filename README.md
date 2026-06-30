@@ -52,3 +52,7 @@ The `--model-cli-name` options can be found in `src/llm_model/llm_model_name.rs`
 2. "trees_correctness (✓, ❌, mixed)" if mixed count is too small (< 5% of total), then there is likely to be a problem.
 
 Make Claude Code to modify the code in research-utility so that claude code can read the status of tui logs at a specified timestep.
+
+
+
+remove gsm8k

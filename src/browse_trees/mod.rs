@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::config_paths::{ConfigPaths, config_paths_file_path_from_action_logs_path};
 use crate::direct_tool::hybrid_dataset::{
-    DatasetSplit, DatasetSplitEnum, HybridDatasetQuestion, QuestionFlatId, Testing, Training,
+    DatasetSplit, DatasetSplitEnum, HybridDatasetStore, QuestionFlatId, Testing, Training,
     Validation, open_hybrid_dataset,
 };
 use crate::direct_tool::{
@@ -38,7 +38,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
-use research_utility::sqlite_store::SqliteStore;
+
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use self::context::parse_action_logs_context;
@@ -56,7 +56,7 @@ struct App<M: LlmModelMarker, S: DatasetSplit> {
     override_hyperparameters: Option<PosteriorHyperparameters>,
     rollout_config: DirectRolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
-    question_store: SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>>,
+    question_store: HybridDatasetStore<S>,
     action_store: ActionLogStore<M, S>,
     entry_keys: Vec<QuestionFlatId<S>>,
     entry_cache: Vec<EntryLoadState<M, S>>,

@@ -18,6 +18,7 @@ pub async fn launch_inference_wrapper_process(
     hf_model_name: &str,
     num_gpus: usize,
     wrapper_log_path: &str,
+    deterministic_inference: bool,
 ) -> Result<(u16, Child, watch::Sender<bool>, tokio::task::JoinHandle<()>), String> {
     let listen_port = 30000u16;
     ensure_wrapper_port_available(listen_port).await?;
@@ -46,6 +47,10 @@ pub async fn launch_inference_wrapper_process(
         .arg(hf_model_name)
         .arg("--model-path")
         .arg(model_path);
+
+    if deterministic_inference {
+        command.arg("--enable-deterministic-inference");
+    }
 
     command.arg("--wrapper-log-path").arg(wrapper_log_path);
     if let Some(parent) = Path::new(wrapper_log_path).parent() {

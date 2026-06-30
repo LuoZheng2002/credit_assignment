@@ -1,4 +1,5 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
+use std::marker::PhantomData;
 
 use std::sync::{
     Arc,
@@ -25,7 +26,9 @@ use crate::{
         ActionLogConfigBundle, ActionLogStore, DirectTreeActionLog, open_action_logs,
     },
     direct_tool::{
-        hybrid_dataset::{DatasetSplit, open_hybrid_dataset},
+        hybrid_dataset::{
+            DatasetSplit, HybridDatasetQuestion, QuestionFlatId, open_hybrid_dataset,
+        },
         posterior_calculation_config::PosteriorCalculationConfig,
         rollout_config::DirectRolloutConfig,
         trajectory::{FailureMode, FinalAnswer},
@@ -686,9 +689,14 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
             .unwrap();
         store.sort().unwrap();
     }
-    let mut question_keys = dataset.get_keys().unwrap();
-    // sort by question id to ensure deterministic order
-    question_keys.sort();
+    let num_questions = dataset.len();
+    let question_map: BTreeMap<usize, HybridDatasetQuestion<S>> = dataset
+        .iter()
+        .unwrap()
+        .map(|r| r.expect("failed to read question from hybrid dataset during rollout"))
+        .map(|(idx, q)| (idx, q))
+        .collect();
+    let mut question_keys: Vec<usize> = (0..num_questions).collect();
     if S::IS_TRAINING {
         assert!(
             epoch < total_epochs,
@@ -747,12 +755,12 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
                 && !ROLLOUT_STOP_SIGNAL.load(Ordering::Relaxed) => {
                 let permit = permit_result.expect("rollout semaphore should not be closed");
 
-                let question_key = question_keys[next_question_index];
+                let question_key = QuestionFlatId(question_keys[next_question_index], PhantomData);
                 next_question_index += 1;
-                let question = dataset
-                    .get(question_key)
-                    .unwrap()
-                    .expect("question key from rollout queue must exist");
+                let question = question_map
+                    .get(&question_key.0)
+                    .expect("question key from rollout queue must exist")
+                    .clone();
                 let actions = {
                     let store = action_store.lock().await;
                     store.load_or_init_action_log(question_key).unwrap()

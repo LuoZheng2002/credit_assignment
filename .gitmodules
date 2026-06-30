@@ -1,3 +1,6 @@
 [submodule "research-utility"]
 	path = research-utility
 	url = https://github.com/LuoZheng2002/research-utility.git
+[submodule "credit_assignment_paper"]
+	path = credit_assignment_paper
+	url = https://github.com/LuoZheng2002/credit_assignment_paper.git

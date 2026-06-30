@@ -92,6 +92,10 @@ def training_trajectories_stats_file_name() -> str:
     return "training_trajectories_stats.json"
 
 
+def training_trajectories_config_bundle_file_name() -> str:
+    return "config_bundle.json"
+
+
 def experiment_remote_training_trajectories_file_path(
     model_cli_name: str, config_nickname: str, epoch: int
 ) -> str:
@@ -135,6 +139,31 @@ def experiment_local_training_trajectories_stats_file_path(
         / config_nickname
         / f"epoch_{epoch}"
         / training_trajectories_stats_file_name()
+    )
+
+
+def experiment_remote_training_trajectories_config_bundle_file_path(
+    model_cli_name: str, config_nickname: str, epoch: int
+) -> str:
+    return (
+        f"medium_files/{model_cli_name}/{config_nickname}/epoch_{epoch}/"
+        f"{training_trajectories_dir_name()}/"
+        f"{training_trajectories_config_bundle_file_name()}"
+    )
+
+
+def experiment_local_training_trajectories_config_bundle_file_path(
+    repo_root: Path, model_cli_name: str, config_nickname: str, epoch: int
+) -> Path:
+    return (
+        repo_root
+        / LOCAL_RESULTS_DIR
+        / "medium_files"
+        / model_cli_name
+        / config_nickname
+        / f"epoch_{epoch}"
+        / training_trajectories_dir_name()
+        / training_trajectories_config_bundle_file_name()
     )
 
 

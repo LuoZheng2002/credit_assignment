@@ -5,9 +5,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use ordered_float::NotNan;
-use research_utility::{
-    progress_tui_logger::{log_info, log_key_value_pair, log_master_progress, log_warning},
-    sqlite_store::SqliteStore,
+use research_utility::progress_tui_logger::{
+    log_info, log_key_value_pair, log_master_progress, log_warning,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
@@ -313,7 +312,7 @@ fn supervised_content_advantage_stats<M: LlmModelMarker>(
 }
 
 pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
-    question_store: SqliteStore<QuestionFlatId<Training>, HybridDatasetQuestion<Training>>,
+    question_map: BTreeMap<usize, HybridDatasetQuestion<Training>>,
     action_store: ActionLogStore<M, Training>,
     rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
@@ -327,9 +326,9 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         "cumulative_avg_abs_advantage_cutoff must be in (0.0, 1.0]"
     );
     action_store.sort().unwrap();
-    let (selection_output, question_store, action_store) =
+    let (selection_output, question_map, action_store) =
         select_training_trajectories_from_rollout_logs::<M, Training>(
-            question_store,
+            question_map,
             action_store,
             rollout_config.clone(),
             posterior_calculation_config.clone(),
@@ -344,7 +343,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         average_absolute_advantage_cutoff,
     } = selection_output;
     let mut training_trajectories = materialize_selected_training_trajectories::<M>(
-        question_store,
+        question_map,
         action_store,
         rollout_config,
         posterior_calculation_config,
@@ -461,7 +460,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
 }
 
 async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: DatasetSplit>(
-    question_store: SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>>,
+    question_map: BTreeMap<usize, HybridDatasetQuestion<S>>,
     action_store: ActionLogStore<M, S>,
     rollout_config: DirectRolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
@@ -469,7 +468,7 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
     advantage_calculation_policy: AdvantageCalculationPolicy,
 ) -> (
     TrainingTrajectorySelectionOutput<S>,
-    SqliteStore<QuestionFlatId<S>, HybridDatasetQuestion<S>>,
+    BTreeMap<usize, HybridDatasetQuestion<S>>,
     ActionLogStore<M, S>,
 ) {
     // let mut keys = action_log_store.metadata_store.get_keys().unwrap();
@@ -492,7 +491,7 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
                 let key = keys[sample_index];
                 next_sample_index += 1;
                 // let action_log = action_log_store.get(key).unwrap().unwrap();
-                let question = question_store.get(key).unwrap().unwrap();
+                let question = question_map.get(&key.0).unwrap().clone();
                 let actions = action_store.load_action_log(key).unwrap();
                 let action_log = DirectTreeActionLog {
                     question,
@@ -545,11 +544,11 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
         }
     }
 
-    (selection_state.into_output(), question_store, action_store)
+    (selection_state.into_output(), question_map, action_store)
 }
 
 async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
-    question_store: SqliteStore<QuestionFlatId<Training>, HybridDatasetQuestion<Training>>,
+    question_map: BTreeMap<usize, HybridDatasetQuestion<Training>>,
     action_store: ActionLogStore<M, Training>,
     rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
@@ -598,7 +597,7 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                     .pop_first()
                     .expect("grouped metadata should be non-empty");
                 let key = question_flat_id;
-                let question = question_store.get(key).unwrap().unwrap();
+                let question = question_map.get(&key.0).unwrap().clone();
                 let actions = action_store.load_action_log(key).unwrap();
                 let action_log = DirectTreeActionLog{
                     question,
@@ -1163,6 +1162,11 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
     )
     .unwrap();
     let dataset_store = open_hybrid_dataset::<Training>();
+    let question_map: BTreeMap<usize, HybridDatasetQuestion<Training>> = dataset_store
+        .iter()
+        .expect("failed to iterate hybrid dataset")
+        .map(|r| r.expect("failed to read question from hybrid dataset"))
+        .collect();
     let action_store = open_action_logs::<M, Training>(config_nickname, epoch);
     action_store
         .write_config_bundle_if_missing(&ActionLogConfigBundle {
@@ -1171,7 +1175,7 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
         })
         .unwrap();
     rollout_logs_to_training_trajectories::<M>(
-        dataset_store,
+        question_map,
         action_store,
         rollout_config,
         posterior_calculation_config,

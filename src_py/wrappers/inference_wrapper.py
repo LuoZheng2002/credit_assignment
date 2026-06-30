@@ -344,6 +344,7 @@ class HpcBackend:
         model_cli_name: str,
         config_nickname: str,
         wrapper_log_path: str,
+        deterministic_inference: bool,
     ) -> None:
         model_path_obj = Path(model_path)
         self._process: subprocess.Popen[bytes] | None = None
@@ -405,20 +406,23 @@ class HpcBackend:
         with open(
             self._wrapper_log_path, "a", buffering=1, encoding="utf-8"
         ) as log_handle:
+            launch_command = [
+                sglang_python,
+                "-m",
+                "sglang.launch_server",
+                "--model-path",
+                model_path,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(upstream_port),
+                "--dp",
+                str(num_gpus),
+            ]
+            if deterministic_inference:
+                launch_command.append("--enable-deterministic-inference")
             self._process = subprocess.Popen(
-                [
-                    sglang_python,
-                    "-m",
-                    "sglang.launch_server",
-                    "--model-path",
-                    model_path,
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    str(upstream_port),
-                    "--dp",
-                    str(num_gpus),
-                ],
+                launch_command,
                 stdout=log_handle,
                 stderr=log_handle,
                 env=child_env,
@@ -488,6 +492,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hf-model-name", type=str, required=True)
     parser.add_argument("--wrapper-log-path", type=str, required=True)
     parser.add_argument("--orchestrator-socket-path", type=str, default="")
+    parser.add_argument("--enable-deterministic-inference", action="store_true")
     return parser
 
 
@@ -518,6 +523,7 @@ def main() -> int:
             args.model_cli_name,
             args.config_nickname,
             args.wrapper_log_path,
+            args.enable_deterministic_inference,
         )
 
         _emit_inference_identity(
