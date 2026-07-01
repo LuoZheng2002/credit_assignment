@@ -117,10 +117,18 @@ def _load_orchestrator_config_payload() -> dict[str, Any]:
     if not app_name:
         raise RuntimeError("orchestrator config field 'app_name' must be non-empty")
 
+    gpu_name = config_payload.get("gpu_name")
+    if not isinstance(gpu_name, str):
+        raise RuntimeError("orchestrator config field 'gpu_name' must be a string")
+    gpu_name = gpu_name.strip()
+    if not gpu_name:
+        raise RuntimeError("orchestrator config field 'gpu_name' must be non-empty")
+
     return {
         "args": validated_args,
         "service_state_volume_name": service_state_volume_name,
         "app_name": app_name,
+        "gpu_name": gpu_name,
     }
 
 
@@ -153,7 +161,10 @@ DEPLOY_MOUNT_DIR = _extract_required_cli_arg(
     DEPLOY_ORCHESTRATOR_CLI_ARGS, "--mount-dir"
 )
 DEPLOY_NUM_GPUS = _extract_num_gpus(DEPLOY_ORCHESTRATOR_CLI_ARGS)
-GPU = f"H200:{DEPLOY_NUM_GPUS}"
+DEPLOY_GPU_NAME = str(DEPLOY_ORCHESTRATOR_CONFIG["gpu_name"])
+GPU = (
+    DEPLOY_GPU_NAME if DEPLOY_NUM_GPUS == 1 else f"{DEPLOY_GPU_NAME}:{DEPLOY_NUM_GPUS}"
+)
 APP_NAME = str(DEPLOY_ORCHESTRATOR_CONFIG["app_name"])
 SERVICE_STATE_VOLUME_NAME = str(DEPLOY_ORCHESTRATOR_CONFIG["service_state_volume_name"])
 service_state_volume = modal.Volume.from_name(
@@ -168,6 +179,7 @@ def _print_service_state_volume_status() -> None:
         f"model_cli_name={DEPLOY_MODEL_CLI_NAME} "
         f"config_nickname={DEPLOY_CONFIG_NICKNAME} "
         f"mount_dir={DEPLOY_MOUNT_DIR} "
+        f"gpu={GPU} "
         f"volume_name={SERVICE_STATE_VOLUME_NAME}"
     )
 

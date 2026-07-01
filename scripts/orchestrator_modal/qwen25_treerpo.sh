@@ -5,7 +5,7 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --validation-rollout-config-path config/rollout_config_validation_tool.json \
     --training-rollout-config-path config/rollout_config_training_treerpo.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
-    --num-total-epochs 10 \
+    --num-total-epochs 20 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
     --num-iterations-limit 3 \
     --advantage-calculation-policy tree-rpo-win-rate \
@@ -15,6 +15,7 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --validation-rollout-time-limit-secs 1200 \
     --max-python-processes 4 \
     --num-gpus 1 \
+    --gpu-name H200 \
     --mount-dir "/volume" \
     --positive-advantage-only false \
     --keep-action-logs true \

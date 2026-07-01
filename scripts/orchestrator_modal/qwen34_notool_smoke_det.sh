@@ -15,6 +15,7 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --validation-rollout-time-limit-secs 120 \
     --max-python-processes 4 \
     --num-gpus 1 \
+    --gpu-name H200 \
     --mount-dir "/volume" \
     --positive-advantage-only false \
     --keep-action-logs true \

@@ -7,6 +7,7 @@ import os
 import random
 import re
 import shutil
+import types
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import Any, cast
 
 import numpy as np
 import torch
+from torch.optim.optimizer import _get_scalar_dtype
 
 from ..tui_logging import _tui_error, _tui_info, _tui_warning
 from .batch_dataset import LazyResolvedBatchLoader, ResolvedTrainingBatch
@@ -24,6 +26,98 @@ from .training_plan import (
     TRAINING_PLAN_LORA,
     assert_supported_training_plan,
 )
+
+ADAM_USES_FP32 = True
+
+_ADAM_STATE_KEYS = ("exp_avg", "exp_avg_sq", "max_exp_avg_sq")
+
+
+def _convert_optimizer_state_dict_to_fp32(state_dict: dict[str, Any]) -> dict[str, Any]:
+    """Convert Adam state tensors in a state_dict from any dtype to float32."""
+    state = state_dict.get("state", {})
+    for state_entry in state.values():
+        for key in _ADAM_STATE_KEYS:
+            tensor = state_entry.get(key)
+            if tensor is not None and tensor.dtype != torch.float32:
+                state_entry[key] = tensor.to(torch.float32)
+    return state_dict
+
+
+def _ensure_adam_state_fp32(
+    optimizer: torch.optim.AdamW, group: dict[str, Any], parameter: torch.Tensor
+) -> dict[str, Any]:
+    """Initialize or convert Adam state tensors to float32 for one parameter."""
+    state = optimizer.state[parameter]
+    if len(state) == 0:
+        is_fused = bool(group.get("fused", False))
+        is_capturable = bool(group.get("capturable", False))
+        step_device = parameter.device if (is_capturable or is_fused) else "cpu"
+        state["step"] = torch.zeros(
+            (), dtype=_get_scalar_dtype(is_fused=is_fused), device=step_device
+        )
+        state["exp_avg"] = torch.zeros_like(
+            parameter, dtype=torch.float32, memory_format=torch.preserve_format
+        )
+        state["exp_avg_sq"] = torch.zeros_like(
+            parameter, dtype=torch.float32, memory_format=torch.preserve_format
+        )
+        if bool(group.get("amsgrad", False)):
+            state["max_exp_avg_sq"] = torch.zeros_like(
+                parameter, dtype=torch.float32, memory_format=torch.preserve_format
+            )
+        return state
+
+    for key in _ADAM_STATE_KEYS:
+        tensor = state.get(key)
+        if tensor is not None and tensor.dtype != torch.float32:
+            state[key] = tensor.to(torch.float32)
+    return state
+
+
+def _make_adam_fp32_aware(optimizer: torch.optim.AdamW) -> None:
+    """Monkey-patch AdamW so its optimizer state arithmetic runs in float32.
+
+    Model parameters remain bf16. Right before the real AdamW step, we ensure
+    each parameter's Adam state (`exp_avg`, `exp_avg_sq`, and optionally
+    `max_exp_avg_sq`) exists in fp32, then temporarily swap each bf16 gradient
+    for an fp32 copy so Adam's update math can execute consistently in fp32.
+    To satisfy PyTorch's grad-dtype checks, we temporarily relax
+    `param.grad_dtype` to allow the fp32 assignment, then restore the original
+    bf16 gradient and grad_dtype immediately after the step.
+    """
+    original_step = optimizer.step
+
+    def fp32_step(self, closure=None):
+        saved_grads: dict[int, tuple[torch.Tensor, Any]] = {}
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                _ensure_adam_state_fp32(self, group, p)
+                if p.grad.dtype != torch.float32:
+                    original_grad = p.grad
+                    original_grad_dtype = getattr(p, "grad_dtype", None)
+                    saved_grads[id(p)] = (original_grad, original_grad_dtype)
+                    if hasattr(p, "grad_dtype"):
+                        p.grad_dtype = None
+                    p.grad = original_grad.to(torch.float32)
+
+        try:
+            return original_step(closure)
+        finally:
+            for group in self.param_groups:
+                for p in group["params"]:
+                    saved = saved_grads.pop(id(p), None)
+                    if saved is not None:
+                        original_grad, original_grad_dtype = saved
+                        p.grad = original_grad
+                        if hasattr(p, "grad_dtype"):
+                            p.grad_dtype = original_grad_dtype
+                    if p.grad is None:
+                        continue
+                    _ensure_adam_state_fp32(self, group, p)
+
+    optimizer.step = types.MethodType(fp32_step, optimizer)
 
 
 @dataclass(frozen=True)
@@ -957,6 +1051,8 @@ def _load_checkpoint(
         )
 
     optimizer_state = torch.load(optimizer_state_path, map_location="cpu")
+    if ADAM_USES_FP32:
+        optimizer_state = _convert_optimizer_state_dict_to_fp32(optimizer_state)
     optimizer.load_state_dict(optimizer_state)
 
     training_state = torch.load(training_state_path, map_location="cpu")
@@ -1537,6 +1633,8 @@ def train(config: TrainConfig) -> None:
         weight_decay=config.weight_decay,
         betas=(0.9, 0.999),
     )
+    if ADAM_USES_FP32:
+        _make_adam_fp32_aware(optimizer)
 
     if training_plan in {TRAINING_PLAN_LORA, TRAINING_PLAN_DDP} and world_size > 1:
         model = torch.nn.parallel.DistributedDataParallel(

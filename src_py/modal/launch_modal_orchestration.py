@@ -48,6 +48,7 @@ def _write_orchestrator_config(
     cli_args: list[str],
     service_state_volume_name: str,
     app_name: str,
+    gpu_name: str,
 ) -> Path:
     if not cli_args:
         raise RuntimeError(
@@ -59,6 +60,7 @@ def _write_orchestrator_config(
         "args": cli_args,
         "service_state_volume_name": service_state_volume_name,
         "app_name": app_name,
+        "gpu_name": gpu_name,
     }
     config_path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
     return config_path
@@ -92,6 +94,52 @@ def _extract_num_gpus(cli_args: list[str]) -> int:
     if num_gpus <= 0:
         raise RuntimeError(f"--num-gpus must be positive, got: {num_gpus}")
     return num_gpus
+
+
+def _extract_gpu_name(cli_args: list[str]) -> str:
+    return _extract_required_cli_arg(cli_args, "--gpu-name")
+
+
+def _strip_modal_only_args(cli_args: list[str]) -> list[str]:
+    normalized: list[str] = []
+    index = 0
+    removed_compute_backend = False
+    removed_gpu_name = False
+    while index < len(cli_args):
+        arg = cli_args[index]
+        if arg == "--compute-backend":
+            if index + 1 >= len(cli_args):
+                raise RuntimeError("Missing value after --compute-backend")
+            removed_compute_backend = True
+            index += 2
+            continue
+        if arg.startswith("--compute-backend="):
+            removed_compute_backend = True
+            index += 1
+            continue
+        if arg == "--gpu-name":
+            if index + 1 >= len(cli_args):
+                raise RuntimeError("Missing value after --gpu-name")
+            removed_gpu_name = True
+            index += 2
+            continue
+        if arg.startswith("--gpu-name="):
+            removed_gpu_name = True
+            index += 1
+            continue
+        normalized.append(arg)
+        index += 1
+    if removed_compute_backend:
+        print(
+            "Ignoring legacy --compute-backend flag; orchestration now always uses local wrapper-managed runtime paths.",
+            flush=True,
+        )
+    if removed_gpu_name:
+        print(
+            "Stripped Modal-only --gpu-name flag before invoking bin_orchestrator.",
+            flush=True,
+        )
+    return normalized
 
 
 def _strip_legacy_compute_backend(cli_args: list[str]) -> list[str]:
@@ -154,8 +202,10 @@ def _launch_orchestration(repo_root: Path):
 
 
 def main() -> int:
-    cli_args = _strip_legacy_compute_backend(sys.argv[1:])
-    num_gpus = _extract_num_gpus(cli_args)
+    raw_cli_args = _strip_legacy_compute_backend(sys.argv[1:])
+    num_gpus = _extract_num_gpus(raw_cli_args)
+    gpu_name = _extract_gpu_name(raw_cli_args)
+    cli_args = _strip_modal_only_args(raw_cli_args)
     model_cli_name = _extract_required_cli_arg(cli_args, "--model-cli-name")
     config_nickname = _extract_required_cli_arg(cli_args, "--config-nickname")
     mount_dir = _extract_required_cli_arg(cli_args, "--mount-dir")
@@ -165,6 +215,7 @@ def main() -> int:
     app_name = _orchestrator_app_name(model_cli_name, config_nickname)
     repo_root = _repo_root()
     print(f"Validated orchestrator num_gpus: {num_gpus}", flush=True)
+    print(f"Validated Modal gpu_name: {gpu_name}", flush=True)
     print(
         "Validated orchestrator runtime: local wrapper-managed inference/training",
         flush=True,
@@ -180,7 +231,7 @@ def main() -> int:
     with _config_file_lock(repo_root):
         try:
             config_path = _write_orchestrator_config(
-                repo_root, cli_args, service_state_volume_name, app_name
+                repo_root, cli_args, service_state_volume_name, app_name, gpu_name
             )
             print(f"Wrote orchestrator config: {config_path}", flush=True)
             print(

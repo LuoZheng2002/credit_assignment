@@ -1,7 +1,7 @@
 uv run -m src_py.modal.launch_modal_orchestration \
-    --model-cli-name llama \
+    --model-cli-name qwen34 \
     --max-rollout-concurrency 300 \
-    --config-nickname grpo_notool \
+    --config-nickname grpo_notool_fp32 \
     --validation-rollout-config-path config/rollout_config_validation_notool.json \
     --training-rollout-config-path config/rollout_config_training_grpo_notool.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \

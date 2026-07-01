@@ -52,6 +52,7 @@ class TrainProcessLaunchArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     training_trajectory_sqlite_path: str
+    training_request_json_path: str
     orchestrator_socket_path: str = ""
 
 
@@ -97,6 +98,16 @@ def parse_model_stdin(model_type: type[T]) -> T:
     return model_type.model_validate_json(raw)
 
 
+def parse_model_json_file(model_type: type[T], json_path: str | Path) -> T:
+    path = Path(json_path)
+    raw = path.read_bytes()
+    if not raw or not raw.strip():
+        raise ValueError(
+            f"expected JSON payload in file for {model_type.__name__}: {path}"
+        )
+    return model_type.model_validate_json(raw)
+
+
 def model_to_payload(
     instance: BaseModel,
     *,
@@ -108,6 +119,13 @@ def model_to_payload(
 
 def model_to_json_bytes(instance: BaseModel) -> bytes:
     return instance.model_dump_json(exclude_none=True).encode("utf-8")
+
+
+def write_model_json_file(instance: BaseModel, json_path: str | Path) -> Path:
+    path = Path(json_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(instance.model_dump_json(exclude_none=True), encoding="utf-8")
+    return path
 
 
 def model_to_cli_args(

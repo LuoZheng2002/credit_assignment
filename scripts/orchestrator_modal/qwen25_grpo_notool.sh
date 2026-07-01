@@ -1,11 +1,11 @@
 uv run -m src_py.modal.launch_modal_orchestration \
     --model-cli-name qwen25 \
     --max-rollout-concurrency 300 \
---config-nickname grpo_notool \
+    --config-nickname grpo_notool \
     --validation-rollout-config-path config/rollout_config_validation_notool.json \
     --training-rollout-config-path config/rollout_config_training_grpo_notool.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
-    --num-total-epochs 10 \
+    --num-total-epochs 20 \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
     --num-iterations-limit 3 \
     --advantage-calculation-policy tree-mappo-posterior \
@@ -15,6 +15,7 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --validation-rollout-time-limit-secs 1200 \
     --max-python-processes 2 \
     --num-gpus 1 \
+    --gpu-name H200 \
     --mount-dir "/volume" \
     --positive-advantage-only false \
     --keep-action-logs true \

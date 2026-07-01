@@ -10,7 +10,7 @@ from .cli_args import (
     TrainProcessLaunchArgs,
     add_model_arguments,
     parse_model_args,
-    parse_model_stdin,
+    parse_model_json_file,
 )
 from .engine import TrainConfig, train
 from .status_log_buffer import install_status_log_buffer, shutdown_status_log_buffer
@@ -67,7 +67,9 @@ def _load_train_config(
 def main() -> None:
     launch_args = parse_model_args(_build_parser(), TrainProcessLaunchArgs)
     install_status_log_buffer(launch_args.orchestrator_socket_path)
-    request = parse_model_stdin(TrainingRequestArgs)
+    request = parse_model_json_file(
+        TrainingRequestArgs, launch_args.training_request_json_path
+    )
     config = _load_train_config(launch_args, request)
     try:
         train(config)

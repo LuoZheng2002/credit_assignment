@@ -55,9 +55,9 @@ from src_py.train.cli_args import (
     TrainProcessLaunchArgs,
     add_model_arguments,
     model_to_cli_args,
-    model_to_json_bytes,
     parse_model_args,
     parse_model_stdin,
+    write_model_json_file,
 )
 from src_py.tui_logging import (
     _tui_error,
@@ -267,12 +267,10 @@ def _ensure_initial_model_if_missing(
     ensure_model_snapshot(parent_dir, hf_model_name)
 
 
-def _write_subprocess_stdin(process: subprocess.Popen[Any], payload: bytes) -> None:
-    if process.stdin is None:
-        raise RuntimeError("subprocess stdin was not piped")
-    process.stdin.write(payload)
-    process.stdin.close()
-    process.stdin = None
+def _training_request_json_path(training_config: TrainingRequestArgs) -> Path:
+    checkpoints_root = Path(training_config.checkpoints_parent_dir)
+    checkpoints_root.mkdir(parents=True, exist_ok=True)
+    return checkpoints_root / "training_request.json"
 
 
 def _run_hpc_training(
@@ -298,10 +296,13 @@ def _run_hpc_training(
             "-c",
             f"import time; time.sleep({launch_args.test_sleep_secs})",
         ]
-        stdin_payload = None
+        training_request_json_path = None
     else:
+        training_request_json_path = _training_request_json_path(training_config)
+        write_model_json_file(training_config, training_request_json_path)
         train_process_launch_args = TrainProcessLaunchArgs(
             training_trajectory_sqlite_path=str(trajectory_path),
+            training_request_json_path=str(training_request_json_path),
             orchestrator_socket_path=launch_args.orchestrator_socket_path,
         )
         cmd = [
@@ -314,40 +315,42 @@ def _run_hpc_training(
             "src_py.train.main",
             *model_to_cli_args(train_process_launch_args),
         ]
-        stdin_payload = model_to_json_bytes(training_config)
-    if _TRAINING_WRAPPER_LOG_PATH is None:
-        process = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE if stdin_payload is not None else None,
-        )
-        if stdin_payload is not None:
-            _write_subprocess_stdin(process, stdin_payload)
-        _set_active_process(process)
-        _emit_status(backend, "running", f"started torchrun with pid={process.pid}")
-        _tui_info(f"Training subprocess started (pid={process.pid})")
-        return_code = process.wait()
-    else:
-        with _TRAINING_WRAPPER_LOG_PATH.open("a", encoding="utf-8") as log_handle:
+    try:
+        if _TRAINING_WRAPPER_LOG_PATH is None:
             process = subprocess.Popen(
                 cmd,
-                stdin=subprocess.PIPE if stdin_payload is not None else None,
-                stdout=log_handle,
-                stderr=log_handle,
+                stdin=None,
             )
-            if stdin_payload is not None:
-                _write_subprocess_stdin(process, stdin_payload)
             _set_active_process(process)
-            _emit_status(
-                backend,
-                "running",
-                (
-                    f"started torchrun with pid={process.pid}; "
-                    f"subprocess output redirected to {_TRAINING_WRAPPER_LOG_PATH}"
-                ),
-            )
+            _emit_status(backend, "running", f"started torchrun with pid={process.pid}")
             _tui_info(f"Training subprocess started (pid={process.pid})")
             return_code = process.wait()
-    _set_active_process(None)
+        else:
+            with _TRAINING_WRAPPER_LOG_PATH.open("a", encoding="utf-8") as log_handle:
+                process = subprocess.Popen(
+                    cmd,
+                    stdin=None,
+                    stdout=log_handle,
+                    stderr=log_handle,
+                )
+                _set_active_process(process)
+                _emit_status(
+                    backend,
+                    "running",
+                    (
+                        f"started torchrun with pid={process.pid}; "
+                        f"subprocess output redirected to {_TRAINING_WRAPPER_LOG_PATH}"
+                    ),
+                )
+                _tui_info(f"Training subprocess started (pid={process.pid})")
+                return_code = process.wait()
+    finally:
+        _set_active_process(None)
+        if (
+            training_request_json_path is not None
+            and training_request_json_path.exists()
+        ):
+            training_request_json_path.unlink()
     duration_secs = time.time() - started_at
     if _TERMINATION_REQUESTED.is_set():
         _tui_error("Training wrapper cancelled by signal")
