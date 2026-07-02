@@ -6,6 +6,7 @@ use redb::{
 use research_utility::progress_tui_logger::{log_info, log_warning};
 use serde::{Deserialize, Serialize};
 use std::{
+    cell::RefCell,
     cmp::Ordering,
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -33,6 +34,7 @@ const ACTION_ROWS_TABLE_NAME: &str = "action_rows";
 const SORT_GENERATIONS_DIR_NAME: &str = "sorted_generations";
 const ACTIVE_SORT_GENERATION_FILE_NAME: &str = "sorted_generation.txt";
 const SORT_TEMP_FILE_PREFIX: &str = "sort_tmp_";
+const ELAPSED_TIME_FILE_NAME: &str = "elapsed_time.txt";
 
 static SORT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -46,6 +48,14 @@ fn action_log_config_bundle_path(base_path: &Path) -> PathBuf {
 
 pub fn action_log_config_bundle_file_path(action_logs_path: impl AsRef<Path>) -> PathBuf {
     action_log_config_bundle_path(action_logs_path.as_ref())
+}
+
+fn elapsed_time_file_path(base_path: &Path) -> PathBuf {
+    if base_path.extension().and_then(|ext| ext.to_str()) == Some("extsort") {
+        base_path.join(ELAPSED_TIME_FILE_NAME)
+    } else {
+        base_path.with_extension(ELAPSED_TIME_FILE_NAME)
+    }
 }
 
 #[derive(Clone)]
@@ -179,6 +189,20 @@ impl<M: LlmModelMarker, S: DatasetSplit> ActionLogStore<M, S> {
     ) -> Result<(), String> {
         self.append(table_key, row_index, value)
     }
+
+    pub fn read_elapsed_time(&self) -> Result<f32, String> {
+        match &self.backend {
+            ActionLogStoreBackend::Redb(store) => store.read_elapsed_time(),
+            ActionLogStoreBackend::ExtSort(store) => store.read_elapsed_time(),
+        }
+    }
+
+    pub fn write_elapsed_time(&self, elapsed_secs: f32) -> Result<(), String> {
+        match &self.backend {
+            ActionLogStoreBackend::Redb(store) => store.write_elapsed_time(elapsed_secs),
+            ActionLogStoreBackend::ExtSort(store) => store.write_elapsed_time(elapsed_secs),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,6 +315,7 @@ impl<M: LlmModelMarker> RedbKey for StoredActionRow<M> {
 struct RedbActionLogStore<M: LlmModelMarker, S: DatasetSplit> {
     db_path: PathBuf,
     db: Database,
+    elapsed_time_file: RefCell<Option<File>>,
     _phantom: PhantomData<(M, S)>,
 }
 
@@ -418,9 +443,23 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
                 e
             )
         })?;
+        let elapsed_time_path = elapsed_time_file_path(&db_path);
+        let elapsed_time_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .read(true)
+            .open(&elapsed_time_path)
+            .map_err(|e| {
+                format!(
+                    "Failed to open elapsed time file at {}: {}",
+                    elapsed_time_path.display(),
+                    e
+                )
+            })?;
         Ok(Self {
             db_path,
             db,
+            elapsed_time_file: RefCell::new(Some(elapsed_time_file)),
             _phantom: PhantomData,
         })
     }
@@ -860,12 +899,90 @@ impl<M: LlmModelMarker, S: DatasetSplit> RedbActionLogStore<M, S> {
         })?;
         Ok(true)
     }
+
+    fn elapsed_time_file_path(&self) -> PathBuf {
+        elapsed_time_file_path(&self.db_path)
+    }
+
+    fn read_elapsed_time(&self) -> Result<f32, String> {
+        let path = self.elapsed_time_file_path();
+        let mut file = self.elapsed_time_file.borrow_mut();
+        let file = file
+            .as_mut()
+            .ok_or_else(|| format!("Elapsed time file handle not open at {}", path.display()))?;
+        let metadata = file.metadata().map_err(|e| {
+            format!(
+                "Failed to get metadata for elapsed time file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        if metadata.len() == 0 {
+            return Ok(0.0);
+        }
+        file.seek(SeekFrom::Start(0)).map_err(|e| {
+            format!(
+                "Failed to seek elapsed time file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        let mut content = String::new();
+        file.read_to_string(&mut content).map_err(|e| {
+            format!(
+                "Failed to read elapsed time file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        content.trim().parse::<f32>().map_err(|e| {
+            format!(
+                "Failed to parse elapsed time from {}: {}",
+                path.display(),
+                e
+            )
+        })
+    }
+
+    fn write_elapsed_time(&self, elapsed_secs: f32) -> Result<(), String> {
+        let path = self.elapsed_time_file_path();
+        let mut file = self.elapsed_time_file.borrow_mut();
+        let file = file
+            .as_mut()
+            .ok_or_else(|| format!("Elapsed time file handle not open at {}", path.display()))?;
+        let content = format!("{:.6}", elapsed_secs);
+        file.seek(SeekFrom::Start(0)).map_err(|e| {
+            format!(
+                "Failed to seek elapsed time file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        file.write_all(content.as_bytes())
+            .map_err(|e| format!("Failed to write elapsed time to {}: {}", path.display(), e))?;
+        file.set_len(content.len() as u64).map_err(|e| {
+            format!(
+                "Failed to truncate elapsed time file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        file.flush().map_err(|e| {
+            format!(
+                "Failed to flush elapsed time file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        Ok(())
+    }
 }
 
 #[allow(dead_code)]
 struct ExtSortActionLogStore<M: LlmModelMarker, S: DatasetSplit> {
     base_path: PathBuf,
     storage_dir: PathBuf,
+    elapsed_time_file: RefCell<Option<File>>,
     _phantom: PhantomData<(M, S)>,
 }
 
@@ -1024,9 +1141,23 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
                 e
             )
         })?;
+        let elapsed_time_path = elapsed_time_file_path(&base_path);
+        let elapsed_time_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .read(true)
+            .open(&elapsed_time_path)
+            .map_err(|e| {
+                format!(
+                    "Failed to open elapsed time file at {}: {}",
+                    elapsed_time_path.display(),
+                    e
+                )
+            })?;
         let store = Self {
             base_path,
             storage_dir,
+            elapsed_time_file: RefCell::new(Some(elapsed_time_file)),
             _phantom: PhantomData,
         };
         store.repair_sort_generation_state()?;
@@ -2021,6 +2152,83 @@ impl<M: LlmModelMarker, S: DatasetSplit> ExtSortActionLogStore<M, S> {
 
     fn sorted_source_len_path(&self) -> PathBuf {
         self.legacy_sorted_source_len_path()
+    }
+
+    fn elapsed_time_file_path(&self) -> PathBuf {
+        elapsed_time_file_path(&self.base_path)
+    }
+
+    fn read_elapsed_time(&self) -> Result<f32, String> {
+        let path = self.elapsed_time_file_path();
+        let mut file = self.elapsed_time_file.borrow_mut();
+        let file = file
+            .as_mut()
+            .ok_or_else(|| format!("Elapsed time file handle not open at {}", path.display()))?;
+        let metadata = file.metadata().map_err(|e| {
+            format!(
+                "Failed to get metadata for elapsed time file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        if metadata.len() == 0 {
+            return Ok(0.0);
+        }
+        file.seek(SeekFrom::Start(0)).map_err(|e| {
+            format!(
+                "Failed to seek elapsed time file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        let mut content = String::new();
+        file.read_to_string(&mut content).map_err(|e| {
+            format!(
+                "Failed to read elapsed time file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        content.trim().parse::<f32>().map_err(|e| {
+            format!(
+                "Failed to parse elapsed time from {}: {}",
+                path.display(),
+                e
+            )
+        })
+    }
+
+    fn write_elapsed_time(&self, elapsed_secs: f32) -> Result<(), String> {
+        let path = self.elapsed_time_file_path();
+        let mut file = self.elapsed_time_file.borrow_mut();
+        let file = file
+            .as_mut()
+            .ok_or_else(|| format!("Elapsed time file handle not open at {}", path.display()))?;
+        let content = format!("{:.6}", elapsed_secs);
+        file.seek(SeekFrom::Start(0)).map_err(|e| {
+            format!(
+                "Failed to seek elapsed time file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        file.write_all(content.as_bytes())
+            .map_err(|e| format!("Failed to write elapsed time to {}: {}", path.display(), e))?;
+        file.set_len(content.len() as u64).map_err(|e| {
+            format!(
+                "Failed to truncate elapsed time file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        file.flush().map_err(|e| {
+            format!(
+                "Failed to flush elapsed time file at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        Ok(())
     }
 }
 

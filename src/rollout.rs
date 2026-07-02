@@ -479,6 +479,8 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
     llm_callable: M::Callable,
     client: Client,
     _permit: OwnedSemaphorePermit,
+    start_time: Instant,
+    elapsed_offset: f32,
 ) -> Result<TreeCorrectness, StopRequestedError> {
     let rollout_stats = RolloutStats::global();
     let _active_rollouts_guard =
@@ -598,6 +600,9 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
                         action_log.actions.last().unwrap(),
                     )
                     .unwrap();
+                let cumulative_elapsed =
+                    elapsed_offset + (Instant::now() - start_time).as_secs_f32();
+                store.write_elapsed_time(cumulative_elapsed).unwrap();
                 false
             };
             if _did_commit {
@@ -662,10 +667,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         "rollout_all using fixed_temperature={} for LLM sampling",
         rollout_config.fixed_temperature
     ));
-    let rollout_time_limit = Duration::from_secs(rollout_time_limit_secs as u64);
     let start_time = Instant::now();
-    let deadline = start_time + rollout_time_limit;
-    let total_secs = rollout_time_limit_secs as f32;
 
     if rollout_config.use_tool {
         init_python_tool_pool(max_python_processes)
@@ -725,12 +727,23 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     );
     let rollout_stats = RolloutStats::global();
     rollout_stats.reset_model_answer_judgment_cache_hit_rate();
+    let (previous_elapsed, deadline, total_secs) = {
+        let prev = action_store.lock().await.read_elapsed_time().unwrap_or(0.0);
+        let remaining = (rollout_time_limit_secs as f32 - prev).max(0.0);
+        let deadline = start_time + Duration::from_secs_f32(remaining);
+        if prev > 0.0 {
+            log_info(format!(
+                "Resuming rollout: previous elapsed={prev:.1}s, remaining={remaining:.1}s"
+            ));
+        }
+        (prev, deadline, remaining)
+    };
     let _progress_timer_handle = tokio::spawn(run_progress_timer(start_time, deadline, total_secs));
 
     let semaphore = Arc::new(Semaphore::new(max_rollout_concurrency));
     let mut join_set = JoinSet::new();
     let mut next_question_index = 0;
-    let halfway_time = start_time + rollout_time_limit / 2;
+    let halfway_time = start_time + (deadline - start_time) / 2;
     let mut did_set_halfway_threshold = false;
 
     while next_question_index < question_keys.len() || !join_set.is_empty() {
@@ -778,6 +791,8 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
                     llm_callable.clone(),
                     client.clone(),
                     permit,
+                    start_time,
+                    previous_elapsed,
                 ));
             }
             joined = join_set.join_next(), if !join_set.is_empty() => {
