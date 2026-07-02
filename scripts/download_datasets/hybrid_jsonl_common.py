@@ -36,6 +36,9 @@ from dotenv import load_dotenv
 from datasets import concatenate_datasets, load_dataset
 
 IN_DISTRIBUTION_DATASET_ORDER = ("deepmath", "math", "numinamath")
+
+# Interleaving pattern for hybrid_train: each group of 5 = 1 MATH + 2 DeepMath + 2 NuminaMath.
+TRAIN_INTERLEAVE_PATTERN = ("math", "deepmath", "deepmath", "numinamath", "numinamath")
 EVALUATION_DATASET_ORDER = (
     "deepmath",
     "math",
@@ -293,6 +296,39 @@ def interleave_rows(
                 }
             )
     return ordered_rows
+
+
+def interleave_rows_weighted(
+    rows_by_dataset: dict[str, list[dict[str, Any]]],
+    pattern: tuple[str, ...] = TRAIN_INTERLEAVE_PATTERN,
+) -> list[dict[str, Any]]:
+    """Interleave rows by repeating `pattern`, consuming one row per pattern element.
+
+    Stops cleanly when the first dataset in the pattern is exhausted.  With a
+    well-formed pattern (e.g. 1:2:2 ratio), all datasets should empty
+    simultaneously at the end of a full group.
+    """
+    counters = {name: 0 for name in rows_by_dataset}
+    ordered_rows: list[dict[str, Any]] = []
+
+    while True:
+        for dataset_name in pattern:
+            idx = counters[dataset_name]
+            rows = rows_by_dataset[dataset_name]
+            if idx >= len(rows):
+                # One dataset is exhausted — stop the interleaving.
+                return ordered_rows
+            source = rows[idx]
+            ordered_rows.append(
+                {
+                    "flat_id": len(ordered_rows),
+                    "dataset_name": source["dataset_name"],
+                    "question_id": source["question_id"],
+                    "question": source["question"],
+                    "correct_answer": source["correct_answer"],
+                }
+            )
+            counters[dataset_name] += 1
 
 
 def sample_question_ids(

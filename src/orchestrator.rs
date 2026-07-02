@@ -33,8 +33,6 @@ use crate::{
     utils::storage_large_files_dir,
 };
 
-const DETERMINISTIC_INFERENCE: bool = true;
-
 pub struct Orchestrator {
     // for rollout
     pub config_nickname: String,
@@ -194,10 +192,6 @@ impl Orchestrator {
     }
 
     pub async fn orchestrate<M: LlmModelMarker>(&mut self) -> Result<(), String> {
-        log_info(format!(
-            "SGLang deterministic inference enabled: {}",
-            DETERMINISTIC_INFERENCE
-        ));
         loop {
             let progress = self.progress.clone();
             let epoch = progress.epoch;
@@ -469,9 +463,8 @@ impl Orchestrator {
         let model_path = format!("{}/model", model_parent_dir);
 
         log_info(format!(
-            "Launching local inference wrapper for model {} (deterministic_inference={})",
+            "Launching local inference wrapper for model {}",
             M::CLI_NAME,
-            DETERMINISTIC_INFERENCE
         ));
         let (sglang_port, process, listener_stop_signal, listener_handle) =
             launch_inference_wrapper_process(
@@ -482,7 +475,6 @@ impl Orchestrator {
                 M::API_NAME,
                 self.num_gpus,
                 self.inference_wrapper_log_path.as_ref(),
-                DETERMINISTIC_INFERENCE,
             )
             .await?;
         log_info(format!(

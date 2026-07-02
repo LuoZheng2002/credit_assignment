@@ -151,7 +151,6 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
             M::API_NAME,
             args.num_gpus,
             inference_wrapper_log_path,
-            false,
         )
         .await?;
 

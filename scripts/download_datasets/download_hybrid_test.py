@@ -23,7 +23,6 @@ from pathlib import Path
 from hybrid_jsonl_common import (
     DEFAULT_SAMPLE_SEED,
     DEFAULT_TEST_SAMPLES_PER_DATASET,
-    DEFAULT_TRAIN_SAMPLES_PER_DATASET,
     DEFAULT_VAL_SAMPLES_PER_DATASET,
     EVALUATION_DATASET_ORDER,
     IN_DISTRIBUTION_DATASET_NAMES,
@@ -53,13 +52,22 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--train-samples-per-dataset",
+        "--math-train-samples",
         type=int,
-        default=DEFAULT_TRAIN_SAMPLES_PER_DATASET,
-        help=(
-            "Number of in-distribution training samples already reserved per dataset "
-            f"(default: {DEFAULT_TRAIN_SAMPLES_PER_DATASET})"
-        ),
+        default=6_500,
+        help="Number of MATH training samples already reserved (default: 6500)",
+    )
+    parser.add_argument(
+        "--deepmath-train-samples",
+        type=int,
+        default=13_000,
+        help="Number of DeepMath training samples already reserved (default: 13000)",
+    )
+    parser.add_argument(
+        "--numinamath-train-samples",
+        type=int,
+        default=13_000,
+        help="Number of NuminaMath training samples already reserved (default: 13000)",
     )
     parser.add_argument(
         "--val-samples-per-dataset",
@@ -81,18 +89,25 @@ def main() -> None:
     assert args.max_samples_per_dataset > 0, (
         "--max-samples-per-dataset must be positive"
     )
-    assert args.train_samples_per_dataset >= 0, (
-        "--train-samples-per-dataset must be non-negative"
-    )
-    assert args.val_samples_per_dataset >= 0, (
-        "--val-samples-per-dataset must be non-negative"
-    )
+    for label, val in (
+        ("--math-train-samples", args.math_train_samples),
+        ("--deepmath-train-samples", args.deepmath_train_samples),
+        ("--numinamath-train-samples", args.numinamath_train_samples),
+        ("--val-samples-per-dataset", args.val_samples_per_dataset),
+    ):
+        assert val >= 0, f"{label} must be non-negative"
+
+    # Per-dataset train+val clearance (only used for datasets without a test split).
+    train_samples = {
+        "math": args.math_train_samples,
+        "deepmath": args.deepmath_train_samples,
+        "numinamath": args.numinamath_train_samples,
+    }
 
     repo_root = Path(__file__).resolve().parents[2]
     install_hf_token(repo_root)
 
     output_path = args.output or (repo_root / "datasets" / "hybrid_test.jsonl")
-    combined_clearance = args.train_samples_per_dataset + args.val_samples_per_dataset
 
     all_rows: list[dict[str, object]] = []
     flat_id = 0
@@ -107,11 +122,12 @@ def main() -> None:
 
         start_question_id = 0
         if source_split == "train" and dataset_name in IN_DISTRIBUTION_DATASET_NAMES:
-            assert num_rows > combined_clearance, (
-                f"{dataset_name} has {num_rows} train rows, but {combined_clearance} are reserved for "
+            clearance = train_samples[dataset_name] + args.val_samples_per_dataset
+            assert num_rows > clearance, (
+                f"{dataset_name} has {num_rows} train rows, but {clearance} are reserved for "
                 "hybrid_train and hybrid_val, leaving no non-overlapping rows for hybrid_test"
             )
-            start_question_id = combined_clearance
+            start_question_id = clearance
             available_rows = num_rows - start_question_id
         else:
             available_rows = num_rows

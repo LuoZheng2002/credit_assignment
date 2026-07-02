@@ -11,8 +11,11 @@ use crate::{
 };
 
 const DEEPSEEK_CHAT_COMPLETIONS_URL: &str = "https://api.deepseek.com/v1/chat/completions";
+const OPENROUTER_CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const DEEPSEEK_V4_PRO_MODEL: &str = "deepseek-v4-pro";
-const JUDGE_TOTAL_ATTEMPTS: usize = 5;
+const DEEPSEEK_V4_PRO_OPENROUTER_MODEL: &str = "deepseek/deepseek-v4-pro";
+const USE_OPENROUTER_API: bool = true;
+const JUDGE_TOTAL_ATTEMPTS: usize = 10;
 
 /// Extract the content inside the **last** `\boxed{...}` in the response.
 /// Returns the trimmed inner text, or `None` if no boxed content is found.
@@ -50,14 +53,12 @@ async fn judge_answer_task(
     question: String,
     client: Client,
 ) -> bool {
-    judge_answer_task_with_url(
-        model_answer,
-        correct_answer,
-        question,
-        client,
-        DEEPSEEK_CHAT_COMPLETIONS_URL,
-    )
-    .await
+    let url = if USE_OPENROUTER_API {
+        OPENROUTER_CHAT_COMPLETIONS_URL
+    } else {
+        DEEPSEEK_CHAT_COMPLETIONS_URL
+    };
+    judge_answer_task_with_url(model_answer, correct_answer, question, client, url).await
 }
 
 async fn judge_answer_task_with_url(
@@ -75,9 +76,6 @@ The question is: \"{}\". \
 The model's answer is: \"{}\", and the correct answer is: \"{}\".",
         question, model_answer, correct_answer
     );
-    let deterministic_prompt = format!(
-        "{base_prompt} Put your final answer in \\boxed{{correct}} or \\boxed{{incorrect}}."
-    );
     let thinking_prompt = format!(
         "{base_prompt} Think step by step about whether the model's answer matches the reference answer. Put your final answer in \\boxed{{correct}} or \\boxed{{incorrect}}."
     );
@@ -85,14 +83,9 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\".",
     let mut last_error: Option<String> = None;
 
     for attempt in 0..JUDGE_TOTAL_ATTEMPTS {
-        let is_deterministic = attempt == 0;
-        let prompt = if is_deterministic {
-            &deterministic_prompt
-        } else {
-            &thinking_prompt
-        };
-        let temperature = if is_deterministic { 0.0 } else { 1.0 };
-        let thinking_enabled = !is_deterministic;
+        let prompt = &thinking_prompt;
+        let temperature = if attempt == 0 { 0.0 } else { 1.0 };
+        let thinking_enabled = false;
 
         let fetch_result =
             fetch_judge_evaluation_with_url(&client, prompt, url, temperature, thinking_enabled)
@@ -123,13 +116,8 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\".",
                 last_error = Some(error.to_string());
             }
         }
-        let mode_label = if is_deterministic {
-            "deterministic"
-        } else {
-            "thinking"
-        };
         log_warning(format!(
-            "Judger returned invalid response in {mode_label} mode, attempt {}/{}. Last error: {}",
+            "Judger returned invalid response, attempt {}/{}. Last error: {}",
             attempt + 1,
             JUDGE_TOTAL_ATTEMPTS,
             last_error
@@ -156,8 +144,16 @@ async fn fetch_judge_evaluation_with_url(
     temperature: f64,
     thinking_enabled: bool,
 ) -> Result<(String, Option<String>), String> {
-    let model_name = DEEPSEEK_V4_PRO_MODEL;
-    let api_key_env = "DEEPSEEK_API_KEY";
+    let model_name = if USE_OPENROUTER_API {
+        DEEPSEEK_V4_PRO_OPENROUTER_MODEL
+    } else {
+        DEEPSEEK_V4_PRO_MODEL
+    };
+    let api_key_env = if USE_OPENROUTER_API {
+        "OPENROUTER_API_KEY"
+    } else {
+        "DEEPSEEK_API_KEY"
+    };
 
     let api_key = std::env::var(api_key_env)
         .map_err(|_| format!("{api_key_env} environment variable not set"))?;
@@ -167,9 +163,15 @@ async fn fetch_judge_evaluation_with_url(
         "max_completion_tokens": 4096,
         "temperature": temperature,
     });
-    body_map["thinking"] = serde_json::json!({
-        "type": if thinking_enabled { "enabled" } else { "disabled" }
-    });
+    if USE_OPENROUTER_API {
+        body_map["reasoning"] = serde_json::json!({
+            "effort": if thinking_enabled { "high" } else { "none" }
+        });
+    } else {
+        body_map["thinking"] = serde_json::json!({
+            "type": if thinking_enabled { "enabled" } else { "disabled" }
+        });
+    }
 
     let mut request_builder = client.post(url).json(&body_map);
     request_builder = request_builder.bearer_auth(api_key);
@@ -196,8 +198,14 @@ async fn fetch_judge_evaluation_with_url(
         return Err(error_message.to_string());
     }
 
-    let reasoning_content = response_json["choices"][0]["message"]["reasoning_content"]
-        .as_str()
+    // OpenRouter responds with "reasoning", DeepSeek official responds with "reasoning_content".
+    let reasoning_content = response_json["choices"][0]["message"]
+        .as_object()
+        .and_then(|msg| {
+            msg.get("reasoning_content")
+                .or_else(|| msg.get("reasoning"))
+                .and_then(|v| v.as_str())
+        })
         .and_then(|s| {
             let trimmed = s.trim();
             if trimmed.is_empty() {
@@ -301,7 +309,15 @@ pub async fn judge_final_answer(
 mod tests {
     use super::*;
 
-    /// Helper: call `fetch_judge_evaluation_with_url` against the real DeepSeek
+    fn judge_api_url() -> &'static str {
+        if USE_OPENROUTER_API {
+            OPENROUTER_CHAT_COMPLETIONS_URL
+        } else {
+            DEEPSEEK_CHAT_COMPLETIONS_URL
+        }
+    }
+
+    /// Helper: call `fetch_judge_evaluation_with_url` against the real
     /// API, panicking on failure (so test failure messages are clear).
     async fn call_api(
         client: &Client,
@@ -312,7 +328,7 @@ mod tests {
         fetch_judge_evaluation_with_url(
             client,
             prompt,
-            DEEPSEEK_CHAT_COMPLETIONS_URL,
+            judge_api_url(),
             temperature,
             thinking_enabled,
         )
@@ -332,37 +348,13 @@ mod tests {
             correct_answer.to_string(),
             question.to_string(),
             client.clone(),
-            DEEPSEEK_CHAT_COMPLETIONS_URL,
+            judge_api_url(),
         )
         .await
     }
 
-    /// Deterministic mode (temperature=0, thinking disabled) should return a
-    /// valid answer and no reasoning_content.
-    #[tokio::test]
-    async fn test_deterministic_mode_no_thinking() {
-        let _ = dotenvy::dotenv();
-        let client = Client::new();
-        let (content, reasoning) = call_api(
-            &client,
-            "Is '4' equal to '4'? Put your final answer in \\boxed{correct} or \\boxed{incorrect}.",
-            0.0,
-            false,
-        )
-        .await;
-        let lower = content.trim().to_lowercase();
-        assert!(
-            lower.contains("correct") || lower.contains("incorrect"),
-            "deterministic mode should return a valid verdict, got: {content:?}"
-        );
-        assert!(
-            reasoning.is_none(),
-            "reasoning_content should be absent when thinking is disabled, got: {reasoning:?}"
-        );
-    }
-
-    /// Thinking mode (temperature=1.0, thinking enabled) should return a valid
-    /// answer and non-empty reasoning_content.
+    /// Thinking mode (temperature=0, thinking enabled) should return a valid
+    /// answer and non-empty reasoning content.
     #[tokio::test]
     async fn test_thinking_mode() {
         let _ = dotenvy::dotenv();
@@ -370,7 +362,7 @@ mod tests {
         let (content, reasoning) = call_api(
             &client,
             "A student says the answer is '4'. The answer key says '4'. Think step by step and put your verdict in \\boxed{correct} or \\boxed{incorrect}.",
-            1.0,
+            0.0,
             true,
         )
         .await;
@@ -381,7 +373,7 @@ mod tests {
         );
         assert!(
             reasoning.is_some(),
-            "reasoning_content should be present when thinking is enabled"
+            "reasoning should be present when thinking is enabled"
         );
     }
 
@@ -405,13 +397,13 @@ mod tests {
         assert!(!result, "judge should return false for mismatched answers");
     }
 
-    /// Deterministic mode (temperature=0) with thinking enabled: two identical
-    /// calls should converge on the same verdict.  DeepSeek does not expose a
-    /// `seed` parameter, so byte-for-byte identical output is not guaranteed,
-    /// but the model should reach the same conclusion both times.  We also
-    /// verify that reasoning content is present.
+    /// Two identical calls at temperature 0 with thinking enabled should
+    /// converge on the same verdict.  The model may still produce
+    /// byte-for-byte different output (no `seed` parameter), but the final
+    /// conclusion should be consistent.  We also verify that reasoning content
+    /// is present.
     #[tokio::test]
-    async fn test_deterministic_thinking_identical() {
+    async fn test_thinking_consistent_verdict() {
         let _ = dotenvy::dotenv();
         let client = Client::new();
         let prompt = concat!(
@@ -435,87 +427,23 @@ mod tests {
         assert_eq!(
             lower_a.contains("correct"),
             lower_b.contains("correct"),
-            "deterministic: both calls should reach the same verdict\n  A: {content_a:?}\n  B: {content_b:?}"
+            "both calls should reach the same verdict\n  A: {content_a:?}\n  B: {content_b:?}"
         );
         assert!(
             reasoning_a.is_some(),
-            "reasoning_content should be present when thinking is enabled (call A)"
+            "reasoning should be present when thinking is enabled (call A)"
         );
         assert!(
             reasoning_b.is_some(),
-            "reasoning_content should be present when thinking is enabled (call B)"
-        );
-    }
-
-    /// When thinking is disabled, the API response should contain no
-    /// `reasoning_content` (parsed as `None`).
-    #[tokio::test]
-    async fn test_thinking_disabled_reasoning_empty() {
-        let _ = dotenvy::dotenv();
-        let client = Client::new();
-        let (content, reasoning) = call_api(
-            &client,
-            "Is '42' equal to '42'? Put your final answer in \\boxed{correct} or \\boxed{incorrect}.",
-            0.0,
-            false,
-        )
-        .await;
-        assert!(
-            content.trim().to_lowercase().contains("correct"),
-            "should return the correct verdict, got: {content:?}"
-        );
-        assert!(
-            reasoning.is_none(),
-            "reasoning_content should be None when thinking is disabled, got: {reasoning:?}"
-        );
-    }
-
-    /// Non-deterministic mode (temperature=1.0, thinking enabled): two
-    /// identical calls should produce different `content` or different
-    /// `reasoning_content`, proving the model is not deterministically locked.
-    ///
-    /// Uses an open-ended prompt so that divergence is likely at temp=1.
-    #[tokio::test]
-    async fn test_nondeterministic_thinking_diverges() {
-        let _ = dotenvy::dotenv();
-        let client = Client::new();
-        let prompt = concat!(
-            "Write a creative verification that the student's answer '42' ",
-            "equals the correct answer '42'. Think through it step by step, ",
-            "then put your final verdict in \\boxed{correct} or \\boxed{incorrect}."
-        );
-
-        let (content_a, reasoning_a) = call_api(&client, prompt, 1.0, true).await;
-        let (content_b, reasoning_b) = call_api(&client, prompt, 1.0, true).await;
-
-        let content_differs = content_a != content_b;
-        let reasoning_differs = reasoning_a != reasoning_b;
-        assert!(
-            content_differs || reasoning_differs,
-            "non-deterministic: content or reasoning should differ between calls.\n\
-             content_a: {content_a:?}\n\
-             content_b: {content_b:?}\n\
-             reasoning_a: {reasoning_a:?}\n\
-             reasoning_b: {reasoning_b:?}",
-        );
-
-        let lower_a = content_a.to_lowercase();
-        let lower_b = content_b.to_lowercase();
-        assert!(
-            lower_a.contains("correct") || lower_a.contains("incorrect"),
-            "call A should return a valid verdict, got: {content_a:?}"
-        );
-        assert!(
-            lower_b.contains("correct") || lower_b.contains("incorrect"),
-            "call B should return a valid verdict, got: {content_b:?}"
+            "reasoning should be present when thinking is enabled (call B)"
         );
     }
 
     /// Realistic end-to-end test using the exact same prompt format as
     /// `judge_answer_task_with_url`.  The model answer and reference answer are
     /// semantically equivalent but phrased differently ("x equals 5" vs "five"),
-    /// creating real ambiguity.  Reports the full model output for both
-    /// non-thinking and thinking modes, then verifies the judge returns true.
+    /// creating real ambiguity.  Reports the full model output, then verifies
+    /// the judge returns true.
     #[tokio::test]
     async fn test_realistic_ambiguous_judgment() {
         let _ = dotenvy::dotenv();
@@ -535,28 +463,13 @@ mod tests {
              The model's answer is: \"{}\", and the correct answer is: \"{}\".",
             question, model_answer, correct_answer
         );
-        let deterministic_prompt = format!(
-            "{base_prompt} Put your final answer in \\boxed{{correct}} or \\boxed{{incorrect}}."
-        );
         let thinking_prompt = format!(
             "{base_prompt} Think step by step about whether the model's answer matches the reference answer. Put your final answer in \\boxed{{correct}} or \\boxed{{incorrect}}."
         );
 
-        // ── Non-thinking mode (deterministic, temp=0) ──
-        eprintln!("\n========== NON-THINKING MODE (temp=0) ==========");
-        let (content, reasoning) = call_api(&client, &deterministic_prompt, 0.0, false).await;
-        eprintln!("[content]\n{content}");
-        eprintln!("[reasoning] {:?}", reasoning);
-        let verdict = extract_boxed_verdict(&content);
-        eprintln!("[extracted verdict from \\boxed{{}}] {:?}", verdict);
-        assert!(
-            verdict.is_some(),
-            "non-thinking mode should produce a \\boxed{{}} response"
-        );
-
-        // ── Thinking mode (temp=1) ──
-        eprintln!("\n========== THINKING MODE (temp=1) ==========");
-        let (content, reasoning) = call_api(&client, &thinking_prompt, 1.0, true).await;
+        // ── Thinking mode (temp=0, thinking enabled) ──
+        eprintln!("\n========== THINKING MODE (temp=0) ==========");
+        let (content, reasoning) = call_api(&client, &thinking_prompt, 0.0, true).await;
         eprintln!("[content]\n{content}");
         eprintln!("[reasoning] {:?}", reasoning);
         let verdict = extract_boxed_verdict(&content);

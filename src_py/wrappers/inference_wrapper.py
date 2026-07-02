@@ -344,7 +344,6 @@ class HpcBackend:
         model_cli_name: str,
         config_nickname: str,
         wrapper_log_path: str,
-        deterministic_inference: bool,
     ) -> None:
         model_path_obj = Path(model_path)
         self._process: subprocess.Popen[bytes] | None = None
@@ -419,8 +418,6 @@ class HpcBackend:
                 "--dp",
                 str(num_gpus),
             ]
-            if deterministic_inference:
-                launch_command.append("--enable-deterministic-inference")
             self._process = subprocess.Popen(
                 launch_command,
                 stdout=log_handle,
@@ -492,7 +489,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hf-model-name", type=str, required=True)
     parser.add_argument("--wrapper-log-path", type=str, required=True)
     parser.add_argument("--orchestrator-socket-path", type=str, default="")
-    parser.add_argument("--enable-deterministic-inference", action="store_true")
     return parser
 
 
@@ -523,7 +519,6 @@ def main() -> int:
             args.model_cli_name,
             args.config_nickname,
             args.wrapper_log_path,
-            args.enable_deterministic_inference,
         )
 
         _emit_inference_identity(
