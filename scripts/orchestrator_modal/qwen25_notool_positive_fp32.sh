@@ -1,0 +1,22 @@
+uv run -m src_py.modal.launch_modal_orchestration \
+    --model-cli-name qwen25 \
+    --max-rollout-concurrency 300 \
+    --config-nickname notool_positive_fp32 \
+    --validation-rollout-config-path config/rollout_config_validation_notool.json \
+    --training-rollout-config-path config/rollout_config_training_notool.json \
+    --posterior-hyperparameters-path config/posterior_hyperparameters.json \
+    --num-total-epochs 20 \
+    --cumulative-avg-abs-advantage-cutoff 0.5 \
+    --num-iterations-limit 3 \
+    --advantage-calculation-policy tree-mappo-posterior \
+    --training-config-common-path config/training/common_lora.toml \
+    --training-time 600 \
+    --training-rollout-time-limit-secs 600 \
+    --validation-rollout-time-limit-secs 1200 \
+    --max-python-processes 4 \
+    --num-gpus 1 \
+    --gpu-name H200 \
+    --mount-dir "/volume" \
+    --positive-advantage-only true \
+    --keep-action-logs true \
+    --ui true

@@ -12,7 +12,7 @@ use crate::direct_tool::tree_action::DirectTreeAction::SubmitAnswer;
 use crate::direct_tool::tree_status::{
     GuidedBranchingSubStatus, SpontaneousBranchingSubStatus, TrunkSubStatus,
 };
-use crate::judge_correctness::{JudgeAnswerModel, judge_final_answer};
+use crate::judge_correctness::judge_final_answer;
 use crate::llm_model::MyTokenizer;
 use crate::tool_call_python::{PythonToolResponse, execute_python_tool_call, python_tool_pool};
 use crate::{
@@ -242,7 +242,6 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     &self.action_log.question.correct_answer,
                     &self.action_log.question.question,
                     client,
-                    JudgeAnswerModel::Gemini25FlashLite,
                 )
                 .await;
                 DirectTreeAction::JudgeAnswer(correctness_judgment)

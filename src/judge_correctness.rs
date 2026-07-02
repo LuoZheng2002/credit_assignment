@@ -10,30 +10,31 @@ use crate::{
     model_answer_judgment_cache::{get_cached_judgment, store_cached_judgment},
 };
 
-const OPENROUTER_CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
-const JUDGE_DETERMINISTIC_SEED: i64 = 42;
-const OPENROUTER_GPT4O_MODEL: &str = "openai/gpt-4o";
-const OPENROUTER_GEMINI_25_FLASH_LITE_MODEL: &str = "google/gemini-2.5-flash-lite";
-const OPENROUTER_GEMINI_25_FLASH_MODEL: &str = "google/gemini-2.5-flash";
-const OPENROUTER_GPT_41_MINI_MODEL: &str = "openai/gpt-4.1-mini";
+const DEEPSEEK_CHAT_COMPLETIONS_URL: &str = "https://api.deepseek.com/v1/chat/completions";
+const DEEPSEEK_V4_PRO_MODEL: &str = "deepseek-v4-pro";
+const JUDGE_TOTAL_ATTEMPTS: usize = 5;
 
-#[derive(Clone, Copy)]
-pub enum JudgeAnswerModel {
-    Gpt4o,
-    Gemini25FlashLite,
-    Gemini25Flash,
-    Gpt41Mini,
-}
-
-impl JudgeAnswerModel {
-    fn display_name(&self) -> &'static str {
-        match self {
-            JudgeAnswerModel::Gpt4o => OPENROUTER_GPT4O_MODEL,
-            JudgeAnswerModel::Gemini25FlashLite => OPENROUTER_GEMINI_25_FLASH_LITE_MODEL,
-            JudgeAnswerModel::Gemini25Flash => OPENROUTER_GEMINI_25_FLASH_MODEL,
-            JudgeAnswerModel::Gpt41Mini => OPENROUTER_GPT_41_MINI_MODEL,
+/// Extract the content inside the **last** `\boxed{...}` in the response.
+/// Returns the trimmed inner text, or `None` if no boxed content is found.
+fn extract_boxed_verdict(response: &str) -> Option<String> {
+    let marker = "\\boxed{";
+    let start = response.rfind(marker)?;
+    let content_start = start + marker.len();
+    let remaining = &response[content_start..];
+    let mut depth: u32 = 1;
+    for (i, c) in remaining.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(remaining[..i].trim().to_string());
+                }
+            }
+            _ => {}
         }
     }
+    None
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,7 +55,7 @@ async fn judge_answer_task(
         correct_answer,
         question,
         client,
-        OPENROUTER_CHAT_COMPLETIONS_URL,
+        DEEPSEEK_CHAT_COMPLETIONS_URL,
     )
     .await
 }
@@ -66,68 +67,84 @@ async fn judge_answer_task_with_url(
     client: Client,
     url: &str,
 ) -> bool {
-    let prompt = format!(
+    let base_prompt = format!(
         "You are an answer checker that checks a model's answer against the reference answer. Judge if the model's answer is equivalent to the reference answer. \
 Do not attempt to solve the problem yourself, only judge whether the given answer and the reference answer is equivalent. \
 If the model's answer contains units but the reference answer does not, treat them as equivalent if the numerical values are the same. \n\
 The question is: \"{}\". \
-The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'correct' or 'incorrect'.",
+The model's answer is: \"{}\", and the correct answer is: \"{}\".",
         question, model_answer, correct_answer
     );
-    let mut last_error: Option<String> = None;
-    let attempts_per_model: usize = 1;
-    let model_sequence = vec![
-        JudgeAnswerModel::Gemini25FlashLite,
-        JudgeAnswerModel::Gemini25Flash,
-        JudgeAnswerModel::Gpt4o,
-        JudgeAnswerModel::Gpt41Mini,
-    ];
+    let deterministic_prompt = format!(
+        "{base_prompt} Put your final answer in \\boxed{{correct}} or \\boxed{{incorrect}}."
+    );
+    let thinking_prompt = format!(
+        "{base_prompt} Think step by step about whether the model's answer matches the reference answer. Put your final answer in \\boxed{{correct}} or \\boxed{{incorrect}}."
+    );
 
-    let total_attempts = attempts_per_model * model_sequence.len();
-    for (model_index, model_to_try) in model_sequence.into_iter().enumerate() {
-        if model_index > 0 {
-            log_warning(format!(
-                "Falling back to judge model {} after previous model failures",
-                model_to_try.display_name()
-            ));
-        }
-        for attempt in 1..=attempts_per_model {
-            let fetch_result =
-                fetch_judge_evaluation_with_url(&client, &prompt, model_to_try, url).await;
-            match fetch_result {
-                Ok(evaluation) => {
-                    let evaluation = evaluation.trim().to_lowercase();
-                    if evaluation.contains("incorrect") {
+    let mut last_error: Option<String> = None;
+
+    for attempt in 0..JUDGE_TOTAL_ATTEMPTS {
+        let is_deterministic = attempt == 0;
+        let prompt = if is_deterministic {
+            &deterministic_prompt
+        } else {
+            &thinking_prompt
+        };
+        let temperature = if is_deterministic { 0.0 } else { 1.0 };
+        let thinking_enabled = !is_deterministic;
+
+        let fetch_result =
+            fetch_judge_evaluation_with_url(&client, prompt, url, temperature, thinking_enabled)
+                .await;
+        match fetch_result {
+            Ok((evaluation, _reasoning)) => match extract_boxed_verdict(&evaluation) {
+                Some(verdict) => {
+                    let verdict_lower = verdict.to_lowercase();
+                    if verdict_lower.contains("incorrect") {
                         return false;
                     }
-                    if evaluation.contains("correct") {
+                    if verdict_lower.contains("correct") {
                         return true;
                     }
-                    last_error = Some(format!("Unexpected evaluation result: {}", evaluation));
+                    last_error = Some(format!(
+                        "Verdict in \\boxed{{}} was neither 'correct' nor 'incorrect': {}",
+                        verdict
+                    ));
                 }
-                Err(error) => {
-                    last_error = Some(error.to_string());
+                None => {
+                    last_error = Some(format!(
+                        "No \\boxed{{}} found in evaluation response: {}",
+                        evaluation
+                    ));
                 }
+            },
+            Err(error) => {
+                last_error = Some(error.to_string());
             }
-            log_warning(format!(
-                "Judger returned invalid response with model {}, attempt {}/{}. Last error: {}",
-                model_to_try.display_name(),
-                attempt,
-                attempts_per_model,
-                last_error
-                    .as_deref()
-                    .unwrap_or("none (response did not include 'correct' or 'incorrect')")
-            ));
+        }
+        let mode_label = if is_deterministic {
+            "deterministic"
+        } else {
+            "thinking"
+        };
+        log_warning(format!(
+            "Judger returned invalid response in {mode_label} mode, attempt {}/{}. Last error: {}",
+            attempt + 1,
+            JUDGE_TOTAL_ATTEMPTS,
+            last_error
+                .as_deref()
+                .unwrap_or("none (response did not include 'correct' or 'incorrect')")
+        ));
 
-            if attempt < attempts_per_model {
-                sleep(Duration::from_secs(1)).await;
-            }
+        if attempt + 1 < JUDGE_TOTAL_ATTEMPTS {
+            sleep(Duration::from_secs(1)).await;
         }
     }
 
     panic!(
-        "Failed to judge answer after {} attempts across primary and fallback models: {}",
-        total_attempts,
+        "Failed to judge answer after {} attempts: {}",
+        JUDGE_TOTAL_ATTEMPTS,
         last_error.unwrap_or_else(|| "unknown error".to_string())
     );
 }
@@ -135,32 +152,27 @@ The model's answer is: \"{}\", and the correct answer is: \"{}\". Return only 'c
 async fn fetch_judge_evaluation_with_url(
     client: &Client,
     prompt: &str,
-    judge_model: JudgeAnswerModel,
     url: &str,
-) -> Result<String, String> {
-    let model_name = match judge_model {
-        JudgeAnswerModel::Gpt4o => OPENROUTER_GPT4O_MODEL,
-        JudgeAnswerModel::Gemini25FlashLite => OPENROUTER_GEMINI_25_FLASH_LITE_MODEL,
-        JudgeAnswerModel::Gemini25Flash => OPENROUTER_GEMINI_25_FLASH_MODEL,
-        JudgeAnswerModel::Gpt41Mini => OPENROUTER_GPT_41_MINI_MODEL,
-    };
-    let api_key_env = "OPENROUTER_API_KEY";
-    let auth_is_bearer = true;
+    temperature: f64,
+    thinking_enabled: bool,
+) -> Result<(String, Option<String>), String> {
+    let model_name = DEEPSEEK_V4_PRO_MODEL;
+    let api_key_env = "DEEPSEEK_API_KEY";
 
     let api_key = std::env::var(api_key_env)
         .map_err(|_| format!("{api_key_env} environment variable not set"))?;
-    let body = serde_json::json!({
+    let mut body_map = serde_json::json!({
         "model": model_name,
         "messages": [{"role": "user", "content": prompt}],
-        "max_completion_tokens": 32,
-        "temperature": 0.0,
-        "seed": JUDGE_DETERMINISTIC_SEED,
+        "max_completion_tokens": 4096,
+        "temperature": temperature,
+    });
+    body_map["thinking"] = serde_json::json!({
+        "type": if thinking_enabled { "enabled" } else { "disabled" }
     });
 
-    let mut request_builder = client.post(url).json(&body);
-    if auth_is_bearer {
-        request_builder = request_builder.bearer_auth(api_key);
-    }
+    let mut request_builder = client.post(url).json(&body_map);
+    request_builder = request_builder.bearer_auth(api_key);
     request_builder = request_builder
         .header("HTTP-Referer", "https://github.com/luoz/credit_assignment")
         .header("X-Title", "credit_assignment");
@@ -184,9 +196,20 @@ async fn fetch_judge_evaluation_with_url(
         return Err(error_message.to_string());
     }
 
+    let reasoning_content = response_json["choices"][0]["message"]["reasoning_content"]
+        .as_str()
+        .and_then(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
     let content = &response_json["choices"][0]["message"]["content"];
     if let Some(evaluation) = content.as_str() {
-        return Ok(evaluation.to_string());
+        return Ok((evaluation.to_string(), reasoning_content));
     }
     if let Some(parts) = content.as_array() {
         let merged = parts
@@ -194,7 +217,7 @@ async fn fetch_judge_evaluation_with_url(
             .filter_map(|entry| entry["text"].as_str())
             .collect::<String>();
         if !merged.is_empty() {
-            return Ok(merged);
+            return Ok((merged, reasoning_content));
         }
     }
 
@@ -206,7 +229,6 @@ pub async fn judge_final_answer(
     correct_answer: &str,
     question: &str,
     client: Client,
-    _judge_model: JudgeAnswerModel,
 ) -> CorrectnessJudgment {
     let rollout_stats = RolloutStats::global();
     let is_correct = match final_answer {
@@ -278,213 +300,278 @@ pub async fn judge_final_answer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::{TcpListener, TcpStream},
-    };
 
-    fn response_body() -> Vec<u8> {
-        serde_json::to_vec(&json!({
-            "choices": [
-                {
-                    "message": {
-                        "content": "correct"
-                    }
-                }
-            ]
-        }))
-        .expect("response body should serialize")
-    }
-
-    async fn read_http_request(stream: &mut TcpStream) -> Result<(String, Vec<u8>), String> {
-        let mut request = Vec::new();
-        let mut buffer = [0u8; 1024];
-        let header_end = loop {
-            let read = stream
-                .read(&mut buffer)
-                .await
-                .map_err(|err| format!("failed to read request: {err}"))?;
-            if read == 0 {
-                return Err("connection closed before request completed".to_string());
-            }
-            request.extend_from_slice(&buffer[..read]);
-            if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
-                break index;
-            }
-        };
-
-        let headers = String::from_utf8(request[..header_end].to_vec())
-            .map_err(|err| format!("request headers were not valid UTF-8: {err}"))?;
-        let content_length = headers
-            .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                if name.trim().eq_ignore_ascii_case("content-length") {
-                    value.trim().parse::<usize>().ok()
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| "missing content-length header".to_string())?;
-        let body_start = header_end + 4;
-        let required_len = body_start + content_length;
-        while request.len() < required_len {
-            let read = stream
-                .read(&mut buffer)
-                .await
-                .map_err(|err| format!("failed to read request body: {err}"))?;
-            if read == 0 {
-                return Err("connection closed before request body completed".to_string());
-            }
-            request.extend_from_slice(&buffer[..read]);
-        }
-
-        Ok((headers, request[body_start..required_len].to_vec()))
-    }
-
-    fn validate_request(headers: &str, body: &[u8], expected_model: &str, expected_api_key: &str) {
-        let request_line = headers.lines().next().unwrap_or_default().to_lowercase();
-        assert!(
-            request_line.starts_with("post /api/v1/chat/completions http/1.1"),
-            "unexpected request line: {}",
-            request_line
-        );
-        assert!(
-            headers
-                .lines()
-                .any(|line| line.to_lowercase().starts_with("authorization:")),
-            "missing authorization header"
-        );
-        let authorization_line = headers
-            .lines()
-            .find(|line| line.to_lowercase().starts_with("authorization:"))
-            .expect("authorization header should be present");
-        assert_eq!(
-            authorization_line
-                .split_once(':')
-                .expect("authorization header should contain colon")
-                .1
-                .trim(),
-            format!("Bearer {}", expected_api_key)
-        );
-        assert!(
-            headers.lines().any(|line| line
-                .eq_ignore_ascii_case("HTTP-Referer: https://github.com/luoz/credit_assignment")),
-            "missing HTTP-Referer header"
-        );
-        assert!(
-            headers
-                .lines()
-                .any(|line| line.eq_ignore_ascii_case("X-Title: credit_assignment")),
-            "missing X-Title header"
-        );
-
-        let parsed_body: Value = serde_json::from_slice(body).expect("body should be valid JSON");
-        assert_eq!(parsed_body["model"], expected_model);
-        assert_eq!(parsed_body["messages"][0]["role"], "user");
-    }
-
-    async fn spawn_mock_judge_server(
-        expected_models: Vec<&'static str>,
-        expected_api_key: String,
-    ) -> (String, tokio::task::JoinHandle<Result<(), String>>) {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("mock server should bind");
-        let addr = listener
-            .local_addr()
-            .expect("listener should have local addr");
-        let url = format!("http://{}/api/v1/chat/completions", addr);
-        let handle = tokio::spawn(async move {
-            for expected_model in expected_models {
-                let (mut stream, _) = listener
-                    .accept()
-                    .await
-                    .map_err(|err| format!("failed to accept request: {err}"))?;
-                let (headers, body) = read_http_request(&mut stream).await?;
-                validate_request(&headers, &body, expected_model, &expected_api_key);
-                let response_body = response_body();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    response_body.len()
-                );
-                stream
-                    .write_all(response.as_bytes())
-                    .await
-                    .map_err(|err| format!("failed to write response headers: {err}"))?;
-                stream
-                    .write_all(&response_body)
-                    .await
-                    .map_err(|err| format!("failed to write response body: {err}"))?;
-                stream
-                    .shutdown()
-                    .await
-                    .map_err(|err| format!("failed to shutdown response stream: {err}"))?;
-            }
-            Ok(())
-        });
-        (url, handle)
-    }
-
-    #[tokio::test]
-    async fn all_judge_models_use_openrouter_and_parse_correct_response() {
-        let _ = dotenvy::dotenv();
-        let api_key = std::env::var("OPENROUTER_API_KEY")
-            .expect("OPENROUTER_API_KEY should be loaded from .env for this test");
-        let expected_models = vec![
-            JudgeAnswerModel::Gpt4o.display_name(),
-            JudgeAnswerModel::Gemini25FlashLite.display_name(),
-            JudgeAnswerModel::Gemini25Flash.display_name(),
-            JudgeAnswerModel::Gpt41Mini.display_name(),
-        ];
-        let (url, server_handle) = spawn_mock_judge_server(expected_models, api_key).await;
-        let client = Client::new();
-        for judge_model in [
-            JudgeAnswerModel::Gpt4o,
-            JudgeAnswerModel::Gemini25FlashLite,
-            JudgeAnswerModel::Gemini25Flash,
-            JudgeAnswerModel::Gpt41Mini,
-        ] {
-            let evaluation = fetch_judge_evaluation_with_url(
-                &client,
-                "the question does not matter in this mock test",
-                judge_model,
-                &url,
-            )
-            .await
-            .expect("mock judge request should succeed");
-            assert_eq!(evaluation, "correct");
-        }
-        server_handle
-            .await
-            .expect("server task should join successfully")
-            .expect("mock server should complete successfully");
-    }
-
-    #[tokio::test]
-    async fn judge_answer_task_returns_true_for_correct_result() {
-        let _ = dotenvy::dotenv();
-        let api_key = std::env::var("OPENROUTER_API_KEY")
-            .expect("OPENROUTER_API_KEY should be loaded from .env for this test");
-        let (url, server_handle) = spawn_mock_judge_server(
-            vec![JudgeAnswerModel::Gemini25FlashLite.display_name()],
-            api_key,
-        )
-        .await;
-        let client = Client::new();
-        let result = judge_answer_task_with_url(
-            "42".to_string(),
-            "42".to_string(),
-            "what is six times seven?".to_string(),
+    /// Helper: call `fetch_judge_evaluation_with_url` against the real DeepSeek
+    /// API, panicking on failure (so test failure messages are clear).
+    async fn call_api(
+        client: &Client,
+        prompt: &str,
+        temperature: f64,
+        thinking_enabled: bool,
+    ) -> (String, Option<String>) {
+        fetch_judge_evaluation_with_url(
             client,
-            &url,
+            prompt,
+            DEEPSEEK_CHAT_COMPLETIONS_URL,
+            temperature,
+            thinking_enabled,
+        )
+        .await
+        .expect("API call should succeed")
+    }
+
+    /// Helper: run `judge_answer_task_with_url` against the real API.
+    async fn call_judge(
+        client: &Client,
+        model_answer: &str,
+        correct_answer: &str,
+        question: &str,
+    ) -> bool {
+        judge_answer_task_with_url(
+            model_answer.to_string(),
+            correct_answer.to_string(),
+            question.to_string(),
+            client.clone(),
+            DEEPSEEK_CHAT_COMPLETIONS_URL,
+        )
+        .await
+    }
+
+    /// Deterministic mode (temperature=0, thinking disabled) should return a
+    /// valid answer and no reasoning_content.
+    #[tokio::test]
+    async fn test_deterministic_mode_no_thinking() {
+        let _ = dotenvy::dotenv();
+        let client = Client::new();
+        let (content, reasoning) = call_api(
+            &client,
+            "Is '4' equal to '4'? Put your final answer in \\boxed{correct} or \\boxed{incorrect}.",
+            0.0,
+            false,
         )
         .await;
-        assert!(result, "mock judge response should evaluate as correct");
-        server_handle
-            .await
-            .expect("server task should join successfully")
-            .expect("mock server should complete successfully");
+        let lower = content.trim().to_lowercase();
+        assert!(
+            lower.contains("correct") || lower.contains("incorrect"),
+            "deterministic mode should return a valid verdict, got: {content:?}"
+        );
+        assert!(
+            reasoning.is_none(),
+            "reasoning_content should be absent when thinking is disabled, got: {reasoning:?}"
+        );
+    }
+
+    /// Thinking mode (temperature=1.0, thinking enabled) should return a valid
+    /// answer and non-empty reasoning_content.
+    #[tokio::test]
+    async fn test_thinking_mode() {
+        let _ = dotenvy::dotenv();
+        let client = Client::new();
+        let (content, reasoning) = call_api(
+            &client,
+            "A student says the answer is '4'. The answer key says '4'. Think step by step and put your verdict in \\boxed{correct} or \\boxed{incorrect}.",
+            1.0,
+            true,
+        )
+        .await;
+        let lower = content.trim().to_lowercase();
+        assert!(
+            lower.contains("correct") || lower.contains("incorrect"),
+            "thinking mode should return a valid verdict, got: {content:?}"
+        );
+        assert!(
+            reasoning.is_some(),
+            "reasoning_content should be present when thinking is enabled"
+        );
+    }
+
+    /// The full judge pipeline should return true when the model answer matches
+    /// the correct answer.
+    #[tokio::test]
+    async fn test_judge_correct_answer() {
+        let _ = dotenvy::dotenv();
+        let client = Client::new();
+        let result = call_judge(&client, "4", "4", "What is 2+2?").await;
+        assert!(result, "judge should return true for matching answers");
+    }
+
+    /// The full judge pipeline should return false when the model answer does
+    /// not match the correct answer.
+    #[tokio::test]
+    async fn test_judge_incorrect_answer() {
+        let _ = dotenvy::dotenv();
+        let client = Client::new();
+        let result = call_judge(&client, "5", "4", "What is 2+2?").await;
+        assert!(!result, "judge should return false for mismatched answers");
+    }
+
+    /// Deterministic mode (temperature=0) with thinking enabled: two identical
+    /// calls should converge on the same verdict.  DeepSeek does not expose a
+    /// `seed` parameter, so byte-for-byte identical output is not guaranteed,
+    /// but the model should reach the same conclusion both times.  We also
+    /// verify that reasoning content is present.
+    #[tokio::test]
+    async fn test_deterministic_thinking_identical() {
+        let _ = dotenvy::dotenv();
+        let client = Client::new();
+        let prompt = concat!(
+            "Verify step by step: does '42' equal '42'? ",
+            "Put your final verdict in \\boxed{correct} or \\boxed{incorrect}."
+        );
+
+        let (content_a, reasoning_a) = call_api(&client, prompt, 0.0, true).await;
+        let (content_b, reasoning_b) = call_api(&client, prompt, 0.0, true).await;
+
+        let lower_a = content_a.trim().to_lowercase();
+        let lower_b = content_b.trim().to_lowercase();
+        assert!(
+            lower_a.contains("correct") || lower_a.contains("incorrect"),
+            "call A verdict missing, got: {content_a:?}"
+        );
+        assert!(
+            lower_b.contains("correct") || lower_b.contains("incorrect"),
+            "call B verdict missing, got: {content_b:?}"
+        );
+        assert_eq!(
+            lower_a.contains("correct"),
+            lower_b.contains("correct"),
+            "deterministic: both calls should reach the same verdict\n  A: {content_a:?}\n  B: {content_b:?}"
+        );
+        assert!(
+            reasoning_a.is_some(),
+            "reasoning_content should be present when thinking is enabled (call A)"
+        );
+        assert!(
+            reasoning_b.is_some(),
+            "reasoning_content should be present when thinking is enabled (call B)"
+        );
+    }
+
+    /// When thinking is disabled, the API response should contain no
+    /// `reasoning_content` (parsed as `None`).
+    #[tokio::test]
+    async fn test_thinking_disabled_reasoning_empty() {
+        let _ = dotenvy::dotenv();
+        let client = Client::new();
+        let (content, reasoning) = call_api(
+            &client,
+            "Is '42' equal to '42'? Put your final answer in \\boxed{correct} or \\boxed{incorrect}.",
+            0.0,
+            false,
+        )
+        .await;
+        assert!(
+            content.trim().to_lowercase().contains("correct"),
+            "should return the correct verdict, got: {content:?}"
+        );
+        assert!(
+            reasoning.is_none(),
+            "reasoning_content should be None when thinking is disabled, got: {reasoning:?}"
+        );
+    }
+
+    /// Non-deterministic mode (temperature=1.0, thinking enabled): two
+    /// identical calls should produce different `content` or different
+    /// `reasoning_content`, proving the model is not deterministically locked.
+    ///
+    /// Uses an open-ended prompt so that divergence is likely at temp=1.
+    #[tokio::test]
+    async fn test_nondeterministic_thinking_diverges() {
+        let _ = dotenvy::dotenv();
+        let client = Client::new();
+        let prompt = concat!(
+            "Write a creative verification that the student's answer '42' ",
+            "equals the correct answer '42'. Think through it step by step, ",
+            "then put your final verdict in \\boxed{correct} or \\boxed{incorrect}."
+        );
+
+        let (content_a, reasoning_a) = call_api(&client, prompt, 1.0, true).await;
+        let (content_b, reasoning_b) = call_api(&client, prompt, 1.0, true).await;
+
+        let content_differs = content_a != content_b;
+        let reasoning_differs = reasoning_a != reasoning_b;
+        assert!(
+            content_differs || reasoning_differs,
+            "non-deterministic: content or reasoning should differ between calls.\n\
+             content_a: {content_a:?}\n\
+             content_b: {content_b:?}\n\
+             reasoning_a: {reasoning_a:?}\n\
+             reasoning_b: {reasoning_b:?}",
+        );
+
+        let lower_a = content_a.to_lowercase();
+        let lower_b = content_b.to_lowercase();
+        assert!(
+            lower_a.contains("correct") || lower_a.contains("incorrect"),
+            "call A should return a valid verdict, got: {content_a:?}"
+        );
+        assert!(
+            lower_b.contains("correct") || lower_b.contains("incorrect"),
+            "call B should return a valid verdict, got: {content_b:?}"
+        );
+    }
+
+    /// Realistic end-to-end test using the exact same prompt format as
+    /// `judge_answer_task_with_url`.  The model answer and reference answer are
+    /// semantically equivalent but phrased differently ("x equals 5" vs "five"),
+    /// creating real ambiguity.  Reports the full model output for both
+    /// non-thinking and thinking modes, then verifies the judge returns true.
+    #[tokio::test]
+    async fn test_realistic_ambiguous_judgment() {
+        let _ = dotenvy::dotenv();
+        let client = Client::new();
+
+        let question = "What is the value of x if 3x + 5 = 20?";
+        let model_answer = "x equals 5";
+        let correct_answer = "five";
+
+        // Exact same prompt construction as judge_answer_task_with_url
+        let base_prompt = format!(
+            "You are an answer checker that checks a model's answer against the reference answer. \
+             Judge if the model's answer is equivalent to the reference answer. \
+             Do not attempt to solve the problem yourself, only judge whether the given answer and the reference answer is equivalent. \
+             If the model's answer contains units but the reference answer does not, treat them as equivalent if the numerical values are the same. \n\
+             The question is: \"{}\". \
+             The model's answer is: \"{}\", and the correct answer is: \"{}\".",
+            question, model_answer, correct_answer
+        );
+        let deterministic_prompt = format!(
+            "{base_prompt} Put your final answer in \\boxed{{correct}} or \\boxed{{incorrect}}."
+        );
+        let thinking_prompt = format!(
+            "{base_prompt} Think step by step about whether the model's answer matches the reference answer. Put your final answer in \\boxed{{correct}} or \\boxed{{incorrect}}."
+        );
+
+        // ── Non-thinking mode (deterministic, temp=0) ──
+        eprintln!("\n========== NON-THINKING MODE (temp=0) ==========");
+        let (content, reasoning) = call_api(&client, &deterministic_prompt, 0.0, false).await;
+        eprintln!("[content]\n{content}");
+        eprintln!("[reasoning] {:?}", reasoning);
+        let verdict = extract_boxed_verdict(&content);
+        eprintln!("[extracted verdict from \\boxed{{}}] {:?}", verdict);
+        assert!(
+            verdict.is_some(),
+            "non-thinking mode should produce a \\boxed{{}} response"
+        );
+
+        // ── Thinking mode (temp=1) ──
+        eprintln!("\n========== THINKING MODE (temp=1) ==========");
+        let (content, reasoning) = call_api(&client, &thinking_prompt, 1.0, true).await;
+        eprintln!("[content]\n{content}");
+        eprintln!("[reasoning] {:?}", reasoning);
+        let verdict = extract_boxed_verdict(&content);
+        eprintln!("[extracted verdict from \\boxed{{}}] {:?}", verdict);
+        assert!(
+            verdict.is_some(),
+            "thinking mode should produce a \\boxed{{}} response"
+        );
+
+        // ── Full judge pipeline ──
+        let result = call_judge(&client, model_answer, correct_answer, question).await;
+        eprintln!("\n[judge_answer_task_with_url result] {result}");
+        assert!(
+            result,
+            "judge should recognize 'x equals 5' and 'five' as equivalent"
+        );
     }
 }
