@@ -14,9 +14,10 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --training-rollout-time-limit-secs 600 \
     --validation-rollout-time-limit-secs 1200 \
     --max-python-processes 2 \
-    --num-gpus 2 \
-    --gpu-name A100-80GB \
+    --num-gpus 1 \
+    --gpu-name B200 \
     --mount-dir "/volume" \
     --positive-advantage-only false \
     --keep-action-logs true \
+    --adam-fp32 false \
     --ui true

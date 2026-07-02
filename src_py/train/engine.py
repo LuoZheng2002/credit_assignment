@@ -27,8 +27,6 @@ from .training_plan import (
     assert_supported_training_plan,
 )
 
-ADAM_USES_FP32 = True
-
 _ADAM_STATE_KEYS = ("exp_avg", "exp_avg_sq", "max_exp_avg_sq")
 
 
@@ -142,6 +140,7 @@ class TrainConfig:
     lora_target_modules_csv: str
     resume_checkpoint_tag: str
     seed: int
+    adam_fp32: bool
 
 
 @dataclass(frozen=True)
@@ -989,6 +988,8 @@ def _load_checkpoint(
     output_dir: Path,
     checkpoint_tag: str,
     training_plan: str,
+    *,
+    adam_fp32: bool,
 ) -> ResumeState:
     training_plan = assert_supported_training_plan(training_plan)
     assert len(checkpoint_tag.strip()) > 0, "checkpoint_tag cannot be empty"
@@ -1051,7 +1052,7 @@ def _load_checkpoint(
         )
 
     optimizer_state = torch.load(optimizer_state_path, map_location="cpu")
-    if ADAM_USES_FP32:
+    if adam_fp32:
         optimizer_state = _convert_optimizer_state_dict_to_fp32(optimizer_state)
     optimizer.load_state_dict(optimizer_state)
 
@@ -1633,7 +1634,7 @@ def train(config: TrainConfig) -> None:
         weight_decay=config.weight_decay,
         betas=(0.9, 0.999),
     )
-    if ADAM_USES_FP32:
+    if config.adam_fp32:
         _make_adam_fp32_aware(optimizer)
 
     if training_plan in {TRAINING_PLAN_LORA, TRAINING_PLAN_DDP} and world_size > 1:
@@ -1684,6 +1685,7 @@ def train(config: TrainConfig) -> None:
             output_dir=checkpoints_parent_dir,
             checkpoint_tag=resolved_resume_tag,
             training_plan=training_plan,
+            adam_fp32=config.adam_fp32,
         )
         if resume_state.next_batch_size == 0:
             resume_state = ResumeState(

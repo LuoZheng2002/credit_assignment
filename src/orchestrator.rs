@@ -52,6 +52,7 @@ pub struct Orchestrator {
     pub cumulative_avg_abs_advantage_cutoff: f32,
     pub advantage_calculation_policy: AdvantageCalculationPolicy,
     pub positive_advantage_only: bool,
+    pub adam_fp32: bool,
     // for orchestration
     pub num_total_epochs: usize,
     // utilities
@@ -966,6 +967,7 @@ impl Orchestrator {
             hpc_training_root_dir: None,
             model_cli_name: M::CLI_NAME.to_string(),
             config_nickname: self.config_nickname.clone(),
+            adam_fp32: self.adam_fp32,
             epoch,
             model_parent_dir,
             checkpoints_parent_dir,

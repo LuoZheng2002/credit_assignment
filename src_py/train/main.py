@@ -60,6 +60,7 @@ def _load_train_config(
         or "q_proj,k_proj,v_proj,o_proj",
         resume_checkpoint_tag=request.resume_checkpoint_tag or "auto",
         seed=request.seed,
+        adam_fp32=request.adam_fp32,
     )
 
 

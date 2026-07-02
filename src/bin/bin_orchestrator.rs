@@ -75,6 +75,8 @@ struct Args {
     keep_action_logs: bool,
     #[arg(long, action = ArgAction::Set)]
     positive_advantage_only: bool,
+    #[arg(long, action = ArgAction::Set)]
+    adam_fp32: bool,
 }
 
 fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
@@ -126,6 +128,7 @@ async fn main() {
         mount_dir,
         keep_action_logs,
         positive_advantage_only,
+        adam_fp32,
     } = Args::parse();
     let process_title = format!("orchestrator_{}_{}", model_cli_name, config_nickname);
     set_title(&process_title);
@@ -232,6 +235,7 @@ async fn main() {
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         positive_advantage_only,
+        adam_fp32,
         training_config_common,
         training_time,
         num_iterations_limit,

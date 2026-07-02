@@ -19,4 +19,5 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --mount-dir "/volume" \
     --positive-advantage-only true \
     --keep-action-logs true \
+    --adam-fp32 true \
     --ui true
