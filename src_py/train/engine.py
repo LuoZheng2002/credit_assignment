@@ -142,6 +142,7 @@ class TrainConfig:
     seed: int
     adam_fp32: bool
     negative_loss_mode: str = "weighted_ce"
+    negative_loss_weight: float = 1.0
 
 
 @dataclass(frozen=True)

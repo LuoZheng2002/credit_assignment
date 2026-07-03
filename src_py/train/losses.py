@@ -90,6 +90,7 @@ def compute_advantage_weighted_causal_lm_loss(
     advantages: torch.Tensor,
     advantage_clip: float,
     negative_loss_mode: str = NEGATIVE_LOSS_MODE_WEIGHTED_CE,
+    negative_loss_weight: float = 1.0,
 ) -> AdvantageWeightedLossOutput:
     assert logits.ndim == 3, "logits must be [batch, seq_len, vocab]"
     assert labels.ndim == 2, "labels must be [batch, seq_len]"
@@ -98,6 +99,7 @@ def compute_advantage_weighted_causal_lm_loss(
         f"unsupported negative_loss_mode: {negative_loss_mode!r}; "
         f"expected one of {SUPPORTED_NEGATIVE_LOSS_MODES}"
     )
+    assert negative_loss_weight >= 0.0, "negative_loss_weight must be >= 0"
 
     batch_size, seq_len, vocab_size = logits.shape
     assert labels.shape[0] == batch_size, "labels batch size must match logits"
@@ -137,6 +139,13 @@ def compute_advantage_weighted_causal_lm_loss(
         raw_supervised_advantages.to(torch.float32),
         min=-advantage_clip,
         max=advantage_clip,
+    )
+    # Scale down the negative-advantage contribution uniformly across modes so
+    # the suppression pressure is tunable relative to positive imitation.
+    per_token_advantages = torch.where(
+        per_token_advantages < 0.0,
+        per_token_advantages * negative_loss_weight,
+        per_token_advantages,
     )
     supervised_ce = token_losses.masked_select(supervised_mask).to(torch.float32)
     if negative_loss_mode == NEGATIVE_LOSS_MODE_WEIGHTED_CE:

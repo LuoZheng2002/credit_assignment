@@ -62,6 +62,7 @@ def _load_train_config(
         seed=request.seed,
         adam_fp32=request.adam_fp32,
         negative_loss_mode=request.negative_loss_mode,
+        negative_loss_weight=request.negative_loss_weight,
     )
 
 

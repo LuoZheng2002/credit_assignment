@@ -248,6 +248,7 @@ def trace_first_nonfinite_backward_signal(
     advantage_clip: float,
     grad_accum_steps: int,
     negative_loss_mode: str,
+    negative_loss_weight: float,
 ) -> str:
     module_names = {
         module: (name if len(name) > 0 else "<root>")
@@ -318,6 +319,7 @@ def trace_first_nonfinite_backward_signal(
             advantages=advantages,
             advantage_clip=advantage_clip,
             negative_loss_mode=negative_loss_mode,
+            negative_loss_weight=negative_loss_weight,
         )
         replay_loss = loss_output.loss / grad_accum_steps
         replay_loss.backward()
@@ -1085,6 +1087,7 @@ def _run_unified_loop(
                     advantages=advantages,
                     advantage_clip=config.advantage_clip,
                     negative_loss_mode=config.negative_loss_mode,
+                    negative_loss_weight=config.negative_loss_weight,
                 )
                 loss = loss_output.loss / config.grad_accum_steps
                 loss.backward()
@@ -1108,6 +1111,7 @@ def _run_unified_loop(
                                 advantage_clip=config.advantage_clip,
                                 grad_accum_steps=config.grad_accum_steps,
                                 negative_loss_mode=config.negative_loss_mode,
+                                negative_loss_weight=config.negative_loss_weight,
                             )
                         )
                     except Exception as trace_exc:
@@ -1447,6 +1451,7 @@ def _run_unified_loop(
                                     advantage_clip=config.advantage_clip,
                                     grad_accum_steps=config.grad_accum_steps,
                                     negative_loss_mode=config.negative_loss_mode,
+                                    negative_loss_weight=config.negative_loss_weight,
                                 )
                             )
                         except Exception as trace_exc:

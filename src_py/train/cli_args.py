@@ -39,6 +39,9 @@ class TrainingRequestArgs(BaseModel):
     # (legacy, unbounded below) or "unlikelihood" (bounded). Mirrors the
     # optional negative_loss_mode field of PythonTrainingConfigCommon.
     negative_loss_mode: str = "weighted_ce"
+    # Multiplier on the negative-advantage contribution relative to positive
+    # imitation (1.0 = symmetric; unlikelihood at 1.0 hurt validation -4.8pt).
+    negative_loss_weight: float = 1.0
     adam_fp32: bool
 
 

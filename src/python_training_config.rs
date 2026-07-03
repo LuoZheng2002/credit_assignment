@@ -51,6 +51,10 @@ pub struct PythonTrainingConfigCommon {
     /// None falls back to the Python-side default ("weighted_ce").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub negative_loss_mode: Option<String>,
+    /// Multiplier on the negative-advantage loss contribution relative to
+    /// positive imitation. None falls back to the Python-side default (1.0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub negative_loss_weight: Option<f32>,
 }
 
 #[cfg(test)]
@@ -77,6 +81,7 @@ mod tests {
                 lora_target_modules_csv: None,
                 resume_checkpoint_tag: Some("latest".to_string()),
                 negative_loss_mode: None,
+                negative_loss_weight: None,
             },
             training_time: 120.0,
             num_iterations_limit: 200,
