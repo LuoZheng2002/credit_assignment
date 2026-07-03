@@ -12,8 +12,8 @@ use crate::{
 
 const DEEPSEEK_CHAT_COMPLETIONS_URL: &str = "https://api.deepseek.com/v1/chat/completions";
 const OPENROUTER_CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
-const DEEPSEEK_V4_PRO_MODEL: &str = "deepseek-v4-pro";
-const DEEPSEEK_V4_PRO_OPENROUTER_MODEL: &str = "deepseek/deepseek-v4-pro";
+const DEEPSEEK_V4_FLASH_MODEL: &str = "deepseek-v4-flash";
+const DEEPSEEK_V4_FLASH_OPENROUTER_MODEL: &str = "deepseek/deepseek-v4-flash";
 const USE_OPENROUTER_API: bool = true;
 const JUDGE_TOTAL_ATTEMPTS: usize = 10;
 
@@ -145,9 +145,9 @@ async fn fetch_judge_evaluation_with_url(
     thinking_enabled: bool,
 ) -> Result<(String, Option<String>), String> {
     let model_name = if USE_OPENROUTER_API {
-        DEEPSEEK_V4_PRO_OPENROUTER_MODEL
+        DEEPSEEK_V4_FLASH_OPENROUTER_MODEL
     } else {
-        DEEPSEEK_V4_PRO_MODEL
+        DEEPSEEK_V4_FLASH_MODEL
     };
     let api_key_env = if USE_OPENROUTER_API {
         "OPENROUTER_API_KEY"
