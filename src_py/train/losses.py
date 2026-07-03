@@ -75,15 +75,29 @@ def _global_weighted_mean(
     return global_sum / global_count
 
 
+NEGATIVE_LOSS_MODE_WEIGHTED_CE = "weighted_ce"
+NEGATIVE_LOSS_MODE_UNLIKELIHOOD = "unlikelihood"
+SUPPORTED_NEGATIVE_LOSS_MODES = (
+    NEGATIVE_LOSS_MODE_WEIGHTED_CE,
+    NEGATIVE_LOSS_MODE_UNLIKELIHOOD,
+)
+UNLIKELIHOOD_PROB_CEILING = 1.0 - 1e-6
+
+
 def compute_advantage_weighted_causal_lm_loss(
     logits: torch.Tensor,
     labels: torch.Tensor,
     advantages: torch.Tensor,
     advantage_clip: float,
+    negative_loss_mode: str = NEGATIVE_LOSS_MODE_WEIGHTED_CE,
 ) -> AdvantageWeightedLossOutput:
     assert logits.ndim == 3, "logits must be [batch, seq_len, vocab]"
     assert labels.ndim == 2, "labels must be [batch, seq_len]"
     assert advantages.ndim == 2, "advantages must be [batch, seq_len]"
+    assert negative_loss_mode in SUPPORTED_NEGATIVE_LOSS_MODES, (
+        f"unsupported negative_loss_mode: {negative_loss_mode!r}; "
+        f"expected one of {SUPPORTED_NEGATIVE_LOSS_MODES}"
+    )
 
     batch_size, seq_len, vocab_size = logits.shape
     assert labels.shape[0] == batch_size, "labels batch size must match logits"
@@ -124,10 +138,27 @@ def compute_advantage_weighted_causal_lm_loss(
         min=-advantage_clip,
         max=advantage_clip,
     )
-    weighted_loss = (
-        token_losses.masked_select(supervised_mask).to(torch.float32)
-        * per_token_advantages
-    ).sum() / supervised_count_fp
+    supervised_ce = token_losses.masked_select(supervised_mask).to(torch.float32)
+    if negative_loss_mode == NEGATIVE_LOSS_MODE_WEIGHTED_CE:
+        # Legacy objective: CE * advantage for both signs. The negative-sign
+        # term is unbounded below (pays forever for pushing p -> 0).
+        per_token_weighted_losses = supervised_ce * per_token_advantages
+    else:
+        # Unlikelihood objective for negative-advantage tokens:
+        # |adv| * -log(1 - p). Bounded: as p -> 0 the term (and its gradient)
+        # vanishes, so there is no incentive to destroy the model.
+        positive_weights = per_token_advantages.clamp(min=0.0)
+        negative_weights = (-per_token_advantages).clamp(min=0.0)
+        target_probs = torch.exp(-supervised_ce).clamp(
+            max=UNLIKELIHOOD_PROB_CEILING
+        )
+        unlikelihood_losses = -torch.log1p(-target_probs)
+        _assert_tensor_finite(unlikelihood_losses, "unlikelihood_losses")
+        per_token_weighted_losses = (
+            supervised_ce * positive_weights
+            + unlikelihood_losses * negative_weights
+        )
+    weighted_loss = per_token_weighted_losses.sum() / supervised_count_fp
     _assert_tensor_finite(weighted_loss, "weighted_loss")
 
     local_batch_count = torch.tensor(
@@ -140,10 +171,7 @@ def compute_advantage_weighted_causal_lm_loss(
         local_supervised_tokens,
     )
     global_weighted_loss = _global_weighted_mean(
-        (
-            token_losses.masked_select(supervised_mask).to(torch.float32)
-            * per_token_advantages
-        ).sum(),
+        per_token_weighted_losses.sum(),
         local_supervised_tokens,
     )
     global_adv_norm_mean = _global_weighted_mean(

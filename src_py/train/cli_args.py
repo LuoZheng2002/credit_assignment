@@ -35,6 +35,10 @@ class TrainingRequestArgs(BaseModel):
     lora_dropout: float | None = None
     lora_target_modules_csv: str | None = None
     resume_checkpoint_tag: str | None = None
+    # How negative-advantage tokens contribute to the loss: "weighted_ce"
+    # (legacy, unbounded below) or "unlikelihood" (bounded). Mirrors the
+    # optional negative_loss_mode field of PythonTrainingConfigCommon.
+    negative_loss_mode: str = "weighted_ce"
     adam_fp32: bool
 
 

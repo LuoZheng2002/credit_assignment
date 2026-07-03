@@ -1,0 +1,20 @@
+# v2 +/- advantage arm with BOUNDED negative term (unlikelihood):
+# positive-advantage tokens use CE * adv; negative-advantage tokens use
+# |adv| * -log(1 - p), which vanishes as p -> 0 instead of paying forever.
+# LR matches the positive-only arm for a clean A/B; the divergence guard in
+# train_loop.py is the backstop.
+training_plan = "lora"
+advantage_clip = 3.0
+learning_rate = 1e-4
+weight_decay = 0.01
+grad_accum_steps = 8
+log_time_interval = 30
+checkpoint_save_time_interval = 1800
+seed = 42
+negative_loss_mode = "unlikelihood"
+# lora specific
+lora_rank = 64
+lora_alpha = 128
+lora_dropout = 0.1
+lora_target_modules_csv = "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+resume_checkpoint_tag = "auto"

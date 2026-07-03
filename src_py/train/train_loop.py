@@ -52,6 +52,48 @@ class AdaptiveBatchState:
 DEFAULT_TRAJECTORY_LENGTH_CAP = 4096
 MIN_TRAJECTORY_LENGTH_CAP = 2
 
+# Divergence guard: abort training when the unweighted CE stays far above its
+# early-run baseline. Catches runaway objectives (e.g. unbounded negative
+# advantage terms) that stay finite, so nonfinite asserts never fire, while
+# the model is being destroyed.
+DIVERGENCE_BASELINE_STEPS = 20
+DIVERGENCE_CE_ABS_FLOOR = 8.0
+DIVERGENCE_CE_BASELINE_MULTIPLIER = 10.0
+DIVERGENCE_STRIKES_TO_ABORT = 5
+
+
+@dataclass
+class DivergenceGuardState:
+    baseline_ce_values: list[float]
+    consecutive_strikes: int
+
+
+def _update_divergence_guard(state: DivergenceGuardState, unweighted_ce: float) -> None:
+    assert math.isfinite(unweighted_ce), "unweighted_ce must be finite"
+    if len(state.baseline_ce_values) < DIVERGENCE_BASELINE_STEPS:
+        state.baseline_ce_values.append(unweighted_ce)
+        return
+    baseline_ce = float(statistics.median(state.baseline_ce_values))
+    threshold = max(
+        DIVERGENCE_CE_ABS_FLOOR,
+        DIVERGENCE_CE_BASELINE_MULTIPLIER * baseline_ce,
+    )
+    if unweighted_ce > threshold:
+        state.consecutive_strikes += 1
+    else:
+        state.consecutive_strikes = 0
+    if state.consecutive_strikes >= DIVERGENCE_STRIKES_TO_ABORT:
+        message = (
+            "training_divergence_detected=1 "
+            f"unweighted_ce={unweighted_ce:.4f} threshold={threshold:.4f} "
+            f"baseline_ce={baseline_ce:.4f} "
+            f"consecutive_strikes={state.consecutive_strikes} "
+            "aborting training to avoid destroying the model"
+        )
+        if _is_primary_rank():
+            _tui_error(message)
+        raise RuntimeError(message)
+
 
 def _truncate_sample_to_cap(
     sample: TrainingSampleTokenized, trajectory_length_cap: int
@@ -205,6 +247,7 @@ def trace_first_nonfinite_backward_signal(
     advantages: torch.Tensor,
     advantage_clip: float,
     grad_accum_steps: int,
+    negative_loss_mode: str,
 ) -> str:
     module_names = {
         module: (name if len(name) > 0 else "<root>")
@@ -274,6 +317,7 @@ def trace_first_nonfinite_backward_signal(
             labels=labels,
             advantages=advantages,
             advantage_clip=advantage_clip,
+            negative_loss_mode=negative_loss_mode,
         )
         replay_loss = loss_output.loss / grad_accum_steps
         replay_loss.backward()
@@ -879,6 +923,9 @@ def _run_unified_loop(
     )
     samples_trained = max(0, int(resume_state.samples_trained))
     optimizer.zero_grad(set_to_none=True)
+    divergence_guard = DivergenceGuardState(
+        baseline_ce_values=[], consecutive_strikes=0
+    )
 
     iteration_index = max(0, resume_state.next_iteration_index)
 
@@ -1037,6 +1084,7 @@ def _run_unified_loop(
                     labels=labels,
                     advantages=advantages,
                     advantage_clip=config.advantage_clip,
+                    negative_loss_mode=config.negative_loss_mode,
                 )
                 loss = loss_output.loss / config.grad_accum_steps
                 loss.backward()
@@ -1059,6 +1107,7 @@ def _run_unified_loop(
                                 advantages=advantages,
                                 advantage_clip=config.advantage_clip,
                                 grad_accum_steps=config.grad_accum_steps,
+                                negative_loss_mode=config.negative_loss_mode,
                             )
                         )
                     except Exception as trace_exc:
@@ -1305,6 +1354,10 @@ def _run_unified_loop(
             for stat_key, stat_value in loss_output.stats.items():
                 _tui_key_value(stat_key, f"{stat_value:.6f}")
 
+        _update_divergence_guard(
+            divergence_guard, float(loss_output.stats["loss_unweighted_ce"])
+        )
+
         accumulation_step += 1
         if is_distributed:
             samples_trained += requested_batch_size * world_size
@@ -1393,6 +1446,7 @@ def _run_unified_loop(
                                     advantages=advantages,
                                     advantage_clip=config.advantage_clip,
                                     grad_accum_steps=config.grad_accum_steps,
+                                    negative_loss_mode=config.negative_loss_mode,
                                 )
                             )
                         except Exception as trace_exc:

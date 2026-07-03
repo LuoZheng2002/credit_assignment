@@ -46,6 +46,11 @@ pub struct PythonTrainingConfigCommon {
     pub lora_target_modules_csv: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume_checkpoint_tag: Option<String>,
+    /// How negative-advantage tokens contribute to the loss:
+    /// "weighted_ce" (legacy, unbounded below) or "unlikelihood" (bounded).
+    /// None falls back to the Python-side default ("weighted_ce").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub negative_loss_mode: Option<String>,
 }
 
 #[cfg(test)]
@@ -71,6 +76,7 @@ mod tests {
                 lora_dropout: Some(0.05),
                 lora_target_modules_csv: None,
                 resume_checkpoint_tag: Some("latest".to_string()),
+                negative_loss_mode: None,
             },
             training_time: 120.0,
             num_iterations_limit: 200,
