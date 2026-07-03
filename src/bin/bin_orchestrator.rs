@@ -12,8 +12,8 @@ use credit_assignment::{
         rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
     },
     jinja_directories::{
-        inference_wrapper_log_path_from_template, training_wrapper_log_path_from_template,
-        tui_log_path_from_template,
+        inference_wrapper_log_path_from_template, sft_wrapper_log_path_from_template,
+        training_wrapper_log_path_from_template, tui_log_path_from_template,
     },
     json_toml_utils::{read_json, read_toml},
     llm_model::{
@@ -77,6 +77,10 @@ struct Args {
     positive_advantage_only: bool,
     #[arg(long, action = ArgAction::Set)]
     adam_fp32: bool,
+    #[arg(long, action = ArgAction::Set)]
+    sft: bool,
+    #[arg(long)]
+    sft_training_config_common_path: Option<String>,
 }
 
 fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
@@ -129,6 +133,8 @@ async fn main() {
         keep_action_logs,
         positive_advantage_only,
         adam_fp32,
+        sft,
+        sft_training_config_common_path,
     } = Args::parse();
     let process_title = format!("orchestrator_{}_{}", model_cli_name, config_nickname);
     set_title(&process_title);
@@ -145,12 +151,17 @@ async fn main() {
     let training_wrapper_log_path =
         training_wrapper_log_path_from_template(&model_cli_name, &config_nickname)
             .unwrap_or_else(|err| panic!("failed to render training wrapper log path: {}", err));
+    let sft_wrapper_log_path =
+        sft_wrapper_log_path_from_template(&model_cli_name, &config_nickname)
+            .unwrap_or_else(|err| panic!("failed to render SFT wrapper log path: {}", err));
     let tui_log_path = tui_log_path_from_template(&model_cli_name, &config_nickname)
         .unwrap_or_else(|err| panic!("failed to render tui log path: {}", err));
     ensure_parent_dir_exists(&inference_wrapper_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare inference wrapper log directory: {}", err));
     ensure_parent_dir_exists(&training_wrapper_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare training wrapper log directory: {}", err));
+    ensure_parent_dir_exists(&sft_wrapper_log_path)
+        .unwrap_or_else(|err| panic!("failed to prepare SFT wrapper log directory: {}", err));
     ensure_parent_dir_exists(&tui_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare tui log directory: {}", err));
     assert!(num_gpus > 0, "--num-gpus must be positive");
@@ -188,6 +199,23 @@ async fn main() {
     };
     let training_config_common: PythonTrainingConfigCommon =
         read_toml(training_config_common_path).unwrap();
+    let sft_training_config_common: PythonTrainingConfigCommon = if let Some(ref sft_path) =
+        sft_training_config_common_path
+    {
+        read_toml(sft_path).unwrap_or_else(|err| {
+            panic!(
+                "failed to read SFT training config common from {}: {}",
+                sft_path, err
+            )
+        })
+    } else if sft {
+        log_info(
+            "--sft-training-config-common-path not provided; falling back to RL training config for SFT",
+        );
+        training_config_common.clone()
+    } else {
+        training_config_common.clone()
+    };
     // do the rest of the orchestrator work here
     let client = reqwest::Client::new();
     let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
@@ -206,8 +234,13 @@ async fn main() {
                 "No progress file found at: {}, starting fresh",
                 progress_save_path
             ));
+            let initial_status = if sft {
+                OrchestrationStatus::WorkingOnSFT
+            } else {
+                OrchestrationStatus::WorkingOnValidation
+            };
             OrchestrationProgress {
-                status: OrchestrationStatus::WorkingOnValidation,
+                status: initial_status,
                 epoch: 0,
                 validation_accuracies: BTreeMap::new(),
                 training_rollout_accuracies: BTreeMap::new(),
@@ -231,16 +264,19 @@ async fn main() {
         inference_server_handle: None,
         inference_wrapper_log_path,
         training_wrapper_log_path,
+        sft_wrapper_log_path,
         keep_action_logs,
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         positive_advantage_only,
         adam_fp32,
         training_config_common,
+        sft_training_config_common,
         training_time,
         num_iterations_limit,
         progress,
         num_gpus,
+        sft_enabled: sft,
     };
 
     let result = match model_name {

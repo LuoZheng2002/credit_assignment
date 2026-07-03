@@ -25,6 +25,7 @@ dependencies = [
     "jsonargparse>=4.42.0",
     "modal>=1.4.4.dev21",
     "pydantic==2.11.7",
+    "httpx",
 ]
 
 # [[tool.uv.index]]

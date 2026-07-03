@@ -26,6 +26,8 @@ const TRAINING_SUMMARY_PARENT_DIR_TEMPLATE_PATH: &str =
     "config/directories/training_summary_parent_dir.jinja";
 const TRAINING_WRAPPER_LOG_PATH_TEMPLATE_PATH: &str =
     "config/directories/training_wrapper_log_path.jinja";
+const SFT_WRAPPER_LOG_PATH_TEMPLATE_PATH: &str = "config/directories/sft_wrapper_log_path.jinja";
+const SFT_MODEL_PARENT_DIR_TEMPLATE_PATH: &str = "config/directories/sft_model_parent_dir.jinja";
 const TUI_LOG_PATH_TEMPLATE_PATH: &str = "config/directories/tui_log_path.jinja";
 
 static ACTION_LOGS_TRAINING_PATH_EXTSORT_TEMPLATE_ENVIRONMENT: LazyLock<
@@ -128,6 +130,18 @@ static TRAINING_WRAPPER_LOG_PATH_TEMPLATE_ENVIRONMENT: LazyLock<
         TRAINING_WRAPPER_LOG_PATH_TEMPLATE_PATH,
         "training_wrapper_log_path",
     )
+});
+
+static SFT_WRAPPER_LOG_PATH_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    load_jinja_template_environment(SFT_WRAPPER_LOG_PATH_TEMPLATE_PATH, "sft_wrapper_log_path")
+});
+
+static SFT_MODEL_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    load_jinja_template_environment(SFT_MODEL_PARENT_DIR_TEMPLATE_PATH, "sft_model_parent_dir")
 });
 
 static TUI_LOG_PATH_TEMPLATE_ENVIRONMENT: LazyLock<
@@ -371,6 +385,30 @@ pub fn training_wrapper_log_path_from_template(
     render_model_config_template(
         &TRAINING_WRAPPER_LOG_PATH_TEMPLATE_ENVIRONMENT,
         "training_wrapper_log_path",
+        model_cli_name,
+        config_nickname,
+    )
+}
+
+pub fn sft_wrapper_log_path_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+) -> Result<String, String> {
+    render_model_config_template(
+        &SFT_WRAPPER_LOG_PATH_TEMPLATE_ENVIRONMENT,
+        "sft_wrapper_log_path",
+        model_cli_name,
+        config_nickname,
+    )
+}
+
+pub fn sft_model_parent_dir_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+) -> Result<String, String> {
+    render_model_config_template(
+        &SFT_MODEL_PARENT_DIR_TEMPLATE_ENVIRONMENT,
+        "sft_model_parent_dir",
         model_cli_name,
         config_nickname,
     )

@@ -10,7 +10,6 @@ from typing import Any
 import modal
 
 MINUTES = 60
-REGION = "us-west"
 
 ORCHESTRATOR_CONFIG_RELATIVE_PATH = Path("src_py/modal/orchestrator_config.json")
 MODAL_RUNTIME_IGNORE_PATH = ".modalignore"
@@ -333,7 +332,6 @@ app = modal.App(name=APP_NAME)
     image=orchestrator_image,
     gpu=GPU,
     cpu=8.0,
-    region=REGION,
     startup_timeout=20 * MINUTES,
     min_containers=0,
     max_containers=1,

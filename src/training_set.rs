@@ -753,7 +753,7 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
         .collect()
 }
 
-fn write_training_trajectories_msgpack_file<M: LlmModelMarker>(
+pub fn write_training_trajectories_msgpack_file<M: LlmModelMarker>(
     file_path: &str,
     trajectories: &[DirectTrainingTrajectory<M>],
 ) -> Result<(), String> {
