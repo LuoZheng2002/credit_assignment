@@ -61,6 +61,7 @@ def _load_train_config(
         resume_checkpoint_tag=request.resume_checkpoint_tag or "auto",
         seed=request.seed,
         adam_fp32=request.adam_fp32,
+        negative_loss_mode=request.negative_loss_mode,
     )
 
 

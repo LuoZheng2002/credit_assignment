@@ -141,6 +141,7 @@ class TrainConfig:
     resume_checkpoint_tag: str
     seed: int
     adam_fp32: bool
+    negative_loss_mode: str = "weighted_ce"
 
 
 @dataclass(frozen=True)
