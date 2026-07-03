@@ -60,6 +60,10 @@ struct Args {
     #[arg(long)]
     num_iterations_limit: usize,
     #[arg(long)]
+    sft_training_time: Option<f32>,
+    #[arg(long)]
+    sft_num_iterations_limit: Option<usize>,
+    #[arg(long)]
     training_rollout_time_limit_secs: usize,
     #[arg(long)]
     validation_rollout_time_limit_secs: usize,
@@ -128,6 +132,8 @@ async fn main() {
         training_config_common_path,
         training_time,
         num_iterations_limit,
+        sft_training_time,
+        sft_num_iterations_limit,
         num_gpus,
         mount_dir,
         keep_action_logs,
@@ -216,6 +222,25 @@ async fn main() {
     } else {
         training_config_common.clone()
     };
+    let sft_training_time = if let Some(sft_training_time) = sft_training_time {
+        sft_training_time
+    } else {
+        if sft {
+            log_info("--sft-training-time not provided; falling back to --training-time for SFT");
+        }
+        training_time
+    };
+    let sft_num_iterations_limit = if let Some(sft_num_iterations_limit) = sft_num_iterations_limit
+    {
+        sft_num_iterations_limit
+    } else {
+        if sft {
+            log_info(
+                "--sft-num-iterations-limit not provided; falling back to --num-iterations-limit for SFT",
+            );
+        }
+        num_iterations_limit
+    };
     // do the rest of the orchestrator work here
     let client = reqwest::Client::new();
     let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
@@ -274,6 +299,8 @@ async fn main() {
         sft_training_config_common,
         training_time,
         num_iterations_limit,
+        sft_training_time,
+        sft_num_iterations_limit,
         progress,
         num_gpus,
         sft_enabled: sft,

@@ -65,6 +65,8 @@ pub struct Orchestrator {
     pub sft_training_config_common: PythonTrainingConfigCommon,
     pub training_time: f32,
     pub num_iterations_limit: usize,
+    pub sft_training_time: f32,
+    pub sft_num_iterations_limit: usize,
     pub num_gpus: usize,
     // for sft
     pub sft_enabled: bool,
@@ -862,9 +864,15 @@ impl Orchestrator {
         }
 
         if epoch == 0 {
-            log_info(
-                "Skipping epoch 0 model directory deletion because epoch 0 parent path is a shared root",
-            );
+            if self.sft_enabled {
+                log_info(
+                    "Skipping epoch 0 model directory deletion because the epoch 0 starting model (base model or dedicated SFT model) is retained unconditionally",
+                );
+            } else {
+                log_info(
+                    "Skipping epoch 0 model directory deletion because epoch 0 parent path is a shared root",
+                );
+            }
             return Ok(());
         }
 
@@ -903,9 +911,15 @@ impl Orchestrator {
                 continue;
             }
             if epoch == 0 {
-                log_info(
-                    "Skipping epoch 0 model directory deletion during sweep because epoch 0 parent path is a shared root",
-                );
+                if self.sft_enabled {
+                    log_info(
+                        "Skipping epoch 0 model directory deletion during sweep because the epoch 0 starting model (base model or dedicated SFT model) is retained unconditionally",
+                    );
+                } else {
+                    log_info(
+                        "Skipping epoch 0 model directory deletion during sweep because epoch 0 parent path is a shared root",
+                    );
+                }
                 continue;
             }
             let model_parent_dir =
@@ -980,8 +994,8 @@ impl Orchestrator {
 
         let training_config = PythonTrainingConfig {
             common: self.sft_training_config_common.clone(),
-            training_time: self.training_time,
-            num_iterations_limit: self.num_iterations_limit,
+            training_time: self.sft_training_time,
+            num_iterations_limit: self.sft_num_iterations_limit,
             artifact_root_dir,
             hpc_training_root_dir: None,
             model_cli_name: M::CLI_NAME.to_string(),
