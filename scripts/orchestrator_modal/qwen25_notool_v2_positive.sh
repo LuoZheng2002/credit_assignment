@@ -1,5 +1,8 @@
 # v2 positive-only ablation: same as notool_v2 but negative advantages are
 # clamped to zero (weighted-SFT-like objective; inherently stable at higher LR).
+# num-iterations-limit raised 1 -> 3 after epochs 0-5 showed flat validation:
+# one pass (~2.7k samples) per epoch is ~6x less gradient than the control's
+# 4x4.4k, and the control only moved held-out val after that much gradient.
 uv run -m src_py.modal.launch_modal_orchestration \
     --model-cli-name qwen25 \
     --max-rollout-concurrency 300 \
@@ -9,7 +12,7 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --num-total-epochs 10 \
     --cumulative-avg-abs-advantage-cutoff 0.9 \
-    --num-iterations-limit 1 \
+    --num-iterations-limit 3 \
     --advantage-calculation-policy tree-mappo-posterior \
     --training-config-common-path config/training/common_lora_v2_positive.toml \
     --training-time 1800 \
