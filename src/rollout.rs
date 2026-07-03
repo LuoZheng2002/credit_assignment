@@ -704,10 +704,13 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
             epoch < total_epochs,
             "epoch ({epoch}) must be less than total_epochs ({total_epochs}) for training split"
         );
+        let question_rotation_seed = rollout_config
+            .question_rotation_seed
+            .unwrap_or(epoch as u64);
         let training_segment_start = if question_keys.is_empty() {
             0
         } else {
-            let mut training_segment_rng = StdRng::seed_from_u64(epoch as u64);
+            let mut training_segment_rng = StdRng::seed_from_u64(question_rotation_seed);
             training_segment_rng.random_range(0..question_keys.len())
         };
         question_keys.rotate_left(training_segment_start);
@@ -715,7 +718,10 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
             "training_segment_start_index",
             training_segment_start.to_string(),
         );
-        log_key_value_pair("training_segment_start_seed", epoch.to_string());
+        log_key_value_pair(
+            "training_segment_start_seed",
+            question_rotation_seed.to_string(),
+        );
         log_key_value_pair(
             "training_segment_total_keys",
             question_keys.len().to_string(),
