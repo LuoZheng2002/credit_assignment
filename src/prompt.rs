@@ -14,7 +14,8 @@ solution = np.linalg.solve(A, b)
 solution
 ```
 \n\
-You should reason step by step, and put the final answer in a \\boxed{{}}.\n\
+You should reason step by step, and put the final answer in a \\boxed{{}}. \
+If the question asks for a yes/no judgment, put exactly Yes or No in the \\boxed{{}}.\n\
 Begin your reasoning:"
     )
 }
@@ -24,7 +25,8 @@ pub fn prompt_without_tool_call(question: String) -> String {
         "\
 You are a helpful agent that solves the following problem.\n\
 Question: {question}\n\
-You should reason step by step, and put the final answer in a \\boxed{{}}.\n\
+You should reason step by step, and put the final answer in a \\boxed{{}}. \
+If the question asks for a yes/no judgment, put exactly Yes or No in the \\boxed{{}}.\n\
 Begin your reasoning:"
     )
 }
