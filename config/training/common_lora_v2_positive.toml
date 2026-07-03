@@ -1,0 +1,16 @@
+# v2 positive-only arm: LR 1e-4 validated by the notool_control_pos experiment
+# (pinned-question rollout +5.3pt after one epoch, CE/grad_norm stable).
+training_plan = "lora"
+advantage_clip = 3.0
+learning_rate = 1e-4
+weight_decay = 0.01
+grad_accum_steps = 8
+log_time_interval = 30
+checkpoint_save_time_interval = 1800
+seed = 42
+# lora specific
+lora_rank = 64
+lora_alpha = 128
+lora_dropout = 0.1
+lora_target_modules_csv = "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+resume_checkpoint_tag = "auto"
