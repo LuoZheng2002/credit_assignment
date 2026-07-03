@@ -2977,7 +2977,6 @@ dependencies = [
  "lru 0.12.5",
  "parking_lot",
  "ratatui",
- "redb",
  "rmp-serde",
  "rusqlite",
  "serde",
