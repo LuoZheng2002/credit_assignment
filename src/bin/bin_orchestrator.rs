@@ -81,7 +81,7 @@ struct Args {
     positive_advantage_only: bool,
     #[arg(long, action = ArgAction::Set)]
     adam_fp32: bool,
-    #[arg(long, action = ArgAction::Set)]
+    #[arg(long, action = ArgAction::Set, default_value_t = false)]
     sft: bool,
     #[arg(long)]
     sft_training_config_common_path: Option<String>,
