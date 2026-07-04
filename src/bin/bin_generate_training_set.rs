@@ -29,8 +29,6 @@ struct Args {
     posterior_hyperparameters_path: String,
     #[arg(long)]
     epoch: usize, // the epoch index
-    #[arg(long)]
-    cumulative_avg_abs_advantage_cutoff: f32,
     #[arg(long, value_enum)]
     advantage_calculation_policy: AdvantageCalculationPolicy,
     #[arg(long)]
@@ -55,7 +53,6 @@ async fn main() {
         rollout_config_path,
         posterior_hyperparameters_path,
         epoch,
-        cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         positive_advantage_only,
     } = Args::parse();
@@ -76,7 +73,6 @@ async fn main() {
         rollout_config,
         posterior_calculation_config,
         epoch,
-        cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         positive_advantage_only,
     };
@@ -99,7 +95,6 @@ struct RunProgramArgs {
     rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize, // the epoch index
-    cumulative_avg_abs_advantage_cutoff: f32,
     advantage_calculation_policy: AdvantageCalculationPolicy,
     positive_advantage_only: bool,
 }
@@ -110,7 +105,6 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         rollout_config,
         posterior_calculation_config,
         epoch,
-        cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         positive_advantage_only,
     } = run_program_args;
@@ -119,7 +113,6 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         rollout_config,
         posterior_calculation_config,
         epoch,
-        cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         positive_advantage_only,
     )

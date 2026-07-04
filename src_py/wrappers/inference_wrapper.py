@@ -451,6 +451,15 @@ class HpcBackend:
             raise RuntimeError(exit_error)
         return _post_json(f"{self._upstream_url}/generate", payload)
 
+    def update_model(self, new_model_path: str) -> dict[str, Any]:
+        exit_error = self.unexpected_exit_error()
+        if exit_error is not None:
+            raise RuntimeError(exit_error)
+        return _post_json(
+            f"{self._upstream_url}/update_weights_from_disk",
+            {"model_path": new_model_path},
+        )
+
     def unexpected_exit_error(self) -> str | None:
         if self._process is None:
             return None
@@ -569,7 +578,7 @@ def main() -> int:
                     self.wfile.write(body)
 
             def do_POST(self) -> None:  # noqa: N802
-                if self.path != "/generate":
+                if self.path not in ("/generate", "/update_model"):
                     self.send_response(404)
                     self.end_headers()
                     return
@@ -577,7 +586,11 @@ def main() -> int:
                 raw = self.rfile.read(content_len)
                 try:
                     payload = json.loads(raw.decode("utf-8"))
-                    result = backend.generate(payload)
+                    if self.path == "/update_model":
+                        new_model_path = payload["model_path"]
+                        result = backend.update_model(new_model_path)
+                    else:
+                        result = backend.generate(payload)
                     body = json.dumps(result).encode("utf-8")
                     self.send_response(200)
                     self.send_header("content-type", "application/json")
@@ -585,11 +598,16 @@ def main() -> int:
                     self.end_headers()
                     self.wfile.write(body)
                 except Exception as error:  # noqa: BLE001
+                    error_code = (
+                        "INFERENCE_UPDATE_MODEL_FAILED"
+                        if self.path == "/update_model"
+                        else "INFERENCE_GENERATE_FAILED"
+                    )
                     _emit_event(
                         {
                             "type": "error",
                             "backend": backend_name,
-                            "error_code": "INFERENCE_GENERATE_FAILED",
+                            "error_code": error_code,
                             "error_message": str(error),
                             "timestamp": time.time(),
                         }

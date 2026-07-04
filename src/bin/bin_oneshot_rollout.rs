@@ -8,11 +8,15 @@ use credit_assignment::{
         hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
         rollout::{RolloutProgramConfig, rollout_all},
-        rollout_config::DirectRolloutConfig,
+        rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+        training_set::generate_training_trajectories_with_path,
+        tree_action_log::ActionLogStore,
     },
     jinja_directories::{
         action_logs_oneshot_path_from_template, inference_wrapper_log_path_from_template,
         model_parent_dir_from_template, rollout_summary_oneshot_path_from_template,
+        training_trajectories_oneshot_path_from_template,
+        training_trajectories_stats_oneshot_path_from_template,
     },
     json_toml_utils::read_json,
     launch_inference_wrapper::{
@@ -26,7 +30,7 @@ use credit_assignment::{
     utils::configure_mount_dir,
 };
 use reqwest::Client;
-use research_utility::progress_tui_logger::ProgressTuiLogger;
+use research_utility::progress_tui_logger::{ProgressTuiLogger, log_info};
 
 const DEFAULT_PROGRESS_TUI_LOG_PATH: &str = "progress_tui_log.bin";
 
@@ -53,6 +57,10 @@ struct Args {
     epoch: usize,
     #[arg(long, default_value_t = 1)]
     total_epochs: usize,
+    #[arg(long, value_enum)]
+    advantage_calculation_policy: AdvantageCalculationPolicy,
+    #[arg(long, action = ArgAction::Set)]
+    positive_advantage_only: bool,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
     #[arg(long)]
@@ -91,6 +99,28 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     num_gpus: usize,
     inference_wrapper_log_path: &str,
 ) {
+    let action_log_store_override_path = action_logs_oneshot_path_from_template::<S>(
+        &args.model_cli_name,
+        &args.config_nickname_rollout,
+        args.epoch,
+    )
+    .unwrap_or_else(|err| panic!("failed to resolve one-shot action logs path: {}", err));
+
+    // Check if previous run already exhausted the time limit; if so, skip the
+    // inference server startup and rollout entirely.
+    let prev_elapsed =
+        ActionLogStore::<M, S>::initialize_if_missing(&action_log_store_override_path)
+            .and_then(|store| store.read_elapsed_time())
+            .unwrap_or(0.0);
+    if prev_elapsed >= args.rollout_time_limit_secs as f32 {
+        log_info(format!(
+            "Skipping rollout: previous elapsed time ({prev_elapsed:.1}s) already meets \
+             or exceeds the time limit ({}s). No new actions will be added.",
+            args.rollout_time_limit_secs
+        ));
+        return;
+    }
+
     best_effort_shutdown_stale_inference_wrapper().await;
     let model_parent_dir =
         model_parent_dir_from_template(M::CLI_NAME, &args.config_nickname_rollout, args.epoch)
@@ -109,13 +139,6 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         )
         .await
         .unwrap_or_else(|err| panic!("failed to launch inference server: {}", err));
-
-    let action_log_store_override_path = action_logs_oneshot_path_from_template::<S>(
-        &args.model_cli_name,
-        &args.config_nickname_rollout,
-        args.epoch,
-    )
-    .unwrap_or_else(|err| panic!("failed to resolve one-shot action logs path: {}", err));
 
     let program_config = RolloutProgramConfig {
         config_nickname: args.config_nickname_rollout.clone(),
@@ -210,6 +233,41 @@ macro_rules! run_rollout {
     }};
 }
 
+macro_rules! generate_trajectories {
+    (
+        $model_name:expr,
+        $action_log_store_path:expr,
+        $trajectories_dir:expr,
+        $trajectories_msgpack_path:expr,
+        $stats_path:expr,
+        $config_bundle_path:expr,
+        $rollout_config:expr,
+        $posterior_calculation_config:expr,
+        $advantage_calculation_policy:expr,
+        $positive_advantage_only:expr;
+        $( $model_enum:path, $model_ty:ty ),+ $(,)?
+    ) => {
+        match $model_name {
+            $(
+                $model_enum => {
+                    generate_training_trajectories_with_path::<$model_ty>(
+                        $action_log_store_path,
+                        $trajectories_dir,
+                        $trajectories_msgpack_path,
+                        $stats_path,
+                        $config_bundle_path,
+                        $rollout_config,
+                        $posterior_calculation_config,
+                        $advantage_calculation_policy,
+                        $positive_advantage_only,
+                    )
+                    .await
+                }
+            ),+
+        }
+    };
+}
+
 #[tokio::main]
 async fn main() {
     std::panic::set_hook(Box::new(|info| {
@@ -257,6 +315,8 @@ async fn main() {
             .unwrap();
     }
 
+    let posterior_calculation_config_clone = posterior_calculation_config.clone();
+
     run_rollout!(
         model_name,
         args.dataset_split,
@@ -277,6 +337,61 @@ async fn main() {
         DatasetSplitEnum::Validation, Validation,
         DatasetSplitEnum::Testing, Testing
     );
+
+    // Generate training trajectories from one-shot action logs (only for Training split)
+    if matches!(args.dataset_split, DatasetSplitEnum::Training) {
+        println!("Generating training trajectories from one-shot action logs...");
+        let trajectories_dir = training_trajectories_oneshot_path_from_template(
+            &args.model_cli_name,
+            &args.config_nickname_rollout,
+        )
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to resolve one-shot training trajectories path: {}",
+                err
+            )
+        });
+        let trajectories_msgpack_path = format!("{}/trajectories.msgpack", trajectories_dir);
+        let stats_path = training_trajectories_stats_oneshot_path_from_template(
+            &args.model_cli_name,
+            &args.config_nickname_rollout,
+        )
+        .unwrap_or_else(|err| panic!("failed to resolve stats path: {}", err));
+        let config_bundle_path = format!("{}/config_bundle.json", trajectories_dir);
+        let action_log_store_path = action_logs_oneshot_path_from_template::<Training>(
+            &args.model_cli_name,
+            &args.config_nickname_rollout,
+            args.epoch,
+        )
+        .unwrap_or_else(|err| panic!("failed to resolve action logs path: {}", err));
+        let rollout_config: DirectRolloutConfig<Training> =
+            read_json(&args.rollout_config_path).unwrap();
+
+        generate_trajectories!(
+            model_name,
+            &action_log_store_path,
+            &trajectories_dir,
+            &trajectories_msgpack_path,
+            &stats_path,
+            &config_bundle_path,
+            rollout_config,
+            posterior_calculation_config_clone,
+            args.advantage_calculation_policy,
+            args.positive_advantage_only;
+            LlmModelName::Qwen25_7b, Qwen25_7B,
+            LlmModelName::Qwen3_06b, Qwen3_06B,
+            LlmModelName::Qwen3_4b, Qwen3_4B,
+            LlmModelName::Qwen35_4b, Qwen35_4B,
+            LlmModelName::Qwen35_08b, Qwen35_08B,
+            LlmModelName::Gemma3_4b, Gemma3_4BIt,
+            LlmModelName::Llama31_8b, Llama31_8BInstruct,
+            LlmModelName::Mistral7bInstructV03, Mistral7BInstructV03
+        );
+        println!(
+            "Training trajectories generated at {}",
+            trajectories_msgpack_path
+        );
+    }
 
     if args.ui {
         ProgressTuiLogger::shutdown().await.unwrap();

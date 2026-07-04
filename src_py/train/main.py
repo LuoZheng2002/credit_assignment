@@ -67,6 +67,7 @@ def _load_train_config(
         lr_total_steps=request.lr_total_steps,
         training_mode=request.training_mode,
         oneshot_num_epochs=request.oneshot_num_epochs,
+        oneshot_start_epoch=request.oneshot_start_epoch,
         oneshot_model_output_root=request.oneshot_model_output_root,
     )
 

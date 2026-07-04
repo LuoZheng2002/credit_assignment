@@ -36,6 +36,9 @@ const ALLOW_INCOMPLETE: bool = false;
 const MAX_ABSOLUTE_TOKEN_ADVANTAGE: f32 = 3.0;
 const EXTREME_ABSOLUTE_TOKEN_ADVANTAGE_WARNING_THRESHOLD: f32 = 5.0;
 const ADVANTAGE_BALANCE_EPSILON: f32 = 1.0e-12;
+const INV_CDF_ADVANTAGE_THRESHOLD: f32 = 0.05;
+const CUTOFF_FRACTION: f32 = 0.1;
+const MIN_ADOPTED_TRAJECTORY_FRACTION: f32 = 0.25;
 
 #[derive(Debug, Clone)]
 struct TrajectoryMetadata<S: DatasetSplit> {
@@ -60,22 +63,16 @@ struct TrajectorySelectionState<S: DatasetSplit> {
     total_trajectories: usize,
     all_average_absolute_advantages: Vec<f32>,
     candidate_metadata: Vec<TrajectoryMetadata<S>>,
-    cumulative_avg_abs_advantage_cutoff: f32,
 }
 
 impl<S: DatasetSplit> TrajectorySelectionState<S> {
-    fn new(total_samples: usize, cumulative_avg_abs_advantage_cutoff: f32) -> Self {
-        assert!(
-            cumulative_avg_abs_advantage_cutoff > 0.0 && cumulative_avg_abs_advantage_cutoff <= 1.0,
-            "cumulative_avg_abs_advantage_cutoff must be in (0.0, 1.0]"
-        );
+    fn new(total_samples: usize) -> Self {
         Self {
             total_samples,
             finished_samples: 0,
             total_trajectories: 0,
             all_average_absolute_advantages: Vec::new(),
             candidate_metadata: Vec::new(),
-            cumulative_avg_abs_advantage_cutoff,
         }
     }
 
@@ -86,43 +83,84 @@ impl<S: DatasetSplit> TrajectorySelectionState<S> {
             b.average_absolute_advantage
                 .cmp(&a.average_absolute_advantage)
         });
+        let total_trajectories = self.total_trajectories;
         let total_average_absolute_advantage_sum: f32 = self
             .candidate_metadata
             .iter()
             .map(|item| *item.average_absolute_advantage)
             .sum();
-        let max_selected_average_absolute_advantage_sum =
-            self.cumulative_avg_abs_advantage_cutoff * total_average_absolute_advantage_sum;
+
+        // Find the inverse CDF 5% threshold: the average absolute advantage at
+        // the point where trajectories better than this one account for 5% of
+        // total advantage.
+        let target_advantage = INV_CDF_ADVANTAGE_THRESHOLD * total_average_absolute_advantage_sum;
         let tolerance = f32::EPSILON * total_average_absolute_advantage_sum.max(1.0);
-        let mut selected_average_absolute_advantage_sum = 0.0_f32;
-        let mut selected_metadata: Vec<TrajectoryMetadata<S>> = Vec::new();
-        for item in self.candidate_metadata {
-            let next_sum =
-                selected_average_absolute_advantage_sum + *item.average_absolute_advantage;
-            if next_sum <= max_selected_average_absolute_advantage_sum + tolerance {
-                selected_metadata.push(item);
-                selected_average_absolute_advantage_sum = next_sum;
-            } else {
+        let mut cumulative_adv = 0.0_f32;
+        let mut inv_cdf_5pct_threshold = 0.0_f32;
+        for item in self.candidate_metadata.iter() {
+            cumulative_adv += *item.average_absolute_advantage;
+            if cumulative_adv > target_advantage + tolerance {
+                inv_cdf_5pct_threshold = *item.average_absolute_advantage;
                 break;
             }
         }
-        let average_absolute_advantage_cutoff = selected_metadata
+        // If we never crossed the threshold (e.g. only 1 trajectory or all
+        // zero), keep all trajectories.
+        if inv_cdf_5pct_threshold <= 0.0 {
+            inv_cdf_5pct_threshold = self
+                .candidate_metadata
+                .last()
+                .map(|item| *item.average_absolute_advantage)
+                .unwrap_or(0.0);
+        }
+
+        let cutoff = inv_cdf_5pct_threshold * CUTOFF_FRACTION;
+
+        // Keep trajectories with average absolute advantage >= cutoff.
+        let mut selected_metadata: Vec<TrajectoryMetadata<S>> = Vec::new();
+        for item in self.candidate_metadata.iter() {
+            if *item.average_absolute_advantage >= cutoff {
+                selected_metadata.push(item.clone());
+            }
+        }
+
+        // Patch: ensure at least MIN_ADOPTED_TRAJECTORY_FRACTION of all
+        // trajectories are kept, to avoid trimming too much on a long, narrow
+        // tail.
+        let min_adopted =
+            (total_trajectories as f32 * MIN_ADOPTED_TRAJECTORY_FRACTION).ceil() as usize;
+        let min_adopted = min_adopted.min(total_trajectories);
+        if selected_metadata.len() < min_adopted {
+            // The candidate_metadata is already sorted descending, so take the
+            // top min_adopted.
+            selected_metadata = self.candidate_metadata[..min_adopted].to_vec();
+        }
+
+        let adopted_trajectories = selected_metadata.len();
+        let adopted_percentage = if total_trajectories > 0 {
+            100.0 * adopted_trajectories as f32 / total_trajectories as f32
+        } else {
+            0.0
+        };
+        let lowest_average_absolute_advantage_adopted = selected_metadata
             .iter()
             .map(|item| *item.average_absolute_advantage)
             .min_by(|a, b| a.partial_cmp(b).unwrap())
             .unwrap_or(0.0);
-        if total_average_absolute_advantage_sum > 0.0 {
-            let adopted_share =
-                selected_average_absolute_advantage_sum / total_average_absolute_advantage_sum;
-            log_key_value_pair(
-                "adopted_cumulative_average_absolute_advantage_share",
-                format!("{:.6}", adopted_share),
-            );
-        }
+        let average_absolute_advantage_cutoff = lowest_average_absolute_advantage_adopted;
+
+        log_info(format!(
+            "adopted_trajectories={} total_trajectories={} adopted_percentage={:.2}% lowest_average_absolute_advantage_adopted={:.6}",
+            adopted_trajectories,
+            total_trajectories,
+            adopted_percentage,
+            lowest_average_absolute_advantage_adopted,
+        ));
+
         TrainingTrajectorySelectionOutput {
             selected_metadata,
             all_average_absolute_advantages: self.all_average_absolute_advantages,
-            total_trajectories: self.total_trajectories,
+            total_trajectories,
             average_absolute_advantage_cutoff,
         }
     }
@@ -325,15 +363,10 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
     training_trajectories_file_path: String,
-    cumulative_avg_abs_advantage_cutoff: f32,
     statistics_file_path: String,
     advantage_calculation_policy: AdvantageCalculationPolicy,
     positive_advantage_only: bool,
 ) {
-    assert!(
-        cumulative_avg_abs_advantage_cutoff > 0.0 && cumulative_avg_abs_advantage_cutoff <= 1.0,
-        "cumulative_avg_abs_advantage_cutoff must be in (0.0, 1.0]"
-    );
     action_store.sort().unwrap();
     let (selection_output, question_map, action_store) =
         select_training_trajectories_from_rollout_logs::<M, Training>(
@@ -341,7 +374,6 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
             action_store,
             rollout_config.clone(),
             posterior_calculation_config.clone(),
-            cumulative_avg_abs_advantage_cutoff,
             advantage_calculation_policy,
             positive_advantage_only,
         )
@@ -485,7 +517,6 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
     action_store: ActionLogStore<M, S>,
     rollout_config: DirectRolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
-    cumulative_avg_abs_advantage_cutoff: f32,
     advantage_calculation_policy: AdvantageCalculationPolicy,
     positive_advantage_only: bool,
 ) -> (
@@ -498,8 +529,7 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
     let num_keys = keys.len();
     keys.sort();
 
-    let mut selection_state =
-        TrajectorySelectionState::new(num_keys, cumulative_avg_abs_advantage_cutoff);
+    let mut selection_state = TrajectorySelectionState::new(num_keys);
     log_info("Converting action logs to trajectories".to_string());
     let semaphore = Arc::new(Semaphore::new(200));
     let mut join_set = JoinSet::new();
@@ -593,7 +623,7 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
     let adopted_trajectories = selected_metadata.len();
     assert!(
         adopted_trajectories > 0,
-        "cumulative_avg_abs_advantage_cutoff kept zero trajectories; increase cutoff"
+        "trajectory selection kept zero trajectories; check advantage distribution"
     );
 
     let mut grouped_metadata: BTreeMap<
@@ -1173,7 +1203,6 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
     rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize,
-    cumulative_avg_abs_advantage_cutoff: f32,
     advantage_calculation_policy: AdvantageCalculationPolicy,
     positive_advantage_only: bool,
 ) {
@@ -1214,7 +1243,6 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
         rollout_config,
         posterior_calculation_config,
         file_path,
-        cumulative_avg_abs_advantage_cutoff,
         stats_file_path,
         advantage_calculation_policy,
         positive_advantage_only,
@@ -1233,7 +1261,6 @@ pub async fn generate_training_trajectories_with_path<M: LlmModelMarker>(
     config_bundle_path: &str,
     rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
-    cumulative_avg_abs_advantage_cutoff: f32,
     advantage_calculation_policy: AdvantageCalculationPolicy,
     positive_advantage_only: bool,
 ) {
@@ -1275,7 +1302,6 @@ pub async fn generate_training_trajectories_with_path<M: LlmModelMarker>(
         rollout_config,
         posterior_calculation_config,
         training_trajectories_msgpack_path.to_string(),
-        cumulative_avg_abs_advantage_cutoff,
         stats_file_path.to_string(),
         advantage_calculation_policy,
         positive_advantage_only,

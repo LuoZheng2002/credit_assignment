@@ -49,7 +49,6 @@ pub struct Orchestrator {
     pub sft_wrapper_log_path: String,
     pub keep_action_logs: bool,
     // for training set generation
-    pub cumulative_avg_abs_advantage_cutoff: f32,
     pub advantage_calculation_policy: AdvantageCalculationPolicy,
     pub positive_advantage_only: bool,
     pub adam_fp32: bool,
@@ -1014,6 +1013,7 @@ impl Orchestrator {
             training_summary_parent_dir: checkpoints_parent_dir,
             training_mode: "orchestration".to_string(),
             oneshot_num_epochs: 0,
+            oneshot_start_epoch: 0,
             oneshot_model_output_root: String::new(),
         };
 
@@ -1056,7 +1056,6 @@ impl Orchestrator {
             self.training_set_rollout_config.clone(),
             self.posterior_calculation_config.clone(),
             epoch,
-            self.cumulative_avg_abs_advantage_cutoff,
             self.advantage_calculation_policy,
             self.positive_advantage_only,
         )
@@ -1102,6 +1101,7 @@ impl Orchestrator {
             training_summary_parent_dir: checkpoints_parent_dir,
             training_mode: "orchestration".to_string(),
             oneshot_num_epochs: 0,
+            oneshot_start_epoch: 0,
             oneshot_model_output_root: String::new(),
         };
 

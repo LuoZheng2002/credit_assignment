@@ -49,8 +49,6 @@ struct Args {
     posterior_hyperparameters_path: String,
     #[arg(long)]
     num_total_epochs: usize,
-    #[arg(long)]
-    cumulative_avg_abs_advantage_cutoff: f32,
     #[arg(long, value_enum)]
     advantage_calculation_policy: AdvantageCalculationPolicy,
     #[arg(long)]
@@ -127,7 +125,6 @@ async fn main() {
         training_rollout_time_limit_secs,
         validation_rollout_time_limit_secs,
         max_python_processes,
-        cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         training_config_common_path,
         training_time,
@@ -291,7 +288,6 @@ async fn main() {
         training_wrapper_log_path,
         sft_wrapper_log_path,
         keep_action_logs,
-        cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         positive_advantage_only,
         adam_fp32,

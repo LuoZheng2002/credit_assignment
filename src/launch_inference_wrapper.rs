@@ -71,8 +71,44 @@ pub async fn launch_inference_wrapper_process(
         stop_signal_rx,
     );
 
-    wait_for_wrapper_health(listen_port, &mut process, wrapper_log_path).await?;
+    wait_for_wrapper_health(listen_port, Some(&mut process), wrapper_log_path).await?;
     Ok((listen_port, process, stop_signal_tx, listener_handle))
+}
+
+pub async fn update_inference_model(
+    port: u16,
+    model_path: &str,
+    wrapper_log_path: &str,
+) -> Result<(), String> {
+    let url = format!("http://127.0.0.1:{}/update_model", port);
+    log_info(format!(
+        "Updating inference model to {} via {}",
+        model_path, url
+    ));
+    let payload = serde_json::json!({"model_path": model_path});
+
+    let client = reqwest::Client::new();
+    let response = timeout(
+        Duration::from_secs(300),
+        client.post(&url).json(&payload).send(),
+    )
+    .await
+    .map_err(|_| format!("update_model request to {} timed out after 300s", url))?
+    .map_err(|e| format!("update_model request to {} failed: {}", url, e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("update_model returned {}: {}", status, body));
+    }
+
+    log_info(format!(
+        "Model update succeeded; re-verifying health at port {}",
+        port
+    ));
+    wait_for_wrapper_health(port, None, wrapper_log_path).await?;
+    log_info("Model update completed and health check passed");
+    Ok(())
 }
 
 pub async fn shut_down_inference_wrapper_process(process: &mut Child) {
@@ -201,7 +237,7 @@ pub async fn best_effort_shutdown_stale_inference_wrapper() {
 
 async fn wait_for_wrapper_health(
     port: u16,
-    process: &mut Child,
+    mut process: Option<&mut Child>,
     log_path: &str,
 ) -> Result<(), String> {
     let timeout_secs = std::env::var("INFERENCE_WRAPPER_HEALTH_TIMEOUT_SECS")
@@ -215,11 +251,13 @@ async fn wait_for_wrapper_health(
     let url = format!("http://127.0.0.1:{}/health", port);
 
     loop {
-        if let Ok(Some(status)) = process.try_wait() {
-            return Err(format!(
-                "inference wrapper process exited before becoming healthy: {}; inspect wrapper log at {}",
-                status, log_path
-            ));
+        if let Some(proc) = process.as_mut() {
+            if let Ok(Some(status)) = proc.try_wait() {
+                return Err(format!(
+                    "inference wrapper process exited before becoming healthy: {}; inspect wrapper log at {}",
+                    status, log_path
+                ));
+            }
         }
 
         match timeout(Duration::from_secs(2), reqwest::get(url.clone())).await {

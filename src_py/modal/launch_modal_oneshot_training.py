@@ -254,9 +254,6 @@ def main() -> int:
     cli_args = _strip_modal_only_args(raw_cli_args)
     modal_time_limit_hrs = _extract_modal_time_limit_hrs(raw_cli_args)
     model_cli_name = _extract_required_cli_arg(cli_args, "--model-cli-name")
-    config_nickname_rollout = _extract_required_cli_arg(
-        cli_args, "--config-nickname-rollout"
-    )
     config_nickname_training = _extract_required_cli_arg(
         cli_args, "--config-nickname-training"
     )

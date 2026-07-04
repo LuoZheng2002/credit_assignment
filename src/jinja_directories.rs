@@ -586,6 +586,38 @@ pub fn training_trajectories_stats_oneshot_path_from_template(
     )
 }
 
+pub fn training_trajectories_oneshot_path_with_mount(
+    model_cli_name: &str,
+    config_nickname: &str,
+    mount_dir: &str,
+) -> Result<String, String> {
+    render_template(
+        &TRAINING_TRAJECTORIES_ONESHOT_PATH_TEMPLATE_ENVIRONMENT,
+        "training_trajectories_oneshot_path",
+        json!({
+            "mount_dir": mount_dir,
+            "model_cli_name": model_cli_name,
+            "config_nickname": config_nickname,
+        }),
+    )
+}
+
+pub fn training_trajectories_stats_oneshot_path_with_mount(
+    model_cli_name: &str,
+    config_nickname: &str,
+    mount_dir: &str,
+) -> Result<String, String> {
+    render_template(
+        &TRAINING_TRAJECTORIES_STATS_ONESHOT_PATH_TEMPLATE_ENVIRONMENT,
+        "training_trajectories_stats_oneshot_path",
+        json!({
+            "mount_dir": mount_dir,
+            "model_cli_name": model_cli_name,
+            "config_nickname": config_nickname,
+        }),
+    )
+}
+
 pub fn training_summary_oneshot_parent_dir_from_template(
     model_cli_name: &str,
     config_nickname: &str,

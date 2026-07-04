@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import modal
+from src_py.modal.modal_experiment_paths import experiment_service_state_volume_name
 
 MINUTES = 60
 
@@ -183,6 +184,13 @@ service_state_volume = modal.Volume.from_name(
     SERVICE_STATE_VOLUME_NAME,
     create_if_missing=True,
 )
+rollout_volume_name = experiment_service_state_volume_name(
+    DEPLOY_MODEL_CLI_NAME, DEPLOY_CONFIG_NICKNAME_ROLLOUT, pipeline="oneshot-rollout"
+)
+rollout_volume = modal.Volume.from_name(
+    rollout_volume_name,
+    create_if_missing=True,
+)
 
 
 def _print_service_state_volume_status() -> None:
@@ -206,6 +214,17 @@ def _commit_service_state_volume() -> None:
     print(
         "[oneshot_training] committed service state volume "
         f"volume_name={SERVICE_STATE_VOLUME_NAME}"
+    )
+
+
+def _commit_rollout_volume() -> None:
+    print(
+        "[oneshot_training] committing rollout volume "
+        f"volume_name={rollout_volume_name}"
+    )
+    rollout_volume.commit()
+    print(
+        f"[oneshot_training] committed rollout volume volume_name={rollout_volume_name}"
     )
 
 
@@ -352,6 +371,7 @@ app = modal.App(name=APP_NAME)
     timeout=MODAL_TIMEOUT_SECS,
     volumes={
         "/volume": service_state_volume,
+        "/rollout_volume": rollout_volume,
     },
 )
 class OneshotTrainingService:
@@ -373,6 +393,7 @@ class OneshotTrainingService:
             return _run_oneshot_training_subprocess(cli_args)
         finally:
             _commit_service_state_volume()
+            _commit_rollout_volume()
 
 
 @app.local_entrypoint()

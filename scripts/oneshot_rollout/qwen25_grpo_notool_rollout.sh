@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # One-shot tree rollout: runs the rollout binary to generate training action logs
-# and saves them to the shared Modal volume at /volume.
+# and training trajectories, saved to the shared Modal volume at /volume.
 #
 # Prerequisites:
 #   1. The correct model checkpoint must be present at the expected path on the
@@ -16,8 +16,10 @@ uv run -m src_py.modal.launch_modal_oneshot_rollout \
     --rollout-config-path config/rollout_config_training_grpo_notool.json \
     --dataset-split training \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
-    --rollout-time-limit-secs 600 \
+    --rollout-time-limit-secs 3600 \
     --max-python-processes 2 \
+    --advantage-calculation-policy tree-mappo-posterior \
+    --positive-advantage-only false \
     --mount-dir "/volume" \
     --num-gpus 1 \
     --gpu-name H200 \

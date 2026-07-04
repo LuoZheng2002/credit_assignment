@@ -24,6 +24,9 @@ pub struct PythonTrainingConfig {
     #[serde(skip_serializing_if = "usize_is_zero")]
     pub oneshot_num_epochs: usize,
     #[serde(default)]
+    #[serde(skip_serializing_if = "usize_is_zero")]
+    pub oneshot_start_epoch: usize,
+    #[serde(default)]
     #[serde(skip_serializing_if = "String::is_empty")]
     pub oneshot_model_output_root: String,
 }
@@ -138,6 +141,7 @@ mod tests {
                 .to_string(),
             training_mode: "orchestration".to_string(),
             oneshot_num_epochs: 0,
+            oneshot_start_epoch: 0,
             oneshot_model_output_root: String::new(),
         };
 

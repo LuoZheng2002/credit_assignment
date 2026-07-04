@@ -43,6 +43,7 @@ class TrainingRequestArgs(BaseModel):
     lr_total_steps: int = 0
     training_mode: str = "orchestration"
     oneshot_num_epochs: int = 0
+    oneshot_start_epoch: int = 0
     oneshot_model_output_root: str = ""
 
 

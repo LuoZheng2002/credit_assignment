@@ -147,6 +147,7 @@ class TrainConfig:
     lr_total_steps: int
     training_mode: str = "orchestration"
     oneshot_num_epochs: int = 0
+    oneshot_start_epoch: int = 0
     oneshot_model_output_root: str = ""
 
 
@@ -1561,14 +1562,27 @@ def _train_oneshot_multiepoch(
     Adam state, training data cursor, and adaptive batch state persist
     across epochs via checkpoint save/load on a shared checkpoints_parent_dir.
 
+    Supports resuming from a non-zero start epoch via config.oneshot_start_epoch.
+    When resuming, the "latest" checkpoint is loaded to restore Adam state,
+    training cursor, and adaptive batch state from the previous run.
+
     Each epoch runs for config.training_time seconds independently;
     the total training wall-clock time is therefore
-    config.training_time * config.oneshot_num_epochs.
+    config.training_time * (config.oneshot_num_epochs - config.oneshot_start_epoch).
     """
     from . import engine as eng
     from .train_loop import _run_unified_loop
 
-    for oneshot_epoch in range(config.oneshot_num_epochs):
+    start_epoch = max(0, config.oneshot_start_epoch)
+    if start_epoch >= config.oneshot_num_epochs:
+        if _is_primary_rank():
+            _tui_info(
+                "oneshot_skip_all_training=1 "
+                f"start_epoch={start_epoch} >= oneshot_num_epochs={config.oneshot_num_epochs}"
+            )
+        return
+
+    for oneshot_epoch in range(start_epoch, config.oneshot_num_epochs):
         is_final = oneshot_epoch == config.oneshot_num_epochs - 1
         output_dir = (
             Path(config.oneshot_model_output_root)
