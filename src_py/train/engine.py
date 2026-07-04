@@ -141,6 +141,10 @@ class TrainConfig:
     resume_checkpoint_tag: str
     seed: int
     adam_fp32: bool
+    adam_beta1: float
+    adam_beta2: float
+    lr_schedule: str
+    lr_total_steps: int
 
 
 @dataclass(frozen=True)
@@ -1533,6 +1537,8 @@ def train(config: TrainConfig) -> None:
     assert config.checkpoint_save_time_interval > 0.0, (
         "checkpoint_save_time_interval must be positive"
     )
+    assert 0.0 < config.adam_beta1 < 1.0, "adam_beta1 must be in (0, 1)"
+    assert 0.0 < config.adam_beta2 < 1.0, "adam_beta2 must be in (0, 1)"
     assert len(config.resume_checkpoint_tag.strip()) > 0, (
         "resume_checkpoint_tag cannot be empty"
     )
@@ -1590,7 +1596,14 @@ def train(config: TrainConfig) -> None:
             f"lr_warmup_micro_batches={lr_warmup_micro_batches} "
             f"lr_warmup_steps={lr_warmup_steps} "
             f"grad_accum_steps={config.grad_accum_steps} "
-            f"lr_min_scale={lr_min_scale:.4f}"
+            f"lr_min_scale={lr_min_scale:.4f} "
+            f"lr_schedule={config.lr_schedule} "
+            f"lr_total_steps={config.lr_total_steps}"
+        )
+        _tui_info(
+            "optimizer_config=1 "
+            f"adam_beta1={config.adam_beta1:.4f} "
+            f"adam_beta2={config.adam_beta2:.4f} "
         )
     tokenizer = AutoTokenizer.from_pretrained(resolved_model_path)
     eos_token_id = _normalize_optional_token_id(tokenizer.eos_token_id)
@@ -1632,7 +1645,7 @@ def train(config: TrainConfig) -> None:
         [parameter for parameter in model.parameters() if parameter.requires_grad],
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
-        betas=(0.9, 0.999),
+        betas=(config.adam_beta1, config.adam_beta2),
     )
     if config.adam_fp32:
         _make_adam_fp32_aware(optimizer)

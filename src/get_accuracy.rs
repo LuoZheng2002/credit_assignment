@@ -8,7 +8,7 @@ use crate::{
         posterior_calculation_config::PosteriorCalculationConfig,
         rollout_config::DirectRolloutConfig,
         tree::DirectTree,
-        tree_action_log::{DirectTreeActionLog, open_action_logs},
+        tree_action_log::{ActionLogStore, DirectTreeActionLog, open_action_logs},
     },
     llm_model::LlmModelMarker,
 };
@@ -458,4 +458,128 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
     }
 
     TestAccuracyResult { per_dataset }
+}
+
+/// Like `get_accuracy` but reads action logs from an explicit store path.
+pub async fn get_accuracy_at_path<M: LlmModelMarker, S: DatasetSplit>(
+    action_log_store_path: &str,
+    rollout_config: DirectRolloutConfig<S>,
+    posterior_calculation_config: PosteriorCalculationConfig,
+    progress_bar_label: &str,
+) -> AccuracyStats {
+    let question_store = open_hybrid_dataset::<S>();
+    let question_map: BTreeMap<usize, HybridDatasetQuestion<S>> = question_store
+        .iter()
+        .expect("failed to iterate hybrid dataset")
+        .map(|r| r.expect("failed to read question from hybrid dataset"))
+        .collect();
+    log_info(format!(
+        "get_accuracy_at_path: opening action logs at {action_log_store_path}"
+    ));
+    let action_store =
+        ActionLogStore::<M, S>::initialize_if_missing(action_log_store_path.to_string())
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Failed to open action log store at {}: {}",
+                    action_log_store_path, e
+                )
+            });
+    action_store.sort().unwrap();
+    let mut keys = action_store.get_keys().unwrap();
+    keys.sort();
+
+    log_master_progress(0.0, format!("{}: Calculating", progress_bar_label));
+
+    let num_keys = keys.len();
+    let mut weighted_num_wins = 0.0f32;
+    let mut weighted_total_plays = 0.0f32;
+    let mut num_trees_with_judgments = 0usize;
+    let mut num_trajectories_judged = 0usize;
+    let mut deepmath_stats = DatasetBucketStats::new();
+    let mut math_stats = DatasetBucketStats::new();
+    let mut numinamath_stats = DatasetBucketStats::new();
+
+    const MAX_CONCURRENT_TASKS: usize = 200;
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS));
+    let mut join_set = JoinSet::new();
+    let mut next_key_index = 0usize;
+
+    let mut finished = 0usize;
+    while next_key_index < keys.len() || !join_set.is_empty() {
+        tokio::select! {
+            permit_result = semaphore.clone().acquire_owned(), if next_key_index < keys.len() => {
+                let permit = permit_result.expect("accuracy semaphore should not be closed");
+                let key = keys[next_key_index];
+                next_key_index += 1;
+
+                let question = question_map.get(&key.0).unwrap().clone();
+                let dataset_name = dataset_bucket_name(&question.dataset_name).to_string();
+                let actions = action_store.load_action_log(key).unwrap();
+                let action_log = DirectTreeActionLog {
+                    question,
+                    rollout_config: rollout_config.clone(),
+                    posterior_calculation_config: posterior_calculation_config.clone(),
+                    actions,
+                };
+
+                join_set.spawn(async move {
+                    let _permit = permit;
+                    (dataset_name, tree_accuracy::<M, S>(&action_log))
+                });
+            }
+            joined = join_set.join_next(), if !join_set.is_empty() => {
+                finished += 1;
+
+                match joined.expect("join_set must have at least one task") {
+                    Ok((dataset_name, result)) => {
+                        if let Some((num_correct_trajectories, total_trajectories)) = result {
+                            weighted_num_wins +=
+                                num_correct_trajectories as f32 / total_trajectories as f32;
+                            weighted_total_plays += 1.0;
+                            num_trees_with_judgments += 1;
+                            num_trajectories_judged += total_trajectories;
+                            match dataset_name.as_str() {
+                                DEEPMATH_DATASET_NAME => {
+                                    deepmath_stats
+                                        .update(num_correct_trajectories, total_trajectories)
+                                }
+                                MATH_DATASET_NAME => {
+                                    math_stats.update(num_correct_trajectories, total_trajectories)
+                                }
+                                NUMINAMATH_DATASET_NAME => {
+                                    numinamath_stats.update(num_correct_trajectories, total_trajectories)
+                                }
+                                _ => unreachable!(
+                                    "dataset name was validated before task spawn"
+                                ),
+                            }
+                        }
+                    }
+                    Err(join_err) => panic!("accuracy task panicked: {join_err}"),
+                }
+
+                let progress = if num_keys == 0 {
+                    1.0
+                } else {
+                    finished as f32 / num_keys as f32
+                };
+                log_master_progress(progress, format!("{}: Calculating", progress_bar_label));
+            }
+        }
+    }
+
+    log_master_progress(1.0, format!("{}: Done", progress_bar_label));
+
+    AccuracyStats {
+        weighted_num_wins,
+        weighted_total_plays,
+        num_trees_with_judgments,
+        num_trajectories_judged,
+        deepmath_weighted_num_wins: deepmath_stats.weighted_num_wins,
+        deepmath_weighted_total_plays: deepmath_stats.weighted_total_plays,
+        math_weighted_num_wins: math_stats.weighted_num_wins,
+        math_weighted_total_plays: math_stats.weighted_total_plays,
+        numinamath_weighted_num_wins: numinamath_stats.weighted_num_wins,
+        numinamath_weighted_total_plays: numinamath_stats.weighted_total_plays,
+    }
 }

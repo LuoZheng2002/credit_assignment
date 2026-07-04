@@ -9,6 +9,7 @@ use credit_assignment::{
         rollout::{RolloutProgramConfig, rollout_all},
         rollout_config::DirectRolloutConfig,
     },
+    jinja_directories::action_logs_oneshot_path_from_template,
     json_toml_utils::read_json,
     llm_model::{
         Gemma3_4BIt, InferenceEndpoint, Llama31_8BInstruct, LlmModelMarker, LlmModelName,
@@ -24,7 +25,7 @@ const DEFAULT_PROGRESS_TUI_LOG_PATH: &str = "progress_tui_log.bin";
 #[command(
     author,
     version,
-    about = "Run direct tree rollout and save action logs"
+    about = "Run one-shot tree rollout and save action logs to one-shot paths"
 )]
 struct Args {
     #[arg(long)]
@@ -43,9 +44,9 @@ struct Args {
     dataset_split: DatasetSplitEnum,
     #[arg(long)]
     posterior_hyperparameters_path: String,
-    #[arg(long)]
-    epoch: usize, // the epoch index
-    #[arg(long)]
+    #[arg(long, default_value_t = 0)]
+    epoch: usize,
+    #[arg(long, default_value_t = 1)]
     total_epochs: usize,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
@@ -53,8 +54,6 @@ struct Args {
     rollout_time_limit_secs: usize,
     #[arg(long, default_value_t = 1)]
     max_python_processes: usize,
-    #[arg(long)]
-    inference_wrapper_log_path: String,
     #[arg(long, default_value = DEFAULT_PROGRESS_TUI_LOG_PATH)]
     progress_tui_log_path: String,
 }
@@ -66,6 +65,13 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     posterior_calculation_config: PosteriorCalculationConfig,
     inference_endpoint: InferenceEndpoint,
 ) {
+    let action_log_store_override_path = action_logs_oneshot_path_from_template::<S>(
+        &args.model_cli_name,
+        &args.config_nickname,
+        args.epoch,
+    )
+    .unwrap_or_else(|err| panic!("failed to resolve one-shot action logs path: {}", err));
+
     let program_config = RolloutProgramConfig {
         config_nickname: args.config_nickname.clone(),
         rollout_config,
@@ -77,7 +83,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         rollout_time_limit_secs: args.rollout_time_limit_secs,
         max_python_processes: args.max_python_processes,
         total_epochs: args.total_epochs,
-        action_log_store_override_path: None,
+        action_log_store_override_path: Some(action_log_store_override_path),
     };
     let _ = rollout_all::<M, S>(program_config).await;
 }
@@ -151,7 +157,7 @@ async fn main() {
     );
     assert!(args.total_epochs > 0, "total_epochs must be positive");
 
-    println!("Starting direct rollout evaluation pipeline...");
+    println!("Starting one-shot rollout pipeline...");
     let client = Client::new();
     let posterior_hyperparameters =
         read_json::<PosteriorHyperparameters>(&args.posterior_hyperparameters_path).unwrap();

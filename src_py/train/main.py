@@ -36,7 +36,7 @@ def _load_train_config(
     checkpoints_parent_dir_path = Path(request.checkpoints_parent_dir)
     final_model_output_parent_dir_path = Path(request.final_model_output_parent_dir)
 
-    training_summary_parent_dir = checkpoints_parent_dir_path
+    training_summary_parent_dir = request.training_summary_parent_dir
 
     return TrainConfig(
         training_plan=request.training_plan,
@@ -61,6 +61,10 @@ def _load_train_config(
         resume_checkpoint_tag=request.resume_checkpoint_tag or "auto",
         seed=request.seed,
         adam_fp32=request.adam_fp32,
+        adam_beta1=request.adam_beta1,
+        adam_beta2=request.adam_beta2,
+        lr_schedule=request.lr_schedule,
+        lr_total_steps=request.lr_total_steps,
     )
 
 

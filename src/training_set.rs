@@ -1222,3 +1222,64 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
     .await;
     log_info("Finished generating training trajectories file.");
 }
+
+/// Generate training trajectories using custom action log store path.
+/// Used by the one-shot training program where action logs live at a non-standard path.
+pub async fn generate_training_trajectories_with_path<M: LlmModelMarker>(
+    action_log_store_path: &str,
+    training_trajectories_dir: &str,
+    training_trajectories_msgpack_path: &str,
+    stats_file_path: &str,
+    config_bundle_path: &str,
+    rollout_config: DirectRolloutConfig<Training>,
+    posterior_calculation_config: PosteriorCalculationConfig,
+    cumulative_avg_abs_advantage_cutoff: f32,
+    advantage_calculation_policy: AdvantageCalculationPolicy,
+    positive_advantage_only: bool,
+) {
+    std::fs::create_dir_all(training_trajectories_dir).unwrap();
+    if Path::new(training_trajectories_msgpack_path).exists() {
+        std::fs::remove_file(training_trajectories_msgpack_path).unwrap();
+    }
+    write_json(
+        config_bundle_path,
+        &TrainingTrajectoryConfigBundle {
+            rollout_config: rollout_config.clone(),
+            posterior_calculation_config: posterior_calculation_config.clone(),
+        },
+    )
+    .unwrap();
+    let dataset_store = open_hybrid_dataset::<Training>();
+    let question_map: BTreeMap<usize, HybridDatasetQuestion<Training>> = dataset_store
+        .iter()
+        .expect("failed to iterate hybrid dataset")
+        .map(|r| r.expect("failed to read question from hybrid dataset"))
+        .collect();
+    let action_store =
+        ActionLogStore::<M, Training>::initialize_if_missing(action_log_store_path.to_string())
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Failed to open action log store at {}: {}",
+                    action_log_store_path, e
+                )
+            });
+    action_store
+        .write_config_bundle_if_missing(&ActionLogConfigBundle {
+            rollout_config: rollout_config.clone(),
+            posterior_calculation_config: posterior_calculation_config.clone(),
+        })
+        .unwrap();
+    rollout_logs_to_training_trajectories::<M>(
+        question_map,
+        action_store,
+        rollout_config,
+        posterior_calculation_config,
+        training_trajectories_msgpack_path.to_string(),
+        cumulative_avg_abs_advantage_cutoff,
+        stats_file_path.to_string(),
+        advantage_calculation_policy,
+        positive_advantage_only,
+    )
+    .await;
+    log_info("Finished generating one-shot training trajectories.");
+}

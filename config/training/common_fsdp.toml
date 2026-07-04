@@ -6,6 +6,8 @@ grad_accum_steps = 32
 log_time_interval = 30
 checkpoint_save_time_interval = 1800
 seed = 42
+adam_beta1 = 0.9
+adam_beta2 = 0.95
 # lora fields are unused for fsdp training plan
 lora_rank = 64
 lora_alpha = 128

@@ -9,15 +9,16 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --cumulative-avg-abs-advantage-cutoff 0.5 \
     --num-iterations-limit 3 \
     --advantage-calculation-policy tree-mappo-posterior \
-    --training-config-common-path config/training/common_fsdp.toml \
+    --training-config-common-path config/training/common_ddp.toml \
     --training-time 600 \
     --training-rollout-time-limit-secs 600 \
     --validation-rollout-time-limit-secs 1200 \
     --max-python-processes 2 \
     --num-gpus 1 \
-    --gpu-name B200 \
+    --gpu-name H200 \
     --mount-dir "/volume" \
     --positive-advantage-only false \
     --keep-action-logs true \
     --adam-fp32 false \
+    --sft false \
     --ui true

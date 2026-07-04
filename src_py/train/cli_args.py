@@ -20,6 +20,8 @@ class TrainingRequestArgs(BaseModel):
     log_time_interval: float
     checkpoint_save_time_interval: float
     seed: int
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.95
     training_time: float
     num_iterations_limit: int
     artifact_root_dir: str
@@ -29,6 +31,7 @@ class TrainingRequestArgs(BaseModel):
     model_parent_dir: str
     checkpoints_parent_dir: str
     final_model_output_parent_dir: str
+    training_summary_parent_dir: str
     hpc_training_root_dir: str | None = None
     lora_rank: int | None = None
     lora_alpha: int | None = None
@@ -36,6 +39,8 @@ class TrainingRequestArgs(BaseModel):
     lora_target_modules_csv: str | None = None
     resume_checkpoint_tag: str | None = None
     adam_fp32: bool
+    lr_schedule: str = "cosine"
+    lr_total_steps: int = 0
 
 
 class SftTrainingRequestArgs(BaseModel):
@@ -50,6 +55,8 @@ class SftTrainingRequestArgs(BaseModel):
     log_time_interval: float
     checkpoint_save_time_interval: float
     seed: int
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.95
     training_time: float
     num_iterations_limit: int
     artifact_root_dir: str

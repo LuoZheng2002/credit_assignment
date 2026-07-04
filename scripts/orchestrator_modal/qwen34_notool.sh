@@ -20,4 +20,5 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --positive-advantage-only false \
     --keep-action-logs true \
     --adam-fp32 false \
+    --sft false \
     --ui true

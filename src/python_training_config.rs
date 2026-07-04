@@ -16,6 +16,7 @@ pub struct PythonTrainingConfig {
     pub model_parent_dir: String,
     pub checkpoints_parent_dir: String,
     pub final_model_output_parent_dir: String,
+    pub training_summary_parent_dir: String,
 }
 
 impl PythonTrainingConfig {
@@ -23,6 +24,22 @@ impl PythonTrainingConfig {
         serde_json::to_vec(self)
             .map_err(|err| format!("failed to serialize training config as JSON: {}", err))
     }
+}
+
+fn default_adam_beta1() -> f32 {
+    0.9
+}
+
+fn default_adam_beta2() -> f32 {
+    0.95
+}
+
+fn default_lr_schedule() -> String {
+    "cosine".to_string()
+}
+
+fn default_lr_total_steps() -> usize {
+    0
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -35,6 +52,14 @@ pub struct PythonTrainingConfigCommon {
     pub log_time_interval: f32,
     pub checkpoint_save_time_interval: f32,
     pub seed: u64,
+    #[serde(default = "default_adam_beta1")]
+    pub adam_beta1: f32,
+    #[serde(default = "default_adam_beta2")]
+    pub adam_beta2: f32,
+    #[serde(default = "default_lr_schedule")]
+    pub lr_schedule: String,
+    #[serde(default = "default_lr_total_steps")]
+    pub lr_total_steps: usize,
     // lora specific
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lora_rank: Option<usize>,
@@ -66,6 +91,10 @@ mod tests {
                 log_time_interval: 5.0,
                 checkpoint_save_time_interval: 60.0,
                 seed: 7,
+                adam_beta1: 0.9,
+                adam_beta2: 0.95,
+                lr_schedule: "cosine".to_string(),
+                lr_total_steps: 1000,
                 lora_rank: Some(64),
                 lora_alpha: None,
                 lora_dropout: Some(0.05),
@@ -84,6 +113,8 @@ mod tests {
             checkpoints_parent_dir: "/tmp/artifacts/results/qwen35_4b/demo/epoch_3".to_string(),
             final_model_output_parent_dir: "/tmp/artifacts/results/qwen35_4b/demo/epoch_4"
                 .to_string(),
+            training_summary_parent_dir: "/tmp/artifacts/results/qwen35_4b/demo/epoch_3"
+                .to_string(),
         };
 
         let payload = config
@@ -96,6 +127,10 @@ mod tests {
         assert_eq!(parsed["artifact_root_dir"], "/tmp/artifacts");
         assert_eq!(parsed["epoch"], 3);
         assert_eq!(parsed["lora_rank"], 64);
+        let adam_beta2 = parsed["adam_beta2"]
+            .as_f64()
+            .expect("expected adam_beta2 to deserialize as f64");
+        assert!((adam_beta2 - 0.95).abs() < 0.0001);
         let dropout = parsed["lora_dropout"]
             .as_f64()
             .expect("expected lora_dropout to deserialize as f64");

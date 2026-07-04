@@ -30,6 +30,18 @@ const SFT_WRAPPER_LOG_PATH_TEMPLATE_PATH: &str = "config/directories/sft_wrapper
 const SFT_MODEL_PARENT_DIR_TEMPLATE_PATH: &str = "config/directories/sft_model_parent_dir.jinja";
 const TUI_LOG_PATH_TEMPLATE_PATH: &str = "config/directories/tui_log_path.jinja";
 
+// One-shot (standalone) template paths
+const ACTION_LOGS_TRAINING_ONESHOT_PATH_EXTSORT_TEMPLATE_PATH: &str =
+    "config/directories_oneshot/action_logs_training_oneshot_path_extsort.jinja";
+const ACTION_LOGS_VALIDATION_ONESHOT_PATH_EXTSORT_TEMPLATE_PATH: &str =
+    "config/directories_oneshot/action_logs_validation_oneshot_path_extsort.jinja";
+const TRAINING_TRAJECTORIES_ONESHOT_PATH_TEMPLATE_PATH: &str =
+    "config/directories_oneshot/training_trajectories_oneshot_path.jinja";
+const TRAINING_TRAJECTORIES_STATS_ONESHOT_PATH_TEMPLATE_PATH: &str =
+    "config/directories_oneshot/training_trajectories_stats_oneshot_path.jinja";
+const TRAINING_SUMMARY_ONESHOT_PARENT_DIR_TEMPLATE_PATH: &str =
+    "config/directories_oneshot/training_summary_oneshot_parent_dir.jinja";
+
 static ACTION_LOGS_TRAINING_PATH_EXTSORT_TEMPLATE_ENVIRONMENT: LazyLock<
     Result<minijinja::Environment<'static>, String>,
 > = LazyLock::new(|| {
@@ -147,6 +159,51 @@ static SFT_MODEL_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
 static TUI_LOG_PATH_TEMPLATE_ENVIRONMENT: LazyLock<
     Result<minijinja::Environment<'static>, String>,
 > = LazyLock::new(|| load_jinja_template_environment(TUI_LOG_PATH_TEMPLATE_PATH, "tui_log_path"));
+
+static ACTION_LOGS_TRAINING_ONESHOT_PATH_EXTSORT_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    load_jinja_template_environment(
+        ACTION_LOGS_TRAINING_ONESHOT_PATH_EXTSORT_TEMPLATE_PATH,
+        "action_logs_training_oneshot_path_extsort",
+    )
+});
+
+static ACTION_LOGS_VALIDATION_ONESHOT_PATH_EXTSORT_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    load_jinja_template_environment(
+        ACTION_LOGS_VALIDATION_ONESHOT_PATH_EXTSORT_TEMPLATE_PATH,
+        "action_logs_validation_oneshot_path_extsort",
+    )
+});
+
+static TRAINING_TRAJECTORIES_ONESHOT_PATH_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    load_jinja_template_environment(
+        TRAINING_TRAJECTORIES_ONESHOT_PATH_TEMPLATE_PATH,
+        "training_trajectories_oneshot_path",
+    )
+});
+
+static TRAINING_TRAJECTORIES_STATS_ONESHOT_PATH_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    load_jinja_template_environment(
+        TRAINING_TRAJECTORIES_STATS_ONESHOT_PATH_TEMPLATE_PATH,
+        "training_trajectories_stats_oneshot_path",
+    )
+});
+
+static TRAINING_SUMMARY_ONESHOT_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    load_jinja_template_environment(
+        TRAINING_SUMMARY_ONESHOT_PARENT_DIR_TEMPLATE_PATH,
+        "training_summary_oneshot_parent_dir",
+    )
+});
 
 fn render_template(
     template_env: &LazyLock<Result<minijinja::Environment<'static>, String>>,
@@ -421,6 +478,68 @@ pub fn tui_log_path_from_template(
     render_model_config_template(
         &TUI_LOG_PATH_TEMPLATE_ENVIRONMENT,
         "tui_log_path",
+        model_cli_name,
+        config_nickname,
+    )
+}
+
+// ---- One-shot path functions ----
+
+pub fn action_logs_oneshot_path_from_template<S: DatasetSplit>(
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+) -> Result<String, String> {
+    match S::dataset_file_postfix().as_str() {
+        "train" => render_model_config_template(
+            &ACTION_LOGS_TRAINING_ONESHOT_PATH_EXTSORT_TEMPLATE_ENVIRONMENT,
+            "action_logs_training_oneshot_path_extsort",
+            model_cli_name,
+            config_nickname,
+        ),
+        "val" => render_epoch_template(
+            &ACTION_LOGS_VALIDATION_ONESHOT_PATH_EXTSORT_TEMPLATE_ENVIRONMENT,
+            "action_logs_validation_oneshot_path_extsort",
+            model_cli_name,
+            config_nickname,
+            epoch,
+        ),
+        "test" => Err("Testing split is not supported for one-shot action logs".to_string()),
+        other => Err(format!("Unsupported dataset split postfix: {}", other)),
+    }
+}
+
+pub fn training_trajectories_oneshot_path_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+) -> Result<String, String> {
+    render_model_config_template(
+        &TRAINING_TRAJECTORIES_ONESHOT_PATH_TEMPLATE_ENVIRONMENT,
+        "training_trajectories_oneshot_path",
+        model_cli_name,
+        config_nickname,
+    )
+}
+
+pub fn training_trajectories_stats_oneshot_path_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+) -> Result<String, String> {
+    render_model_config_template(
+        &TRAINING_TRAJECTORIES_STATS_ONESHOT_PATH_TEMPLATE_ENVIRONMENT,
+        "training_trajectories_stats_oneshot_path",
+        model_cli_name,
+        config_nickname,
+    )
+}
+
+pub fn training_summary_oneshot_parent_dir_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+) -> Result<String, String> {
+    render_model_config_template(
+        &TRAINING_SUMMARY_ONESHOT_PARENT_DIR_TEMPLATE_ENVIRONMENT,
+        "training_summary_oneshot_parent_dir",
         model_cli_name,
         config_nickname,
     )

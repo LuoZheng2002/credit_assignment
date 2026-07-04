@@ -335,7 +335,7 @@ app = modal.App(name=APP_NAME)
     startup_timeout=20 * MINUTES,
     min_containers=0,
     max_containers=1,
-    timeout=6 * 60 * MINUTES,
+    timeout=12 * 60 * MINUTES,
     volumes={
         "/volume": service_state_volume,
     },

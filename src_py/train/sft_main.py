@@ -29,7 +29,6 @@ from .engine import (
     _init_distributed_device,
     _is_primary_rank,
     _make_adam_fp32_aware,
-    _normalize_optional_token_id,
     _resolve_local_model_path,
     _resolve_pad_token_id,
     _resolve_resume_checkpoint_tag,
@@ -160,6 +159,8 @@ def _run_sft_training(
     assert request.training_time > 0.0, "training_time must be positive"
     assert request.num_iterations_limit > 0, "num_iterations_limit must be positive"
     assert request.grad_accum_steps > 0, "grad_accum_steps must be positive"
+    assert 0.0 < request.adam_beta1 < 1.0, "adam_beta1 must be in (0, 1)"
+    assert 0.0 < request.adam_beta2 < 1.0, "adam_beta2 must be in (0, 1)"
 
     from transformers import AutoTokenizer
 
@@ -176,7 +177,6 @@ def _run_sft_training(
         )
 
     tokenizer = AutoTokenizer.from_pretrained(resolved_model_path)
-    eos_token_id = _normalize_optional_token_id(tokenizer.eos_token_id)
     pad_token_id = _resolve_pad_token_id(tokenizer.pad_token_id, tokenizer.eos_token_id)
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         tokenizer.pad_token_id = int(tokenizer.eos_token_id)
@@ -197,10 +197,11 @@ def _run_sft_training(
     if training_plan == TRAINING_PLAN_LORA:
         model, attention_backend = _build_lora_model(
             model_path=resolved_model_path,
-            lora_rank=request.lora_rank,
-            lora_alpha=request.lora_alpha,
-            lora_dropout=request.lora_dropout,
-            lora_target_modules_csv=request.lora_target_modules_csv,
+            lora_rank=request.lora_rank or 64,
+            lora_alpha=request.lora_alpha or 128,
+            lora_dropout=request.lora_dropout or 0.05,
+            lora_target_modules_csv=request.lora_target_modules_csv
+            or "q_proj,k_proj,v_proj,o_proj",
             device=device,
         )
     elif training_plan == TRAINING_PLAN_DDP:
@@ -218,7 +219,7 @@ def _run_sft_training(
         [p for p in model.parameters() if p.requires_grad],
         lr=request.learning_rate,
         weight_decay=request.weight_decay,
-        betas=(0.9, 0.999),
+        betas=(request.adam_beta1, request.adam_beta2),
     )
     if request.adam_fp32:
         _make_adam_fp32_aware(optimizer)
@@ -246,7 +247,7 @@ def _run_sft_training(
 
     resolved_resume_tag = _resolve_resume_checkpoint_tag(
         output_dir=checkpoints_parent_dir,
-        resume_checkpoint_tag=request.resume_checkpoint_tag,
+        resume_checkpoint_tag=request.resume_checkpoint_tag or "auto",
     )
 
     # Load checkpoint if available
@@ -367,60 +368,60 @@ def _run_sft_training(
                             )
 
                 # Checkpointing
-                if _is_primary_rank():
-                    now = time.time()
-                    if (
-                        now - last_checkpoint_time
-                        >= request.checkpoint_save_time_interval
-                    ):
-                        last_checkpoint_time = now
-                        # Ensure no partial accumulation when checkpointing
-                        if accumulation_step != 0:
-                            torch.nn.utils.clip_grad_norm_(
-                                [p for p in model.parameters() if p.requires_grad],
-                                max_norm=1.0,
-                            )
-                            optimizer.step()
-                            optimizer.zero_grad()
-                            global_step += 1
-                            trained_samples += batch_size * accumulation_step
-                            accumulation_step = 0
-                        _save_checkpoint(
-                            model=model,
-                            optimizer=optimizer,
-                            output_dir=checkpoints_parent_dir,
-                            checkpoint_tag="latest",
-                            training_plan=training_plan,
-                            global_step=global_step,
-                            next_iteration_index=global_step,
-                            next_batch_cursor=sample_index,
-                            accumulation_step=accumulation_step,
-                            next_sample_index=sample_index,
-                            next_batch_size=batch_size,
-                            adaptive_velocity=0.0,
-                            adaptive_throughput_ema=0.0,
-                            adaptive_best_throughput_ema=0.0,
-                            adaptive_memory_utilization_ema=0.0,
-                            adaptive_previous_tokens_per_sample=0.0,
-                            adaptive_next_batch_size_float=float(batch_size),
-                            elapsed_training_time_sec=time.time() - training_start_time,
-                            samples_trained=trained_samples,
-                            samples_available=sample_count,
-                            max_average_absolute_advantage=-1.0,
-                            min_average_absolute_advantage=-1.0,
-                            median_average_absolute_advantage=-1.0,
+                now = time.time()
+                if now - last_checkpoint_time >= request.checkpoint_save_time_interval:
+                    last_checkpoint_time = now
+                    # Ensure no partial accumulation when checkpointing
+                    if accumulation_step != 0:
+                        torch.nn.utils.clip_grad_norm_(
+                            [p for p in model.parameters() if p.requires_grad],
+                            max_norm=1.0,
                         )
+                        optimizer.step()
+                        optimizer.zero_grad()
+                        global_step += 1
+                        trained_samples += batch_size * accumulation_step
+                        accumulation_step = 0
+                    if _is_primary_rank():
+                        _tui_info(
+                            f"saving_sft_checkpoint=1 global_step={global_step} sample_index={sample_index}"
+                        )
+                    _save_checkpoint(
+                        model=model,
+                        optimizer=optimizer,
+                        output_dir=checkpoints_parent_dir,
+                        checkpoint_tag="latest",
+                        training_plan=training_plan,
+                        global_step=global_step,
+                        next_iteration_index=global_step,
+                        next_batch_cursor=sample_index,
+                        accumulation_step=accumulation_step,
+                        next_sample_index=sample_index,
+                        next_batch_size=batch_size,
+                        adaptive_velocity=0.0,
+                        adaptive_throughput_ema=0.0,
+                        adaptive_best_throughput_ema=0.0,
+                        adaptive_memory_utilization_ema=0.0,
+                        adaptive_previous_tokens_per_sample=0.0,
+                        adaptive_next_batch_size_float=float(batch_size),
+                        elapsed_training_time_sec=time.time() - training_start_time,
+                        samples_trained=trained_samples,
+                        samples_available=sample_count,
+                        max_average_absolute_advantage=-1.0,
+                        min_average_absolute_advantage=-1.0,
+                        median_average_absolute_advantage=-1.0,
+                    )
     finally:
         pass  # No lazy loader to close — all data is in memory
 
+    _save_final_model_folder(
+        model=model,
+        training_plan=training_plan,
+        final_model_output_parent_dir=final_model_output_parent_dir,
+        source_model_path=resolved_model_path,
+        tokenizer=tokenizer,
+    )
     if _is_primary_rank():
-        _save_final_model_folder(
-            model=model,
-            training_plan=training_plan,
-            final_model_output_parent_dir=final_model_output_parent_dir,
-            source_model_path=resolved_model_path,
-            tokenizer=tokenizer,
-        )
         total_elapsed = time.time() - training_start_time
         _tui_info(
             f"sft_finished=1 "

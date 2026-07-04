@@ -116,6 +116,7 @@ _NONFINITE_TENSOR_CODES = {
     "loss": 3,
     "token_losses": 3,
     "weighted_loss": 3,
+    "total_loss": 3,
     "gradients": 4,
     "grad_norm": 4,
     "optimizer_state": 5,
@@ -491,13 +492,27 @@ def _maybe_emit_master_progress(
     clock.last_master_progress_time = now
 
 
+LR_SCHEDULE_SQRT = "sqrt"
+LR_SCHEDULE_COSINE = "cosine"
+
+
 def _compute_lr_multiplier(
-    *, step_index: int, warmup_steps: int, min_lr_scale: float
+    *,
+    step_index: int,
+    warmup_steps: int,
+    min_lr_scale: float,
+    schedule: str,
+    total_steps: int,
 ) -> float:
     assert step_index >= 0, "step_index must be non-negative"
     assert warmup_steps >= 0, "warmup_steps must be non-negative"
     assert min_lr_scale > 0.0 and min_lr_scale <= 1.0, "min_lr_scale must be in (0, 1]"
+    assert schedule in {LR_SCHEDULE_SQRT, LR_SCHEDULE_COSINE}, (
+        f"lr_schedule must be one of: {LR_SCHEDULE_SQRT}, {LR_SCHEDULE_COSINE}"
+    )
+    assert total_steps >= 0, "total_steps must be non-negative"
 
+    # --- warmup phase (linear ramp from min_lr_scale to 1.0) ---
     if warmup_steps > 0 and step_index < warmup_steps:
         warmup_scale = float(step_index + 1) / float(warmup_steps)
         return max(min_lr_scale, min(1.0, warmup_scale))
@@ -505,6 +520,15 @@ def _compute_lr_multiplier(
     if warmup_steps <= 0:
         return 1.0
 
+    # --- decay phase ---
+    if schedule == LR_SCHEDULE_COSINE and total_steps > warmup_steps:
+        decay_steps = total_steps - warmup_steps
+        progress = min(1.0, float(step_index - warmup_steps) / float(decay_steps))
+        cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return min_lr_scale + (1.0 - min_lr_scale) * cosine_decay
+
+    # sqrt decay (original behaviour, also used as fallback when total_steps is
+    # not meaningfully larger than warmup_steps for cosine)
     decay_scale = math.sqrt(float(warmup_steps) / float(max(step_index, warmup_steps)))
     return max(min_lr_scale, min(1.0, decay_scale))
 
@@ -516,11 +540,15 @@ def _set_optimizer_learning_rate(
     step_index: int,
     warmup_steps: int,
     min_lr_scale: float,
+    schedule: str,
+    total_steps: int,
 ) -> float:
     multiplier = _compute_lr_multiplier(
         step_index=step_index,
         warmup_steps=warmup_steps,
         min_lr_scale=min_lr_scale,
+        schedule=schedule,
+        total_steps=total_steps,
     )
     current_learning_rate = base_learning_rate * multiplier
     for param_group in optimizer.param_groups:
@@ -549,6 +577,8 @@ def _flush_partial_gradients(
     base_learning_rate: float,
     lr_warmup_steps: int,
     lr_min_scale: float,
+    lr_schedule: str,
+    lr_total_steps: int,
 ) -> tuple[int, int, float | None, float]:
     if accumulation_step <= 0:
         current_lr = float(optimizer.param_groups[0]["lr"])
@@ -564,6 +594,8 @@ def _flush_partial_gradients(
         step_index=next_global_step,
         warmup_steps=lr_warmup_steps,
         min_lr_scale=lr_min_scale,
+        schedule=lr_schedule,
+        total_steps=lr_total_steps,
     )
     return 0, next_global_step, clipped_grad_norm, current_lr
 
@@ -725,6 +757,47 @@ def _run_unified_loop(
     trajectory_length_cap = DEFAULT_TRAJECTORY_LENGTH_CAP
 
     sample_count = lazy_loader.sample_count
+
+    lr_schedule = config.lr_schedule
+    assert lr_schedule in {LR_SCHEDULE_SQRT, LR_SCHEDULE_COSINE}, (
+        f"lr_schedule must be one of: {LR_SCHEDULE_SQRT}, {LR_SCHEDULE_COSINE}"
+    )
+
+    # Cap warmup steps so the LR reaches its peak before the dataset is exhausted
+    # in a single pass (critical for tiny datasets).
+    if lr_warmup_steps > 0 and sample_count > 0:
+        max_warmup_steps = max(1, sample_count // (2 * config.grad_accum_steps))
+        if lr_warmup_steps > max_warmup_steps:
+            if _is_primary_rank():
+                _tui_info(
+                    "lr_warmup_capped_for_dataset_size=1 "
+                    f"original_warmup_steps={lr_warmup_steps} "
+                    f"capped_warmup_steps={max_warmup_steps} "
+                    f"sample_count={sample_count} "
+                    f"grad_accum_steps={config.grad_accum_steps}"
+                )
+            lr_warmup_steps = max_warmup_steps
+
+    # Auto-compute total decay steps when not explicitly provided.
+    # Conservative estimate: assume batch_size=1 and each sample is visited
+    # num_iterations_limit times, then divide by grad_accum_steps.
+    if config.lr_total_steps > 0:
+        lr_total_steps = config.lr_total_steps
+    else:
+        lr_total_steps = max(
+            1,
+            (sample_count * config.num_iterations_limit) // config.grad_accum_steps,
+        )
+
+    if _is_primary_rank():
+        _tui_info(
+            "lr_schedule_config=1 "
+            f"lr_schedule={lr_schedule} "
+            f"lr_warmup_steps={lr_warmup_steps} "
+            f"lr_total_steps={lr_total_steps} "
+            f"lr_min_scale={lr_min_scale:.4f}"
+        )
+
     samples_available = sample_count
     if (
         resume_state.samples_available == samples_available
@@ -869,6 +942,8 @@ def _run_unified_loop(
         step_index=global_step,
         warmup_steps=lr_warmup_steps,
         min_lr_scale=lr_min_scale,
+        schedule=lr_schedule,
+        total_steps=lr_total_steps,
     )
     resumed_elapsed_training_time_sec = min(
         config.training_time, max(0.0, resume_state.elapsed_training_time_sec)
@@ -1530,6 +1605,8 @@ def _run_unified_loop(
                 step_index=global_step,
                 warmup_steps=lr_warmup_steps,
                 min_lr_scale=lr_min_scale,
+                schedule=lr_schedule,
+                total_steps=lr_total_steps,
             )
 
             if (not is_distributed) or _is_primary_rank():
@@ -1630,6 +1707,8 @@ def _run_unified_loop(
             base_learning_rate=config.learning_rate,
             lr_warmup_steps=lr_warmup_steps,
             lr_min_scale=lr_min_scale,
+            lr_schedule=lr_schedule,
+            lr_total_steps=lr_total_steps,
         )
     )
     if _is_primary_rank() and clipped_grad_norm is not None:

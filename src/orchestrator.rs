@@ -605,6 +605,7 @@ impl Orchestrator {
             rollout_time_limit_secs: self.validation_rollout_time_limit_secs,
             max_python_processes: self.max_python_processes,
             total_epochs: self.num_total_epochs,
+            action_log_store_override_path: None,
         };
         let rollout_summary = rollout_all::<M, Validation>(validation_rollout_program_config).await;
         self.progress
@@ -650,6 +651,7 @@ impl Orchestrator {
             rollout_time_limit_secs: self.training_rollout_time_limit_secs,
             max_python_processes: self.max_python_processes,
             total_epochs: self.num_total_epochs,
+            action_log_store_override_path: None,
         };
         let rollout_summary = rollout_all::<M, Training>(training_set_rollout_program_config).await;
         self.progress
@@ -1002,9 +1004,10 @@ impl Orchestrator {
             config_nickname: self.config_nickname.clone(),
             adam_fp32: self.adam_fp32,
             epoch: 0,
-            model_parent_dir,
-            checkpoints_parent_dir,
+            model_parent_dir: model_parent_dir.clone(),
+            checkpoints_parent_dir: checkpoints_parent_dir.clone(),
             final_model_output_parent_dir,
+            training_summary_parent_dir: checkpoints_parent_dir,
         };
 
         let sft_start_time = Instant::now();
@@ -1086,9 +1089,10 @@ impl Orchestrator {
             config_nickname: self.config_nickname.clone(),
             adam_fp32: self.adam_fp32,
             epoch,
-            model_parent_dir,
-            checkpoints_parent_dir,
+            model_parent_dir: model_parent_dir.clone(),
+            checkpoints_parent_dir: checkpoints_parent_dir.clone(),
             final_model_output_parent_dir,
+            training_summary_parent_dir: checkpoints_parent_dir,
         };
 
         let training_start_time = Instant::now();

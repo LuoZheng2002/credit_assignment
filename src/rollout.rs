@@ -627,6 +627,8 @@ pub struct RolloutProgramConfig<S: DatasetSplit> {
     pub rollout_time_limit_secs: usize,
     pub max_python_processes: usize,
     pub total_epochs: usize,
+    /// If set, open the action log store at this path instead of the default orchestrator path.
+    pub action_log_store_override_path: Option<String>,
 }
 
 pub struct RolloutExecutionSummary {
@@ -649,6 +651,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         rollout_time_limit_secs,
         max_python_processes,
         total_epochs,
+        action_log_store_override_path,
     } = program_config;
     assert!(
         max_python_processes > 0,
@@ -677,10 +680,15 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     let llm_callable = M::Callable::from_inference_endpoint(client.clone(), &inference_endpoint);
     let dataset = open_hybrid_dataset::<S>();
 
-    let action_store = Arc::new(tokio::sync::Mutex::new(open_action_logs::<M, S>(
-        &config_nickname,
-        epoch,
-    )));
+    let action_store = Arc::new(tokio::sync::Mutex::new(
+        if let Some(ref override_path) = action_log_store_override_path {
+            ActionLogStore::initialize_if_missing(override_path.clone()).unwrap_or_else(|e| {
+                panic!("Failed to open action log store at {override_path}: {e}")
+            })
+        } else {
+            open_action_logs::<M, S>(&config_nickname, epoch)
+        },
+    ));
     {
         let store = action_store.lock().await;
         store

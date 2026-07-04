@@ -112,6 +112,7 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
         rollout_time_limit_secs: args.rollout_time_limit_secs,
         max_python_processes: args.max_python_processes,
         total_epochs: testing_config.total_epochs,
+        action_log_store_override_path: None,
     };
     let _ = rollout_all::<M, Testing>(program_config).await;
 

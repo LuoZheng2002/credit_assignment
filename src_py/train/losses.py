@@ -130,6 +130,9 @@ def compute_advantage_weighted_causal_lm_loss(
     ).sum() / supervised_count_fp
     _assert_tensor_finite(weighted_loss, "weighted_loss")
 
+    total_loss = weighted_loss
+    _assert_tensor_finite(total_loss, "total_loss")
+
     local_batch_count = torch.tensor(
         float(batch_size), device=logits.device, dtype=torch.float32
     )
@@ -146,6 +149,10 @@ def compute_advantage_weighted_causal_lm_loss(
         ).sum(),
         local_supervised_tokens,
     )
+    global_total_loss = _global_weighted_mean(
+        total_loss.detach() * local_supervised_tokens,
+        local_supervised_tokens,
+    )
     global_adv_norm_mean = _global_weighted_mean(
         per_token_advantages.detach().to(torch.float32).sum(),
         local_supervised_tokens,
@@ -156,6 +163,7 @@ def compute_advantage_weighted_causal_lm_loss(
 
     stats = {
         "loss_weighted": float(global_weighted_loss.item()),
+        "loss_total": float(global_total_loss.item()),
         "loss_unweighted_ce": float(global_unweighted_ce.item()),
         "advantage_raw_mean": float(advantage_mean.item()),
         "advantage_raw_std": float(advantage_std.item()),
@@ -164,7 +172,7 @@ def compute_advantage_weighted_causal_lm_loss(
         "batch_size_per_rank": float(batch_size),
     }
 
-    return AdvantageWeightedLossOutput(loss=weighted_loss, stats=stats)
+    return AdvantageWeightedLossOutput(loss=total_loss, stats=stats)
 
 
 @dataclass(frozen=True)
