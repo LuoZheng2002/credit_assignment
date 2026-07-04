@@ -1107,6 +1107,7 @@ def _run_unified_loop(
                         advantage_clip=config.advantage_clip,
                         clip_epsilon=config.clip_epsilon,
                         negative_loss_weight=config.negative_loss_weight,
+                        kl_beta=config.kl_beta,
                     )
                 else:
                     loss_output = compute_advantage_weighted_causal_lm_loss(

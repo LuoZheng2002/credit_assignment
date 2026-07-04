@@ -65,6 +65,7 @@ def _load_train_config(
         negative_loss_weight=request.negative_loss_weight,
         loss_objective=request.loss_objective,
         clip_epsilon=request.clip_epsilon,
+        kl_beta=request.kl_beta,
         uniform_positive_advantage=request.uniform_positive_advantage,
     )
 

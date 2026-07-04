@@ -218,6 +218,7 @@ def compute_ppo_clip_causal_lm_loss(
     advantage_clip: float,
     clip_epsilon: float,
     negative_loss_weight: float = 1.0,
+    kl_beta: float = 0.0,
 ) -> AdvantageWeightedLossOutput:
     """PPO clipped-surrogate loss over supervised tokens.
 
@@ -241,6 +242,7 @@ def compute_ppo_clip_causal_lm_loss(
     assert advantage_clip > 0.0, "advantage_clip must be > 0"
     assert 0.0 < clip_epsilon < 1.0, "clip_epsilon must be in (0, 1)"
     assert negative_loss_weight >= 0.0, "negative_loss_weight must be >= 0"
+    assert kl_beta >= 0.0, "kl_beta must be >= 0"
 
     shifted_logits = logits[:, :-1, :].contiguous()
     shifted_ref_logits = ref_logits[:, :-1, :].contiguous()
@@ -298,7 +300,14 @@ def compute_ppo_clip_causal_lm_loss(
         * per_token_advantages
     )
     per_token_surrogate = torch.minimum(unclipped_surrogate, clipped_surrogate)
-    ppo_loss = -per_token_surrogate.sum() / supervised_count_fp
+    # Sequence-level anchor the per-token clip cannot provide: the k3 KL
+    # estimator (Schulman) to the epoch-start reference, as in GRPO.
+    # kl3 = exp(-log_ratio) - 1 + log_ratio  (>= 0, minimized at ratio=1)
+    per_token_kl = torch.exp(-log_ratio) - 1.0 + log_ratio
+    _assert_tensor_finite(per_token_kl, "kl_penalty")
+    ppo_loss = (
+        -per_token_surrogate.sum() + kl_beta * per_token_kl.sum()
+    ) / supervised_count_fp
     _assert_tensor_finite(ppo_loss, "weighted_loss")
 
     local_batch_count = torch.tensor(
@@ -325,11 +334,15 @@ def compute_ppo_clip_causal_lm_loss(
         local_supervised_tokens, local_batch_count
     )
 
+    global_kl_mean = _global_weighted_mean(
+        per_token_kl.detach().sum(), local_supervised_tokens
+    )
     stats = {
         "loss_weighted": float(global_ppo_loss.item()),
         "loss_unweighted_ce": float(global_unweighted_ce.item()),
         "ppo_ratio_mean": float(global_ratio_mean.item()),
         "ppo_clip_fraction": float(global_clip_fraction.item()),
+        "ppo_kl_mean": float(global_kl_mean.item()),
         "advantage_raw_mean": float(advantage_mean.item()),
         "advantage_raw_std": float(advantage_std.item()),
         "advantage_normalized_mean": float(global_adv_norm_mean.item()),

@@ -145,6 +145,7 @@ class TrainConfig:
     negative_loss_weight: float = 1.0
     loss_objective: str = "advantage_weighted_ce"
     clip_epsilon: float = 0.2
+    kl_beta: float = 0.0
     uniform_positive_advantage: bool = False
 
 

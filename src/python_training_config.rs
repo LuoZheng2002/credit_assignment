@@ -63,6 +63,10 @@ pub struct PythonTrainingConfigCommon {
     /// PPO trust-region half-width, used when loss_objective="ppo_clip".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clip_epsilon: Option<f32>,
+    /// KL(pi_theta || pi_ref) penalty weight (GRPO-style sequence-level
+    /// anchor), used when loss_objective="ppo_clip".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kl_beta: Option<f32>,
     /// Ablation switch: binarize positive advantages in the loss so credit
     /// magnitudes carry no information (uniform rejection sampling).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -96,6 +100,7 @@ mod tests {
                 negative_loss_weight: None,
                 loss_objective: None,
                 clip_epsilon: None,
+                kl_beta: None,
                 uniform_positive_advantage: None,
             },
             training_time: 120.0,

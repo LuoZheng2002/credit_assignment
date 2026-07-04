@@ -47,6 +47,9 @@ class TrainingRequestArgs(BaseModel):
     loss_objective: str = "advantage_weighted_ce"
     # PPO trust-region half-width; only used when loss_objective="ppo_clip".
     clip_epsilon: float = 0.2
+    # KL(pi_theta || pi_ref) penalty weight (GRPO-style sequence anchor);
+    # only used when loss_objective="ppo_clip".
+    kl_beta: float = 0.0
     # Ablation: binarize positive advantages so credit magnitudes carry no
     # information (uniform rejection-sampling baseline).
     uniform_positive_advantage: bool = False
