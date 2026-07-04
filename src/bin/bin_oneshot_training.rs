@@ -18,7 +18,7 @@ use credit_assignment::{
     get_accuracy::get_accuracy_at_path,
     jinja_directories::{
         action_logs_oneshot_path_from_template, inference_wrapper_log_path_from_template,
-        model_checkpoint_dir_from_template, model_parent_dir_from_template,
+        oneshot_model_checkpoint_dir_from_template, oneshot_model_parent_dir_from_template,
         training_summary_oneshot_parent_dir_from_template,
         training_trajectories_oneshot_path_from_template,
         training_trajectories_stats_oneshot_path_from_template,
@@ -43,7 +43,7 @@ use research_utility::progress_tui_logger::{
 #[command(
     author,
     version,
-    about = "One-shot training: uses fixed rollout trajectories, trains model with periodic validation"
+    about = "One-shot training: uses fixed rollout trajectories, trains all epochs first, then validates all models (including base model)"
 )]
 struct Args {
     #[arg(long)]
@@ -51,7 +51,9 @@ struct Args {
     #[arg(long)]
     max_rollout_concurrency: usize,
     #[arg(long)]
-    config_nickname: String,
+    config_nickname_rollout: String,
+    #[arg(long)]
+    config_nickname_training: String,
     #[arg(long)]
     validation_rollout_config_path: String,
     #[arg(long)]
@@ -59,7 +61,7 @@ struct Args {
     #[arg(long)]
     posterior_hyperparameters_path: String,
     #[arg(long)]
-    num_total_epochs: usize,
+    num_oneshot_epochs: usize,
     #[arg(long)]
     cumulative_avg_abs_advantage_cutoff: f32,
     #[arg(long, value_enum)]
@@ -67,7 +69,7 @@ struct Args {
     #[arg(long)]
     training_config_common_path: String,
     #[arg(long)]
-    training_time: f32,
+    oneshot_per_epoch_training_time: f32,
     #[arg(long)]
     num_iterations_limit: usize,
     #[arg(long)]
@@ -152,27 +154,29 @@ fn write_training_summary(
         })
     };
 
-    // 1. Epoch-specific snapshot: training_summary_epoch_{N}.json
-    let epoch_output_path =
-        Path::new(summary_parent_dir).join(format!("training_summary_epoch_{}.json", latest_epoch));
+    // 1. Per-epoch snapshot: oneshot_per_epoch_summary_epoch_{N}.json
+    let epoch_output_path = Path::new(summary_parent_dir).join(format!(
+        "oneshot_per_epoch_summary_epoch_{}.json",
+        latest_epoch
+    ));
     std::fs::write(
         &epoch_output_path,
         serde_json::to_string_pretty(&latest_epoch_data).unwrap() + "\n",
     )
     .unwrap_or_else(|err| {
         panic!(
-            "Failed to write epoch-specific training summary to {}: {}",
+            "Failed to write per-epoch oneshot summary to {}: {}",
             epoch_output_path.display(),
             err
         )
     });
     log_info(format!(
-        "Wrote epoch-specific training summary to {}",
+        "Wrote per-epoch oneshot summary to {}",
         epoch_output_path.display()
     ));
 
-    // 2. Epoch-agnostic accumulated file: training_summary.json (all epochs so far)
-    let accumulated_path = Path::new(summary_parent_dir).join("training_summary.json");
+    // 2. Aggregated file: oneshot_aggregated_summary.json (all epochs so far)
+    let accumulated_path = Path::new(summary_parent_dir).join("oneshot_aggregated_summary.json");
     let payload = serde_json::json!({
         "latest_epoch": latest_epoch,
         "validation_accuracies": accuracies_json,
@@ -184,31 +188,32 @@ fn write_training_summary(
     )
     .unwrap_or_else(|err| {
         panic!(
-            "Failed to write accumulated training summary to {}: {}",
+            "Failed to write aggregated oneshot summary to {}: {}",
             accumulated_path.display(),
             err
         )
     });
     log_info(format!(
-        "Wrote accumulated training summary to {}",
+        "Wrote aggregated oneshot summary to {}",
         accumulated_path.display()
     ));
 }
 
 async fn run_oneshot_training<M: LlmModelMarker>(
     model_cli_name: &str,
-    config_nickname: &str,
+    config_nickname_rollout: &str,
+    config_nickname_training: &str,
     max_rollout_concurrency: usize,
     validation_rollout_config: DirectRolloutConfig<Validation>,
     training_set_rollout_config: DirectRolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
-    num_total_epochs: usize,
+    num_oneshot_epochs: usize,
     validation_rollout_time_limit_secs: usize,
     max_python_processes: usize,
     cumulative_avg_abs_advantage_cutoff: f32,
     advantage_calculation_policy: AdvantageCalculationPolicy,
     training_config_common: credit_assignment::python_training_config::PythonTrainingConfigCommon,
-    training_time: f32,
+    oneshot_per_epoch_training_time: f32,
     num_iterations_limit: usize,
     num_gpus: usize,
     inference_wrapper_log_path: &str,
@@ -219,16 +224,19 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     let client = Client::new();
 
     // Resolve one-shot paths
-    let oneshot_training_action_log_path =
-        action_logs_oneshot_path_from_template::<Training>(model_cli_name, config_nickname, 0)
-            .unwrap_or_else(|err| {
-                panic!(
-                    "failed to resolve one-shot training action logs path: {}",
-                    err
-                )
-            });
+    let oneshot_training_action_log_path = action_logs_oneshot_path_from_template::<Training>(
+        model_cli_name,
+        config_nickname_rollout,
+        0,
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "failed to resolve one-shot training action logs path: {}",
+            err
+        )
+    });
     let oneshot_trajectories_dir =
-        training_trajectories_oneshot_path_from_template(model_cli_name, config_nickname)
+        training_trajectories_oneshot_path_from_template(model_cli_name, config_nickname_training)
             .unwrap_or_else(|err| {
                 panic!(
                     "failed to resolve one-shot training trajectories path: {}",
@@ -239,15 +247,17 @@ async fn run_oneshot_training<M: LlmModelMarker>(
         .join("trajectories.msgpack")
         .to_string_lossy()
         .into_owned();
-    let oneshot_stats_path =
-        training_trajectories_stats_oneshot_path_from_template(model_cli_name, config_nickname)
-            .unwrap_or_else(|err| panic!("failed to resolve one-shot stats path: {}", err));
+    let oneshot_stats_path = training_trajectories_stats_oneshot_path_from_template(
+        model_cli_name,
+        config_nickname_training,
+    )
+    .unwrap_or_else(|err| panic!("failed to resolve one-shot stats path: {}", err));
     let oneshot_config_bundle_path = Path::new(&oneshot_trajectories_dir)
         .join("config_bundle.json")
         .to_string_lossy()
         .into_owned();
     let oneshot_training_summary_parent_dir =
-        training_summary_oneshot_parent_dir_from_template(model_cli_name, config_nickname)
+        training_summary_oneshot_parent_dir_from_template(model_cli_name, config_nickname_training)
             .unwrap_or_else(|err| {
                 panic!(
                     "failed to resolve one-shot training summary parent dir: {}",
@@ -273,26 +283,96 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     )
     .await;
 
-    // Step 2: Loop epochs: validate, train, write summary
-    let mut validation_accuracies: BTreeMap<usize, (f32, f32, f32, f32)> = BTreeMap::new();
-    let mut training_throughputs: BTreeMap<usize, f32> = BTreeMap::new();
+    // ================================================================
+    // Phase 1: Train all oneshot epochs in a single process
+    //        (Adam state, training cursor, and adaptive batch state
+    //         persist across epochs via checkpoint save/load)
+    // ================================================================
+    log_state(format!(
+        "Starting oneshot training for {} epoch(s) in a single process",
+        num_oneshot_epochs
+    ));
 
-    for epoch in 0..num_total_epochs {
+    let shared_checkpoints_parent_dir =
+        oneshot_model_checkpoint_dir_from_template(model_cli_name, config_nickname_training, 0)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "failed to resolve shared oneshot checkpoints parent dir: {}",
+                    err
+                )
+            });
+    let oneshot_model_output_root = shared_checkpoints_parent_dir
+        .rsplit_once('/')
+        .map(|(parent, _)| parent.to_string())
+        .unwrap_or_else(|| shared_checkpoints_parent_dir.clone());
+
+    let base_model_parent_dir =
+        oneshot_model_parent_dir_from_template(model_cli_name, config_nickname_training, 0)
+            .unwrap_or_else(|err| {
+                panic!("failed to resolve base oneshot model parent dir: {}", err)
+            });
+
+    let training_config = PythonTrainingConfig {
+        common: training_config_common.clone(),
+        training_time: oneshot_per_epoch_training_time,
+        num_iterations_limit,
+        artifact_root_dir: artifact_root_dir.clone(),
+        hpc_training_root_dir: None,
+        model_cli_name: model_cli_name.to_string(),
+        config_nickname: config_nickname_training.to_string(),
+        adam_fp32,
+        epoch: 0,
+        model_parent_dir: base_model_parent_dir,
+        checkpoints_parent_dir: shared_checkpoints_parent_dir.clone(),
+        final_model_output_parent_dir: shared_checkpoints_parent_dir.clone(),
+        training_summary_parent_dir: shared_checkpoints_parent_dir.clone(),
+        training_mode: "oneshot".to_string(),
+        oneshot_num_epochs: num_oneshot_epochs,
+        oneshot_model_output_root: oneshot_model_output_root.clone(),
+    };
+
+    let training_start_time = Instant::now();
+    let mut training_throughputs: BTreeMap<usize, f32> = BTreeMap::new();
+    run_training_wrapper_and_wait(
+        num_gpus,
+        M::API_NAME,
+        &training_config,
+        &oneshot_trajectories_msgpack_path,
+        training_wrapper_log_path,
+    )
+    .await
+    .unwrap_or_else(|err| panic!("Oneshot training failed: {}", err));
+    let elapsed_secs = training_start_time.elapsed().as_secs_f32();
+    for epoch in 0..num_oneshot_epochs {
+        training_throughputs.insert(epoch, 0.0);
+    }
+    log_info(format!(
+        "Oneshot training of {} epoch(s) finished in {:.3}s",
+        num_oneshot_epochs, elapsed_secs
+    ));
+
+    log_state("All oneshot training epochs completed; starting validation phase");
+
+    // ================================================================
+    // Phase 2: Validate all models (base model + all trained epochs)
+    // ================================================================
+    let mut validation_accuracies: BTreeMap<usize, (f32, f32, f32, f32)> = BTreeMap::new();
+
+    for epoch in 0..=num_oneshot_epochs {
         log_state(format!(
-            "One-shot training epoch {}/{}",
-            epoch, num_total_epochs
+            "One-shot validation for epoch {}/{}",
+            epoch, num_oneshot_epochs
         ));
 
         // --- Validate model ---
         let model_parent_dir =
-            model_parent_dir_from_template(model_cli_name, config_nickname, epoch).unwrap_or_else(
-                |err| {
+            oneshot_model_parent_dir_from_template(model_cli_name, config_nickname_training, epoch)
+                .unwrap_or_else(|err| {
                     panic!(
-                        "failed to resolve model parent dir for epoch {}: {}",
+                        "failed to resolve oneshot model parent dir for epoch {}: {}",
                         epoch, err
                     )
-                },
-            );
+                });
         let model_path = format!("{}/model", model_parent_dir);
 
         log_info(format!(
@@ -303,7 +383,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
             launch_inference_wrapper::launch_inference_wrapper_process(
                 &model_path,
                 model_cli_name,
-                config_nickname,
+                config_nickname_training,
                 epoch,
                 M::API_NAME,
                 num_gpus,
@@ -319,7 +399,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
         // Run validation rollout to one-shot validation action logs
         let validation_action_log_path = action_logs_oneshot_path_from_template::<Validation>(
             model_cli_name,
-            config_nickname,
+            config_nickname_training,
             epoch,
         )
         .unwrap_or_else(|err| {
@@ -329,7 +409,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
             )
         });
         let validation_program_config = RolloutProgramConfig {
-            config_nickname: config_nickname.to_string(),
+            config_nickname: config_nickname_training.to_string(),
             rollout_config: validation_rollout_config.clone(),
             posterior_calculation_config: posterior_calculation_config.clone(),
             epoch,
@@ -338,7 +418,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
             inference_endpoint: InferenceEndpoint::SglangPort(sglang_port),
             rollout_time_limit_secs: validation_rollout_time_limit_secs,
             max_python_processes,
-            total_epochs: num_total_epochs,
+            total_epochs: num_oneshot_epochs,
             action_log_store_override_path: Some(validation_action_log_path.clone()),
         };
         let validation_summary = rollout_all::<M, Validation>(validation_program_config).await;
@@ -397,48 +477,6 @@ async fn run_oneshot_training<M: LlmModelMarker>(
             }
         }
 
-        // --- Train model ---
-        log_info(format!("Epoch {}: Starting training", epoch));
-        let checkpoints_parent_dir =
-            model_checkpoint_dir_from_template(model_cli_name, config_nickname, epoch)
-                .unwrap_or_else(|err| panic!("failed to resolve checkpoints parent dir: {}", err));
-        let final_model_output_parent_dir =
-            model_checkpoint_dir_from_template(model_cli_name, config_nickname, epoch + 1)
-                .unwrap_or_else(|err| panic!("failed to resolve final model output dir: {}", err));
-
-        let training_config = PythonTrainingConfig {
-            common: training_config_common.clone(),
-            training_time,
-            num_iterations_limit,
-            artifact_root_dir: artifact_root_dir.clone(),
-            hpc_training_root_dir: None,
-            model_cli_name: model_cli_name.to_string(),
-            config_nickname: config_nickname.to_string(),
-            adam_fp32,
-            epoch,
-            model_parent_dir,
-            checkpoints_parent_dir: checkpoints_parent_dir.clone(),
-            final_model_output_parent_dir,
-            training_summary_parent_dir: checkpoints_parent_dir,
-        };
-
-        let training_start_time = Instant::now();
-        run_training_wrapper_and_wait(
-            num_gpus,
-            M::API_NAME,
-            &training_config,
-            &oneshot_trajectories_msgpack_path,
-            training_wrapper_log_path,
-        )
-        .await
-        .unwrap_or_else(|err| panic!("Training failed for epoch {}: {}", epoch, err));
-        let elapsed_secs = training_start_time.elapsed().as_secs_f32();
-        training_throughputs.insert(epoch, 0.0);
-        log_info(format!(
-            "Epoch {}: Training finished in {:.3}s",
-            epoch, elapsed_secs
-        ));
-
         // Write training summary (accumulated so far, one-shot path)
         write_training_summary(
             &oneshot_training_summary_parent_dir,
@@ -465,26 +503,30 @@ async fn main() {
     dotenvy::dotenv().ok();
     let Args {
         model_cli_name,
-        config_nickname,
+        config_nickname_rollout,
+        config_nickname_training,
         max_rollout_concurrency,
         validation_rollout_config_path,
         training_rollout_config_path,
         posterior_hyperparameters_path,
-        num_total_epochs,
+        num_oneshot_epochs,
         ui,
         validation_rollout_time_limit_secs,
         max_python_processes,
         cumulative_avg_abs_advantage_cutoff,
         advantage_calculation_policy,
         training_config_common_path,
-        training_time,
+        oneshot_per_epoch_training_time,
         num_iterations_limit,
         num_gpus,
         mount_dir,
         positive_advantage_only,
         adam_fp32,
     } = Args::parse();
-    let process_title = format!("oneshot_training_{}_{}", model_cli_name, config_nickname);
+    let process_title = format!(
+        "oneshot_training_{}_{}",
+        model_cli_name, config_nickname_training
+    );
     set_title(&process_title);
     check_sympy_availability().unwrap();
     assert!(
@@ -494,22 +536,26 @@ async fn main() {
     configure_mount_dir(&mount_dir)
         .unwrap_or_else(|err| panic!("failed to configure mount dir: {}", err));
     let inference_wrapper_log_path =
-        inference_wrapper_log_path_from_template(&model_cli_name, &config_nickname)
+        inference_wrapper_log_path_from_template(&model_cli_name, &config_nickname_training)
             .unwrap_or_else(|err| panic!("failed to render inference wrapper log path: {}", err));
     let training_wrapper_log_path =
-        training_wrapper_log_path_from_template(&model_cli_name, &config_nickname)
+        training_wrapper_log_path_from_template(&model_cli_name, &config_nickname_training)
             .unwrap_or_else(|err| panic!("failed to render training wrapper log path: {}", err));
     ensure_parent_dir_exists(&inference_wrapper_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare inference wrapper log directory: {}", err));
     ensure_parent_dir_exists(&training_wrapper_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare training wrapper log directory: {}", err));
     assert!(num_gpus > 0, "--num-gpus must be positive");
+    assert!(
+        num_oneshot_epochs > 0,
+        "--num-oneshot-epochs must be positive"
+    );
     log_info(format!("One-shot training will use num_gpus={}", num_gpus));
 
     if ui {
         let tui_log_path = format!(
             "progress_tui_log_oneshot_training_{}_{}.bin",
-            model_cli_name, config_nickname
+            model_cli_name, config_nickname_training
         );
         ProgressTuiLogger::initialize(tui_log_path).await.unwrap();
     }
@@ -530,18 +576,19 @@ async fn main() {
         LlmModelName::Gemma3_4b => {
             run_oneshot_training::<Gemma3_4BIt>(
                 &model_cli_name,
-                &config_nickname,
+                &config_nickname_rollout,
+                &config_nickname_training,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 training_set_rollout_config,
                 posterior_calculation_config,
-                num_total_epochs,
+                num_oneshot_epochs,
                 validation_rollout_time_limit_secs,
                 max_python_processes,
                 cumulative_avg_abs_advantage_cutoff,
                 advantage_calculation_policy,
                 training_config_common,
-                training_time,
+                oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
                 &inference_wrapper_log_path,
@@ -554,18 +601,19 @@ async fn main() {
         LlmModelName::Llama31_8b => {
             run_oneshot_training::<Llama31_8BInstruct>(
                 &model_cli_name,
-                &config_nickname,
+                &config_nickname_rollout,
+                &config_nickname_training,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 training_set_rollout_config,
                 posterior_calculation_config,
-                num_total_epochs,
+                num_oneshot_epochs,
                 validation_rollout_time_limit_secs,
                 max_python_processes,
                 cumulative_avg_abs_advantage_cutoff,
                 advantage_calculation_policy,
                 training_config_common,
-                training_time,
+                oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
                 &inference_wrapper_log_path,
@@ -578,18 +626,19 @@ async fn main() {
         LlmModelName::Mistral7bInstructV03 => {
             run_oneshot_training::<Mistral7BInstructV03>(
                 &model_cli_name,
-                &config_nickname,
+                &config_nickname_rollout,
+                &config_nickname_training,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 training_set_rollout_config,
                 posterior_calculation_config,
-                num_total_epochs,
+                num_oneshot_epochs,
                 validation_rollout_time_limit_secs,
                 max_python_processes,
                 cumulative_avg_abs_advantage_cutoff,
                 advantage_calculation_policy,
                 training_config_common,
-                training_time,
+                oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
                 &inference_wrapper_log_path,
@@ -602,18 +651,19 @@ async fn main() {
         LlmModelName::Qwen3_06b => {
             run_oneshot_training::<Qwen3_06B>(
                 &model_cli_name,
-                &config_nickname,
+                &config_nickname_rollout,
+                &config_nickname_training,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 training_set_rollout_config,
                 posterior_calculation_config,
-                num_total_epochs,
+                num_oneshot_epochs,
                 validation_rollout_time_limit_secs,
                 max_python_processes,
                 cumulative_avg_abs_advantage_cutoff,
                 advantage_calculation_policy,
                 training_config_common,
-                training_time,
+                oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
                 &inference_wrapper_log_path,
@@ -626,18 +676,19 @@ async fn main() {
         LlmModelName::Qwen3_4b => {
             run_oneshot_training::<Qwen3_4B>(
                 &model_cli_name,
-                &config_nickname,
+                &config_nickname_rollout,
+                &config_nickname_training,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 training_set_rollout_config,
                 posterior_calculation_config,
-                num_total_epochs,
+                num_oneshot_epochs,
                 validation_rollout_time_limit_secs,
                 max_python_processes,
                 cumulative_avg_abs_advantage_cutoff,
                 advantage_calculation_policy,
                 training_config_common,
-                training_time,
+                oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
                 &inference_wrapper_log_path,
@@ -650,18 +701,19 @@ async fn main() {
         LlmModelName::Qwen25_7b => {
             run_oneshot_training::<Qwen25_7B>(
                 &model_cli_name,
-                &config_nickname,
+                &config_nickname_rollout,
+                &config_nickname_training,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 training_set_rollout_config,
                 posterior_calculation_config,
-                num_total_epochs,
+                num_oneshot_epochs,
                 validation_rollout_time_limit_secs,
                 max_python_processes,
                 cumulative_avg_abs_advantage_cutoff,
                 advantage_calculation_policy,
                 training_config_common,
-                training_time,
+                oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
                 &inference_wrapper_log_path,
@@ -674,18 +726,19 @@ async fn main() {
         LlmModelName::Qwen35_08b => {
             run_oneshot_training::<Qwen35_08B>(
                 &model_cli_name,
-                &config_nickname,
+                &config_nickname_rollout,
+                &config_nickname_training,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 training_set_rollout_config,
                 posterior_calculation_config,
-                num_total_epochs,
+                num_oneshot_epochs,
                 validation_rollout_time_limit_secs,
                 max_python_processes,
                 cumulative_avg_abs_advantage_cutoff,
                 advantage_calculation_policy,
                 training_config_common,
-                training_time,
+                oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
                 &inference_wrapper_log_path,
@@ -698,18 +751,19 @@ async fn main() {
         LlmModelName::Qwen35_4b => {
             run_oneshot_training::<Qwen35_4B>(
                 &model_cli_name,
-                &config_nickname,
+                &config_nickname_rollout,
+                &config_nickname_training,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 training_set_rollout_config,
                 posterior_calculation_config,
-                num_total_epochs,
+                num_oneshot_epochs,
                 validation_rollout_time_limit_secs,
                 max_python_processes,
                 cumulative_avg_abs_advantage_cutoff,
                 advantage_calculation_policy,
                 training_config_common,
-                training_time,
+                oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
                 &inference_wrapper_log_path,

@@ -41,6 +41,9 @@ class TrainingRequestArgs(BaseModel):
     adam_fp32: bool
     lr_schedule: str = "cosine"
     lr_total_steps: int = 0
+    training_mode: str = "orchestration"
+    oneshot_num_epochs: int = 0
+    oneshot_model_output_root: str = ""
 
 
 class SftTrainingRequestArgs(BaseModel):

@@ -65,6 +65,9 @@ def _load_train_config(
         adam_beta2=request.adam_beta2,
         lr_schedule=request.lr_schedule,
         lr_total_steps=request.lr_total_steps,
+        training_mode=request.training_mode,
+        oneshot_num_epochs=request.oneshot_num_epochs,
+        oneshot_model_output_root=request.oneshot_model_output_root,
     )
 
 

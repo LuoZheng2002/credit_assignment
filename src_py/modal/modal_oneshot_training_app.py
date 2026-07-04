@@ -11,7 +11,9 @@ import modal
 
 MINUTES = 60
 
-ORCHESTRATOR_CONFIG_RELATIVE_PATH = Path("src_py/modal/orchestrator_config.json")
+ONESHOT_TRAINING_CONFIG_RELATIVE_PATH = Path(
+    "src_py/modal/oneshot_training_config.json"
+)
 MODAL_RUNTIME_IGNORE_PATH = ".modalignore"
 CARGO_NET_RETRY = "10"
 CARGO_HTTP_TIMEOUT = "60"
@@ -24,12 +26,12 @@ def _extract_required_cli_arg(cli_args: list[str], flag_name: str) -> str:
         if arg == flag_name:
             if index + 1 >= len(cli_args):
                 raise RuntimeError(
-                    f"orchestrator config missing value after {flag_name}"
+                    f"oneshot training config missing value after {flag_name}"
                 )
             value = cli_args[index + 1].strip()
             if not value:
                 raise RuntimeError(
-                    f"orchestrator config value after {flag_name} must be non-empty"
+                    f"oneshot training config value after {flag_name} must be non-empty"
                 )
             return value
         prefixed_flag = f"{flag_name}="
@@ -37,39 +39,39 @@ def _extract_required_cli_arg(cli_args: list[str], flag_name: str) -> str:
             value = arg[len(prefixed_flag) :].strip()
             if not value:
                 raise RuntimeError(
-                    f"orchestrator config value for {flag_name} must be non-empty"
+                    f"oneshot training config value for {flag_name} must be non-empty"
                 )
             return value
         index += 1
-    raise RuntimeError(f"orchestrator config must include {flag_name}")
+    raise RuntimeError(f"oneshot training config must include {flag_name}")
 
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _load_orchestrator_config_payload() -> dict[str, Any]:
+def _load_oneshot_training_config_payload() -> dict[str, Any]:
     candidate_paths = [
-        Path("/workspace") / ORCHESTRATOR_CONFIG_RELATIVE_PATH,
-        _repo_root() / ORCHESTRATOR_CONFIG_RELATIVE_PATH,
+        Path("/workspace") / ONESHOT_TRAINING_CONFIG_RELATIVE_PATH,
+        _repo_root() / ONESHOT_TRAINING_CONFIG_RELATIVE_PATH,
     ]
     config_path = next((path for path in candidate_paths if path.is_file()), None)
     if config_path is None:
         searched = ", ".join(str(path) for path in candidate_paths)
         raise RuntimeError(
-            "missing orchestrator config JSON; write orchestrator CLI args before deploy/invoke; "
+            "missing oneshot training config JSON; write oneshot training CLI args before deploy/invoke; "
             f"searched: {searched}"
         )
     try:
         raw = config_path.read_text(encoding="utf-8")
     except OSError as error:
         raise RuntimeError(
-            f"failed to read orchestrator config JSON at {config_path}: {error}"
+            f"failed to read oneshot training config JSON at {config_path}: {error}"
         ) from error
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as error:
-        raise RuntimeError(f"invalid orchestrator config JSON: {error}") from error
+        raise RuntimeError(f"invalid oneshot training config JSON: {error}") from error
 
     config_payload: dict[str, Any]
     if isinstance(payload, list):
@@ -78,50 +80,52 @@ def _load_orchestrator_config_payload() -> dict[str, Any]:
         config_payload = payload
     else:
         raise RuntimeError(
-            "orchestrator config must be a JSON array or object with 'args'"
+            "oneshot training config must be a JSON array or object with 'args'"
         )
 
     args = config_payload.get("args")
     if not isinstance(args, list):
-        raise RuntimeError("orchestrator config field 'args' must be a JSON array")
+        raise RuntimeError("oneshot training config field 'args' must be a JSON array")
     if not args:
-        raise RuntimeError("orchestrator config CLI args array must be non-empty")
+        raise RuntimeError("oneshot training config CLI args array must be non-empty")
 
     validated_args: list[str] = []
     for index, value in enumerate(args):
         if not isinstance(value, str):
             raise RuntimeError(
-                f"orchestrator config args[{index}] must be string, got {type(value)}"
+                f"oneshot training config args[{index}] must be string, got {type(value)}"
             )
         stripped = value.strip()
         if not stripped:
-            raise RuntimeError(f"orchestrator config args[{index}] must be non-empty")
+            raise RuntimeError(
+                f"oneshot training config args[{index}] must be non-empty"
+            )
         validated_args.append(stripped)
 
     service_state_volume_name = config_payload.get("service_state_volume_name")
     if not isinstance(service_state_volume_name, str):
         raise RuntimeError(
-            "orchestrator config field 'service_state_volume_name' must be a string"
+            "oneshot training config field 'service_state_volume_name' must be a string"
         )
     service_state_volume_name = service_state_volume_name.strip()
     if not service_state_volume_name:
         raise RuntimeError(
-            "orchestrator config field 'service_state_volume_name' must be non-empty"
+            "oneshot training config field 'service_state_volume_name' must be non-empty"
         )
 
     app_name = config_payload.get("app_name")
     if not isinstance(app_name, str):
-        raise RuntimeError("orchestrator config field 'app_name' must be a string")
+        raise RuntimeError("oneshot training config field 'app_name' must be a string")
     app_name = app_name.strip()
     if not app_name:
-        raise RuntimeError("orchestrator config field 'app_name' must be non-empty")
+        raise RuntimeError("oneshot training config field 'app_name' must be non-empty")
 
     gpu_name = config_payload.get("gpu_name")
     if not isinstance(gpu_name, str):
-        raise RuntimeError("orchestrator config field 'gpu_name' must be a string")
+        raise RuntimeError("oneshot training config field 'gpu_name' must be a string")
     gpu_name = gpu_name.strip()
     if not gpu_name:
-        raise RuntimeError("orchestrator config field 'gpu_name' must be non-empty")
+        raise RuntimeError("oneshot training config field 'gpu_name' must be non-empty")
 
     return {
         "args": validated_args,
@@ -138,38 +142,43 @@ def _extract_num_gpus(cli_args: list[str]) -> int:
         num_gpus = int(num_gpus_raw)
     except ValueError as error:
         raise RuntimeError(
-            f"orchestrator config must include a valid --num-gpus integer: {error}"
+            f"oneshot training config must include a valid --num-gpus integer: {error}"
         ) from error
 
     if num_gpus <= 0:
         raise RuntimeError(
-            f"orchestrator config --num-gpus must be positive, got {num_gpus}"
+            f"oneshot training config --num-gpus must be positive, got {num_gpus}"
         )
     return num_gpus
 
 
-DEPLOY_ORCHESTRATOR_CONFIG = _load_orchestrator_config_payload()
-DEPLOY_ORCHESTRATOR_CLI_ARGS = list(DEPLOY_ORCHESTRATOR_CONFIG["args"])
+DEPLOY_ONESHOT_TRAINING_CONFIG = _load_oneshot_training_config_payload()
+DEPLOY_ONESHOT_TRAINING_CLI_ARGS = list(DEPLOY_ONESHOT_TRAINING_CONFIG["args"])
 DEPLOY_MODEL_CLI_NAME = _extract_required_cli_arg(
-    DEPLOY_ORCHESTRATOR_CLI_ARGS, "--model-cli-name"
+    DEPLOY_ONESHOT_TRAINING_CLI_ARGS, "--model-cli-name"
 )
-DEPLOY_CONFIG_NICKNAME = _extract_required_cli_arg(
-    DEPLOY_ORCHESTRATOR_CLI_ARGS, "--config-nickname"
+DEPLOY_CONFIG_NICKNAME_ROLLOUT = _extract_required_cli_arg(
+    DEPLOY_ONESHOT_TRAINING_CLI_ARGS, "--config-nickname-rollout"
+)
+DEPLOY_CONFIG_NICKNAME_TRAINING = _extract_required_cli_arg(
+    DEPLOY_ONESHOT_TRAINING_CLI_ARGS, "--config-nickname-training"
 )
 DEPLOY_MOUNT_DIR = _extract_required_cli_arg(
-    DEPLOY_ORCHESTRATOR_CLI_ARGS, "--mount-dir"
+    DEPLOY_ONESHOT_TRAINING_CLI_ARGS, "--mount-dir"
 )
-DEPLOY_NUM_GPUS = _extract_num_gpus(DEPLOY_ORCHESTRATOR_CLI_ARGS)
-DEPLOY_GPU_NAME = str(DEPLOY_ORCHESTRATOR_CONFIG["gpu_name"])
+DEPLOY_NUM_GPUS = _extract_num_gpus(DEPLOY_ONESHOT_TRAINING_CLI_ARGS)
+DEPLOY_GPU_NAME = str(DEPLOY_ONESHOT_TRAINING_CONFIG["gpu_name"])
 DEPLOY_MODAL_TIME_LIMIT_HRS = float(
-    DEPLOY_ORCHESTRATOR_CONFIG.get("modal_time_limit_hrs", 12.0)
+    DEPLOY_ONESHOT_TRAINING_CONFIG.get("modal_time_limit_hrs", 12.0)
 )
 MODAL_TIMEOUT_SECS = int(DEPLOY_MODAL_TIME_LIMIT_HRS * 60 * MINUTES)
 GPU = (
     DEPLOY_GPU_NAME if DEPLOY_NUM_GPUS == 1 else f"{DEPLOY_GPU_NAME}:{DEPLOY_NUM_GPUS}"
 )
-APP_NAME = str(DEPLOY_ORCHESTRATOR_CONFIG["app_name"])
-SERVICE_STATE_VOLUME_NAME = str(DEPLOY_ORCHESTRATOR_CONFIG["service_state_volume_name"])
+APP_NAME = str(DEPLOY_ONESHOT_TRAINING_CONFIG["app_name"])
+SERVICE_STATE_VOLUME_NAME = str(
+    DEPLOY_ONESHOT_TRAINING_CONFIG["service_state_volume_name"]
+)
 service_state_volume = modal.Volume.from_name(
     SERVICE_STATE_VOLUME_NAME,
     create_if_missing=True,
@@ -178,9 +187,10 @@ service_state_volume = modal.Volume.from_name(
 
 def _print_service_state_volume_status() -> None:
     print(
-        "[orchestrate] service state volume "
+        "[oneshot_training] service state volume "
         f"model_cli_name={DEPLOY_MODEL_CLI_NAME} "
-        f"config_nickname={DEPLOY_CONFIG_NICKNAME} "
+        f"config_nickname_rollout={DEPLOY_CONFIG_NICKNAME_ROLLOUT} "
+        f"config_nickname_training={DEPLOY_CONFIG_NICKNAME_TRAINING} "
         f"mount_dir={DEPLOY_MOUNT_DIR} "
         f"gpu={GPU} "
         f"volume_name={SERVICE_STATE_VOLUME_NAME}"
@@ -189,12 +199,12 @@ def _print_service_state_volume_status() -> None:
 
 def _commit_service_state_volume() -> None:
     print(
-        "[orchestrate] committing service state volume "
+        "[oneshot_training] committing service state volume "
         f"volume_name={SERVICE_STATE_VOLUME_NAME}"
     )
     service_state_volume.commit()
     print(
-        "[orchestrate] committed service state volume "
+        "[oneshot_training] committed service state volume "
         f"volume_name={SERVICE_STATE_VOLUME_NAME}"
     )
 
@@ -202,15 +212,15 @@ def _commit_service_state_volume() -> None:
 def _print_workspace_env_file_status() -> None:
     env_path = Path("/workspace/.env")
     if env_path.is_file():
-        print(f"[orchestrate] found workspace env file at {env_path}")
+        print(f"[oneshot_training] found workspace env file at {env_path}")
     else:
-        print(f"[orchestrate] workspace env file missing at {env_path}")
+        print(f"[oneshot_training] workspace env file missing at {env_path}")
 
 
 def _print_sglang_env_package_versions() -> None:
     sglang_python = Path("/workspace/pyprojects/sglang/.venv/bin/python")
     if not sglang_python.is_file():
-        print(f"[orchestrate] missing sglang python executable at {sglang_python}")
+        print(f"[oneshot_training] missing sglang python executable at {sglang_python}")
         return
 
     freeze_cmd = ["uv", "pip", "freeze", "--python", str(sglang_python)]
@@ -249,21 +259,21 @@ def _print_sglang_env_package_versions() -> None:
     if result.returncode != 0:
         stderr = result.stderr.strip()
         print(
-            "[orchestrate] failed to list sglang package versions "
+            "[oneshot_training] failed to list sglang package versions "
             f"(rc={result.returncode}): {stderr}"
         )
         return
 
-    print("[orchestrate] pyprojects/sglang package versions (pip freeze):")
+    print("[oneshot_training] pyprojects/sglang package versions (pip freeze):")
     output = result.stdout.strip()
     if output:
         print(output)
     else:
-        print("[orchestrate] (no packages reported)")
+        print("[oneshot_training] (no packages reported)")
 
 
-def _run_orchestrator_subprocess(cli_args: list[str]) -> dict[str, Any]:
-    cmd = ["cargo", "run", "--bin", "bin_orchestrator", "--", *cli_args]
+def _run_oneshot_training_subprocess(cli_args: list[str]) -> dict[str, Any]:
+    cmd = ["cargo", "run", "--bin", "bin_oneshot_training", "--", *cli_args]
 
     termination_requested = threading.Event()
     child: subprocess.Popen[bytes] | None = None
@@ -298,19 +308,19 @@ def _run_orchestrator_subprocess(cli_args: list[str]) -> dict[str, Any]:
 
     if termination_requested.is_set():
         raise RuntimeError(
-            "CANCELLED_BY_SIGNAL: modal orchestrator subprocess received SIGTERM/SIGINT"
+            "CANCELLED_BY_SIGNAL: modal oneshot training subprocess received SIGTERM/SIGINT"
         )
 
     if return_code == 0:
-        return {"ok": True, "message": "orchestrator completed"}
+        return {"ok": True, "message": "oneshot training completed"}
     raise RuntimeError(
-        "ORCHESTRATOR_PROCESS_FAILED: "
-        f"orchestrator subprocess failed rc={return_code}; "
+        "ONESHOT_TRAINING_PROCESS_FAILED: "
+        f"oneshot training subprocess failed rc={return_code}; "
         "stdout/stderr are streamed directly to container logs"
     )
 
 
-orchestrator_image = (
+oneshot_training_image = (
     modal.Image.from_dockerfile(
         "Dockerfile.modal-mirror",
         context_dir=str(_repo_root()),
@@ -333,7 +343,7 @@ app = modal.App(name=APP_NAME)
 
 
 @app.cls(
-    image=orchestrator_image,
+    image=oneshot_training_image,
     gpu=GPU,
     cpu=8.0,
     startup_timeout=20 * MINUTES,
@@ -344,27 +354,27 @@ app = modal.App(name=APP_NAME)
         "/volume": service_state_volume,
     },
 )
-class OrchestratorService:
+class OneshotTrainingService:
     @modal.method()
-    def orchestrate(self) -> dict[str, Any]:
+    def run_training(self) -> dict[str, Any]:
         _print_service_state_volume_status()
         _print_workspace_env_file_status()
         _print_sglang_env_package_versions()
-        cli_args = list(DEPLOY_ORCHESTRATOR_CLI_ARGS)
+        cli_args = list(DEPLOY_ONESHOT_TRAINING_CLI_ARGS)
         requested_num_gpus = _extract_num_gpus(cli_args)
         if requested_num_gpus != DEPLOY_NUM_GPUS:
             raise RuntimeError(
                 "MODAL_GPU_COUNT_MISMATCH: "
                 f"requested num_gpus={requested_num_gpus} but deployed container has "
-                f"DEPLOY_NUM_GPUS={DEPLOY_NUM_GPUS}; redeploy src_py/modal/modal_orchestrator_app.py "
-                "with matching orchestrator config"
+                f"DEPLOY_NUM_GPUS={DEPLOY_NUM_GPUS}; redeploy src_py/modal/modal_oneshot_training_app.py "
+                "with matching oneshot training config"
             )
         try:
-            return _run_orchestrator_subprocess(cli_args)
+            return _run_oneshot_training_subprocess(cli_args)
         finally:
             _commit_service_state_volume()
 
 
 @app.local_entrypoint()
 def show_url() -> None:
-    print("Deploy with: modal deploy src_py/modal/modal_orchestrator_app.py")
+    print("Deploy with: modal deploy src_py/modal/modal_oneshot_training_app.py")

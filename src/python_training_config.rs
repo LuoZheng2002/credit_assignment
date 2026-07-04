@@ -17,6 +17,27 @@ pub struct PythonTrainingConfig {
     pub checkpoints_parent_dir: String,
     pub final_model_output_parent_dir: String,
     pub training_summary_parent_dir: String,
+    #[serde(default = "default_training_mode")]
+    #[serde(skip_serializing_if = "is_default_training_mode")]
+    pub training_mode: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "usize_is_zero")]
+    pub oneshot_num_epochs: usize,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub oneshot_model_output_root: String,
+}
+
+fn default_training_mode() -> String {
+    "orchestration".to_string()
+}
+
+fn is_default_training_mode(value: &str) -> bool {
+    value == "orchestration"
+}
+
+fn usize_is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 impl PythonTrainingConfig {
@@ -115,6 +136,9 @@ mod tests {
                 .to_string(),
             training_summary_parent_dir: "/tmp/artifacts/results/qwen35_4b/demo/epoch_3"
                 .to_string(),
+            training_mode: "orchestration".to_string(),
+            oneshot_num_epochs: 0,
+            oneshot_model_output_root: String::new(),
         };
 
         let payload = config

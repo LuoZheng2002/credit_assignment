@@ -18,36 +18,57 @@ def sanitize_modal_name_component(value: str) -> str:
 
 
 def experiment_service_state_volume_name(
-    model_cli_name: str, config_nickname: str
+    model_cli_name: str, config_nickname: str, pipeline: str = ""
 ) -> str:
+    """Derive a deterministic Modal volume name.
+
+    When *pipeline* is non-empty it is inserted between the prefix and model
+    name components so that different pipelines (e.g. orchestrator, oneshot
+    rollout, oneshot training) targeting the same model / config never share
+    the same volume.
+    """
     model_component = sanitize_modal_name_component(model_cli_name)
     config_component = sanitize_modal_name_component(config_nickname)
-    full_name = f"{SERVICE_STATE_VOLUME_PREFIX}-{model_component}-{config_component}"
+
+    if pipeline:
+        pipeline_component = sanitize_modal_name_component(pipeline)
+        components = [pipeline_component, model_component, config_component]
+        hash_input = f"{pipeline}\0{model_cli_name}\0{config_nickname}"
+    else:
+        components = [model_component, config_component]
+        hash_input = f"{model_cli_name}\0{config_nickname}"
+
+    full_name = f"{SERVICE_STATE_VOLUME_PREFIX}-{'-'.join(components)}"
     if len(full_name) <= MAX_MODAL_OBJECT_NAME_LENGTH:
         return full_name
 
-    digest = hashlib.sha1(
-        f"{model_cli_name}\0{config_nickname}".encode("utf-8")
-    ).hexdigest()[:10]
+    digest = hashlib.sha1(hash_input.encode("utf-8")).hexdigest()[:10]
+    num_dashes = len(components) + 1
     remaining = (
         MAX_MODAL_OBJECT_NAME_LENGTH
         - len(SERVICE_STATE_VOLUME_PREFIX)
         - len(digest)
-        - 3
+        - num_dashes
     )
     if remaining <= 2:
         raise RuntimeError(
             "Modal volume name prefix is too long to derive a per-experiment volume name"
         )
-    model_budget = max(1, remaining // 2)
-    config_budget = max(1, remaining - model_budget)
-    truncated_model = model_component[:model_budget].rstrip("-") or model_component[:1]
-    truncated_config = (
-        config_component[:config_budget].rstrip("-") or config_component[:1]
-    )
-    return (
-        f"{SERVICE_STATE_VOLUME_PREFIX}-{truncated_model}-{truncated_config}-{digest}"
-    )
+
+    num_parts = len(components)
+    budgets: list[int] = []
+    budget_remaining = remaining
+    for i in range(num_parts):
+        budget = max(1, budget_remaining // (num_parts - i))
+        budgets.append(budget)
+        budget_remaining -= budget
+
+    truncated_names: list[str] = []
+    for comp, budget in zip(components, budgets):
+        truncated = comp[:budget].rstrip("-") or comp[:1]
+        truncated_names.append(truncated)
+
+    return f"{SERVICE_STATE_VOLUME_PREFIX}-{'-'.join(truncated_names)}-{digest}"
 
 
 def experiment_remote_small_files_dir(model_cli_name: str, config_nickname: str) -> str:

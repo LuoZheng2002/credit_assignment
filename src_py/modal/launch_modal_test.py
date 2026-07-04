@@ -12,7 +12,7 @@ import modal
 from src_py.modal.modal_experiment_paths import experiment_service_state_volume_name
 
 CONFIG_PATH = Path("src_py/modal/test_config.json")
-CONFIG_LOCK_PATH = Path("src_py/modal/test_config.lock")
+CONFIG_LOCK_PATH = Path("src_py/modal/launcher_config.lock")
 
 
 def _repo_root() -> Path:

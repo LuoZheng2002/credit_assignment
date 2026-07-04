@@ -745,6 +745,7 @@ def _run_unified_loop(
     lr_warmup_steps: int,
     lr_min_scale: float,
     eng: Any,
+    finalize_training: bool = True,
 ) -> None:
     assert lazy_loader.sample_count > 0, "training set must be non-empty"
     training_plan = assert_supported_training_plan(config.training_plan)
@@ -1772,13 +1773,16 @@ def _run_unified_loop(
             "training_summary_written=1 "
             f"training_summary_parent_dir={training_summary_parent_dir}"
         )
-    _finalize_training_run(
-        rank=rank,
-        global_step=global_step,
-        training_time=config.training_time,
-        final_model_output_parent_dir=final_model_output_parent_dir,
-        eng=eng,
-    )
+    if finalize_training:
+        _finalize_training_run(
+            rank=rank,
+            global_step=global_step,
+            training_time=config.training_time,
+            final_model_output_parent_dir=final_model_output_parent_dir,
+            eng=eng,
+        )
+    else:
+        eng._distributed_barrier()
 
 
 def run_training_loop(

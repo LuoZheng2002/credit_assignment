@@ -41,6 +41,12 @@ const TRAINING_TRAJECTORIES_STATS_ONESHOT_PATH_TEMPLATE_PATH: &str =
     "config/directories_oneshot/training_trajectories_stats_oneshot_path.jinja";
 const TRAINING_SUMMARY_ONESHOT_PARENT_DIR_TEMPLATE_PATH: &str =
     "config/directories_oneshot/training_summary_oneshot_parent_dir.jinja";
+const ROLLOUT_SUMMARY_ONESHOT_PATH_TEMPLATE_PATH: &str =
+    "config/directories_oneshot/rollout_summary_oneshot_path.jinja";
+const ONESHOT_MODEL_PARENT_DIR_TEMPLATE_PATH: &str =
+    "config/directories_oneshot/oneshot_model_parent_dir.jinja";
+const ONESHOT_MODEL_CHECKPOINT_DIR_TEMPLATE_PATH: &str =
+    "config/directories_oneshot/oneshot_model_checkpoint_dir.jinja";
 
 static ACTION_LOGS_TRAINING_PATH_EXTSORT_TEMPLATE_ENVIRONMENT: LazyLock<
     Result<minijinja::Environment<'static>, String>,
@@ -205,6 +211,33 @@ static TRAINING_SUMMARY_ONESHOT_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
     )
 });
 
+static ROLLOUT_SUMMARY_ONESHOT_PATH_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    load_jinja_template_environment(
+        ROLLOUT_SUMMARY_ONESHOT_PATH_TEMPLATE_PATH,
+        "rollout_summary_oneshot_path",
+    )
+});
+
+static ONESHOT_MODEL_PARENT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    load_jinja_template_environment(
+        ONESHOT_MODEL_PARENT_DIR_TEMPLATE_PATH,
+        "oneshot_model_parent_dir",
+    )
+});
+
+static ONESHOT_MODEL_CHECKPOINT_DIR_TEMPLATE_ENVIRONMENT: LazyLock<
+    Result<minijinja::Environment<'static>, String>,
+> = LazyLock::new(|| {
+    load_jinja_template_environment(
+        ONESHOT_MODEL_CHECKPOINT_DIR_TEMPLATE_PATH,
+        "oneshot_model_checkpoint_dir",
+    )
+});
+
 fn render_template(
     template_env: &LazyLock<Result<minijinja::Environment<'static>, String>>,
     template_name: &'static str,
@@ -236,28 +269,10 @@ fn render_epoch_template(
         template_env,
         template_name,
         json!({
-            "mount_dir": mount_dir,
-            "model_cli_name": model_cli_name,
-            "config_nickname": config_nickname,
-            "epoch": epoch,
-        }),
-    )
-}
-
-fn render_model_config_template(
-    template_env: &LazyLock<Result<minijinja::Environment<'static>, String>>,
-    template_name: &'static str,
-    model_cli_name: &str,
-    config_nickname: &str,
-) -> Result<String, String> {
-    let mount_dir = mount_dir()?;
-    render_template(
-        template_env,
-        template_name,
-        json!({
-            "mount_dir": mount_dir,
-            "model_cli_name": model_cli_name,
-            "config_nickname": config_nickname,
+        "mount_dir": mount_dir,
+        "model_cli_name": model_cli_name,
+        "config_nickname": config_nickname,
+        "epoch": epoch,
         }),
     )
 }
@@ -278,6 +293,44 @@ fn render_training_trajectories_template(
             "model_cli_name": model_cli_name,
             "config_nickname": config_nickname,
             "epoch": epoch,
+        }),
+    )
+}
+
+fn render_oneshot_epoch_template(
+    template_env: &LazyLock<Result<minijinja::Environment<'static>, String>>,
+    template_name: &'static str,
+    model_cli_name: &str,
+    config_nickname: &str,
+    oneshot_epoch: usize,
+) -> Result<String, String> {
+    let mount_dir = mount_dir()?;
+    render_template(
+        template_env,
+        template_name,
+        json!({
+            "mount_dir": mount_dir,
+            "model_cli_name": model_cli_name,
+            "config_nickname": config_nickname,
+            "oneshot_epoch": oneshot_epoch,
+        }),
+    )
+}
+
+fn render_model_config_template(
+    template_env: &LazyLock<Result<minijinja::Environment<'static>, String>>,
+    template_name: &'static str,
+    model_cli_name: &str,
+    config_nickname: &str,
+) -> Result<String, String> {
+    let mount_dir = mount_dir()?;
+    render_template(
+        template_env,
+        template_name,
+        json!({
+            "mount_dir": mount_dir,
+            "model_cli_name": model_cli_name,
+            "config_nickname": config_nickname,
         }),
     )
 }
@@ -542,5 +595,45 @@ pub fn training_summary_oneshot_parent_dir_from_template(
         "training_summary_oneshot_parent_dir",
         model_cli_name,
         config_nickname,
+    )
+}
+
+pub fn rollout_summary_oneshot_path_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+) -> Result<String, String> {
+    render_model_config_template(
+        &ROLLOUT_SUMMARY_ONESHOT_PATH_TEMPLATE_ENVIRONMENT,
+        "rollout_summary_oneshot_path",
+        model_cli_name,
+        config_nickname,
+    )
+}
+
+pub fn oneshot_model_parent_dir_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+    oneshot_epoch: usize,
+) -> Result<String, String> {
+    render_oneshot_epoch_template(
+        &ONESHOT_MODEL_PARENT_DIR_TEMPLATE_ENVIRONMENT,
+        "oneshot_model_parent_dir",
+        model_cli_name,
+        config_nickname,
+        oneshot_epoch,
+    )
+}
+
+pub fn oneshot_model_checkpoint_dir_from_template(
+    model_cli_name: &str,
+    config_nickname: &str,
+    oneshot_epoch: usize,
+) -> Result<String, String> {
+    render_oneshot_epoch_template(
+        &ONESHOT_MODEL_CHECKPOINT_DIR_TEMPLATE_ENVIRONMENT,
+        "oneshot_model_checkpoint_dir",
+        model_cli_name,
+        config_nickname,
+        oneshot_epoch,
     )
 }

@@ -7,6 +7,7 @@ use std::sync::{
 };
 
 use arc_swap::ArcSwapOption;
+use serde::{Deserialize, Serialize};
 
 use kll_rs::KllFloatSketch;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
@@ -631,10 +632,16 @@ pub struct RolloutProgramConfig<S: DatasetSplit> {
     pub action_log_store_override_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RolloutExecutionSummary {
     pub llm_call_throughput_per_sec: f32,
     pub elapsed_secs: f32,
     pub total_llm_calls: usize,
+    pub num_finished_trees: usize,
+    pub num_finished_branches: usize,
+    pub num_correct_branches: usize,
+    pub num_all_correct_trees: usize,
+    pub num_all_incorrect_trees: usize,
 }
 
 pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
@@ -855,9 +862,22 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         format!("{llm_call_throughput_per_sec:.2}"),
     );
 
+    let num_finished_trees = rollout_stats.num_finished_trees.load(Ordering::Relaxed);
+    let num_finished_branches = rollout_stats.num_finished_branches.load(Ordering::Relaxed);
+    let num_correct_branches = rollout_stats.num_correct_branches.load(Ordering::Relaxed);
+    let num_all_correct_trees = rollout_stats.num_all_correct_trees.load(Ordering::Relaxed);
+    let num_all_incorrect_trees = rollout_stats
+        .num_all_incorrect_trees
+        .load(Ordering::Relaxed);
+
     RolloutExecutionSummary {
         llm_call_throughput_per_sec,
         elapsed_secs,
         total_llm_calls,
+        num_finished_trees,
+        num_finished_branches,
+        num_correct_branches,
+        num_all_correct_trees,
+        num_all_incorrect_trees,
     }
 }

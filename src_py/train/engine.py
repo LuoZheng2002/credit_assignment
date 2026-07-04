@@ -145,6 +145,9 @@ class TrainConfig:
     adam_beta2: float
     lr_schedule: str
     lr_total_steps: int
+    training_mode: str = "orchestration"
+    oneshot_num_epochs: int = 0
+    oneshot_model_output_root: str = ""
 
 
 @dataclass(frozen=True)
@@ -1525,6 +1528,135 @@ def _build_fsdp_model(
     ), attention_backend
 
 
+def _train_oneshot_multiepoch(
+    *,
+    config: TrainConfig,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    rank: int,
+    world_size: int,
+    device: torch.device,
+    pad_token_id: int,
+    eos_token_id: int,
+    bos_token_id: int,
+    model_vocab_size: int,
+    expected_model_name: str,
+    logs_path: Path,
+    checkpoints_parent_dir: Path,
+    training_summary_parent_dir: str,
+    resolved_model_path: str,
+    tokenizer: Any,
+    initial_batch_size: int,
+    initial_adaptive_velocity: float,
+    target_gpu_memory_utilization: float,
+    max_batch_size_cap: int | None,
+    reset_batch_size_on_wrap: bool,
+    max_grad_norm: float,
+    lr_warmup_steps: int,
+    lr_min_scale: float,
+    lazy_loader: LazyResolvedBatchLoader,
+) -> None:
+    """Multi-epoch oneshot training: all oneshot epochs in a single process.
+
+    Adam state, training data cursor, and adaptive batch state persist
+    across epochs via checkpoint save/load on a shared checkpoints_parent_dir.
+
+    Each epoch runs for config.training_time seconds independently;
+    the total training wall-clock time is therefore
+    config.training_time * config.oneshot_num_epochs.
+    """
+    from . import engine as eng
+    from .train_loop import _run_unified_loop
+
+    for oneshot_epoch in range(config.oneshot_num_epochs):
+        is_final = oneshot_epoch == config.oneshot_num_epochs - 1
+        output_dir = (
+            Path(config.oneshot_model_output_root)
+            / f"oneshot_epoch_{oneshot_epoch + 1}"
+        )
+
+        if oneshot_epoch == 0:
+            resume_state = ResumeState(
+                global_step=0,
+                next_iteration_index=0,
+                next_batch_cursor=0,
+                accumulation_step=0,
+                next_sample_index=0,
+                next_batch_size=initial_batch_size,
+                adaptive_velocity=initial_adaptive_velocity,
+                adaptive_next_batch_size_float=float(initial_batch_size),
+                samples_trained=0,
+            )
+        else:
+            resume_state = _load_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                output_dir=checkpoints_parent_dir,
+                checkpoint_tag="latest",
+                training_plan=config.training_plan,
+                adam_fp32=config.adam_fp32,
+            )
+            if resume_state.next_batch_size == 0:
+                resume_state = ResumeState(
+                    global_step=resume_state.global_step,
+                    next_iteration_index=resume_state.next_iteration_index,
+                    next_batch_cursor=resume_state.next_batch_cursor,
+                    accumulation_step=resume_state.accumulation_step,
+                    next_sample_index=resume_state.next_sample_index,
+                    next_batch_size=initial_batch_size,
+                    adaptive_velocity=initial_adaptive_velocity,
+                    adaptive_throughput_ema=resume_state.adaptive_throughput_ema,
+                    adaptive_best_throughput_ema=resume_state.adaptive_best_throughput_ema,
+                    adaptive_memory_utilization_ema=resume_state.adaptive_memory_utilization_ema,
+                    adaptive_previous_tokens_per_sample=resume_state.adaptive_previous_tokens_per_sample,
+                    adaptive_next_batch_size_float=float(initial_batch_size),
+                    elapsed_training_time_sec=resume_state.elapsed_training_time_sec,
+                    samples_trained=resume_state.samples_trained,
+                    samples_available=resume_state.samples_available,
+                    max_average_absolute_advantage=resume_state.max_average_absolute_advantage,
+                    min_average_absolute_advantage=resume_state.min_average_absolute_advantage,
+                    median_average_absolute_advantage=resume_state.median_average_absolute_advantage,
+                )
+
+        if _is_primary_rank():
+            _tui_info(
+                f"oneshot_epoch={oneshot_epoch}/{config.oneshot_num_epochs} "
+                f"output_dir={output_dir} is_final={is_final}"
+            )
+
+        _run_unified_loop(
+            config=config,
+            model=model,
+            optimizer=optimizer,
+            lazy_loader=lazy_loader,
+            resume_state=resume_state,
+            rank=rank,
+            world_size=world_size,
+            device=device,
+            pad_token_id=pad_token_id,
+            eos_token_id=eos_token_id,
+            bos_token_id=bos_token_id,
+            model_vocab_size=model_vocab_size,
+            expected_model_name=expected_model_name,
+            logs_path=logs_path,
+            checkpoints_parent_dir=checkpoints_parent_dir,
+            final_model_output_parent_dir=output_dir,
+            training_summary_parent_dir=str(output_dir),
+            resolved_model_path=resolved_model_path,
+            tokenizer=tokenizer,
+            initial_batch_size=initial_batch_size,
+            initial_adaptive_velocity=initial_adaptive_velocity,
+            target_gpu_memory_utilization=target_gpu_memory_utilization,
+            max_batch_size_cap=max_batch_size_cap,
+            reset_batch_size_on_wrap=reset_batch_size_on_wrap,
+            max_grad_norm=max_grad_norm,
+            lr_warmup_steps=lr_warmup_steps,
+            lr_min_scale=lr_min_scale,
+            eng=eng,
+            finalize_training=is_final,
+        )
+
+
 def train(config: TrainConfig) -> None:
     training_plan = assert_supported_training_plan(config.training_plan)
     assert config.advantage_clip > 0.0, "advantage_clip must be positive"
@@ -1730,34 +1862,63 @@ def train(config: TrainConfig) -> None:
         first_n_training_samples=0,
     )
     try:
-        run_training_loop(
-            config=config,
-            model=model,
-            optimizer=optimizer,
-            resume_state=resume_state,
-            rank=rank,
-            world_size=world_size,
-            device=device,
-            pad_token_id=pad_token_id,
-            eos_token_id=eos_token_id,
-            bos_token_id=bos_token_id,
-            model_vocab_size=model_vocab_size,
-            expected_model_name=expected_model_name,
-            logs_path=logs_path,
-            checkpoints_parent_dir=checkpoints_parent_dir,
-            final_model_output_parent_dir=final_model_output_parent_dir,
-            training_summary_parent_dir=config.training_summary_parent_dir,
-            resolved_model_path=resolved_model_path,
-            tokenizer=tokenizer,
-            initial_batch_size=initial_batch_size,
-            initial_adaptive_velocity=initial_adaptive_velocity,
-            target_gpu_memory_utilization=target_gpu_memory_utilization,
-            max_batch_size_cap=max_batch_size_cap,
-            reset_batch_size_on_wrap=reset_batch_size_on_wrap,
-            max_grad_norm=max_grad_norm,
-            lr_warmup_steps=lr_warmup_steps,
-            lr_min_scale=lr_min_scale,
-            lazy_loader=lazy_loader,
-        )
+        if config.training_mode == "oneshot" and config.oneshot_num_epochs > 0:
+            _train_oneshot_multiepoch(
+                config=config,
+                model=model,
+                optimizer=optimizer,
+                rank=rank,
+                world_size=world_size,
+                device=device,
+                pad_token_id=pad_token_id,
+                eos_token_id=eos_token_id,
+                bos_token_id=bos_token_id,
+                model_vocab_size=model_vocab_size,
+                expected_model_name=expected_model_name,
+                logs_path=logs_path,
+                checkpoints_parent_dir=checkpoints_parent_dir,
+                training_summary_parent_dir=config.training_summary_parent_dir,
+                resolved_model_path=resolved_model_path,
+                tokenizer=tokenizer,
+                initial_batch_size=initial_batch_size,
+                initial_adaptive_velocity=initial_adaptive_velocity,
+                target_gpu_memory_utilization=target_gpu_memory_utilization,
+                max_batch_size_cap=max_batch_size_cap,
+                reset_batch_size_on_wrap=reset_batch_size_on_wrap,
+                max_grad_norm=max_grad_norm,
+                lr_warmup_steps=lr_warmup_steps,
+                lr_min_scale=lr_min_scale,
+                lazy_loader=lazy_loader,
+            )
+        else:
+            run_training_loop(
+                config=config,
+                model=model,
+                optimizer=optimizer,
+                resume_state=resume_state,
+                rank=rank,
+                world_size=world_size,
+                device=device,
+                pad_token_id=pad_token_id,
+                eos_token_id=eos_token_id,
+                bos_token_id=bos_token_id,
+                model_vocab_size=model_vocab_size,
+                expected_model_name=expected_model_name,
+                logs_path=logs_path,
+                checkpoints_parent_dir=checkpoints_parent_dir,
+                final_model_output_parent_dir=final_model_output_parent_dir,
+                training_summary_parent_dir=config.training_summary_parent_dir,
+                resolved_model_path=resolved_model_path,
+                tokenizer=tokenizer,
+                initial_batch_size=initial_batch_size,
+                initial_adaptive_velocity=initial_adaptive_velocity,
+                target_gpu_memory_utilization=target_gpu_memory_utilization,
+                max_batch_size_cap=max_batch_size_cap,
+                reset_batch_size_on_wrap=reset_batch_size_on_wrap,
+                max_grad_norm=max_grad_norm,
+                lr_warmup_steps=lr_warmup_steps,
+                lr_min_scale=lr_min_scale,
+                lazy_loader=lazy_loader,
+            )
     finally:
         lazy_loader.close()

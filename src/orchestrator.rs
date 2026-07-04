@@ -200,6 +200,10 @@ impl Orchestrator {
     }
 
     pub async fn orchestrate<M: LlmModelMarker>(&mut self) -> Result<(), String> {
+        assert!(
+            self.num_total_epochs > 0,
+            "num_total_epochs must be positive for orchestration"
+        );
         loop {
             let progress = self.progress.clone();
             let epoch = progress.epoch;
@@ -1008,6 +1012,9 @@ impl Orchestrator {
             checkpoints_parent_dir: checkpoints_parent_dir.clone(),
             final_model_output_parent_dir,
             training_summary_parent_dir: checkpoints_parent_dir,
+            training_mode: "orchestration".to_string(),
+            oneshot_num_epochs: 0,
+            oneshot_model_output_root: String::new(),
         };
 
         let sft_start_time = Instant::now();
@@ -1093,6 +1100,9 @@ impl Orchestrator {
             checkpoints_parent_dir: checkpoints_parent_dir.clone(),
             final_model_output_parent_dir,
             training_summary_parent_dir: checkpoints_parent_dir,
+            training_mode: "orchestration".to_string(),
+            oneshot_num_epochs: 0,
+            oneshot_model_output_root: String::new(),
         };
 
         let training_start_time = Instant::now();
