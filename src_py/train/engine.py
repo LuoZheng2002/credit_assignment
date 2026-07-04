@@ -143,6 +143,9 @@ class TrainConfig:
     adam_fp32: bool
     negative_loss_mode: str = "weighted_ce"
     negative_loss_weight: float = 1.0
+    loss_objective: str = "advantage_weighted_ce"
+    clip_epsilon: float = 0.2
+    uniform_positive_advantage: bool = False
 
 
 @dataclass(frozen=True)
@@ -378,6 +381,29 @@ def _forward_logits(
     logits = outputs.logits
     assert isinstance(logits, torch.Tensor), "logits must be a tensor"
     return logits
+
+
+def _forward_reference_logits(
+    model_engine: torch.nn.Module,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Behavior-policy logits for PPO-clip.
+
+    With LoRA, the rollout (behavior) policy of the current epoch is exactly
+    the merged base model the adapters sit on, so disabling the adapters
+    recovers it without storing any rollout-time logprobs.
+    """
+    unwrapped = getattr(model_engine, "module", model_engine)
+    disable_adapter = getattr(unwrapped, "disable_adapter", None)
+    assert callable(disable_adapter), (
+        "loss_objective=ppo_clip requires a PEFT LoRA model exposing "
+        "disable_adapter(); full-model plans have no free reference policy"
+    )
+    with torch.no_grad(), disable_adapter():
+        return _forward_logits(
+            model_engine, input_ids=input_ids, attention_mask=attention_mask
+        ).detach()
 
 
 def _resolve_attention_backend_from_env() -> str:

@@ -1,0 +1,21 @@
+# v3: PPO clipped-surrogate objective (trust region eps=0.2), shared by BOTH
+# arms of the decisive A/B (TreeMAPPO segment credit vs GRPO-style trajectory
+# advantage) so the carrier is identical and only the signal differs.
+# Reference policy = adapter-disabled base (lora plan required).
+training_plan = "lora"
+advantage_clip = 3.0
+learning_rate = 1e-4
+weight_decay = 0.01
+grad_accum_steps = 8
+log_time_interval = 30
+checkpoint_save_time_interval = 1800
+seed = 42
+loss_objective = "ppo_clip"
+clip_epsilon = 0.2
+negative_loss_weight = 1.0
+# lora specific
+lora_rank = 64
+lora_alpha = 128
+lora_dropout = 0.1
+lora_target_modules_csv = "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+resume_checkpoint_tag = "auto"

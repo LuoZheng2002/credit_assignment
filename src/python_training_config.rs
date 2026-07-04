@@ -55,6 +55,18 @@ pub struct PythonTrainingConfigCommon {
     /// positive imitation. None falls back to the Python-side default (1.0).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub negative_loss_weight: Option<f32>,
+    /// Training objective: "advantage_weighted_ce" (legacy vanilla policy
+    /// gradient) or "ppo_clip" (clipped surrogate; LoRA only). None falls
+    /// back to the Python-side default ("advantage_weighted_ce").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loss_objective: Option<String>,
+    /// PPO trust-region half-width, used when loss_objective="ppo_clip".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clip_epsilon: Option<f32>,
+    /// Ablation switch: binarize positive advantages in the loss so credit
+    /// magnitudes carry no information (uniform rejection sampling).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uniform_positive_advantage: Option<bool>,
 }
 
 #[cfg(test)]
@@ -82,6 +94,9 @@ mod tests {
                 resume_checkpoint_tag: Some("latest".to_string()),
                 negative_loss_mode: None,
                 negative_loss_weight: None,
+                loss_objective: None,
+                clip_epsilon: None,
+                uniform_positive_advantage: None,
             },
             training_time: 120.0,
             num_iterations_limit: 200,

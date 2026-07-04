@@ -42,6 +42,14 @@ class TrainingRequestArgs(BaseModel):
     # Multiplier on the negative-advantage contribution relative to positive
     # imitation (1.0 = symmetric; unlikelihood at 1.0 hurt validation -4.8pt).
     negative_loss_weight: float = 1.0
+    # "advantage_weighted_ce" (legacy vanilla policy gradient) or "ppo_clip"
+    # (clipped surrogate with the adapter-disabled base as behavior policy).
+    loss_objective: str = "advantage_weighted_ce"
+    # PPO trust-region half-width; only used when loss_objective="ppo_clip".
+    clip_epsilon: float = 0.2
+    # Ablation: binarize positive advantages so credit magnitudes carry no
+    # information (uniform rejection-sampling baseline).
+    uniform_positive_advantage: bool = False
     adam_fp32: bool
 
 

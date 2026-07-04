@@ -91,6 +91,7 @@ def compute_advantage_weighted_causal_lm_loss(
     advantage_clip: float,
     negative_loss_mode: str = NEGATIVE_LOSS_MODE_WEIGHTED_CE,
     negative_loss_weight: float = 1.0,
+    uniform_positive_advantage: bool = False,
 ) -> AdvantageWeightedLossOutput:
     assert logits.ndim == 3, "logits must be [batch, seq_len, vocab]"
     assert labels.ndim == 2, "labels must be [batch, seq_len]"
@@ -147,6 +148,11 @@ def compute_advantage_weighted_causal_lm_loss(
         per_token_advantages * negative_loss_weight,
         per_token_advantages,
     )
+    if uniform_positive_advantage:
+        # Ablation: binarize positive weights so credit magnitudes carry no
+        # information (uniform rejection-sampling baseline). Non-positive
+        # weights are zeroed; combine with positive_advantage_only rollouts.
+        per_token_advantages = (per_token_advantages > 0.0).to(torch.float32)
     supervised_ce = token_losses.masked_select(supervised_mask).to(torch.float32)
     if negative_loss_mode == NEGATIVE_LOSS_MODE_WEIGHTED_CE:
         # Legacy objective: CE * advantage for both signs. The negative-sign
@@ -202,6 +208,135 @@ def compute_advantage_weighted_causal_lm_loss(
     }
 
     return AdvantageWeightedLossOutput(loss=weighted_loss, stats=stats)
+
+
+def compute_ppo_clip_causal_lm_loss(
+    logits: torch.Tensor,
+    ref_logits: torch.Tensor,
+    labels: torch.Tensor,
+    advantages: torch.Tensor,
+    advantage_clip: float,
+    clip_epsilon: float,
+    negative_loss_weight: float = 1.0,
+) -> AdvantageWeightedLossOutput:
+    """PPO clipped-surrogate loss over supervised tokens.
+
+    ratio_t = pi_theta(token_t) / pi_ref(token_t), where pi_ref is the
+    behavior policy of the current epoch (for LoRA: the adapter-disabled base
+    model). Once a token's ratio leaves [1-eps, 1+eps] its gradient vanishes,
+    bounding how far one epoch can push the policy in either direction — the
+    trust region that both the unbounded weighted-CE objective and the
+    unlikelihood objective lacked.
+    """
+    assert logits.ndim == 3, "logits must be [batch, seq_len, vocab]"
+    assert ref_logits.shape == logits.shape, "ref_logits must match logits shape"
+    assert labels.ndim == 2, "labels must be [batch, seq_len]"
+    assert advantages.ndim == 2, "advantages must be [batch, seq_len]"
+    batch_size, seq_len, vocab_size = logits.shape
+    assert labels.shape == (batch_size, seq_len), "labels shape must match logits"
+    assert advantages.shape == (batch_size, seq_len), (
+        "advantages shape must match logits"
+    )
+    assert seq_len >= 2, "seq_len must be >= 2 to support causal shift"
+    assert advantage_clip > 0.0, "advantage_clip must be > 0"
+    assert 0.0 < clip_epsilon < 1.0, "clip_epsilon must be in (0, 1)"
+    assert negative_loss_weight >= 0.0, "negative_loss_weight must be >= 0"
+
+    shifted_logits = logits[:, :-1, :].contiguous()
+    shifted_ref_logits = ref_logits[:, :-1, :].contiguous()
+    shifted_labels = labels[:, 1:].contiguous()
+    shifted_advantages = advantages[:, 1:].contiguous()
+
+    _assert_tensor_finite(shifted_logits, "logits")
+    _assert_tensor_finite(shifted_ref_logits, "ref_logits")
+    _assert_tensor_finite(shifted_advantages, "advantages")
+
+    token_losses = F.cross_entropy(
+        shifted_logits.view(-1, vocab_size),
+        shifted_labels.view(-1),
+        ignore_index=IGNORE_LABEL,
+        reduction="none",
+    ).view(batch_size, seq_len - 1)
+    ref_token_losses = F.cross_entropy(
+        shifted_ref_logits.view(-1, vocab_size),
+        shifted_labels.view(-1),
+        ignore_index=IGNORE_LABEL,
+        reduction="none",
+    ).view(batch_size, seq_len - 1)
+
+    supervised_mask = shifted_labels.ne(IGNORE_LABEL)
+    supervised_count = supervised_mask.sum()
+    assert supervised_count.item() > 0, (
+        "batch must contain at least one supervised token"
+    )
+    _assert_tensor_finite(token_losses, "token_losses")
+
+    supervised_count_fp = supervised_count.to(torch.float32)
+    raw_supervised_advantages = shifted_advantages.masked_select(supervised_mask)
+    advantage_mean, advantage_std = _global_mean_std(raw_supervised_advantages)
+    per_token_advantages = torch.clamp(
+        raw_supervised_advantages.to(torch.float32),
+        min=-advantage_clip,
+        max=advantage_clip,
+    )
+    per_token_advantages = torch.where(
+        per_token_advantages < 0.0,
+        per_token_advantages * negative_loss_weight,
+        per_token_advantages,
+    )
+
+    supervised_ce = token_losses.masked_select(supervised_mask).to(torch.float32)
+    supervised_ref_ce = (
+        ref_token_losses.masked_select(supervised_mask).to(torch.float32).detach()
+    )
+    # log ratio = logp_theta - logp_ref = ref_ce - ce
+    log_ratio = torch.clamp(supervised_ref_ce - supervised_ce, min=-20.0, max=20.0)
+    ratio = torch.exp(log_ratio)
+    unclipped_surrogate = ratio * per_token_advantages
+    clipped_surrogate = (
+        torch.clamp(ratio, min=1.0 - clip_epsilon, max=1.0 + clip_epsilon)
+        * per_token_advantages
+    )
+    per_token_surrogate = torch.minimum(unclipped_surrogate, clipped_surrogate)
+    ppo_loss = -per_token_surrogate.sum() / supervised_count_fp
+    _assert_tensor_finite(ppo_loss, "weighted_loss")
+
+    local_batch_count = torch.tensor(
+        float(batch_size), device=logits.device, dtype=torch.float32
+    )
+    local_supervised_tokens = supervised_mask.to(torch.float32).sum()
+    global_unweighted_ce = _global_weighted_mean(
+        supervised_ce.sum(), local_supervised_tokens
+    )
+    global_ppo_loss = _global_weighted_mean(
+        (-per_token_surrogate).sum(), local_supervised_tokens
+    )
+    global_ratio_mean = _global_weighted_mean(
+        ratio.detach().sum(), local_supervised_tokens
+    )
+    clip_active = (
+        ((ratio.detach() - 1.0).abs() > clip_epsilon).to(torch.float32).sum()
+    )
+    global_clip_fraction = _global_weighted_mean(clip_active, local_supervised_tokens)
+    global_adv_norm_mean = _global_weighted_mean(
+        per_token_advantages.detach().sum(), local_supervised_tokens
+    )
+    global_tokens_per_sample = _global_weighted_mean(
+        local_supervised_tokens, local_batch_count
+    )
+
+    stats = {
+        "loss_weighted": float(global_ppo_loss.item()),
+        "loss_unweighted_ce": float(global_unweighted_ce.item()),
+        "ppo_ratio_mean": float(global_ratio_mean.item()),
+        "ppo_clip_fraction": float(global_clip_fraction.item()),
+        "advantage_raw_mean": float(advantage_mean.item()),
+        "advantage_raw_std": float(advantage_std.item()),
+        "advantage_normalized_mean": float(global_adv_norm_mean.item()),
+        "supervised_tokens_per_sample": float(global_tokens_per_sample.item()),
+        "batch_size_per_rank": float(batch_size),
+    }
+    return AdvantageWeightedLossOutput(loss=ppo_loss, stats=stats)
 
 
 @dataclass(frozen=True)

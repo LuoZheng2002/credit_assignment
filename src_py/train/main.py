@@ -63,6 +63,9 @@ def _load_train_config(
         adam_fp32=request.adam_fp32,
         negative_loss_mode=request.negative_loss_mode,
         negative_loss_weight=request.negative_loss_weight,
+        loss_objective=request.loss_objective,
+        clip_epsilon=request.clip_epsilon,
+        uniform_positive_advantage=request.uniform_positive_advantage,
     )
 
 

@@ -23,7 +23,10 @@ from ..tui_logging import (
 from .batch_dataset import LazyResolvedBatchLoader, ResolvedTrainingBatch
 from .collator import IGNORE_LABEL, collate_training_samples
 from .data_msgpack import TrainingSampleTokenized
-from .losses import compute_advantage_weighted_causal_lm_loss
+from .losses import (
+    compute_advantage_weighted_causal_lm_loss,
+    compute_ppo_clip_causal_lm_loss,
+)
 from .training_plan import assert_supported_training_plan
 
 
@@ -238,6 +241,9 @@ def _summarize_backward_inputs(
     )
 
 
+# NOTE: for loss_objective="ppo_clip" this diagnostic replays the legacy
+# weighted-CE objective (no reference forward); it still exercises the same
+# network for locating nonfinite gradients.
 def trace_first_nonfinite_backward_signal(
     *,
     model: torch.nn.Module,
@@ -762,6 +768,14 @@ def _run_unified_loop(
 ) -> None:
     assert lazy_loader.sample_count > 0, "training set must be non-empty"
     training_plan = assert_supported_training_plan(config.training_plan)
+    assert config.loss_objective in ("advantage_weighted_ce", "ppo_clip"), (
+        f"unsupported loss_objective: {config.loss_objective!r}"
+    )
+    if config.loss_objective == "ppo_clip":
+        assert training_plan == "lora", (
+            "loss_objective=ppo_clip requires the lora plan: the reference "
+            "(behavior) policy is recovered by disabling the adapters"
+        )
     is_distributed = world_size > 1
     if is_distributed:
         assert lazy_loader.sample_count >= world_size, (
@@ -1081,14 +1095,29 @@ def _run_unified_loop(
                 logits = eng._forward_logits(
                     model, input_ids=input_ids, attention_mask=attention_mask
                 )
-                loss_output = compute_advantage_weighted_causal_lm_loss(
-                    logits=logits,
-                    labels=labels,
-                    advantages=advantages,
-                    advantage_clip=config.advantage_clip,
-                    negative_loss_mode=config.negative_loss_mode,
-                    negative_loss_weight=config.negative_loss_weight,
-                )
+                if config.loss_objective == "ppo_clip":
+                    ref_logits = eng._forward_reference_logits(
+                        model, input_ids=input_ids, attention_mask=attention_mask
+                    )
+                    loss_output = compute_ppo_clip_causal_lm_loss(
+                        logits=logits,
+                        ref_logits=ref_logits,
+                        labels=labels,
+                        advantages=advantages,
+                        advantage_clip=config.advantage_clip,
+                        clip_epsilon=config.clip_epsilon,
+                        negative_loss_weight=config.negative_loss_weight,
+                    )
+                else:
+                    loss_output = compute_advantage_weighted_causal_lm_loss(
+                        logits=logits,
+                        labels=labels,
+                        advantages=advantages,
+                        advantage_clip=config.advantage_clip,
+                        negative_loss_mode=config.negative_loss_mode,
+                        negative_loss_weight=config.negative_loss_weight,
+                        uniform_positive_advantage=config.uniform_positive_advantage,
+                    )
                 loss = loss_output.loss / config.grad_accum_steps
                 loss.backward()
                 try:
