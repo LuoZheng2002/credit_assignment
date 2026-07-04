@@ -413,6 +413,28 @@ impl Orchestrator {
             accuracy_stats.num_trees_with_judgments,
             accuracy_stats.num_trajectories_judged
         ));
+        // Model-collapse floor: sampled-rollout accuracy crashing toward zero
+        // means the sampling distribution is destroyed even when greedy
+        // validation still looks fine (observed with unlikelihood negative
+        // loss: rollout 0.61 -> 0.37 -> 0.004 while val was still 0.65 one
+        // step earlier). Abort instead of spending further epochs training on
+        // a degenerate sampler; the CE-based divergence guard cannot see this.
+        let overall_accuracy = accuracies.0;
+        let baseline_overall_accuracy = self
+            .progress
+            .training_rollout_accuracies
+            .get(&0)
+            .map(|baseline| baseline.0)
+            .unwrap_or(overall_accuracy);
+        let collapse_floor = (0.5 * baseline_overall_accuracy).max(0.05);
+        if epoch > 0 && overall_accuracy < collapse_floor {
+            return Err(format!(
+                "model_collapse_detected=1 epoch={} training_rollout_accuracy={:.4} \
+                 collapse_floor={:.4} epoch0_baseline={:.4}; aborting orchestration \
+                 to stop training on a degenerate sampler",
+                epoch, overall_accuracy, collapse_floor, baseline_overall_accuracy
+            ));
+        }
         Ok(())
     }
 
