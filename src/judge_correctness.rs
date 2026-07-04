@@ -240,6 +240,15 @@ pub async fn judge_final_answer(
 ) -> CorrectnessJudgment {
     let rollout_stats = RolloutStats::global();
     let is_correct = match final_answer {
+        FinalAnswer::ModelProvided(model_answer)
+            if !model_answer.trim().is_empty()
+                && model_answer.trim() == correct_answer.trim() =>
+        {
+            // Exact string equality needs no LLM judgment: any judge would
+            // call an identical answer correct. Saves judge API credits on
+            // the majority of correct trajectories.
+            true
+        }
         FinalAnswer::ModelProvided(model_answer) => {
             let _num_judge_waiting_workers_guard = AtomicCountGuardRef::new(
                 &rollout_stats.judge_waiting_workers,
