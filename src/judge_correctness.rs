@@ -241,6 +241,16 @@ pub async fn judge_final_answer(
     let rollout_stats = RolloutStats::global();
     let is_correct = match final_answer {
         FinalAnswer::ModelProvided(model_answer) => {
+            // Short-circuit: if the model answer matches the reference answer
+            // verbatim, it's correct without needing a cache lookup or LLM call.
+            if model_answer.trim() == correct_answer.trim() {
+                return CorrectnessJudgment {
+                    model_answer: final_answer.clone(),
+                    correct_answer: correct_answer.to_string(),
+                    is_correct: true,
+                };
+            }
+
             let _num_judge_waiting_workers_guard = AtomicCountGuardRef::new(
                 &rollout_stats.judge_waiting_workers,
                 "judge_waiting_workers".to_string(),

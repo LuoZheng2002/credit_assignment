@@ -1,0 +1,330 @@
+{"type": "status", "backend": "hpc", "status": "starting", "message": "preparing HPC training job", "timestamp": 1783241628.6316493}
+{"type": "status", "backend": "hpc", "status": "starting", "message": "initial model missing at /volume/large_files/qwen25/model; downloading Qwen/Qwen2.5-7B-Instruct", "timestamp": 1783241628.6321564}
+
+Fetching 14 files:   0%|          | 0/14 [00:00<?, ?it/s]
+Fetching 14 files:   7%|▋         | 1/14 [00:00<00:02,  4.78it/s]
+Fetching 14 files:  50%|█████     | 7/14 [01:09<01:12, 10.37s/it]
+Fetching 14 files: 100%|██████████| 14/14 [01:09<00:00,  4.97s/it]
+{"type": "status", "backend": "hpc", "status": "running", "message": "started torchrun with pid=8121; subprocess output redirected to /__modal/volumes/vo-SVDYN5V8Py4FlV81dPGuLE/small_files/qwen25/grpo_notool_training_kl_ema/training_wrapper.txt", "timestamp": 1783241699.0430045}
+
+Fetching 23 files:   0%|          | 0/23 [00:00<?, ?it/s]
+Fetching 23 files:   0%|          | 0/23 [00:00<?, ?it/s]
+Fetching 23 files:   9%|▊         | 2/23 [00:03<00:32,  1.55s/it]
+Fetching 23 files: 100%|██████████| 23/23 [00:03<00:00,  7.43it/s]
+
+Fetching 23 files:   9%|▊         | 2/23 [00:03<00:33,  1.57s/it]
+Fetching 23 files: 100%|██████████| 23/23 [00:03<00:00,  7.31it/s]
+
+Loading weights:   0%|          | 0/339 [00:00<?, ?it/s]
+Loading weights:   0%|          | 0/339 [00:00<?, ?it/s]
+Loading weights:  45%|████▍     | 152/339 [00:00<00:00, 1513.31it/s]
+Loading weights:  40%|███▉      | 134/339 [00:00<00:00, 1336.66it/s]
+Loading weights: 100%|██████████| 339/339 [00:00<00:00, 2320.17it/s]
+
+Loading weights: 100%|██████████| 339/339 [00:00<00:00, 2392.47it/s]
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "<frozen runpy>", line 198, in _run_module_as_main
+[rank0]:   File "<frozen runpy>", line 88, in _run_code
+[rank0]:   File "/workspace/src_py/train/main.py", line 93, in <module>
+[rank0]:     main()
+[rank0]:   File "/workspace/.venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 367, in wrapper
+[rank0]:     return f(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/workspace/src_py/train/main.py", line 87, in main
+[rank0]:     train(config)
+[rank0]:   File "/workspace/src_py/train/engine.py", line 1836, in train
+[rank0]:     ref_raw = copy.deepcopy(raw_model)
+[rank0]:               ^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 162, in deepcopy
+[rank0]:     y = _reconstruct(x, memo, *rv)
+[rank0]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 259, in _reconstruct
+[rank0]:     state = deepcopy(state, memo)
+[rank0]:             ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+[rank0]:     y = copier(x, memo)
+[rank0]:         ^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+[rank0]:     y[deepcopy(key, memo)] = deepcopy(value, memo)
+[rank0]:                              ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+[rank0]:     y = copier(x, memo)
+[rank0]:         ^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+[rank0]:     y[deepcopy(key, memo)] = deepcopy(value, memo)
+[rank0]:                              ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 162, in deepcopy
+[rank0]:     y = _reconstruct(x, memo, *rv)
+[rank0]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 259, in _reconstruct
+[rank0]:     state = deepcopy(state, memo)
+[rank0]:             ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+[rank0]:     y = copier(x, memo)
+[rank0]:         ^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+[rank0]:     y[deepcopy(key, memo)] = deepcopy(value, memo)
+[rank0]:                              ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+[rank0]:     y = copier(x, memo)
+[rank0]:         ^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+[rank0]:     y[deepcopy(key, memo)] = deepcopy(value, memo)
+[rank0]:                              ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 162, in deepcopy
+[rank0]:     y = _reconstruct(x, memo, *rv)
+[rank0]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 259, in _reconstruct
+[rank0]:     state = deepcopy(state, memo)
+[rank0]:             ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+[rank0]:     y = copier(x, memo)
+[rank0]:         ^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+[rank0]:     y[deepcopy(key, memo)] = deepcopy(value, memo)
+[rank0]:                              ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/lib/python3.12/copy.py", line 143, in deepcopy
+[rank0]:     y = copier(memo)
+[rank0]:         ^^^^^^^^^^^^
+[rank0]:   File "/workspace/.venv/lib/python3.12/site-packages/torch/_tensor.py", line 145, in __deepcopy__
+[rank0]:     if not self.is_leaf:
+[rank0]:            ^^^^^^^^^^^^
+[rank0]: RuntimeError: Output 0 of ViewBackward0 is a view and its base or another view of its base has been modified inplace. This view is the output of a function that returns multiple views. Such functions do not allow the output views to be modified inplace. You should replace the inplace operation by an out-of-place one.
+[rank1]: Traceback (most recent call last):
+[rank1]:   File "<frozen runpy>", line 198, in _run_module_as_main
+[rank1]:   File "<frozen runpy>", line 88, in _run_code
+[rank1]:   File "/workspace/src_py/train/main.py", line 93, in <module>
+[rank1]:     main()
+[rank1]:   File "/workspace/.venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 367, in wrapper
+[rank1]:     return f(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/workspace/src_py/train/main.py", line 87, in main
+[rank1]:     train(config)
+[rank1]:   File "/workspace/src_py/train/engine.py", line 1836, in train
+[rank1]:     ref_raw = copy.deepcopy(raw_model)
+[rank1]:               ^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 162, in deepcopy
+[rank1]:     y = _reconstruct(x, memo, *rv)
+[rank1]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 259, in _reconstruct
+[rank1]:     state = deepcopy(state, memo)
+[rank1]:             ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+[rank1]:     y = copier(x, memo)
+[rank1]:         ^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+[rank1]:     y[deepcopy(key, memo)] = deepcopy(value, memo)
+[rank1]:                              ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+[rank1]:     y = copier(x, memo)
+[rank1]:         ^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+[rank1]:     y[deepcopy(key, memo)] = deepcopy(value, memo)
+[rank1]:                              ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 162, in deepcopy
+[rank1]:     y = _reconstruct(x, memo, *rv)
+[rank1]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 259, in _reconstruct
+[rank1]:     state = deepcopy(state, memo)
+[rank1]:             ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+[rank1]:     y = copier(x, memo)
+[rank1]:         ^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+[rank1]:     y[deepcopy(key, memo)] = deepcopy(value, memo)
+[rank1]:                              ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+[rank1]:     y = copier(x, memo)
+[rank1]:         ^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+[rank1]:     y[deepcopy(key, memo)] = deepcopy(value, memo)
+[rank1]:                              ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 162, in deepcopy
+[rank1]:     y = _reconstruct(x, memo, *rv)
+[rank1]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 259, in _reconstruct
+[rank1]:     state = deepcopy(state, memo)
+[rank1]:             ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+[rank1]:     y = copier(x, memo)
+[rank1]:         ^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+[rank1]:     y[deepcopy(key, memo)] = deepcopy(value, memo)
+[rank1]:                              ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/usr/lib/python3.12/copy.py", line 143, in deepcopy
+[rank1]:     y = copier(memo)
+[rank1]:         ^^^^^^^^^^^^
+[rank1]:   File "/workspace/.venv/lib/python3.12/site-packages/torch/_tensor.py", line 145, in __deepcopy__
+[rank1]:     if not self.is_leaf:
+[rank1]:            ^^^^^^^^^^^^
+[rank1]: RuntimeError: Output 0 of ViewBackward0 is a view and its base or another view of its base has been modified inplace. This view is the output of a function that returns multiple views. Such functions do not allow the output views to be modified inplace. You should replace the inplace operation by an out-of-place one.
+W0705 08:55:23.420000 8124 .venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:1014] Sending process 8138 closing signal SIGTERM
+E0705 08:55:23.538000 8124 .venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:988] failed (exitcode: 1) local_rank: 0 (pid: 8137) of binary: /workspace/.venv/bin/python
+E0705 08:55:23.547000 8124 .venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/error_handler.py:145] no error file defined for parent, to copy child error file (/tmp/torchelastic_ifse_uj8/1a01abca-8220-41ad-82dd-9dc09b4563e9_zteu9w98/attempt_0/0/error.json)
+Traceback (most recent call last):
+  File "/workspace/.venv/bin/torchrun", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/workspace/.venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 367, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/workspace/.venv/lib/python3.12/site-packages/torch/distributed/run.py", line 1016, in main
+    run(args)
+  File "/workspace/.venv/lib/python3.12/site-packages/torch/distributed/run.py", line 1007, in run
+    elastic_launch(
+  File "/workspace/.venv/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 191, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.venv/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 371, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+src_py.train.main FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-07-05_08:55:21
+  host      : localhost
+  rank      : 1 (local_rank: 1)
+  exitcode  : 1 (pid: 8138) 
+  error_file: /tmp/torchelastic_ifse_uj8/1a01abca-8220-41ad-82dd-9dc09b4563e9_zteu9w98/attempt_0/1/error.json
+  traceback : Traceback (most recent call last):
+    File "/workspace/.venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 367, in wrapper
+      return f(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^
+    File "/workspace/src_py/train/main.py", line 87, in main
+      train(config)
+    File "/workspace/src_py/train/engine.py", line 1836, in train
+      ref_raw = copy.deepcopy(raw_model)
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 162, in deepcopy
+      y = _reconstruct(x, memo, *rv)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 259, in _reconstruct
+      state = deepcopy(state, memo)
+              ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+      y = copier(x, memo)
+          ^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+      y[deepcopy(key, memo)] = deepcopy(value, memo)
+                               ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+      y = copier(x, memo)
+          ^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+      y[deepcopy(key, memo)] = deepcopy(value, memo)
+                               ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 162, in deepcopy
+      y = _reconstruct(x, memo, *rv)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 259, in _reconstruct
+      state = deepcopy(state, memo)
+              ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+      y = copier(x, memo)
+          ^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+      y[deepcopy(key, memo)] = deepcopy(value, memo)
+                               ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+      y = copier(x, memo)
+          ^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+      y[deepcopy(key, memo)] = deepcopy(value, memo)
+                               ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 162, in deepcopy
+      y = _reconstruct(x, memo, *rv)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 259, in _reconstruct
+      state = deepcopy(state, memo)
+              ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+      y = copier(x, memo)
+          ^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+      y[deepcopy(key, memo)] = deepcopy(value, memo)
+                               ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 143, in deepcopy
+      y = copier(memo)
+          ^^^^^^^^^^^^
+    File "/workspace/.venv/lib/python3.12/site-packages/torch/_tensor.py", line 145, in __deepcopy__
+      if not self.is_leaf:
+             ^^^^^^^^^^^^
+  RuntimeError: Output 0 of ViewBackward0 is a view and its base or another view of its base has been modified inplace. This view is the output of a function that returns multiple views. Such functions do not allow the output views to be modified inplace. You should replace the inplace operation by an out-of-place one.
+  
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-07-05_08:55:21
+  host      : localhost
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 8137) 
+  error_file: /tmp/torchelastic_ifse_uj8/1a01abca-8220-41ad-82dd-9dc09b4563e9_zteu9w98/attempt_0/0/error.json
+  traceback : Traceback (most recent call last):
+    File "/workspace/.venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 367, in wrapper
+      return f(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^
+    File "/workspace/src_py/train/main.py", line 87, in main
+      train(config)
+    File "/workspace/src_py/train/engine.py", line 1836, in train
+      ref_raw = copy.deepcopy(raw_model)
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 162, in deepcopy
+      y = _reconstruct(x, memo, *rv)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 259, in _reconstruct
+      state = deepcopy(state, memo)
+              ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+      y = copier(x, memo)
+          ^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+      y[deepcopy(key, memo)] = deepcopy(value, memo)
+                               ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+      y = copier(x, memo)
+          ^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+      y[deepcopy(key, memo)] = deepcopy(value, memo)
+                               ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 162, in deepcopy
+      y = _reconstruct(x, memo, *rv)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 259, in _reconstruct
+      state = deepcopy(state, memo)
+              ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+      y = copier(x, memo)
+          ^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+      y[deepcopy(key, memo)] = deepcopy(value, memo)
+                               ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+      y = copier(x, memo)
+          ^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+      y[deepcopy(key, memo)] = deepcopy(value, memo)
+                               ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 162, in deepcopy
+      y = _reconstruct(x, memo, *rv)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 259, in _reconstruct
+      state = deepcopy(state, memo)
+              ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 136, in deepcopy
+      y = copier(x, memo)
+          ^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+      y[deepcopy(key, memo)] = deepcopy(value, memo)
+                               ^^^^^^^^^^^^^^^^^^^^^
+    File "/usr/lib/python3.12/copy.py", line 143, in deepcopy
+      y = copier(memo)
+          ^^^^^^^^^^^^
+    File "/workspace/.venv/lib/python3.12/site-packages/torch/_tensor.py", line 145, in __deepcopy__
+      if not self.is_leaf:
+             ^^^^^^^^^^^^
+  RuntimeError: Output 0 of ViewBackward0 is a view and its base or another view of its base has been modified inplace. This view is the output of a function that returns multiple views. Such functions do not allow the output views to be modified inplace. You should replace the inplace operation by an out-of-place one.
+  
+============================================================
+{"type": "result", "backend": "hpc", "ok": false, "error_code": "TRAIN_PROCESS_FAILED", "error_message": "torchrun exited with code 1", "duration_secs": 95.37521481513977, "timestamp": 1783241724.0069525}

@@ -746,6 +746,8 @@ def _run_unified_loop(
     lr_min_scale: float,
     eng: Any,
     finalize_training: bool = True,
+    ref_model: torch.nn.Module | None = None,
+    ema_shadows: dict[str, torch.Tensor] | None = None,
 ) -> None:
     assert lazy_loader.sample_count > 0, "training set must be non-empty"
     training_plan = assert_supported_training_plan(config.training_plan)
@@ -1091,6 +1093,7 @@ def _run_unified_loop(
         attention_mask = None
         advantages = None
         logits = None
+        ref_logits = None
         loss_output = None
         loss = None
         try:
@@ -1104,6 +1107,12 @@ def _run_unified_loop(
             )
             advantages = collated.advantages.to(device=device, non_blocking=True)
 
+            if ref_model is not None:
+                with torch.no_grad():
+                    ref_logits = eng._forward_logits(
+                        ref_model, input_ids=input_ids, attention_mask=attention_mask
+                    )
+
             with sync_context:
                 logits = eng._forward_logits(
                     model, input_ids=input_ids, attention_mask=attention_mask
@@ -1113,6 +1122,10 @@ def _run_unified_loop(
                     labels=labels,
                     advantages=advantages,
                     advantage_clip=config.advantage_clip,
+                    ref_logits=ref_logits,
+                    kl_penalty_coefficient=config.kl_penalty_coefficient
+                    if ref_model is not None
+                    else 0.0,
                 )
                 loss = loss_output.loss / config.grad_accum_steps
                 loss.backward()
@@ -1157,6 +1170,7 @@ def _run_unified_loop(
                 attention_mask = None
                 advantages = None
                 logits = None
+                ref_logits = None
                 loss_output = None
                 loss = None
                 eng._print_cuda_oom_diagnostics_stderr(
@@ -1271,6 +1285,7 @@ def _run_unified_loop(
                 and attention_mask is not None
             ):
                 logits = None
+                ref_logits = None
                 loss_output = None
                 loss = None
                 collated = None
@@ -1294,6 +1309,7 @@ def _run_unified_loop(
             attention_mask = None
             advantages = None
             logits = None
+            ref_logits = None
             loss_output = None
             loss = None
             eng._release_step_memory(device)
@@ -1437,6 +1453,13 @@ def _run_unified_loop(
                 )
                 _assert_pre_step_finite(model, optimizer, clipped_grad_norm)
                 optimizer.step()
+                if ema_shadows is not None:
+                    ema_decay = config.ema_decay
+                    for name, param in model.named_parameters():
+                        if param.requires_grad and name in ema_shadows:
+                            ema_shadows[name].mul_(ema_decay).add_(
+                                param.data, alpha=1.0 - ema_decay
+                            )
             except (RuntimeError, AssertionError) as exc:
                 if isinstance(exc, RuntimeError) and (
                     not eng._is_cuda_oom_exception(exc)
@@ -1814,6 +1837,8 @@ def run_training_loop(
     lr_warmup_steps: int,
     lr_min_scale: float,
     lazy_loader: LazyResolvedBatchLoader | None,
+    ref_model: torch.nn.Module | None = None,
+    ema_shadows: dict[str, torch.Tensor] | None = None,
 ) -> None:
     from . import engine as eng
 
@@ -1847,4 +1872,6 @@ def run_training_loop(
         lr_warmup_steps=lr_warmup_steps,
         lr_min_scale=lr_min_scale,
         eng=eng,
+        ref_model=ref_model,
+        ema_shadows=ema_shadows,
     )

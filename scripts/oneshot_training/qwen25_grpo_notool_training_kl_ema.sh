@@ -13,17 +13,17 @@ set -euo pipefail
 uv run -m src_py.modal.launch_modal_oneshot_training \
     --model-cli-name qwen25 \
     --max-rollout-concurrency 300 \
-    --config-nickname-training grpo_notool_training1 \
+    --config-nickname-training grpo_notool_training_kl_ema \
     --config-nickname-rollout grpo_notool_rollout \
     --validation-rollout-config-path config/rollout_config_validation_notool.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
-    --num-oneshot-epochs 20 \
+    --num-oneshot-epochs 1 \
     --num-iterations-limit 3 \
-    --training-config-common-path config/training/common_lora.toml \
-    --oneshot-per-epoch-training-time 120 \
+    --training-config-common-path config/training/common_fsdp_kl_ema.toml \
+    --oneshot-per-epoch-training-time 600 \
     --validation-rollout-time-limit-secs 1200 \
     --max-python-processes 2 \
-    --num-gpus 1 \
+    --num-gpus 2 \
     --gpu-name H200 \
     --mount-dir "/volume" \
     --rollout-mount-dir "/rollout_volume" \

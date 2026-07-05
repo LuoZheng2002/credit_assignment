@@ -14,3 +14,6 @@ lora_alpha = 128
 lora_dropout = 0.1
 lora_target_modules_csv = "q_proj,k_proj,v_proj,o_proj"
 resume_checkpoint_tag = "auto"
+kl_and_ema_enabled = false
+kl_penalty_coefficient = 0.04
+ema_decay = 0.992

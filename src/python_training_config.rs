@@ -66,6 +66,18 @@ fn default_lr_total_steps() -> usize {
     0
 }
 
+fn default_kl_and_ema_enabled() -> bool {
+    false
+}
+
+fn default_kl_penalty_coefficient() -> f32 {
+    0.04
+}
+
+fn default_ema_decay() -> f32 {
+    0.992
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PythonTrainingConfigCommon {
     pub training_plan: String,
@@ -95,6 +107,12 @@ pub struct PythonTrainingConfigCommon {
     pub lora_target_modules_csv: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume_checkpoint_tag: Option<String>,
+    #[serde(default = "default_kl_and_ema_enabled")]
+    pub kl_and_ema_enabled: bool,
+    #[serde(default = "default_kl_penalty_coefficient")]
+    pub kl_penalty_coefficient: f32,
+    #[serde(default = "default_ema_decay")]
+    pub ema_decay: f32,
 }
 
 #[cfg(test)]
@@ -124,6 +142,9 @@ mod tests {
                 lora_dropout: Some(0.05),
                 lora_target_modules_csv: None,
                 resume_checkpoint_tag: Some("latest".to_string()),
+                kl_and_ema_enabled: false,
+                kl_penalty_coefficient: 0.04,
+                ema_decay: 0.992,
             },
             training_time: 120.0,
             num_iterations_limit: 200,

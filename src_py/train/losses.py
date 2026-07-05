@@ -80,6 +80,8 @@ def compute_advantage_weighted_causal_lm_loss(
     labels: torch.Tensor,
     advantages: torch.Tensor,
     advantage_clip: float,
+    ref_logits: torch.Tensor | None = None,
+    kl_penalty_coefficient: float = 0.0,
 ) -> AdvantageWeightedLossOutput:
     assert logits.ndim == 3, "logits must be [batch, seq_len, vocab]"
     assert labels.ndim == 2, "labels must be [batch, seq_len]"
@@ -131,6 +133,26 @@ def compute_advantage_weighted_causal_lm_loss(
     _assert_tensor_finite(weighted_loss, "weighted_loss")
 
     total_loss = weighted_loss
+    kl_div_mean: torch.Tensor | None = None
+    if ref_logits is not None and kl_penalty_coefficient > 0.0:
+        shifted_ref_logits = ref_logits[:, :-1, :].contiguous()
+        assert shifted_ref_logits.shape == shifted_logits.shape, (
+            "ref_logits shape must match logits shape"
+        )
+        _assert_tensor_finite(shifted_ref_logits, "ref_logits")
+
+        curr_log_probs = F.log_softmax(shifted_logits.to(torch.float32), dim=-1)
+        ref_log_probs = F.log_softmax(shifted_ref_logits.to(torch.float32), dim=-1)
+        ref_probs = F.softmax(shifted_ref_logits.to(torch.float32), dim=-1)
+
+        per_token_kl = (ref_probs * (ref_log_probs - curr_log_probs)).sum(dim=-1)
+        kl_div_mean = (
+            per_token_kl.masked_select(supervised_mask).to(torch.float32).sum()
+            / supervised_count_fp
+        )
+        _assert_tensor_finite(kl_div_mean, "kl_div")
+        total_loss = total_loss + kl_penalty_coefficient * kl_div_mean
+
     _assert_tensor_finite(total_loss, "total_loss")
 
     local_batch_count = torch.tensor(
@@ -171,6 +193,12 @@ def compute_advantage_weighted_causal_lm_loss(
         "supervised_tokens_per_sample": float(global_tokens_per_sample.item()),
         "batch_size_per_rank": float(batch_size),
     }
+    if kl_div_mean is not None:
+        global_kl_div = _global_weighted_mean(
+            kl_div_mean.detach() * local_supervised_tokens,
+            local_supervised_tokens,
+        )
+        stats["kl_div"] = float(global_kl_div.item())
 
     return AdvantageWeightedLossOutput(loss=total_loss, stats=stats)
 

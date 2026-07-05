@@ -209,7 +209,7 @@ def _run_sft_training(
             model_path=resolved_model_path, device=device
         )
     else:
-        model, attention_backend = _build_fsdp_model(
+        model, _, attention_backend = _build_fsdp_model(
             model_path=resolved_model_path, device=device
         )
 

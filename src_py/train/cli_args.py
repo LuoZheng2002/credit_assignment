@@ -45,6 +45,9 @@ class TrainingRequestArgs(BaseModel):
     oneshot_num_epochs: int = 0
     oneshot_start_epoch: int = 0
     oneshot_model_output_root: str = ""
+    kl_and_ema_enabled: bool = False
+    kl_penalty_coefficient: float = 0.04
+    ema_decay: float = 0.992
 
 
 class SftTrainingRequestArgs(BaseModel):

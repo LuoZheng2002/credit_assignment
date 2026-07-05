@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import copy
 import gc
 import json
 import os
@@ -149,6 +150,9 @@ class TrainConfig:
     oneshot_num_epochs: int = 0
     oneshot_start_epoch: int = 0
     oneshot_model_output_root: str = ""
+    kl_and_ema_enabled: bool = False
+    kl_penalty_coefficient: float = 0.04
+    ema_decay: float = 0.992
 
 
 @dataclass(frozen=True)
@@ -1509,24 +1513,41 @@ def _build_full_model(
     return base_model, attention_backend
 
 
-def _build_fsdp_model(
-    model_path: str, device: torch.device
-) -> tuple[torch.nn.Module, str]:
+def _wrap_as_fsdp(module: torch.nn.Module, device: torch.device) -> torch.nn.Module:
+    """Wrap a module with FSDP using the project's standard mixed-precision config.
+
+    Callers that need an identically-sharded reference model can deepcopy an
+    unwrapped module and then wrap both copies with this helper --- the identical
+    sharding strategy guarantees that each GPU holds the same parameter shards
+    for both models, allowing KL divergence to be computed locally per rank.
+    """
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
     from torch.distributed.fsdp import MixedPrecision
-
-    base_model, attention_backend = _build_full_model(
-        model_path=model_path, device=device
-    )
 
     mixed_precision = MixedPrecision(
         param_dtype=torch.bfloat16,
         reduce_dtype=torch.bfloat16,
         buffer_dtype=torch.bfloat16,
     )
-    return FSDP(
-        base_model, device_id=device, mixed_precision=mixed_precision
-    ), attention_backend
+    return FSDP(module, device_id=device, mixed_precision=mixed_precision)
+
+
+def _build_fsdp_model(
+    model_path: str, device: torch.device
+) -> tuple[torch.nn.Module, torch.nn.Module, str]:
+    """Build a model and return (fsdp_model, raw_model, attention_backend).
+
+    The raw (unwrapped) model is a deepcopy of the base model taken *before*
+    FSDP wrapping.  FSDP mutates parameter views in-place (replacing them with
+    sharded flat-parameter views), so any deepcopy must happen first.
+    """
+    base_model, attention_backend = _build_full_model(
+        model_path=model_path, device=device
+    )
+    # Deepcopy while parameters are still plain tensors --- FSDP wrapping will
+    # replace them with sharded views that are not safe to deepcopy.
+    raw_model = copy.deepcopy(base_model)
+    return _wrap_as_fsdp(base_model, device), raw_model, attention_backend
 
 
 def _train_oneshot_multiepoch(
@@ -1556,6 +1577,8 @@ def _train_oneshot_multiepoch(
     lr_warmup_steps: int,
     lr_min_scale: float,
     lazy_loader: LazyResolvedBatchLoader,
+    ref_model: torch.nn.Module | None = None,
+    ema_shadows: dict[str, torch.Tensor] | None = None,
 ) -> None:
     """Multi-epoch oneshot training: all oneshot epochs in a single process.
 
@@ -1668,6 +1691,8 @@ def _train_oneshot_multiepoch(
             lr_min_scale=lr_min_scale,
             eng=eng,
             finalize_training=is_final,
+            ref_model=ref_model,
+            ema_shadows=ema_shadows,
         )
 
 
@@ -1772,12 +1797,14 @@ def train(config: TrainConfig) -> None:
             lora_target_modules_csv=config.lora_target_modules_csv,
             device=device,
         )
+        raw_model = model
     elif training_plan == TRAINING_PLAN_DDP:
         model, attention_backend = _build_full_model(
             model_path=resolved_model_path, device=device
         )
+        raw_model = model
     else:
-        model, attention_backend = _build_fsdp_model(
+        model, raw_model, attention_backend = _build_fsdp_model(
             model_path=resolved_model_path, device=device
         )
 
@@ -1786,6 +1813,9 @@ def train(config: TrainConfig) -> None:
     input_embeddings = cast(Any, model).get_input_embeddings()
     assert input_embeddings is not None, "model must expose input embeddings"
     model_vocab_size = input_embeddings.num_embeddings
+
+    # raw_model holds the unwrapped module for reference-model creation
+    # (set above per training plan: model for LoRA/DDP, raw_model for FSDP)
 
     optimizer = torch.optim.AdamW(
         [parameter for parameter in model.parameters() if parameter.requires_grad],
@@ -1803,6 +1833,28 @@ def train(config: TrainConfig) -> None:
             output_device=device.index,
             find_unused_parameters=False,
         )
+
+    ref_model: torch.nn.Module | None = None
+    ema_shadows: dict[str, torch.Tensor] | None = None
+    if config.kl_and_ema_enabled:
+        ref_raw = copy.deepcopy(raw_model)
+        ref_raw.eval()
+        for param in ref_raw.parameters():
+            param.requires_grad_(False)
+        if training_plan == TRAINING_PLAN_FSDP:
+            ref_model = _wrap_as_fsdp(ref_raw, device)
+        else:
+            ref_model = ref_raw
+        ema_shadows = {}
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                ema_shadows[name] = param.data.clone().detach()
+        if _is_primary_rank():
+            _tui_info(
+                "kl_and_ema_enabled=1 "
+                f"kl_penalty_coefficient={config.kl_penalty_coefficient:.4f} "
+                f"ema_decay={config.ema_decay:.4f}"
+            )
 
     checkpoints_parent_dir = Path(config.checkpoints_parent_dir)
     checkpoints_parent_dir.mkdir(parents=True, exist_ok=True)
@@ -1903,6 +1955,8 @@ def train(config: TrainConfig) -> None:
                 lr_warmup_steps=lr_warmup_steps,
                 lr_min_scale=lr_min_scale,
                 lazy_loader=lazy_loader,
+                ref_model=ref_model,
+                ema_shadows=ema_shadows,
             )
         else:
             run_training_loop(
@@ -1933,6 +1987,8 @@ def train(config: TrainConfig) -> None:
                 lr_warmup_steps=lr_warmup_steps,
                 lr_min_scale=lr_min_scale,
                 lazy_loader=lazy_loader,
+                ref_model=ref_model,
+                ema_shadows=ema_shadows,
             )
     finally:
         lazy_loader.close()
