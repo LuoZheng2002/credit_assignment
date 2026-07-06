@@ -49,8 +49,20 @@ class AdaptiveBatchState:
     previous_tokens_per_sample: float
 
 
+@dataclass(frozen=True)
+class DistributedStepControl:
+    opcode: int
+    requested_batch_size: int
+    global_sample_cursor: int
+    iteration_index: int
+    adaptive_state: AdaptiveBatchState
+
+
 DEFAULT_TRAJECTORY_LENGTH_CAP = 4096
 MIN_TRAJECTORY_LENGTH_CAP = 2
+_DISTRIBUTED_CONTROL_STOP = -1
+_DISTRIBUTED_CONTROL_SKIP = 0
+_DISTRIBUTED_CONTROL_RUN = 1
 
 
 def _truncate_sample_to_cap(
@@ -136,9 +148,10 @@ def _is_primary_rank() -> bool:
 
 
 def _tensor_nonfinite_counts(tensor: torch.Tensor) -> tuple[int, int]:
-    tensor_fp32 = tensor.to(torch.float32)
-    nan_count = int(torch.isnan(tensor_fp32).sum().item())
-    inf_count = int(torch.isinf(tensor_fp32).sum().item())
+    if not (torch.is_floating_point(tensor) or torch.is_complex(tensor)):
+        return 0, 0
+    nan_count = int(torch.isnan(tensor).sum().item())
+    inf_count = int(torch.isinf(tensor).sum().item())
     return nan_count, inf_count
 
 
@@ -479,6 +492,65 @@ def _elapsed_training_time_sec(
     return min(clock.training_time, elapsed)
 
 
+def _plan_distributed_step_control(
+    *,
+    clock: TrainingLoopClock,
+    iteration_index: int,
+    num_iterations_limit: int,
+    sample_count: int,
+    global_sample_cursor: int,
+    world_size: int,
+    adaptive_state: AdaptiveBatchState,
+    reset_batch_size_on_wrap: bool,
+    initial_adaptive_velocity: float,
+) -> DistributedStepControl:
+    if not _should_continue_training(
+        clock=clock,
+        iteration_index=iteration_index,
+        num_iterations_limit=num_iterations_limit,
+    ):
+        return DistributedStepControl(
+            opcode=_DISTRIBUTED_CONTROL_STOP,
+            requested_batch_size=0,
+            global_sample_cursor=global_sample_cursor,
+            iteration_index=iteration_index,
+            adaptive_state=adaptive_state,
+        )
+
+    remaining_samples = sample_count - global_sample_cursor
+    max_feasible_batch_size = remaining_samples // world_size
+    if max_feasible_batch_size <= 0:
+        next_iteration_index = iteration_index + 1
+        next_adaptive_state = adaptive_state
+        if reset_batch_size_on_wrap:
+            next_adaptive_state = AdaptiveBatchState(
+                next_batch_size=1,
+                next_batch_size_float=1.0,
+                velocity=initial_adaptive_velocity,
+                throughput_ema=adaptive_state.throughput_ema,
+                best_throughput_ema=adaptive_state.best_throughput_ema,
+                memory_utilization_ema=adaptive_state.memory_utilization_ema,
+                previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
+            )
+        return DistributedStepControl(
+            opcode=_DISTRIBUTED_CONTROL_SKIP,
+            requested_batch_size=0,
+            global_sample_cursor=0,
+            iteration_index=next_iteration_index,
+            adaptive_state=next_adaptive_state,
+        )
+
+    return DistributedStepControl(
+        opcode=_DISTRIBUTED_CONTROL_RUN,
+        requested_batch_size=max(
+            1, min(adaptive_state.next_batch_size, max_feasible_batch_size)
+        ),
+        global_sample_cursor=global_sample_cursor,
+        iteration_index=iteration_index,
+        adaptive_state=adaptive_state,
+    )
+
+
 def _maybe_emit_master_progress(
     *, clock: TrainingLoopClock, samples_trained: int
 ) -> None:
@@ -746,9 +818,10 @@ def _run_unified_loop(
     lr_min_scale: float,
     eng: Any,
     finalize_training: bool = True,
+    persist_training_state: bool = True,
     ref_model: torch.nn.Module | None = None,
     ema_shadows: dict[str, torch.Tensor] | None = None,
-) -> None:
+) -> Any:
     assert lazy_loader.sample_count > 0, "training set must be non-empty"
     training_plan = assert_supported_training_plan(config.training_plan)
     is_distributed = world_size > 1
@@ -960,50 +1033,51 @@ def _run_unified_loop(
 
     iteration_index = max(0, resume_state.next_iteration_index)
 
-    while _should_continue_training(
-        clock=clock,
-        iteration_index=iteration_index,
-        num_iterations_limit=config.num_iterations_limit,
-    ):
+    while True:
         _maybe_emit_master_progress(clock=clock, samples_trained=samples_trained)
 
         if is_distributed:
             control_tensor = torch.zeros(4, dtype=torch.int64, device=device)
             if _is_primary_rank():
-                remaining_samples = sample_count - global_sample_cursor
-                max_feasible_batch_size = remaining_samples // world_size
-                if max_feasible_batch_size <= 0:
-                    global_sample_cursor = 0
-                    iteration_index += 1
-                    if reset_batch_size_on_wrap:
-                        adaptive_state = AdaptiveBatchState(
-                            next_batch_size=1,
-                            next_batch_size_float=1.0,
-                            velocity=initial_adaptive_velocity,
-                            throughput_ema=adaptive_state.throughput_ema,
-                            best_throughput_ema=adaptive_state.best_throughput_ema,
-                            memory_utilization_ema=adaptive_state.memory_utilization_ema,
-                            previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-                        )
-                        _tui_info(
-                            "adaptive_batch_wrap_reset_applied=1 "
-                            f"iteration={iteration_index} next_batch_size={adaptive_state.next_batch_size}"
-                        )
-                    control_tensor[0] = 0
-                else:
-                    control_tensor[0] = 1
-                    control_tensor[1] = max(
-                        1, min(adaptive_state.next_batch_size, max_feasible_batch_size)
+                control = _plan_distributed_step_control(
+                    clock=clock,
+                    iteration_index=iteration_index,
+                    num_iterations_limit=config.num_iterations_limit,
+                    sample_count=sample_count,
+                    global_sample_cursor=global_sample_cursor,
+                    world_size=world_size,
+                    adaptive_state=adaptive_state,
+                    reset_batch_size_on_wrap=reset_batch_size_on_wrap,
+                    initial_adaptive_velocity=initial_adaptive_velocity,
+                )
+                global_sample_cursor = control.global_sample_cursor
+                iteration_index = control.iteration_index
+                adaptive_state = control.adaptive_state
+                if (
+                    control.opcode == _DISTRIBUTED_CONTROL_SKIP
+                    and reset_batch_size_on_wrap
+                ):
+                    _tui_info(
+                        "adaptive_batch_wrap_reset_applied=1 "
+                        f"iteration={iteration_index} next_batch_size={adaptive_state.next_batch_size}"
                     )
+                control_tensor[0] = control.opcode
+                control_tensor[1] = control.requested_batch_size
                 control_tensor[2] = global_sample_cursor
                 control_tensor[3] = iteration_index
 
             torch.distributed.broadcast(control_tensor, src=0)
-            should_run_step = int(control_tensor[0].item()) == 1
+            control_opcode = int(control_tensor[0].item())
             requested_batch_size = int(control_tensor[1].item())
             global_sample_cursor = int(control_tensor[2].item())
             iteration_index = int(control_tensor[3].item())
-            if not should_run_step:
+            if control_opcode == _DISTRIBUTED_CONTROL_SKIP and reset_batch_size_on_wrap:
+                adaptive_state = _broadcast_adaptive_state_distributed(
+                    adaptive_state=adaptive_state
+                )
+            if control_opcode == _DISTRIBUTED_CONTROL_STOP:
+                break
+            if control_opcode != _DISTRIBUTED_CONTROL_RUN:
                 continue
 
             rank_sample_start = global_sample_cursor + (rank * requested_batch_size)
@@ -1024,6 +1098,12 @@ def _run_unified_loop(
                 batch_index=rank_sample_start,
             )
         else:
+            if not _should_continue_training(
+                clock=clock,
+                iteration_index=iteration_index,
+                num_iterations_limit=config.num_iterations_limit,
+            ):
+                break
             requested_batch_size = min(
                 adaptive_state.next_batch_size, sample_count - global_sample_cursor
             )
@@ -1180,6 +1260,12 @@ def _run_unified_loop(
                     device=device,
                 )
                 eng._release_step_memory(device)
+                if is_distributed:
+                    raise RuntimeError(
+                        "distributed CUDA OOM recovery is unsupported under FSDP/DDP because "
+                        "ranks can diverge into mismatched collectives; rerun with a smaller fixed "
+                        "batch size or shorter trajectory length"
+                    ) from exc
                 reduced_batch_size = max(1, adaptive_state.next_batch_size // 2)
                 eng._print_cuda_oom_stderr(
                     rank=rank,
@@ -1458,7 +1544,10 @@ def _run_unified_loop(
                     for name, param in model.named_parameters():
                         if param.requires_grad and name in ema_shadows:
                             ema_shadows[name].mul_(ema_decay).add_(
-                                param.data, alpha=1.0 - ema_decay
+                                param.data.detach().to(
+                                    device="cpu", dtype=ema_shadows[name].dtype
+                                ),
+                                alpha=1.0 - ema_decay,
                             )
             except (RuntimeError, AssertionError) as exc:
                 if isinstance(exc, RuntimeError) and (
@@ -1547,6 +1636,12 @@ def _run_unified_loop(
                 )
                 optimizer.zero_grad(set_to_none=True)
                 eng._release_step_memory(device)
+                if is_distributed:
+                    raise RuntimeError(
+                        "distributed CUDA OOM recovery is unsupported under FSDP/DDP because "
+                        "ranks can diverge into mismatched collectives; rerun with a smaller fixed "
+                        "batch size or shorter trajectory length"
+                    ) from exc
                 reduced_batch_size = max(1, adaptive_state.next_batch_size // 2)
                 eng._print_cuda_oom_stderr(
                     rank=rank,
@@ -1676,7 +1771,8 @@ def _run_unified_loop(
 
             elapsed_since_last_checkpoint_sec = now - clock.last_checkpoint_save_time
             if (
-                elapsed_since_last_checkpoint_sec
+                persist_training_state
+                and elapsed_since_last_checkpoint_sec
                 >= config.checkpoint_save_time_interval
             ):
                 checkpoint_tag = "checkpoints"
@@ -1741,36 +1837,37 @@ def _run_unified_loop(
         _tui_key_value("learning_rate", f"{current_learning_rate:.10f}")
 
     total_training_time_sec = _elapsed_training_time_sec(clock=clock)
-    eng._save_checkpoint(
-        model=model,
-        optimizer=optimizer,
-        output_dir=checkpoints_parent_dir,
-        checkpoint_tag="checkpoints",
-        training_plan=training_plan,
-        global_step=global_step,
-        next_iteration_index=iteration_index,
-        next_batch_cursor=global_sample_cursor,
-        accumulation_step=accumulation_step,
-        next_sample_index=global_sample_cursor,
-        next_batch_size=adaptive_state.next_batch_size,
-        adaptive_velocity=adaptive_state.velocity,
-        adaptive_throughput_ema=adaptive_state.throughput_ema,
-        adaptive_best_throughput_ema=adaptive_state.best_throughput_ema,
-        adaptive_memory_utilization_ema=adaptive_state.memory_utilization_ema,
-        adaptive_previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-        adaptive_next_batch_size_float=adaptive_state.next_batch_size_float,
-        elapsed_training_time_sec=total_training_time_sec,
-        samples_trained=samples_trained,
-        samples_available=samples_available,
-        max_average_absolute_advantage=max_average_absolute_advantage,
-        min_average_absolute_advantage=min_average_absolute_advantage,
-        median_average_absolute_advantage=median_average_absolute_advantage,
-    )
-    if _is_primary_rank():
-        _tui_info(
-            f"checkpoint_saved=1 checkpoint_tag=checkpoints global_step={global_step} "
-            f"iteration={iteration_index} next_sample_index={global_sample_cursor} final=1"
+    if persist_training_state:
+        eng._save_checkpoint(
+            model=model,
+            optimizer=optimizer,
+            output_dir=checkpoints_parent_dir,
+            checkpoint_tag="checkpoints",
+            training_plan=training_plan,
+            global_step=global_step,
+            next_iteration_index=iteration_index,
+            next_batch_cursor=global_sample_cursor,
+            accumulation_step=accumulation_step,
+            next_sample_index=global_sample_cursor,
+            next_batch_size=adaptive_state.next_batch_size,
+            adaptive_velocity=adaptive_state.velocity,
+            adaptive_throughput_ema=adaptive_state.throughput_ema,
+            adaptive_best_throughput_ema=adaptive_state.best_throughput_ema,
+            adaptive_memory_utilization_ema=adaptive_state.memory_utilization_ema,
+            adaptive_previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
+            adaptive_next_batch_size_float=adaptive_state.next_batch_size_float,
+            elapsed_training_time_sec=total_training_time_sec,
+            samples_trained=samples_trained,
+            samples_available=samples_available,
+            max_average_absolute_advantage=max_average_absolute_advantage,
+            min_average_absolute_advantage=min_average_absolute_advantage,
+            median_average_absolute_advantage=median_average_absolute_advantage,
         )
+        if _is_primary_rank():
+            _tui_info(
+                f"checkpoint_saved=1 checkpoint_tag=checkpoints global_step={global_step} "
+                f"iteration={iteration_index} next_sample_index={global_sample_cursor} final=1"
+            )
     eng._save_final_model_folder(
         model=model,
         training_plan=training_plan,
@@ -1796,6 +1893,26 @@ def _run_unified_loop(
             "training_summary_written=1 "
             f"training_summary_parent_dir={training_summary_parent_dir}"
         )
+    final_resume_state = eng.ResumeState(
+        global_step=global_step,
+        next_iteration_index=iteration_index,
+        next_batch_cursor=global_sample_cursor,
+        accumulation_step=accumulation_step,
+        next_sample_index=global_sample_cursor,
+        next_batch_size=adaptive_state.next_batch_size,
+        adaptive_velocity=adaptive_state.velocity,
+        adaptive_throughput_ema=adaptive_state.throughput_ema,
+        adaptive_best_throughput_ema=adaptive_state.best_throughput_ema,
+        adaptive_memory_utilization_ema=adaptive_state.memory_utilization_ema,
+        adaptive_previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
+        adaptive_next_batch_size_float=adaptive_state.next_batch_size_float,
+        elapsed_training_time_sec=total_training_time_sec,
+        samples_trained=samples_trained,
+        samples_available=samples_available,
+        max_average_absolute_advantage=max_average_absolute_advantage,
+        min_average_absolute_advantage=min_average_absolute_advantage,
+        median_average_absolute_advantage=median_average_absolute_advantage,
+    )
     if finalize_training:
         _finalize_training_run(
             rank=rank,
@@ -1806,6 +1923,7 @@ def _run_unified_loop(
         )
     else:
         eng._distributed_barrier()
+    return final_resume_state
 
 
 def run_training_loop(

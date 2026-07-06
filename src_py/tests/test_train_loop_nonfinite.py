@@ -4,8 +4,14 @@ from typing import Any
 import torch
 
 from src_py.train.train_loop import (
+    _DISTRIBUTED_CONTROL_RUN,
+    _DISTRIBUTED_CONTROL_SKIP,
+    _DISTRIBUTED_CONTROL_STOP,
+    AdaptiveBatchState,
+    TrainingLoopClock,
     _assert_pre_step_finite,
     _extract_nonfinite_trace_suffix,
+    _plan_distributed_step_control,
     trace_first_nonfinite_backward_signal,
 )
 
@@ -141,6 +147,129 @@ class TestTrainLoopNonfinite(unittest.TestCase):
         self.assertIn("parameter_name=embed.weight", trace)
         self.assertIn("parameter_grad=path=grad", trace)
         self.assertIn("nan_count=12", trace)
+
+    def test_plan_distributed_step_control_stops_all_ranks_when_time_budget_expires(
+        self,
+    ) -> None:
+        adaptive_state = AdaptiveBatchState(
+            next_batch_size=4,
+            next_batch_size_float=4.0,
+            velocity=0.2,
+            throughput_ema=3.0,
+            best_throughput_ema=3.5,
+            memory_utilization_ema=0.7,
+            previous_tokens_per_sample=128.0,
+        )
+        clock = TrainingLoopClock(
+            training_time=600.0,
+            resumed_elapsed_training_time_sec=0.0,
+            run_start_time=0.0,
+            training_end_time=float("-inf"),
+            last_checkpoint_save_time=0.0,
+            last_log_time=0.0,
+            last_master_progress_time=0.0,
+        )
+
+        control = _plan_distributed_step_control(
+            clock=clock,
+            iteration_index=2,
+            num_iterations_limit=5,
+            sample_count=100,
+            global_sample_cursor=32,
+            world_size=2,
+            adaptive_state=adaptive_state,
+            reset_batch_size_on_wrap=True,
+            initial_adaptive_velocity=0.4,
+        )
+
+        self.assertEqual(_DISTRIBUTED_CONTROL_STOP, control.opcode)
+        self.assertEqual(0, control.requested_batch_size)
+        self.assertEqual(32, control.global_sample_cursor)
+        self.assertEqual(2, control.iteration_index)
+        self.assertEqual(adaptive_state, control.adaptive_state)
+
+    def test_plan_distributed_step_control_resets_wrap_state_before_next_epoch(
+        self,
+    ) -> None:
+        adaptive_state = AdaptiveBatchState(
+            next_batch_size=8,
+            next_batch_size_float=8.5,
+            velocity=0.3,
+            throughput_ema=2.5,
+            best_throughput_ema=3.1,
+            memory_utilization_ema=0.8,
+            previous_tokens_per_sample=256.0,
+        )
+        clock = TrainingLoopClock(
+            training_time=600.0,
+            resumed_elapsed_training_time_sec=0.0,
+            run_start_time=0.0,
+            training_end_time=float("inf"),
+            last_checkpoint_save_time=0.0,
+            last_log_time=0.0,
+            last_master_progress_time=0.0,
+        )
+
+        control = _plan_distributed_step_control(
+            clock=clock,
+            iteration_index=4,
+            num_iterations_limit=10,
+            sample_count=9,
+            global_sample_cursor=8,
+            world_size=2,
+            adaptive_state=adaptive_state,
+            reset_batch_size_on_wrap=True,
+            initial_adaptive_velocity=0.6,
+        )
+
+        self.assertEqual(_DISTRIBUTED_CONTROL_SKIP, control.opcode)
+        self.assertEqual(0, control.requested_batch_size)
+        self.assertEqual(0, control.global_sample_cursor)
+        self.assertEqual(5, control.iteration_index)
+        self.assertEqual(1, control.adaptive_state.next_batch_size)
+        self.assertEqual(1.0, control.adaptive_state.next_batch_size_float)
+        self.assertEqual(0.6, control.adaptive_state.velocity)
+        self.assertEqual(
+            adaptive_state.throughput_ema, control.adaptive_state.throughput_ema
+        )
+
+    def test_plan_distributed_step_control_runs_with_feasible_batch_size(self) -> None:
+        adaptive_state = AdaptiveBatchState(
+            next_batch_size=7,
+            next_batch_size_float=7.0,
+            velocity=0.1,
+            throughput_ema=1.0,
+            best_throughput_ema=1.2,
+            memory_utilization_ema=0.5,
+            previous_tokens_per_sample=64.0,
+        )
+        clock = TrainingLoopClock(
+            training_time=600.0,
+            resumed_elapsed_training_time_sec=0.0,
+            run_start_time=0.0,
+            training_end_time=float("inf"),
+            last_checkpoint_save_time=0.0,
+            last_log_time=0.0,
+            last_master_progress_time=0.0,
+        )
+
+        control = _plan_distributed_step_control(
+            clock=clock,
+            iteration_index=1,
+            num_iterations_limit=10,
+            sample_count=21,
+            global_sample_cursor=9,
+            world_size=2,
+            adaptive_state=adaptive_state,
+            reset_batch_size_on_wrap=False,
+            initial_adaptive_velocity=0.9,
+        )
+
+        self.assertEqual(_DISTRIBUTED_CONTROL_RUN, control.opcode)
+        self.assertEqual(6, control.requested_batch_size)
+        self.assertEqual(9, control.global_sample_cursor)
+        self.assertEqual(1, control.iteration_index)
+        self.assertEqual(adaptive_state, control.adaptive_state)
 
 
 if __name__ == "__main__":

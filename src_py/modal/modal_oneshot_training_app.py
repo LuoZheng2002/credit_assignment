@@ -185,7 +185,7 @@ service_state_volume = modal.Volume.from_name(
     create_if_missing=True,
 )
 rollout_volume_name = experiment_service_state_volume_name(
-    DEPLOY_MODEL_CLI_NAME, DEPLOY_CONFIG_NICKNAME_ROLLOUT, pipeline="oneshot-rollout"
+    DEPLOY_MODEL_CLI_NAME, DEPLOY_CONFIG_NICKNAME_ROLLOUT, pipeline="rollout"
 )
 rollout_volume = modal.Volume.from_name(
     rollout_volume_name,

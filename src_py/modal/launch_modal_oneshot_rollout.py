@@ -261,7 +261,7 @@ def main() -> int:
     )
     mount_dir = _extract_required_cli_arg(cli_args, "--mount-dir")
     service_state_volume_name = experiment_service_state_volume_name(
-        model_cli_name, config_nickname_rollout, pipeline="oneshot-rollout"
+        model_cli_name, config_nickname_rollout, pipeline="rollout"
     )
     app_name = _oneshot_rollout_app_name(model_cli_name, config_nickname_rollout)
     repo_root = _repo_root()

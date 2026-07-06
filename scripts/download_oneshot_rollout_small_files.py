@@ -35,7 +35,7 @@ def main() -> int:
 
     repo_root = _repo_root()
     service_state_volume_name = experiment_service_state_volume_name(
-        args.model_cli_name, args.config_nickname_rollout, pipeline="oneshot-rollout"
+        args.model_cli_name, args.config_nickname_rollout, pipeline="rollout"
     )
     local_destination = experiment_local_small_files_dir(
         repo_root, args.model_cli_name, args.config_nickname_rollout

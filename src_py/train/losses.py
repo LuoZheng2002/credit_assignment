@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-import torch.distributed as dist
 import torch.nn.functional as F
 
 IGNORE_LABEL = -100
 STD_EPS = 1e-6
+KL_VOCAB_CHUNK_SIZE = 4096
 
 
 @dataclass(frozen=True)
@@ -16,42 +16,22 @@ class AdvantageWeightedLossOutput:
     stats: dict[str, float]
 
 
-def _all_reduce_sum(tensor: torch.Tensor) -> torch.Tensor:
-    if dist.is_available() and dist.is_initialized():
-        reduced = tensor.clone()
-        dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
-        return reduced
-    return tensor
-
-
-def _global_mean_std(values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def _local_mean_std(values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     assert values.ndim == 1, "values must be rank-1"
     assert values.numel() > 0, "values cannot be empty"
 
     values_fp32 = values.to(torch.float32)
-    local_count = torch.tensor(
-        [values_fp32.numel()], device=values.device, dtype=torch.float32
-    )
-    local_sum = values_fp32.sum().unsqueeze(0)
-    local_sum_sq = (values_fp32 * values_fp32).sum().unsqueeze(0)
-
-    global_count = _all_reduce_sum(local_count)
-    global_sum = _all_reduce_sum(local_sum)
-    global_sum_sq = _all_reduce_sum(local_sum_sq)
-
-    assert global_count.item() > 0.0, "global count must be positive"
-
-    mean = global_sum / global_count
-    var = global_sum_sq / global_count - mean * mean
-    var = torch.clamp(var, min=0.0)
+    mean = values_fp32.mean()
+    var = torch.clamp(values_fp32.var(unbiased=False), min=0.0)
     std = torch.sqrt(var + STD_EPS)
-    return mean.squeeze(0), std.squeeze(0)
+    return mean, std
 
 
 def _tensor_nonfinite_counts(tensor: torch.Tensor) -> tuple[int, int]:
-    tensor_fp32 = tensor.to(torch.float32)
-    nan_count = int(torch.isnan(tensor_fp32).sum().item())
-    inf_count = int(torch.isinf(tensor_fp32).sum().item())
+    if not (torch.is_floating_point(tensor) or torch.is_complex(tensor)):
+        return 0, 0
+    nan_count = int(torch.isnan(tensor).sum().item())
+    inf_count = int(torch.isinf(tensor).sum().item())
     return nan_count, inf_count
 
 
@@ -62,17 +42,47 @@ def _assert_tensor_finite(tensor: torch.Tensor, tensor_name: str) -> None:
     )
 
 
-def _global_weighted_mean(
+def _local_weighted_mean(
     local_sum: torch.Tensor, local_count: torch.Tensor
 ) -> torch.Tensor:
     assert local_sum.ndim == 0, "local_sum must be scalar"
     assert local_count.ndim == 0, "local_count must be scalar"
+    assert local_count.item() > 0.0, "local_count must be positive"
+    return local_sum / local_count
 
-    global_sum = _all_reduce_sum(local_sum.unsqueeze(0)).squeeze(0)
-    global_count = _all_reduce_sum(local_count.unsqueeze(0)).squeeze(0)
 
-    assert global_count.item() > 0.0, "global_count must be positive"
-    return global_sum / global_count
+def _chunked_forward_kl_divergence(
+    current_logits: torch.Tensor,
+    reference_logits: torch.Tensor,
+    *,
+    vocab_chunk_size: int = KL_VOCAB_CHUNK_SIZE,
+) -> torch.Tensor:
+    assert current_logits.ndim == 3, "current_logits must be [batch, seq_len, vocab]"
+    assert reference_logits.ndim == 3, (
+        "reference_logits must be [batch, seq_len, vocab]"
+    )
+    assert current_logits.shape == reference_logits.shape, (
+        "current_logits and reference_logits must match"
+    )
+    assert vocab_chunk_size > 0, "vocab_chunk_size must be positive"
+
+    curr_log_denom = torch.logsumexp(current_logits.to(torch.float32), dim=-1)
+    ref_log_denom = torch.logsumexp(reference_logits.to(torch.float32), dim=-1)
+    per_token_kl = torch.zeros_like(curr_log_denom, dtype=torch.float32)
+    vocab_size = current_logits.shape[-1]
+
+    for start in range(0, vocab_size, vocab_chunk_size):
+        end = min(vocab_size, start + vocab_chunk_size)
+        curr_chunk = current_logits[:, :, start:end].to(torch.float32)
+        ref_chunk = reference_logits[:, :, start:end].to(torch.float32)
+        curr_log_probs_chunk = curr_chunk - curr_log_denom.unsqueeze(-1)
+        ref_log_probs_chunk = ref_chunk - ref_log_denom.unsqueeze(-1)
+        ref_probs_chunk = torch.exp(ref_log_probs_chunk)
+        per_token_kl = per_token_kl + (
+            ref_probs_chunk * (ref_log_probs_chunk - curr_log_probs_chunk)
+        ).sum(dim=-1)
+
+    return per_token_kl
 
 
 def compute_advantage_weighted_causal_lm_loss(
@@ -120,7 +130,7 @@ def compute_advantage_weighted_causal_lm_loss(
 
     supervised_count_fp = supervised_count.to(token_losses.dtype)
     raw_supervised_advantages = shifted_advantages.masked_select(supervised_mask)
-    advantage_mean, advantage_std = _global_mean_std(raw_supervised_advantages)
+    advantage_mean, advantage_std = _local_mean_std(raw_supervised_advantages)
     per_token_advantages = torch.clamp(
         raw_supervised_advantages.to(torch.float32),
         min=-advantage_clip,
@@ -141,11 +151,10 @@ def compute_advantage_weighted_causal_lm_loss(
         )
         _assert_tensor_finite(shifted_ref_logits, "ref_logits")
 
-        curr_log_probs = F.log_softmax(shifted_logits.to(torch.float32), dim=-1)
-        ref_log_probs = F.log_softmax(shifted_ref_logits.to(torch.float32), dim=-1)
-        ref_probs = F.softmax(shifted_ref_logits.to(torch.float32), dim=-1)
-
-        per_token_kl = (ref_probs * (ref_log_probs - curr_log_probs)).sum(dim=-1)
+        per_token_kl = _chunked_forward_kl_divergence(
+            current_logits=shifted_logits,
+            reference_logits=shifted_ref_logits,
+        )
         kl_div_mean = (
             per_token_kl.masked_select(supervised_mask).to(torch.float32).sum()
             / supervised_count_fp
@@ -160,45 +169,41 @@ def compute_advantage_weighted_causal_lm_loss(
     )
     local_supervised_tokens = supervised_mask.to(torch.float32).sum()
 
-    global_unweighted_ce = _global_weighted_mean(
+    local_unweighted_ce = _local_weighted_mean(
         token_losses.masked_select(supervised_mask).to(torch.float32).sum(),
         local_supervised_tokens,
     )
-    global_weighted_loss = _global_weighted_mean(
+    local_weighted_loss = _local_weighted_mean(
         (
             token_losses.masked_select(supervised_mask).to(torch.float32)
             * per_token_advantages
         ).sum(),
         local_supervised_tokens,
     )
-    global_total_loss = _global_weighted_mean(
+    local_total_loss = _local_weighted_mean(
         total_loss.detach() * local_supervised_tokens,
         local_supervised_tokens,
     )
-    global_adv_norm_mean = _global_weighted_mean(
+    local_adv_norm_mean = _local_weighted_mean(
         per_token_advantages.detach().to(torch.float32).sum(),
         local_supervised_tokens,
     )
-    global_tokens_per_sample = _global_weighted_mean(
+    local_tokens_per_sample = _local_weighted_mean(
         local_supervised_tokens, local_batch_count
     )
 
     stats = {
-        "loss_weighted": float(global_weighted_loss.item()),
-        "loss_total": float(global_total_loss.item()),
-        "loss_unweighted_ce": float(global_unweighted_ce.item()),
+        "loss_weighted": float(local_weighted_loss.item()),
+        "loss_total": float(local_total_loss.item()),
+        "loss_unweighted_ce": float(local_unweighted_ce.item()),
         "advantage_raw_mean": float(advantage_mean.item()),
         "advantage_raw_std": float(advantage_std.item()),
-        "advantage_normalized_mean": float(global_adv_norm_mean.item()),
-        "supervised_tokens_per_sample": float(global_tokens_per_sample.item()),
+        "advantage_normalized_mean": float(local_adv_norm_mean.item()),
+        "supervised_tokens_per_sample": float(local_tokens_per_sample.item()),
         "batch_size_per_rank": float(batch_size),
     }
     if kl_div_mean is not None:
-        global_kl_div = _global_weighted_mean(
-            kl_div_mean.detach() * local_supervised_tokens,
-            local_supervised_tokens,
-        )
-        stats["kl_div"] = float(global_kl_div.item())
+        stats["kl_div"] = float(kl_div_mean.item())
 
     return AdvantageWeightedLossOutput(loss=total_loss, stats=stats)
 

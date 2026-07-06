@@ -69,7 +69,8 @@ def _load_train_config(
         oneshot_num_epochs=request.oneshot_num_epochs,
         oneshot_start_epoch=request.oneshot_start_epoch,
         oneshot_model_output_root=request.oneshot_model_output_root,
-        kl_and_ema_enabled=request.kl_and_ema_enabled,
+        kl_enabled=bool(request.kl_enabled),
+        ema_enabled=bool(request.ema_enabled),
         kl_penalty_coefficient=request.kl_penalty_coefficient,
         ema_decay=request.ema_decay,
     )

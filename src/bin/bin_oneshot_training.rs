@@ -1,9 +1,10 @@
 use std::backtrace::Backtrace;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::{ArgAction, Parser, ValueEnum};
 use proctitle::set_title;
+use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
 use credit_assignment::{
@@ -95,9 +96,116 @@ fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
     })
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+struct OneshotRunManifest {
+    num_oneshot_epochs: usize,
+}
+
+fn oneshot_run_manifest_path(summary_parent_dir: &str) -> PathBuf {
+    Path::new(summary_parent_dir).join("oneshot_run_manifest.json")
+}
+
+fn oneshot_aggregated_summary_path(summary_parent_dir: &str) -> PathBuf {
+    Path::new(summary_parent_dir).join("oneshot_aggregated_summary.json")
+}
+
+fn write_oneshot_run_manifest(summary_parent_dir: &str, num_oneshot_epochs: usize) {
+    std::fs::create_dir_all(summary_parent_dir).unwrap_or_else(|err| {
+        panic!(
+            "Failed to create oneshot summary parent dir {}: {}",
+            summary_parent_dir, err
+        )
+    });
+    let manifest_path = oneshot_run_manifest_path(summary_parent_dir);
+    let payload = OneshotRunManifest { num_oneshot_epochs };
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&payload).unwrap() + "\n",
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "Failed to write oneshot run manifest to {}: {}",
+            manifest_path.display(),
+            err
+        )
+    });
+    log_info(format!(
+        "Wrote oneshot run manifest to {}",
+        manifest_path.display()
+    ));
+}
+
+fn read_oneshot_run_manifest(summary_parent_dir: &str) -> Option<OneshotRunManifest> {
+    let manifest_path = oneshot_run_manifest_path(summary_parent_dir);
+    if !manifest_path.exists() {
+        return None;
+    }
+    std::fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<OneshotRunManifest>(&content).ok())
+}
+
+fn read_oneshot_epoch_count_from_summary(summary_parent_dir: &str) -> Option<usize> {
+    let aggregated_path = oneshot_aggregated_summary_path(summary_parent_dir);
+    if !aggregated_path.exists() {
+        return None;
+    }
+    std::fs::read_to_string(&aggregated_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|parsed| parsed.get("num_oneshot_epochs").and_then(|v| v.as_u64()))
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn detect_oneshot_artifacts(summary_parent_dir: &str, model_output_root: &str) -> bool {
+    if oneshot_run_manifest_path(summary_parent_dir).exists()
+        || oneshot_aggregated_summary_path(summary_parent_dir).exists()
+    {
+        return true;
+    }
+
+    if let Ok(entries) = std::fs::read_dir(summary_parent_dir) {
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            if file_name
+                .to_str()
+                .is_some_and(|name| name.starts_with("oneshot_per_epoch_summary_epoch_"))
+            {
+                return true;
+            }
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir(model_output_root) {
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            if file_name
+                .to_str()
+                .is_some_and(|name| name.starts_with("oneshot_epoch_"))
+            {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn all_expected_oneshot_model_outputs_exist(
+    model_output_root: &str,
+    num_oneshot_epochs: usize,
+) -> bool {
+    (1..=num_oneshot_epochs).all(|epoch_index| {
+        Path::new(model_output_root)
+            .join(format!("oneshot_epoch_{}/model", epoch_index))
+            .exists()
+    })
+}
+
 fn write_training_summary(
     summary_parent_dir: &str,
     latest_epoch: usize,
+    num_oneshot_epochs: usize,
     validation_accuracies: &BTreeMap<usize, (f32, f32, f32, f32)>,
     training_throughputs: &BTreeMap<usize, f32>,
 ) {
@@ -167,9 +275,10 @@ fn write_training_summary(
     ));
 
     // 2. Aggregated file: oneshot_aggregated_summary.json (all epochs so far)
-    let accumulated_path = Path::new(summary_parent_dir).join("oneshot_aggregated_summary.json");
+    let accumulated_path = oneshot_aggregated_summary_path(summary_parent_dir);
     let payload = serde_json::json!({
         "latest_epoch": latest_epoch,
+        "num_oneshot_epochs": num_oneshot_epochs,
         "validation_accuracies": accuracies_json,
         "training_throughputs": throughputs_json,
     });
@@ -254,8 +363,8 @@ async fn run_oneshot_training<M: LlmModelMarker>(
 
     // ================================================================
     // Phase 1: Train all oneshot epochs in a single process
-    //        (Adam state, training cursor, and adaptive batch state
-    //         persist across epochs via checkpoint save/load)
+    //        (optimizer/data-cursor continuity is kept in memory only;
+    //         no training-state checkpoint resume is supported)
     // ================================================================
 
     let shared_checkpoints_parent_dir =
@@ -271,19 +380,6 @@ async fn run_oneshot_training<M: LlmModelMarker>(
         .map(|(parent, _)| parent.to_string())
         .unwrap_or_else(|| shared_checkpoints_parent_dir.clone());
 
-    // Detect already-trained epochs by checking for saved model outputs.
-    // Training epoch e produces output at {oneshot_model_output_root}/oneshot_epoch_{e+1}/model.
-    let already_trained_epochs = (0..num_oneshot_epochs)
-        .take_while(|e| {
-            let output_path = format!(
-                "{}/oneshot_epoch_{}/model",
-                oneshot_model_output_root,
-                e + 1
-            );
-            Path::new(&output_path).exists()
-        })
-        .count();
-
     let base_model_parent_dir =
         oneshot_model_parent_dir_from_template(model_cli_name, config_nickname_training, 0)
             .unwrap_or_else(|err| {
@@ -295,22 +391,52 @@ async fn run_oneshot_training<M: LlmModelMarker>(
         training_throughputs.insert(epoch, 0.0);
     }
 
-    if already_trained_epochs >= num_oneshot_epochs {
+    let previous_artifacts_detected = detect_oneshot_artifacts(
+        &oneshot_training_summary_parent_dir,
+        &oneshot_model_output_root,
+    );
+    if previous_artifacts_detected {
+        let previous_num_oneshot_epochs =
+            read_oneshot_run_manifest(&oneshot_training_summary_parent_dir)
+                .map(|manifest| manifest.num_oneshot_epochs)
+                .or_else(|| {
+                    read_oneshot_epoch_count_from_summary(&oneshot_training_summary_parent_dir)
+                });
+
+        let Some(previous_num_oneshot_epochs) = previous_num_oneshot_epochs else {
+            log_warning(format!(
+                "Detected prior oneshot artifacts under {} but could not determine the previous num_oneshot_epochs; exiting early because oneshot training resume is disabled. Clean up the old artifacts to start fresh.",
+                oneshot_model_output_root
+            ));
+            return;
+        };
+
+        if previous_num_oneshot_epochs != num_oneshot_epochs {
+            log_warning(format!(
+                "Detected prior oneshot artifacts with num_oneshot_epochs={} but current request uses {}; exiting early because oneshot training resume is disabled.",
+                previous_num_oneshot_epochs, num_oneshot_epochs
+            ));
+            return;
+        }
+
+        if !all_expected_oneshot_model_outputs_exist(&oneshot_model_output_root, num_oneshot_epochs)
+        {
+            log_warning(format!(
+                "Detected prior oneshot artifacts for num_oneshot_epochs={} but not all expected model outputs are present under {}; exiting early because oneshot training resume is disabled.",
+                num_oneshot_epochs, oneshot_model_output_root
+            ));
+            return;
+        }
+
         log_info(format!(
-            "All {} oneshot training epoch(s) already completed; skipping training phase",
+            "Detected matching prior oneshot artifacts for num_oneshot_epochs={}; skipping training and continuing with remaining validation epochs",
             num_oneshot_epochs
         ));
     } else {
-        let remaining_epochs = num_oneshot_epochs - already_trained_epochs;
-        if already_trained_epochs > 0 {
-            log_info(format!(
-                "Resuming oneshot training: {} epoch(s) already done, {} epoch(s) remaining",
-                already_trained_epochs, remaining_epochs
-            ));
-        }
+        write_oneshot_run_manifest(&oneshot_training_summary_parent_dir, num_oneshot_epochs);
         log_state(format!(
-            "Starting oneshot training for {} epoch(s) in a single process (start_epoch={}, total={})",
-            remaining_epochs, already_trained_epochs, num_oneshot_epochs
+            "Starting oneshot training for {} epoch(s) in a single process",
+            num_oneshot_epochs
         ));
 
         let training_config = PythonTrainingConfig {
@@ -329,7 +455,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
             training_summary_parent_dir: shared_checkpoints_parent_dir.clone(),
             training_mode: "oneshot".to_string(),
             oneshot_num_epochs: num_oneshot_epochs,
-            oneshot_start_epoch: already_trained_epochs,
+            oneshot_start_epoch: 0,
             oneshot_model_output_root: oneshot_model_output_root.clone(),
         };
 
@@ -346,7 +472,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
         let elapsed_secs = training_start_time.elapsed().as_secs_f32();
         log_info(format!(
             "Oneshot training of {} epoch(s) finished in {:.3}s",
-            remaining_epochs, elapsed_secs
+            num_oneshot_epochs, elapsed_secs
         ));
     }
 
@@ -358,8 +484,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
 
     // Detect already-validated epochs by reading the aggregated summary.
     let already_validated_epochs: std::collections::HashSet<usize> = {
-        let aggregated_path =
-            Path::new(&oneshot_training_summary_parent_dir).join("oneshot_aggregated_summary.json");
+        let aggregated_path = oneshot_aggregated_summary_path(&oneshot_training_summary_parent_dir);
         if aggregated_path.exists() {
             std::fs::read_to_string(&aggregated_path)
                 .ok()
@@ -384,8 +509,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
 
     // Pre-populate validation accuracies from summary (for already-validated epochs)
     if !already_validated_epochs.is_empty() {
-        let aggregated_path =
-            Path::new(&oneshot_training_summary_parent_dir).join("oneshot_aggregated_summary.json");
+        let aggregated_path = oneshot_aggregated_summary_path(&oneshot_training_summary_parent_dir);
         if let Ok(content) = std::fs::read_to_string(&aggregated_path) {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
                 if let Some(acc_map) = parsed
@@ -568,6 +692,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
             write_training_summary(
                 &oneshot_training_summary_parent_dir,
                 epoch,
+                num_oneshot_epochs,
                 &validation_accuracies,
                 &training_throughputs,
             );
@@ -582,6 +707,60 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     }
 
     log_state("One-shot training completed for all epochs");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        OneshotRunManifest, all_expected_oneshot_model_outputs_exist, detect_oneshot_artifacts,
+        read_oneshot_run_manifest, write_oneshot_run_manifest,
+    };
+
+    #[test]
+    fn oneshot_manifest_roundtrips() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let summary_parent_dir = temp_dir.path().join("summary");
+        let summary_parent_dir_str = summary_parent_dir.to_string_lossy().into_owned();
+
+        write_oneshot_run_manifest(&summary_parent_dir_str, 7);
+        let manifest = read_oneshot_run_manifest(&summary_parent_dir_str);
+        assert_eq!(
+            manifest,
+            Some(OneshotRunManifest {
+                num_oneshot_epochs: 7
+            })
+        );
+    }
+
+    #[test]
+    fn detect_oneshot_artifacts_notices_epoch_output_dirs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let summary_parent_dir = temp_dir.path().join("summary");
+        let model_output_root = temp_dir.path().join("models");
+        std::fs::create_dir_all(model_output_root.join("oneshot_epoch_1/model")).unwrap();
+
+        assert!(detect_oneshot_artifacts(
+            &summary_parent_dir.to_string_lossy(),
+            &model_output_root.to_string_lossy(),
+        ));
+    }
+
+    #[test]
+    fn expected_oneshot_outputs_require_all_epochs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let model_output_root = temp_dir.path().join("models");
+        std::fs::create_dir_all(model_output_root.join("oneshot_epoch_1/model")).unwrap();
+        std::fs::create_dir_all(model_output_root.join("oneshot_epoch_2/model")).unwrap();
+
+        assert!(all_expected_oneshot_model_outputs_exist(
+            &model_output_root.to_string_lossy(),
+            2,
+        ));
+        assert!(!all_expected_oneshot_model_outputs_exist(
+            &model_output_root.to_string_lossy(),
+            3,
+        ));
+    }
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]

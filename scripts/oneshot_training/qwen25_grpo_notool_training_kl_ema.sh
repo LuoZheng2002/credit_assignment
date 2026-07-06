@@ -17,10 +17,10 @@ uv run -m src_py.modal.launch_modal_oneshot_training \
     --config-nickname-rollout grpo_notool_rollout \
     --validation-rollout-config-path config/rollout_config_validation_notool.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
-    --num-oneshot-epochs 1 \
+    --num-oneshot-epochs 5 \
     --num-iterations-limit 3 \
     --training-config-common-path config/training/common_fsdp_kl_ema.toml \
-    --oneshot-per-epoch-training-time 600 \
+    --oneshot-per-epoch-training-time 300 \
     --validation-rollout-time-limit-secs 1200 \
     --max-python-processes 2 \
     --num-gpus 2 \

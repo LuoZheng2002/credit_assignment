@@ -11,6 +11,7 @@ import shutil
 import types
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -29,6 +30,27 @@ from .training_plan import (
 )
 
 _ADAM_STATE_KEYS = ("exp_avg", "exp_avg_sq", "max_exp_avg_sq")
+_FSDP_TRANSFORMER_BLOCK_CLASS_NAMES = {
+    "BloomBlock",
+    "DecoderLayer",
+    "Gemma2DecoderLayer",
+    "Gemma3DecoderLayer",
+    "GemmaDecoderLayer",
+    "GLMBlock",
+    "GPTNeoXLayer",
+    "GraniteDecoderLayer",
+    "InternLM2DecoderLayer",
+    "LlamaDecoderLayer",
+    "MistralDecoderLayer",
+    "MixtralDecoderLayer",
+    "MPTBlock",
+    "OlmoDecoderLayer",
+    "Phi3DecoderLayer",
+    "Qwen2DecoderLayer",
+    "Qwen3DecoderLayer",
+    "QwenBlock",
+    "TransformerBlock",
+}
 
 
 def _convert_optimizer_state_dict_to_fp32(state_dict: dict[str, Any]) -> dict[str, Any]:
@@ -150,7 +172,8 @@ class TrainConfig:
     oneshot_num_epochs: int = 0
     oneshot_start_epoch: int = 0
     oneshot_model_output_root: str = ""
-    kl_and_ema_enabled: bool = False
+    kl_enabled: bool = False
+    ema_enabled: bool = False
     kl_penalty_coefficient: float = 0.04
     ema_decay: float = 0.992
 
@@ -186,6 +209,36 @@ class AdaptiveBatchState:
     best_throughput_ema: float
     memory_utilization_ema: float
     previous_tokens_per_sample: float
+
+
+def _reset_oneshot_epoch_resume_state(resume_state: ResumeState) -> ResumeState:
+    """Reset per-epoch budget counters while preserving optimizer/data cursor state.
+
+    One-shot multi-epoch training intentionally carries model weights, optimizer
+    state, sample cursor, and adaptive batch state across epochs. However, the
+    wall-clock budget and dataset-pass limit are defined per epoch, so those
+    counters must be reset before starting the next epoch.
+    """
+    return ResumeState(
+        global_step=resume_state.global_step,
+        next_iteration_index=0,
+        next_batch_cursor=resume_state.next_batch_cursor,
+        accumulation_step=resume_state.accumulation_step,
+        next_sample_index=resume_state.next_sample_index,
+        next_batch_size=resume_state.next_batch_size,
+        adaptive_velocity=resume_state.adaptive_velocity,
+        adaptive_throughput_ema=resume_state.adaptive_throughput_ema,
+        adaptive_best_throughput_ema=resume_state.adaptive_best_throughput_ema,
+        adaptive_memory_utilization_ema=resume_state.adaptive_memory_utilization_ema,
+        adaptive_previous_tokens_per_sample=resume_state.adaptive_previous_tokens_per_sample,
+        adaptive_next_batch_size_float=resume_state.adaptive_next_batch_size_float,
+        elapsed_training_time_sec=0.0,
+        samples_trained=resume_state.samples_trained,
+        samples_available=resume_state.samples_available,
+        max_average_absolute_advantage=resume_state.max_average_absolute_advantage,
+        min_average_absolute_advantage=resume_state.min_average_absolute_advantage,
+        median_average_absolute_advantage=resume_state.median_average_absolute_advantage,
+    )
 
 
 def _set_seed(seed: int) -> None:
@@ -239,9 +292,10 @@ def _log_json_line(log_path: Path, payload: dict[str, float | int]) -> None:
 
 
 def _tensor_nonfinite_counts(tensor: torch.Tensor) -> tuple[int, int]:
-    tensor_fp32 = tensor.to(torch.float32)
-    nan_count = int(torch.isnan(tensor_fp32).sum().item())
-    inf_count = int(torch.isinf(tensor_fp32).sum().item())
+    if not (torch.is_floating_point(tensor) or torch.is_complex(tensor)):
+        return 0, 0
+    nan_count = int(torch.isnan(tensor).sum().item())
+    inf_count = int(torch.isinf(tensor).sum().item())
     return nan_count, inf_count
 
 
@@ -1513,6 +1567,19 @@ def _build_full_model(
     return base_model, attention_backend
 
 
+def _resolve_fsdp_transformer_layer_classes(
+    module: torch.nn.Module,
+) -> tuple[type[torch.nn.Module], ...]:
+    discovered: dict[str, type[torch.nn.Module]] = {}
+    for child in module.modules():
+        class_name = type(child).__name__
+        if class_name in _FSDP_TRANSFORMER_BLOCK_CLASS_NAMES or class_name.endswith(
+            "DecoderLayer"
+        ):
+            discovered[class_name] = type(child)
+    return tuple(discovered[class_name] for class_name in sorted(discovered.keys()))
+
+
 def _wrap_as_fsdp(module: torch.nn.Module, device: torch.device) -> torch.nn.Module:
     """Wrap a module with FSDP using the project's standard mixed-precision config.
 
@@ -1521,32 +1588,62 @@ def _wrap_as_fsdp(module: torch.nn.Module, device: torch.device) -> torch.nn.Mod
     sharding strategy guarantees that each GPU holds the same parameter shards
     for both models, allowing KL divergence to be computed locally per rank.
     """
+    from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-    from torch.distributed.fsdp import MixedPrecision
+    from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 
     mixed_precision = MixedPrecision(
         param_dtype=torch.bfloat16,
         reduce_dtype=torch.bfloat16,
         buffer_dtype=torch.bfloat16,
     )
-    return FSDP(module, device_id=device, mixed_precision=mixed_precision)
+    transformer_layer_classes = _resolve_fsdp_transformer_layer_classes(module)
+    auto_wrap_policy = None
+    if len(transformer_layer_classes) > 0:
+        auto_wrap_policy = partial(
+            transformer_auto_wrap_policy,
+            transformer_layer_cls=set(transformer_layer_classes),
+        )
+        if _is_primary_rank():
+            _tui_info(
+                "fsdp_auto_wrap=1 "
+                "policy=transformer_auto_wrap_policy "
+                f"layer_classes={','.join(cls.__name__ for cls in transformer_layer_classes)}"
+            )
+    elif _is_primary_rank():
+        _tui_warning(
+            "fsdp_auto_wrap=0 policy=root_only reason=no_transformer_block_detected"
+        )
+
+    return FSDP(
+        module,
+        device_id=device,
+        mixed_precision=mixed_precision,
+        auto_wrap_policy=auto_wrap_policy,
+        limit_all_gathers=True,
+        forward_prefetch=False,
+        backward_prefetch=BackwardPrefetch.BACKWARD_POST,
+    )
 
 
 def _build_fsdp_model(
-    model_path: str, device: torch.device
-) -> tuple[torch.nn.Module, torch.nn.Module, str]:
+    model_path: str, device: torch.device, include_raw_model: bool = False
+) -> tuple[torch.nn.Module, torch.nn.Module | None, str]:
     """Build a model and return (fsdp_model, raw_model, attention_backend).
 
-    The raw (unwrapped) model is a deepcopy of the base model taken *before*
-    FSDP wrapping.  FSDP mutates parameter views in-place (replacing them with
-    sharded flat-parameter views), so any deepcopy must happen first.
+    When `include_raw_model` is true, the raw (unwrapped) model is a deepcopy of
+    the base model taken *before* FSDP wrapping. FSDP mutates parameter views
+    in-place (replacing them with sharded flat-parameter views), so any deepcopy
+    for reference-model creation must happen first.
     """
     base_model, attention_backend = _build_full_model(
         model_path=model_path, device=device
     )
-    # Deepcopy while parameters are still plain tensors --- FSDP wrapping will
-    # replace them with sharded views that are not safe to deepcopy.
-    raw_model = copy.deepcopy(base_model)
+    raw_model: torch.nn.Module | None = None
+    if include_raw_model:
+        # Deepcopy while parameters are still plain tensors --- FSDP wrapping will
+        # replace them with sharded views that are not safe to deepcopy.
+        raw_model = copy.deepcopy(base_model)
     return _wrap_as_fsdp(base_model, device), raw_model, attention_backend
 
 
@@ -1582,78 +1679,38 @@ def _train_oneshot_multiepoch(
 ) -> None:
     """Multi-epoch oneshot training: all oneshot epochs in a single process.
 
-    Adam state, training data cursor, and adaptive batch state persist
-    across epochs via checkpoint save/load on a shared checkpoints_parent_dir.
+    Model weights, optimizer state, sample cursor, and adaptive batch state
+    persist across epochs entirely in memory. One-shot training does not write
+    training-state checkpoints and does not support resume from prior runs.
 
-    Supports resuming from a non-zero start epoch via config.oneshot_start_epoch.
-    When resuming, the "latest" checkpoint is loaded to restore Adam state,
-    training cursor, and adaptive batch state from the previous run.
-
-    Each epoch runs for config.training_time seconds independently;
-    the total training wall-clock time is therefore
-    config.training_time * (config.oneshot_num_epochs - config.oneshot_start_epoch).
+    Each epoch runs for config.training_time seconds independently.
     """
     from . import engine as eng
     from .train_loop import _run_unified_loop
 
-    start_epoch = max(0, config.oneshot_start_epoch)
-    if start_epoch >= config.oneshot_num_epochs:
-        if _is_primary_rank():
-            _tui_info(
-                "oneshot_skip_all_training=1 "
-                f"start_epoch={start_epoch} >= oneshot_num_epochs={config.oneshot_num_epochs}"
-            )
-        return
+    assert config.oneshot_start_epoch == 0, (
+        "oneshot_start_epoch must be zero because oneshot resume is disabled"
+    )
+    assert config.oneshot_num_epochs > 0, "oneshot_num_epochs must be positive"
 
-    for oneshot_epoch in range(start_epoch, config.oneshot_num_epochs):
+    resume_state = ResumeState(
+        global_step=0,
+        next_iteration_index=0,
+        next_batch_cursor=0,
+        accumulation_step=0,
+        next_sample_index=0,
+        next_batch_size=initial_batch_size,
+        adaptive_velocity=initial_adaptive_velocity,
+        adaptive_next_batch_size_float=float(initial_batch_size),
+        samples_trained=0,
+    )
+
+    for oneshot_epoch in range(config.oneshot_num_epochs):
         is_final = oneshot_epoch == config.oneshot_num_epochs - 1
         output_dir = (
             Path(config.oneshot_model_output_root)
             / f"oneshot_epoch_{oneshot_epoch + 1}"
         )
-
-        if oneshot_epoch == 0:
-            resume_state = ResumeState(
-                global_step=0,
-                next_iteration_index=0,
-                next_batch_cursor=0,
-                accumulation_step=0,
-                next_sample_index=0,
-                next_batch_size=initial_batch_size,
-                adaptive_velocity=initial_adaptive_velocity,
-                adaptive_next_batch_size_float=float(initial_batch_size),
-                samples_trained=0,
-            )
-        else:
-            resume_state = _load_checkpoint(
-                model=model,
-                optimizer=optimizer,
-                output_dir=checkpoints_parent_dir,
-                checkpoint_tag="latest",
-                training_plan=config.training_plan,
-                adam_fp32=config.adam_fp32,
-            )
-            if resume_state.next_batch_size == 0:
-                resume_state = ResumeState(
-                    global_step=resume_state.global_step,
-                    next_iteration_index=resume_state.next_iteration_index,
-                    next_batch_cursor=resume_state.next_batch_cursor,
-                    accumulation_step=resume_state.accumulation_step,
-                    next_sample_index=resume_state.next_sample_index,
-                    next_batch_size=initial_batch_size,
-                    adaptive_velocity=initial_adaptive_velocity,
-                    adaptive_throughput_ema=resume_state.adaptive_throughput_ema,
-                    adaptive_best_throughput_ema=resume_state.adaptive_best_throughput_ema,
-                    adaptive_memory_utilization_ema=resume_state.adaptive_memory_utilization_ema,
-                    adaptive_previous_tokens_per_sample=resume_state.adaptive_previous_tokens_per_sample,
-                    adaptive_next_batch_size_float=float(initial_batch_size),
-                    elapsed_training_time_sec=resume_state.elapsed_training_time_sec,
-                    samples_trained=resume_state.samples_trained,
-                    samples_available=resume_state.samples_available,
-                    max_average_absolute_advantage=resume_state.max_average_absolute_advantage,
-                    min_average_absolute_advantage=resume_state.min_average_absolute_advantage,
-                    median_average_absolute_advantage=resume_state.median_average_absolute_advantage,
-                )
 
         if _is_primary_rank():
             _tui_info(
@@ -1661,7 +1718,7 @@ def _train_oneshot_multiepoch(
                 f"output_dir={output_dir} is_final={is_final}"
             )
 
-        _run_unified_loop(
+        resume_state = _run_unified_loop(
             config=config,
             model=model,
             optimizer=optimizer,
@@ -1691,9 +1748,11 @@ def _train_oneshot_multiepoch(
             lr_min_scale=lr_min_scale,
             eng=eng,
             finalize_training=is_final,
+            persist_training_state=False,
             ref_model=ref_model,
             ema_shadows=ema_shadows,
         )
+        resume_state = _reset_oneshot_epoch_resume_state(resume_state)
 
 
 def train(config: TrainConfig) -> None:
@@ -1747,6 +1806,12 @@ def train(config: TrainConfig) -> None:
     if _is_primary_rank():
         _tui_info(f"loading_model=1 model_parent_dir={config.model_parent_dir}")
     resolved_model_path = _resolve_local_model_path(config.model_parent_dir)
+    if training_plan == TRAINING_PLAN_FSDP:
+        if max_batch_size_cap is None:
+            max_batch_size_cap = 1
+        else:
+            max_batch_size_cap = min(max_batch_size_cap, 1)
+
     if _is_primary_rank():
         _tui_info(
             f"start_training=1 training_plan={training_plan} "
@@ -1757,6 +1822,8 @@ def train(config: TrainConfig) -> None:
             "adaptive_batch_cap=1 "
             f"train_max_batch_size_env={max_batch_size_cap if max_batch_size_cap is not None else 'unset'}"
         )
+        if training_plan == TRAINING_PLAN_FSDP:
+            _tui_info("fsdp_fixed_microbatch=1 next_batch_size_cap=1")
         _tui_info(
             "adaptive_batch_wrap_reset=1 "
             f"train_reset_batch_size_on_wrap={1 if reset_batch_size_on_wrap else 0}"
@@ -1805,7 +1872,9 @@ def train(config: TrainConfig) -> None:
         raw_model = model
     else:
         model, raw_model, attention_backend = _build_fsdp_model(
-            model_path=resolved_model_path, device=device
+            model_path=resolved_model_path,
+            device=device,
+            include_raw_model=config.kl_enabled,
         )
 
     _tui_info(f"rank={rank} attention_backend={attention_backend}")
@@ -1815,7 +1884,7 @@ def train(config: TrainConfig) -> None:
     model_vocab_size = input_embeddings.num_embeddings
 
     # raw_model holds the unwrapped module for reference-model creation
-    # (set above per training plan: model for LoRA/DDP, raw_model for FSDP)
+    # (set above per training plan: model for LoRA/DDP, optional deepcopy for FSDP)
 
     optimizer = torch.optim.AdamW(
         [parameter for parameter in model.parameters() if parameter.requires_grad],
@@ -1836,7 +1905,8 @@ def train(config: TrainConfig) -> None:
 
     ref_model: torch.nn.Module | None = None
     ema_shadows: dict[str, torch.Tensor] | None = None
-    if config.kl_and_ema_enabled:
+    if config.kl_enabled:
+        assert raw_model is not None, "FSDP KL path requires pre-wrap raw model copy"
         ref_raw = copy.deepcopy(raw_model)
         ref_raw.eval()
         for param in ref_raw.parameters():
@@ -1845,16 +1915,24 @@ def train(config: TrainConfig) -> None:
             ref_model = _wrap_as_fsdp(ref_raw, device)
         else:
             ref_model = ref_raw
+    if config.ema_enabled:
         ema_shadows = {}
         for name, param in model.named_parameters():
             if param.requires_grad:
-                ema_shadows[name] = param.data.clone().detach()
-        if _is_primary_rank():
-            _tui_info(
-                "kl_and_ema_enabled=1 "
-                f"kl_penalty_coefficient={config.kl_penalty_coefficient:.4f} "
-                f"ema_decay={config.ema_decay:.4f}"
-            )
+                ema_shadows[name] = param.data.detach().cpu().clone()
+    raw_model = None
+    if training_plan == TRAINING_PLAN_FSDP:
+        gc.collect()
+        if torch.cuda.is_available() and device.type == "cuda":
+            torch.cuda.empty_cache()
+    if _is_primary_rank() and (config.kl_enabled or config.ema_enabled):
+        _tui_info(
+            "auxiliary_regularization=1 "
+            f"kl_enabled={1 if config.kl_enabled else 0} "
+            f"ema_enabled={1 if config.ema_enabled else 0} "
+            f"kl_penalty_coefficient={config.kl_penalty_coefficient:.4f} "
+            f"ema_decay={config.ema_decay:.4f}"
+        )
 
     checkpoints_parent_dir = Path(config.checkpoints_parent_dir)
     checkpoints_parent_dir.mkdir(parents=True, exist_ok=True)
@@ -1869,10 +1947,12 @@ def train(config: TrainConfig) -> None:
         "tokenizer name_or_path must exactly match model_path"
     )
 
-    resolved_resume_tag = _resolve_resume_checkpoint_tag(
-        output_dir=checkpoints_parent_dir,
-        resume_checkpoint_tag=config.resume_checkpoint_tag,
-    )
+    resolved_resume_tag = ""
+    if not (config.training_mode == "oneshot" and config.oneshot_num_epochs > 0):
+        resolved_resume_tag = _resolve_resume_checkpoint_tag(
+            output_dir=checkpoints_parent_dir,
+            resume_checkpoint_tag=config.resume_checkpoint_tag,
+        )
 
     resume_state = ResumeState(
         global_step=0,
@@ -1920,7 +2000,10 @@ def train(config: TrainConfig) -> None:
                 median_average_absolute_advantage=resume_state.median_average_absolute_advantage,
             )
     elif _is_primary_rank():
-        _tui_info("loading_resume_checkpoint=0 starting_fresh=1")
+        if config.training_mode == "oneshot" and config.oneshot_num_epochs > 0:
+            _tui_info("loading_resume_checkpoint=0 oneshot_resume_disabled=1")
+        else:
+            _tui_info("loading_resume_checkpoint=0 starting_fresh=1")
 
     lazy_loader = LazyResolvedBatchLoader(
         training_trajectory_sqlite_path=config.training_trajectory_sqlite_path,

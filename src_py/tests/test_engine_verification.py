@@ -6,6 +6,7 @@ from src_py.train.batch_dataset import ResolvedTrainingBatch
 from src_py.train.data_msgpack import QuestionNodeId, TrainingSampleTokenized
 from src_py.train.engine import (
     _resolve_attention_backend_from_env,
+    _resolve_fsdp_transformer_layer_classes,
     _resolve_pad_token_id,
     _shard_batches_for_rank,
     _verify_tokenizer_model_match,
@@ -86,6 +87,28 @@ class TestEngineTokenizerVerification(unittest.TestCase):
             _resolve_pad_token_id(
                 tokenizer_pad_token_id=None, tokenizer_eos_token_id=None
             )
+
+    def test_resolve_fsdp_transformer_layer_classes_detects_decoder_blocks(
+        self,
+    ) -> None:
+        import torch
+
+        class Qwen2DecoderLayer(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.proj = torch.nn.Linear(4, 4)
+
+        class OtherModule(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.proj = torch.nn.Linear(4, 4)
+
+        model = torch.nn.ModuleList(
+            [Qwen2DecoderLayer(), Qwen2DecoderLayer(), OtherModule()]
+        )
+
+        classes = _resolve_fsdp_transformer_layer_classes(model)
+        self.assertEqual((Qwen2DecoderLayer,), classes)
 
     def test_shard_batches_for_rank_disjoint_and_complete(self) -> None:
         model_name = "Qwen/Qwen2.5-7B-Instruct"

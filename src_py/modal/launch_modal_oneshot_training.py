@@ -259,7 +259,7 @@ def main() -> int:
     )
     mount_dir = _extract_required_cli_arg(cli_args, "--mount-dir")
     service_state_volume_name = experiment_service_state_volume_name(
-        model_cli_name, config_nickname_training, pipeline="oneshot-training"
+        model_cli_name, config_nickname_training, pipeline="training"
     )
     app_name = _oneshot_training_app_name(model_cli_name, config_nickname_training)
     repo_root = _repo_root()

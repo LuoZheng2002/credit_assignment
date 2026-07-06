@@ -6,7 +6,7 @@ from pathlib import Path
 
 MAX_MODAL_OBJECT_NAME_LENGTH = 64
 LOCAL_RESULTS_DIR = Path("results")
-SERVICE_STATE_VOLUME_PREFIX = "credit-assignment"
+SERVICE_STATE_VOLUME_PREFIX = ""
 
 
 def sanitize_modal_name_component(value: str) -> str:
@@ -38,12 +38,16 @@ def experiment_service_state_volume_name(
         components = [model_component, config_component]
         hash_input = f"{model_cli_name}\0{config_nickname}"
 
-    full_name = f"{SERVICE_STATE_VOLUME_PREFIX}-{'-'.join(components)}"
+    full_name = "-".join(
+        [SERVICE_STATE_VOLUME_PREFIX, *components]
+        if SERVICE_STATE_VOLUME_PREFIX
+        else components
+    )
     if len(full_name) <= MAX_MODAL_OBJECT_NAME_LENGTH:
         return full_name
 
     digest = hashlib.sha1(hash_input.encode("utf-8")).hexdigest()[:10]
-    num_dashes = len(components) + 1
+    num_dashes = len(components) + (1 if SERVICE_STATE_VOLUME_PREFIX else 0)
     remaining = (
         MAX_MODAL_OBJECT_NAME_LENGTH
         - len(SERVICE_STATE_VOLUME_PREFIX)
@@ -68,7 +72,12 @@ def experiment_service_state_volume_name(
         truncated = comp[:budget].rstrip("-") or comp[:1]
         truncated_names.append(truncated)
 
-    return f"{SERVICE_STATE_VOLUME_PREFIX}-{'-'.join(truncated_names)}-{digest}"
+    truncated_body = "-".join(truncated_names)
+    return (
+        f"{SERVICE_STATE_VOLUME_PREFIX}-{truncated_body}-{digest}"
+        if SERVICE_STATE_VOLUME_PREFIX
+        else f"{truncated_body}-{digest}"
+    )
 
 
 def experiment_remote_small_files_dir(model_cli_name: str, config_nickname: str) -> str:
