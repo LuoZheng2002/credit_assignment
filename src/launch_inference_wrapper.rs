@@ -63,13 +63,8 @@ pub async fn launch_inference_wrapper_process(
     let mut process = spawn_wrapper_command(&mut command, &socket_path, "inference wrapper")?;
 
     let (stop_signal_tx, stop_signal_rx) = watch::channel(false);
-    let listener_handle = spawn_wrapper_tui_listener(
-        listener,
-        socket_path,
-        "inference wrapper",
-        false,
-        stop_signal_rx,
-    );
+    let listener_handle =
+        spawn_wrapper_tui_listener(listener, socket_path, "inference wrapper", stop_signal_rx);
 
     wait_for_wrapper_health(listen_port, Some(&mut process), wrapper_log_path).await?;
     Ok((listen_port, process, stop_signal_tx, listener_handle))

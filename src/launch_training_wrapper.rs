@@ -51,13 +51,8 @@ pub async fn run_training_wrapper_and_wait(
     write_json_payload_to_child_stdin(&mut process, training_config, "training wrapper").await?;
 
     let (stop_signal_tx, stop_signal_rx) = watch::channel(false);
-    let listener_handle = spawn_wrapper_tui_listener(
-        listener,
-        socket_path,
-        "training wrapper",
-        true,
-        stop_signal_rx,
-    );
+    let listener_handle =
+        spawn_wrapper_tui_listener(listener, socket_path, "training wrapper", stop_signal_rx);
 
     let status = process
         .wait()

@@ -60,6 +60,7 @@ from src_py.train.cli_args import (
     write_model_json_file,
 )
 from src_py.tui_logging import (
+    _emit_tui_message,
     _tui_error,
     _tui_info,
     configure_tui_forwarder,
@@ -273,6 +274,44 @@ def _training_request_json_path(training_config: TrainingRequestArgs) -> Path:
     return checkpoints_root / "training_request.json"
 
 
+_TUI_MESSAGE_KEYS = {"Line", "State", "WindowName", "KeyValuePair", "WorkerProgress",
+                     "MasterProgress", "DeleteWorkerBar", "ExitHint"}
+
+
+def _try_forward_tui_line(line: str) -> None:
+    """Parse a line as a JSON TUI message and forward it through the wrapper's socket."""
+    stripped = line.strip()
+    if not stripped:
+        return
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(payload, dict) or len(payload) != 1:
+        return
+    [(key, _value)] = payload.items()
+    if key in _TUI_MESSAGE_KEYS:
+        _emit_tui_message(payload)
+
+
+def _read_and_relay_subprocess_output(
+    process: subprocess.Popen[Any],
+    log_path: Path,
+) -> int:
+    """Read subprocess stdout line by line, write to log, and forward TUI messages.
+
+    Returns the subprocess exit code.
+    """
+    with log_path.open("a", encoding="utf-8") as log_handle:
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            line = raw_line.decode("utf-8", errors="replace") if isinstance(raw_line, bytes) else raw_line
+            log_handle.write(line)
+            log_handle.flush()
+            _try_forward_tui_line(line)
+    return process.wait()
+
+
 def _run_hpc_training(
     launch_args: TrainingWrapperLaunchArgs,
     training_config: TrainingRequestArgs,
@@ -300,10 +339,12 @@ def _run_hpc_training(
     else:
         training_request_json_path = _training_request_json_path(training_config)
         write_model_json_file(training_config, training_request_json_path)
+        # Ranks relay TUI messages via stdout to the wrapper instead of
+        # opening their own socket connections.
         train_process_launch_args = TrainProcessLaunchArgs(
             training_trajectory_sqlite_path=str(trajectory_path),
             training_request_json_path=str(training_request_json_path),
-            orchestrator_socket_path=launch_args.orchestrator_socket_path,
+            orchestrator_socket_path="",
         )
         cmd = [
             "uv",
@@ -326,24 +367,25 @@ def _run_hpc_training(
             _tui_info(f"Training subprocess started (pid={process.pid})")
             return_code = process.wait()
         else:
-            with _TRAINING_WRAPPER_LOG_PATH.open("a", encoding="utf-8") as log_handle:
-                process = subprocess.Popen(
-                    cmd,
-                    stdin=None,
-                    stdout=log_handle,
-                    stderr=log_handle,
-                )
-                _set_active_process(process)
-                _emit_status(
-                    backend,
-                    "running",
-                    (
-                        f"started torchrun with pid={process.pid}; "
-                        f"subprocess output redirected to {_TRAINING_WRAPPER_LOG_PATH}"
-                    ),
-                )
-                _tui_info(f"Training subprocess started (pid={process.pid})")
-                return_code = process.wait()
+            process = subprocess.Popen(
+                cmd,
+                stdin=None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            _set_active_process(process)
+            _emit_status(
+                backend,
+                "running",
+                (
+                    f"started torchrun with pid={process.pid}; "
+                    f"subprocess output relayed to {_TRAINING_WRAPPER_LOG_PATH}"
+                ),
+            )
+            _tui_info(f"Training subprocess started (pid={process.pid})")
+            return_code = _read_and_relay_subprocess_output(
+                process, _TRAINING_WRAPPER_LOG_PATH
+            )
     finally:
         _set_active_process(None)
         if (

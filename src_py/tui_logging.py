@@ -37,10 +37,17 @@ def shutdown_tui_forwarder() -> None:
             _TUI_FORWARDER = None
 
 
-def send_tui_message(payload: dict[str, Any]) -> None:
+def _emit_tui_message(payload: dict[str, Any]) -> bool:
+    """Try to send a TUI message via the forwarder. Returns True if forwarded."""
     with _TUI_FORWARDER_LOCK:
         if _TUI_FORWARDER is not None:
             _TUI_FORWARDER.send_message(payload)
+            return True
+    return False
+
+
+def send_tui_message(payload: dict[str, Any]) -> None:
+    _emit_tui_message(payload)
 
 
 def _tui_info(message: str) -> None:
