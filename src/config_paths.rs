@@ -8,7 +8,6 @@ pub struct ConfigPaths {
     pub training_rollout_config_path: String,
     pub validation_rollout_config_path: String,
     pub testing_rollout_config_path: String,
-    pub posterior_hyperparameters_path: String,
 }
 
 pub fn config_paths_file_path(

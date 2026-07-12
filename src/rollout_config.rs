@@ -1,7 +1,4 @@
-use ordered_float::NotNan;
 use serde::{Deserialize, Serialize};
-
-use crate::direct_tool::hybrid_dataset::DatasetSplit;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum BranchingPolicy {
@@ -16,14 +13,12 @@ pub enum AdvantageCalculationPolicy {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct DirectRolloutConfig<S: DatasetSplit> {
+pub struct DirectRolloutConfig<S> {
     // pub split: DatasetSplit,
     pub branching_policy: BranchingPolicy,
     pub num_trunks: usize,
     pub num_early_stopping_leaves: usize,
     pub num_leaves: usize,
-    pub fixed_temperature: NotNan<f32>,
-    pub use_tool: bool,
     #[serde(skip)]
     pub _phantom: std::marker::PhantomData<S>,
 }

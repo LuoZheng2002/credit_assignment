@@ -17,10 +17,11 @@ use crate::{
         },
         tree_action_log::action_logs_file_path,
     },
+    fixed_temperatures,
     get_accuracy::get_accuracy,
-    jinja_directories::{
-        model_checkpoint_dir_from_template, model_metrics_path_from_template,
-        model_parent_dir_from_template, progress_save_path_from_template,
+    directories::{
+        model_checkpoint_dir, model_metrics_path,
+        model_parent_dir, progress_save_path,
     },
     json_toml_utils::write_json,
     launch_inference_wrapper::{
@@ -49,7 +50,6 @@ pub struct Orchestrator {
     // for training set generation
     pub advantage_calculation_policy: AdvantageCalculationPolicy,
     pub positive_advantage_only: bool,
-    pub adam_fp32: bool,
     // for orchestration
     pub num_total_epochs: usize,
     // utilities
@@ -62,6 +62,7 @@ pub struct Orchestrator {
     pub training_time: f32,
     pub num_iterations_limit: usize,
     pub num_gpus: usize,
+    pub use_tool: bool,
 }
 
 pub struct InferenceServerHandle {
@@ -163,7 +164,7 @@ impl Orchestrator {
     }
 
     pub fn progress_save_path(model_cli_name: &str, config_nickname: &str) -> String {
-        progress_save_path_from_template(model_cli_name, config_nickname).unwrap_or_else(|err| {
+        progress_save_path(model_cli_name, config_nickname).unwrap_or_else(|err| {
             panic!(
                 "failed to render progress save path for model_cli_name={}, config_nickname={}: {}",
                 model_cli_name, config_nickname, err
@@ -176,7 +177,6 @@ impl Orchestrator {
         config_nickname: &str,
         training_rollout_config_path: &str,
         validation_rollout_config_path: &str,
-        posterior_hyperparameters_path: &str,
     ) -> Result<(), String> {
         let testing_rollout_config_path =
             derive_testing_rollout_config_path(validation_rollout_config_path)?;
@@ -184,7 +184,6 @@ impl Orchestrator {
             training_rollout_config_path: training_rollout_config_path.to_string(),
             validation_rollout_config_path: validation_rollout_config_path.to_string(),
             testing_rollout_config_path,
-            posterior_hyperparameters_path: posterior_hyperparameters_path.to_string(),
         };
         let config_paths_path = config_paths_file_path(model_cli_name, config_nickname)?;
         write_json(config_paths_path, &config_paths)
@@ -202,11 +201,8 @@ impl Orchestrator {
                 OrchestrationStatus::WorkingOnValidation => {
                     log_state(format!("Epoch {}: Working on validation", epoch));
                     assert!(epoch <= self.num_total_epochs);
-                    self.ensure_inference_server_launched::<M>(
-                        epoch,
-                        self.validation_rollout_config.use_tool,
-                    )
-                    .await?;
+                    self.ensure_inference_server_launched::<M>(epoch, self.use_tool)
+                        .await?;
                     self.validate_model::<M>(epoch).await?;
                     self.read_and_log_validation_accuracy::<M>(epoch).await?;
                     self.sweep_previous_model_dirs_after_validation::<M>(epoch)?;
@@ -230,11 +226,8 @@ impl Orchestrator {
                         "Epoch {}: Working on training rollout collection",
                         epoch
                     ));
-                    self.ensure_inference_server_launched::<M>(
-                        epoch,
-                        self.training_set_rollout_config.use_tool,
-                    )
-                    .await?;
+                    self.ensure_inference_server_launched::<M>(epoch, self.use_tool)
+                        .await?;
                     self.collect_training_rollout::<M>(epoch).await?;
                     self.read_and_log_training_rollout_accuracy::<M>(epoch)
                         .await?;
@@ -321,6 +314,7 @@ impl Orchestrator {
             self.posterior_calculation_config.clone(),
             epoch,
             "Validation accuracy",
+            self.use_tool,
         )
         .await;
         let Some(accuracies) = accuracy_stats.accuracy_tuple() else {
@@ -365,6 +359,7 @@ impl Orchestrator {
             self.posterior_calculation_config.clone(),
             epoch,
             "Training rollout accuracy",
+            self.use_tool,
         )
         .await;
         let Some(accuracies) = accuracy_stats.accuracy_tuple() else {
@@ -462,7 +457,7 @@ impl Orchestrator {
             self.inference_server_handle.as_ref().unwrap().epoch
         );
         let model_parent_dir =
-            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+            model_parent_dir(M::CLI_NAME, &self.config_nickname, epoch)?;
         let model_path = format!("{}/model", model_parent_dir);
 
         log_info(format!(
@@ -586,6 +581,8 @@ impl Orchestrator {
             max_python_processes: self.max_python_processes,
             total_epochs: self.num_total_epochs,
             action_log_store_override_path: None,
+            use_tool: self.use_tool,
+            fixed_temperature: fixed_temperatures::validation_temperature(),
         };
         let rollout_summary = rollout_all::<M, Validation>(validation_rollout_program_config).await;
         self.progress
@@ -632,6 +629,8 @@ impl Orchestrator {
             max_python_processes: self.max_python_processes,
             total_epochs: self.num_total_epochs,
             action_log_store_override_path: None,
+            use_tool: self.use_tool,
+            fixed_temperature: fixed_temperatures::training_temperature(),
         };
         let rollout_summary = rollout_all::<M, Training>(training_set_rollout_program_config).await;
         self.progress
@@ -662,9 +661,9 @@ impl Orchestrator {
         epoch: usize,
     ) -> Result<(), String> {
         let checkpoint_parent_dir =
-            model_checkpoint_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+            model_checkpoint_dir(M::CLI_NAME, &self.config_nickname, epoch)?;
         let metrics_path =
-            model_metrics_path_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+            model_metrics_path(M::CLI_NAME, &self.config_nickname, epoch)?;
         let checkpoints_dir = format!("{}/checkpoints", checkpoint_parent_dir);
         let latest_checkpoint_path = format!("{}/latest_checkpoint.txt", checkpoint_parent_dir);
 
@@ -726,7 +725,7 @@ impl Orchestrator {
         epoch: usize,
     ) -> Result<(), String> {
         let checkpoint_parent_dir =
-            model_checkpoint_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+            model_checkpoint_dir(M::CLI_NAME, &self.config_nickname, epoch)?;
         let checkpoints_dir = format!("{}/checkpoints", checkpoint_parent_dir);
         let latest_checkpoint_path = format!("{}/latest_checkpoint.txt", checkpoint_parent_dir);
 
@@ -853,7 +852,7 @@ impl Orchestrator {
         }
 
         let model_parent_dir =
-            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+            model_parent_dir(M::CLI_NAME, &self.config_nickname, epoch)?;
         self.delete_dir_if_exists(
             &model_parent_dir,
             &format!("model parent directory for epoch {}", epoch),
@@ -893,7 +892,7 @@ impl Orchestrator {
                 continue;
             }
             let model_parent_dir =
-                model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+                model_parent_dir(M::CLI_NAME, &self.config_nickname, epoch)?;
             self.delete_dir_if_exists(
                 &model_parent_dir,
                 &format!(
@@ -932,6 +931,7 @@ impl Orchestrator {
             epoch,
             self.advantage_calculation_policy,
             self.positive_advantage_only,
+            self.use_tool,
         )
         .await;
         log_info("Finished generating training set");
@@ -950,11 +950,11 @@ impl Orchestrator {
             training_trajectories_msgpack_file_path::<M>(&self.config_nickname, epoch);
         let artifact_root_dir = storage_large_files_dir()?;
         let model_parent_dir =
-            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+            model_parent_dir(M::CLI_NAME, &self.config_nickname, epoch)?;
         let checkpoints_parent_dir =
-            model_checkpoint_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
+            model_checkpoint_dir(M::CLI_NAME, &self.config_nickname, epoch)?;
         let final_model_output_parent_dir =
-            model_checkpoint_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch + 1)?;
+            model_checkpoint_dir(M::CLI_NAME, &self.config_nickname, epoch + 1)?;
         let training_config = PythonTrainingConfig {
             common: self.training_config_common.clone(),
             training_time: self.training_time,
@@ -963,7 +963,6 @@ impl Orchestrator {
             hpc_training_root_dir: None,
             model_cli_name: M::CLI_NAME.to_string(),
             config_nickname: self.config_nickname.clone(),
-            adam_fp32: self.adam_fp32,
             epoch,
             model_parent_dir: model_parent_dir.clone(),
             checkpoints_parent_dir: checkpoints_parent_dir.clone(),

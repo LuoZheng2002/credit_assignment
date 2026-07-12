@@ -51,7 +51,6 @@ class TestTrainingWrapperSigterm(unittest.TestCase):
             checkpoints_parent_dir="/tmp/results/qwen35_4b/sigterm_test/epoch_1",
             final_model_output_parent_dir="/tmp/results/qwen35_4b/sigterm_test/epoch_2",
             training_summary_parent_dir="/tmp/results/qwen35_4b/sigterm_test/summary",
-            adam_fp32=False,
         )
         command = [
             sys.executable,

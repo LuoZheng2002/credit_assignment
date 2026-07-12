@@ -10,10 +10,11 @@ use credit_assignment::{
         rollout_config::DirectRolloutConfig,
         tree_action_log::open_action_logs,
     },
+    fixed_temperatures,
     get_accuracy::{TestAccuracyResult, get_test_accuracies},
-    jinja_directories::{
-        inference_wrapper_log_path_from_template, model_parent_dir_from_template,
-        test_accuracy_path_from_template, tui_log_path_from_template,
+    directories::{
+        inference_wrapper_log_path, model_parent_dir,
+        test_accuracy_path, tui_log_path,
     },
     json_toml_utils::{read_json, write_json},
     launch_inference_wrapper::{
@@ -57,10 +58,10 @@ struct TestingConfig {
     model_cli_name: String,
     config_nickname: String,
     testing_rollout_config_path: String,
-    posterior_hyperparameters_path: String,
     epoch: usize,
     total_epochs: usize,
     mount_dir: String,
+    use_tool: bool,
 }
 
 fn model_cli_name_to_string(model_name: &LlmModelName) -> String {
@@ -113,6 +114,8 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
         max_python_processes: args.max_python_processes,
         total_epochs: testing_config.total_epochs,
         action_log_store_override_path: None,
+        use_tool: testing_config.use_tool,
+        fixed_temperature: fixed_temperatures::validation_temperature(),
     };
     let _ = rollout_all::<M, Testing>(program_config).await;
 
@@ -124,6 +127,7 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
         testing_config.epoch,
         "Test accuracy",
         rollout_config.num_trunks,
+        testing_config.use_tool,
     )
     .await
 }
@@ -137,7 +141,7 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
     inference_wrapper_log_path: &str,
 ) -> Result<TestAccuracyResult, String> {
     best_effort_shutdown_stale_inference_wrapper().await;
-    let model_parent_dir = model_parent_dir_from_template(
+    let model_parent_dir = model_parent_dir(
         M::CLI_NAME,
         &testing_config.config_nickname,
         testing_config.epoch,
@@ -206,7 +210,7 @@ async fn run_testing_config(
     client: Client,
 ) -> Result<(), String> {
     let posterior_hyperparameters =
-        read_json::<PosteriorHyperparameters>(&testing_config.posterior_hyperparameters_path)?;
+        read_json::<PosteriorHyperparameters>(credit_assignment::posterior_hyperparameters_path::posterior_hyperparameters_path())?;
     let posterior_calculation_config = PosteriorCalculationConfig {
         hyperparameters: posterior_hyperparameters,
     };
@@ -216,10 +220,10 @@ async fn run_testing_config(
     let model_cli_name = model_cli_name_to_string(&model_name);
     configure_mount_dir(&testing_config.mount_dir)?;
     let inference_wrapper_log_path =
-        inference_wrapper_log_path_from_template(&model_cli_name, &testing_config.config_nickname)
+        inference_wrapper_log_path(&model_cli_name, &testing_config.config_nickname)
             .map_err(|err| format!("failed to render inference wrapper log path: {}", err))?;
     let progress_tui_log_path =
-        tui_log_path_from_template(&model_cli_name, &testing_config.config_nickname)
+        tui_log_path(&model_cli_name, &testing_config.config_nickname)
             .map_err(|err| format!("failed to render tui log path: {}", err))?;
     ensure_parent_dir_exists(&inference_wrapper_log_path)
         .map_err(|err| format!("failed to prepare inference wrapper log directory: {}", err))?;
@@ -259,7 +263,7 @@ async fn run_testing_config(
             LlmModelName::Mistral7bInstructV03, Mistral7BInstructV03
         )?;
 
-        let output_path = test_accuracy_path_from_template(
+        let output_path = test_accuracy_path(
             &model_cli_name,
             &testing_config.config_nickname,
             testing_config.epoch,

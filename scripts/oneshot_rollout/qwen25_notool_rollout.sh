@@ -15,7 +15,6 @@ uv run -m src_py.modal.launch_modal_oneshot_rollout \
     --config-nickname-rollout notool_rollout \
     --rollout-config-path config/rollout_config_training_notool.json \
     --dataset-split training \
-    --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --rollout-time-limit-secs 28800 \
     --max-python-processes 2 \
     --advantage-calculation-policy tree-mappo-posterior \

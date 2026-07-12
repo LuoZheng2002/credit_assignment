@@ -15,8 +15,6 @@ uv run -m src_py.modal.launch_modal_oneshot_training \
     --max-rollout-concurrency 300 \
     --config-nickname-training grpo_notool_training_full \
     --config-nickname-rollout grpo_notool_rollout \
-    --validation-rollout-config-path config/rollout_config_validation_notool.json \
-    --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --num-oneshot-epochs 20 \
     --num-iterations-limit 3 \
     --training-config-common-path config/training/common_ddp.toml \
@@ -27,6 +25,5 @@ uv run -m src_py.modal.launch_modal_oneshot_training \
     --gpu-name H200 \
     --mount-dir "/volume" \
     --rollout-mount-dir "/rollout_volume" \
-    --adam-fp32 false \
     --modal-time-limit-hrs 4 \
     --ui true

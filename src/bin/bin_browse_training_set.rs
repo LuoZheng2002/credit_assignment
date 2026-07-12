@@ -17,9 +17,7 @@ use credit_assignment::{
             open_training_trajectories,
         },
     },
-    jinja_directories::{
-        training_trajectories_path_from_template, training_trajectories_stats_path_from_template,
-    },
+    directories::{training_trajectories_path, training_trajectories_stats_path},
     json_toml_utils::read_json,
     llm_model::{
         Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
@@ -63,7 +61,7 @@ fn repo_root() -> PathBuf {
 
 fn training_set_file_path(model_cli_name: &str, config_nickname: &str, epoch: usize) -> PathBuf {
     repo_root().join(
-        training_trajectories_path_from_template(model_cli_name, config_nickname, epoch)
+        training_trajectories_path(model_cli_name, config_nickname, epoch)
             .unwrap_or_else(|err| {
                 panic!(
                     "failed to render training trajectories path for model_cli_name={}, config_nickname={}, epoch={}: {}",
@@ -782,7 +780,7 @@ async fn main() {
     let training_set_path = training_set_file_path(&model_cli_name, &config_nickname, epoch);
     let training_set_msgpack_path = training_set_path.join("trajectories.msgpack");
     let training_set_stats_path = repo_root().join(
-        training_trajectories_stats_path_from_template(&model_cli_name, &config_nickname, epoch)
+        training_trajectories_stats_path(&model_cli_name, &config_nickname, epoch)
             .unwrap_or_else(|err| {
                 panic!(
                     "failed to render training trajectories stats path for model_cli_name={}, config_nickname={}, epoch={}: {}",
@@ -834,7 +832,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
     let training_set_store = open_training_trajectories::<M>(&config_nickname, epoch);
     let keys = (0..training_set_store.len()).collect::<Vec<usize>>();
     let statistics = read_json::<DirectTrainingSetStatistics>(repo_root().join(
-        training_trajectories_stats_path_from_template(M::CLI_NAME, &config_nickname, epoch)
+        training_trajectories_stats_path(M::CLI_NAME, &config_nickname, epoch)
             .unwrap_or_else(|err| {
                 panic!(
                     "failed to render training trajectories stats path for model_cli_name={}, config_nickname={}, epoch={}: {}",

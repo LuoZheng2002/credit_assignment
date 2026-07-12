@@ -28,7 +28,6 @@ class TestMain(unittest.TestCase):
             "lora_dropout": 0.0,
             "lora_target_modules_csv": "q_proj,k_proj",
             "seed": 42,
-            "adam_fp32": False,
             "training_summary_parent_dir": "/tmp/storage_root/results/qwen35_08b/run_a/summary",
         }
         payload.update(overrides)

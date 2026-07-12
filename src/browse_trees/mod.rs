@@ -20,6 +20,7 @@ use crate::direct_tool::{
         action_log_config_bundle_file_path,
     },
 };
+use crate::fixed_temperatures;
 use crate::json_toml_utils::read_json;
 use crate::llm_model::{
     Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03, Qwen3_4B,
@@ -56,6 +57,7 @@ struct App<M: LlmModelMarker, S: DatasetSplit> {
     override_hyperparameters: Option<PosteriorHyperparameters>,
     rollout_config: DirectRolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
+    use_tool: bool,
     question_store: HybridDatasetStore<S>,
     action_store: ActionLogStore<M, S>,
     entry_keys: Vec<QuestionFlatId<S>>,
@@ -87,6 +89,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
         _config_nickname: String,
         rollout_config: DirectRolloutConfig<S>,
         posterior_calculation_config: PosteriorCalculationConfig,
+        use_tool: bool,
         _epoch: usize,
         // entry_keys: Vec<usize>,
         override_hyperparameters: Option<PosteriorHyperparameters>,
@@ -113,6 +116,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
             override_hyperparameters,
             rollout_config,
             posterior_calculation_config,
+            use_tool,
             entry_keys,
             entry_cache,
             entry_load_tx,
@@ -171,6 +175,8 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
                     question,
                     rollout_config: self.rollout_config.clone(),
                     posterior_calculation_config: self.posterior_calculation_config.clone(),
+                    use_tool: self.use_tool,
+                    fixed_temperature: fixed_temperatures::default_temperature_for_split::<S>(),
                     actions,
                 };
                 let (num_correct, num_leaves, win_rate) =
@@ -1033,6 +1039,7 @@ async fn run_model_app<M: LlmModelMarker, S: DatasetSplit>(
     config_nickname: String,
     rollout_config: DirectRolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
+    use_tool: bool,
     epoch: usize,
     override_hyperparameters: Option<PosteriorHyperparameters>,
     action_logs_path: PathBuf,
@@ -1042,6 +1049,7 @@ async fn run_model_app<M: LlmModelMarker, S: DatasetSplit>(
         config_nickname,
         rollout_config,
         posterior_calculation_config,
+        use_tool,
         epoch,
         override_hyperparameters,
         action_logs_path,
@@ -1120,13 +1128,13 @@ fn load_action_log_config_bundle<S: DatasetSplit>(
             )
         })?;
     let posterior_hyperparameters =
-        read_json::<PosteriorHyperparameters>(&config_paths.posterior_hyperparameters_path)
+        read_json::<PosteriorHyperparameters>(crate::posterior_hyperparameters_path::posterior_hyperparameters_path())
             .map_err(|err| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "Failed to read posterior hyperparameters file {}: {}",
-                        config_paths.posterior_hyperparameters_path, err
+                        "Failed to read posterior hyperparameters file: {}",
+                        err
                     ),
                 )
             })?;
@@ -1136,6 +1144,8 @@ fn load_action_log_config_bundle<S: DatasetSplit>(
         posterior_calculation_config: PosteriorCalculationConfig {
             hyperparameters: posterior_hyperparameters,
         },
+        use_tool: false,
+        fixed_temperature: fixed_temperatures::default_temperature_for_split::<S>(),
     })
 }
 
@@ -1145,6 +1155,7 @@ macro_rules! run_model_app_for_model_and_split {
         $config_nickname:expr,
         $rollout_config:expr,
         $posterior_calculation_config:expr,
+        $use_tool:expr,
         $epoch:expr,
         $override_hyperparameters:expr,
         $action_logs_path:expr,
@@ -1155,6 +1166,7 @@ macro_rules! run_model_app_for_model_and_split {
         let config_nickname = $config_nickname;
         let rollout_config = $rollout_config;
         let posterior_calculation_config = $posterior_calculation_config;
+        let use_tool = $use_tool;
         let epoch = $epoch;
         let override_hyperparameters = $override_hyperparameters;
         let action_logs_path = $action_logs_path;
@@ -1171,6 +1183,7 @@ macro_rules! run_model_app_for_model_and_split {
                         config_nickname,
                         rollout_config,
                         posterior_calculation_config,
+                        use_tool,
                         epoch,
                         override_hyperparameters,
                         action_logs_path,
@@ -1197,6 +1210,7 @@ async fn run_with_resolved_context(
                 &config_nickname,
                 config_bundle.rollout_config,
                 config_bundle.posterior_calculation_config,
+                config_bundle.use_tool,
                 epoch,
                 &override_hyperparameters,
                 &action_logs_path,
@@ -1218,6 +1232,7 @@ async fn run_with_resolved_context(
                 &config_nickname,
                 config_bundle.rollout_config,
                 config_bundle.posterior_calculation_config,
+                config_bundle.use_tool,
                 epoch,
                 &override_hyperparameters,
                 &action_logs_path,
@@ -1239,6 +1254,7 @@ async fn run_with_resolved_context(
                 &config_nickname,
                 config_bundle.rollout_config,
                 config_bundle.posterior_calculation_config,
+                config_bundle.use_tool,
                 epoch,
                 &override_hyperparameters,
                 &action_logs_path,

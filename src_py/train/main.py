@@ -59,7 +59,6 @@ def _load_train_config(
         lora_target_modules_csv=request.lora_target_modules_csv
         or "q_proj,k_proj,v_proj,o_proj",
         seed=request.seed,
-        adam_fp32=request.adam_fp32,
         adam_beta1=request.adam_beta1,
         adam_beta2=request.adam_beta2,
         lr_schedule=request.lr_schedule,

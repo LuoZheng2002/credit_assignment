@@ -11,6 +11,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use ordered_float::NotNan;
+
 use crate::{
     direct_tool::{
         hybrid_dataset::{DatasetSplit, HybridDatasetQuestion, QuestionFlatId},
@@ -18,7 +20,7 @@ use crate::{
         rollout_config::DirectRolloutConfig,
         tree_action::DirectTreeAction,
     },
-    jinja_directories::action_logs_path_from_template,
+    directories::action_logs_path,
     json_toml_utils::write_json,
     llm_model::LlmModelMarker,
 };
@@ -47,6 +49,8 @@ pub struct DirectTreeActionLog<M: LlmModelMarker, S: DatasetSplit> {
     pub question: HybridDatasetQuestion<S>,
     pub rollout_config: DirectRolloutConfig<S>,
     pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub use_tool: bool,
+    pub fixed_temperature: NotNan<f32>,
     pub actions: Vec<DirectTreeAction<M>>,
 }
 
@@ -55,6 +59,13 @@ pub struct DirectTreeActionLog<M: LlmModelMarker, S: DatasetSplit> {
 pub struct ActionLogConfigBundle<S: DatasetSplit> {
     pub rollout_config: DirectRolloutConfig<S>,
     pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub use_tool: bool,
+    #[serde(default = "default_fixed_temperature")]
+    pub fixed_temperature: NotNan<f32>,
+}
+
+fn default_fixed_temperature() -> NotNan<f32> {
+    NotNan::new(0.0).unwrap()
 }
 
 pub struct ActionLogStore<M: LlmModelMarker, S: DatasetSplit> {
@@ -1424,7 +1435,7 @@ pub fn action_logs_file_path<M: LlmModelMarker, S: DatasetSplit>(
     config_nickname: &str,
     epoch: usize,
 ) -> String {
-    action_logs_path_from_template::<S>(M::CLI_NAME, config_nickname, epoch)
+    action_logs_path::<S>(M::CLI_NAME, config_nickname, epoch)
         .unwrap_or_else(|err| panic!("Failed to resolve action logs path: {}", err))
 }
 

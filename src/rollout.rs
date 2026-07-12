@@ -21,6 +21,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, sleep_until};
 
+use ordered_float::NotNan;
+
 use crate::{
     atomic_count_guard::AtomicCountGuardRef,
     direct_tool::tree_action_log::{
@@ -630,6 +632,8 @@ pub struct RolloutProgramConfig<S: DatasetSplit> {
     pub total_epochs: usize,
     /// If set, open the action log store at this path instead of the default orchestrator path.
     pub action_log_store_override_path: Option<String>,
+    pub use_tool: bool,
+    pub fixed_temperature: NotNan<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -659,6 +663,8 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         max_python_processes,
         total_epochs,
         action_log_store_override_path,
+        use_tool,
+        fixed_temperature,
     } = program_config;
     assert!(
         max_python_processes > 0,
@@ -675,11 +681,11 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     assert!(total_epochs > 0, "total_epochs must be positive");
     log_info(format!(
         "rollout_all using fixed_temperature={} for LLM sampling",
-        rollout_config.fixed_temperature
+        fixed_temperature
     ));
     let start_time = Instant::now();
 
-    if rollout_config.use_tool {
+    if use_tool {
         init_python_tool_pool(max_python_processes)
             .await
             .expect("failed to initialize python tool server pool");
@@ -702,6 +708,8 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
             .write_config_bundle_if_missing(&ActionLogConfigBundle {
                 rollout_config: rollout_config.clone(),
                 posterior_calculation_config: posterior_calculation_config.clone(),
+                use_tool,
+                fixed_temperature,
             })
             .unwrap();
         store.sort().unwrap();
@@ -795,6 +803,8 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
                     question: question.clone(),
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
+                    use_tool,
+                    fixed_temperature,
                     actions,
                 };
                 join_set.spawn(rollout::<M, S>(

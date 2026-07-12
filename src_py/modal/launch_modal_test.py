@@ -104,9 +104,6 @@ def _normalize_testing_config_entry(entry: Any, *, context: str) -> dict[str, An
         "testing_rollout_config_path": _require_string(
             entry, "testing_rollout_config_path", context=context
         ),
-        "posterior_hyperparameters_path": _require_string(
-            entry, "posterior_hyperparameters_path", context=context
-        ),
         "epoch": _require_int(entry, "epoch", context=context),
         "total_epochs": _require_int(entry, "total_epochs", context=context),
         "max_rollout_concurrency": _require_int(

@@ -15,13 +15,13 @@ use credit_assignment::{
         rollout::{RolloutProgramConfig, rollout_all},
         rollout_config::DirectRolloutConfig,
     },
-    get_accuracy::get_accuracy_at_path,
-    jinja_directories::{
-        action_logs_oneshot_path_from_template, inference_wrapper_log_path_from_template,
-        oneshot_model_checkpoint_dir_from_template, oneshot_model_parent_dir_from_template,
-        training_summary_oneshot_parent_dir_from_template,
-        training_trajectories_oneshot_path_with_mount, training_wrapper_log_path_from_template,
+    directories::{
+        action_logs_oneshot_path, inference_wrapper_log_path, oneshot_model_checkpoint_dir,
+        oneshot_model_parent_dir, training_summary_oneshot_parent_dir,
+        training_trajectories_oneshot_path_with_mount, training_wrapper_log_path,
     },
+    fixed_temperatures,
+    get_accuracy::get_accuracy_at_path,
     json_toml_utils::read_json,
     launch_inference_wrapper::{self, shut_down_inference_wrapper_process, update_inference_model},
     launch_training_wrapper::run_training_wrapper_and_wait,
@@ -53,9 +53,7 @@ struct Args {
     #[arg(long)]
     config_nickname_rollout: String,
     #[arg(long)]
-    validation_rollout_config_path: String,
-    #[arg(long)]
-    posterior_hyperparameters_path: String,
+    use_tool: bool,
     #[arg(long)]
     num_oneshot_epochs: usize,
     #[arg(long)]
@@ -76,8 +74,6 @@ struct Args {
     rollout_mount_dir: String,
     #[arg(long, action = ArgAction::Set)]
     ui: bool,
-    #[arg(long, action = ArgAction::Set)]
-    adam_fp32: bool,
 }
 
 fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
@@ -316,7 +312,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     num_gpus: usize,
     inference_wrapper_log_path: &str,
     training_wrapper_log_path: &str,
-    adam_fp32: bool,
+    use_tool: bool,
 ) {
     let client = Client::new();
 
@@ -351,7 +347,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     ));
 
     let oneshot_training_summary_parent_dir =
-        training_summary_oneshot_parent_dir_from_template(model_cli_name, config_nickname_training)
+        training_summary_oneshot_parent_dir(model_cli_name, config_nickname_training)
             .unwrap_or_else(|err| {
                 panic!(
                     "failed to resolve one-shot training summary parent dir: {}",
@@ -368,23 +364,23 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     // ================================================================
 
     let shared_checkpoints_parent_dir =
-        oneshot_model_checkpoint_dir_from_template(model_cli_name, config_nickname_training, 0)
-            .unwrap_or_else(|err| {
+        oneshot_model_checkpoint_dir(model_cli_name, config_nickname_training, 0).unwrap_or_else(
+            |err| {
                 panic!(
                     "failed to resolve shared oneshot checkpoints parent dir: {}",
                     err
                 )
-            });
+            },
+        );
     let oneshot_model_output_root = shared_checkpoints_parent_dir
         .rsplit_once('/')
         .map(|(parent, _)| parent.to_string())
         .unwrap_or_else(|| shared_checkpoints_parent_dir.clone());
 
     let base_model_parent_dir =
-        oneshot_model_parent_dir_from_template(model_cli_name, config_nickname_training, 0)
-            .unwrap_or_else(|err| {
-                panic!("failed to resolve base oneshot model parent dir: {}", err)
-            });
+        oneshot_model_parent_dir(model_cli_name, config_nickname_training, 0).unwrap_or_else(
+            |err| panic!("failed to resolve base oneshot model parent dir: {}", err),
+        );
 
     let mut training_throughputs: BTreeMap<usize, f32> = BTreeMap::new();
     for epoch in 0..num_oneshot_epochs {
@@ -447,7 +443,6 @@ async fn run_oneshot_training<M: LlmModelMarker>(
             hpc_training_root_dir: None,
             model_cli_name: model_cli_name.to_string(),
             config_nickname: config_nickname_training.to_string(),
-            adam_fp32,
             epoch: 0,
             model_parent_dir: base_model_parent_dir,
             checkpoints_parent_dir: shared_checkpoints_parent_dir.clone(),
@@ -546,17 +541,14 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     } else {
         // Launch inference server ONCE with epoch 0 weights (base model)
         let launch_epoch = 0usize;
-        let launch_model_parent_dir = oneshot_model_parent_dir_from_template(
-            model_cli_name,
-            config_nickname_training,
-            launch_epoch,
-        )
-        .unwrap_or_else(|err| {
-            panic!(
-                "failed to resolve oneshot model parent dir for launch epoch {}: {}",
-                launch_epoch, err
-            )
-        });
+        let launch_model_parent_dir =
+            oneshot_model_parent_dir(model_cli_name, config_nickname_training, launch_epoch)
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "failed to resolve oneshot model parent dir for launch epoch {}: {}",
+                        launch_epoch, err
+                    )
+                });
         let launch_model_path = format!("{}/model", launch_model_parent_dir);
 
         log_info(format!(
@@ -586,17 +578,14 @@ async fn run_oneshot_training<M: LlmModelMarker>(
                 epoch, num_oneshot_epochs
             ));
 
-            let model_parent_dir = oneshot_model_parent_dir_from_template(
-                model_cli_name,
-                config_nickname_training,
-                epoch,
-            )
-            .unwrap_or_else(|err| {
-                panic!(
-                    "failed to resolve oneshot model parent dir for epoch {}: {}",
-                    epoch, err
-                )
-            });
+            let model_parent_dir =
+                oneshot_model_parent_dir(model_cli_name, config_nickname_training, epoch)
+                    .unwrap_or_else(|err| {
+                        panic!(
+                            "failed to resolve oneshot model parent dir for epoch {}: {}",
+                            epoch, err
+                        )
+                    });
             let model_path = format!("{}/model", model_parent_dir);
 
             if epoch > 0 {
@@ -614,7 +603,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
                     });
             }
 
-            let validation_action_log_path = action_logs_oneshot_path_from_template::<Validation>(
+            let validation_action_log_path = action_logs_oneshot_path::<Validation>(
                 model_cli_name,
                 config_nickname_training,
                 epoch,
@@ -637,6 +626,8 @@ async fn run_oneshot_training<M: LlmModelMarker>(
                 max_python_processes,
                 total_epochs: num_oneshot_epochs,
                 action_log_store_override_path: Some(validation_action_log_path.clone()),
+                use_tool,
+                fixed_temperature: fixed_temperatures::validation_temperature(),
             };
             let validation_summary = rollout_all::<M, Validation>(validation_program_config).await;
             log_info(format!(
@@ -650,6 +641,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
                 validation_rollout_config.clone(),
                 posterior_calculation_config.clone(),
                 "Validation accuracy (one-shot)",
+                use_tool,
             )
             .await;
             if let Some(accuracies) = accuracy_stats.accuracy_tuple() {
@@ -780,8 +772,7 @@ async fn main() {
         config_nickname_training,
         config_nickname_rollout,
         max_rollout_concurrency,
-        validation_rollout_config_path,
-        posterior_hyperparameters_path,
+        use_tool,
         num_oneshot_epochs,
         ui,
         validation_rollout_time_limit_secs,
@@ -792,7 +783,6 @@ async fn main() {
         num_gpus,
         mount_dir,
         rollout_mount_dir,
-        adam_fp32,
     } = Args::parse();
     let process_title = format!(
         "oneshot_training_{}_{}",
@@ -807,10 +797,10 @@ async fn main() {
     configure_mount_dir(&mount_dir)
         .unwrap_or_else(|err| panic!("failed to configure mount dir: {}", err));
     let inference_wrapper_log_path =
-        inference_wrapper_log_path_from_template(&model_cli_name, &config_nickname_training)
+        inference_wrapper_log_path(&model_cli_name, &config_nickname_training)
             .unwrap_or_else(|err| panic!("failed to render inference wrapper log path: {}", err));
     let training_wrapper_log_path =
-        training_wrapper_log_path_from_template(&model_cli_name, &config_nickname_training)
+        training_wrapper_log_path(&model_cli_name, &config_nickname_training)
             .unwrap_or_else(|err| panic!("failed to render training wrapper log path: {}", err));
     ensure_parent_dir_exists(&inference_wrapper_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare inference wrapper log directory: {}", err));
@@ -831,9 +821,12 @@ async fn main() {
         ProgressTuiLogger::initialize(tui_log_path).await.unwrap();
     }
     let validation_rollout_config: DirectRolloutConfig<Validation> =
-        read_json(&validation_rollout_config_path).unwrap();
-    let posterior_hyperparameters =
-        read_json::<PosteriorHyperparameters>(&posterior_hyperparameters_path).unwrap();
+        read_json(credit_assignment::validation_config_path::VALIDATION_ROLLOUT_CONFIG_PATH)
+            .unwrap();
+    let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
+        credit_assignment::posterior_hyperparameters_path::posterior_hyperparameters_path(),
+    )
+    .unwrap();
     let posterior_calculation_config = PosteriorCalculationConfig {
         hyperparameters: posterior_hyperparameters,
     };
@@ -860,7 +853,7 @@ async fn main() {
                 num_gpus,
                 &inference_wrapper_log_path,
                 &training_wrapper_log_path,
-                adam_fp32,
+                use_tool,
             )
             .await
         }
@@ -882,7 +875,7 @@ async fn main() {
                 num_gpus,
                 &inference_wrapper_log_path,
                 &training_wrapper_log_path,
-                adam_fp32,
+                use_tool,
             )
             .await
         }
@@ -904,7 +897,7 @@ async fn main() {
                 num_gpus,
                 &inference_wrapper_log_path,
                 &training_wrapper_log_path,
-                adam_fp32,
+                use_tool,
             )
             .await
         }
@@ -926,7 +919,7 @@ async fn main() {
                 num_gpus,
                 &inference_wrapper_log_path,
                 &training_wrapper_log_path,
-                adam_fp32,
+                use_tool,
             )
             .await
         }
@@ -948,7 +941,7 @@ async fn main() {
                 num_gpus,
                 &inference_wrapper_log_path,
                 &training_wrapper_log_path,
-                adam_fp32,
+                use_tool,
             )
             .await
         }
@@ -970,7 +963,7 @@ async fn main() {
                 num_gpus,
                 &inference_wrapper_log_path,
                 &training_wrapper_log_path,
-                adam_fp32,
+                use_tool,
             )
             .await
         }
@@ -992,7 +985,7 @@ async fn main() {
                 num_gpus,
                 &inference_wrapper_log_path,
                 &training_wrapper_log_path,
-                adam_fp32,
+                use_tool,
             )
             .await
         }
@@ -1014,7 +1007,7 @@ async fn main() {
                 num_gpus,
                 &inference_wrapper_log_path,
                 &training_wrapper_log_path,
-                adam_fp32,
+                use_tool,
             )
             .await
         }

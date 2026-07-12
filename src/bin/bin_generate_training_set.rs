@@ -26,7 +26,7 @@ struct Args {
     #[arg(long)]
     rollout_config_path: String,
     #[arg(long)]
-    posterior_hyperparameters_path: String,
+    use_tool: bool,
     #[arg(long)]
     epoch: usize, // the epoch index
     #[arg(long, value_enum)]
@@ -51,7 +51,7 @@ async fn main() {
         model,
         config_nickname,
         rollout_config_path,
-        posterior_hyperparameters_path,
+        use_tool,
         epoch,
         advantage_calculation_policy,
         positive_advantage_only,
@@ -64,7 +64,7 @@ async fn main() {
     });
     let rollout_config: DirectRolloutConfig<Training> = read_json(rollout_config_path).unwrap();
     let posterior_hyperparameters =
-        read_json::<PosteriorHyperparameters>(posterior_hyperparameters_path).unwrap();
+        read_json::<PosteriorHyperparameters>(credit_assignment::posterior_hyperparameters_path::posterior_hyperparameters_path()).unwrap();
     let posterior_calculation_config = PosteriorCalculationConfig {
         hyperparameters: posterior_hyperparameters,
     };
@@ -75,6 +75,7 @@ async fn main() {
         epoch,
         advantage_calculation_policy,
         positive_advantage_only,
+        use_tool,
     };
     match model {
         LlmModelName::Gemma3_4b => run_program::<Gemma3_4BIt>(run_program_args).await,
@@ -97,6 +98,7 @@ struct RunProgramArgs {
     epoch: usize, // the epoch index
     advantage_calculation_policy: AdvantageCalculationPolicy,
     positive_advantage_only: bool,
+    use_tool: bool,
 }
 
 async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
@@ -107,6 +109,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         epoch,
         advantage_calculation_policy,
         positive_advantage_only,
+        use_tool,
     } = run_program_args;
     generate_training_trajectories::<M>(
         &config_nickname,
@@ -115,6 +118,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         epoch,
         advantage_calculation_policy,
         positive_advantage_only,
+        use_tool,
     )
     .await;
 }

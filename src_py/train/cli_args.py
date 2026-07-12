@@ -38,7 +38,6 @@ class TrainingRequestArgs(BaseModel):
     lora_dropout: float | None = None
     lora_target_modules_csv: str | None = None
     resume_checkpoint_tag: str | None = None
-    adam_fp32: bool
     lr_schedule: str = "cosine"
     lr_total_steps: int = 0
     training_mode: str = "orchestration"

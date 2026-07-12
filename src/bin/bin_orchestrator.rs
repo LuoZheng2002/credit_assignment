@@ -11,10 +11,7 @@ use credit_assignment::{
         posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
         rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
     },
-    jinja_directories::{
-        inference_wrapper_log_path_from_template, training_wrapper_log_path_from_template,
-        tui_log_path_from_template,
-    },
+    directories::{inference_wrapper_log_path, training_wrapper_log_path, tui_log_path},
     json_toml_utils::{read_json, read_toml},
     llm_model::{
         Gemma3_4BIt, Llama31_8BInstruct, LlmModelName, Mistral7BInstructV03, Qwen3_4B, Qwen3_06B,
@@ -47,8 +44,6 @@ struct Args {
     #[arg(long)]
     training_rollout_config_path: String,
     #[arg(long)]
-    posterior_hyperparameters_path: String,
-    #[arg(long)]
     num_total_epochs: usize,
     #[arg(long, value_enum)]
     advantage_calculation_policy: AdvantageCalculationPolicy,
@@ -74,8 +69,6 @@ struct Args {
     keep_action_logs: bool,
     #[arg(long, action = ArgAction::Set)]
     positive_advantage_only: bool,
-    #[arg(long, action = ArgAction::Set)]
-    adam_fp32: bool,
 }
 
 fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
@@ -112,7 +105,6 @@ async fn main() {
         max_rollout_concurrency,
         use_tool,
         training_rollout_config_path,
-        posterior_hyperparameters_path,
         num_total_epochs,
         ui,
         training_rollout_time_limit_secs,
@@ -126,7 +118,6 @@ async fn main() {
         mount_dir,
         keep_action_logs,
         positive_advantage_only,
-        adam_fp32,
     } = Args::parse();
     let process_title = format!("orchestrator_{}_{}", model_cli_name, config_nickname);
     set_title(&process_title);
@@ -137,13 +128,11 @@ async fn main() {
     );
     configure_mount_dir(&mount_dir)
         .unwrap_or_else(|err| panic!("failed to configure mount dir: {}", err));
-    let inference_wrapper_log_path =
-        inference_wrapper_log_path_from_template(&model_cli_name, &config_nickname)
-            .unwrap_or_else(|err| panic!("failed to render inference wrapper log path: {}", err));
-    let training_wrapper_log_path =
-        training_wrapper_log_path_from_template(&model_cli_name, &config_nickname)
-            .unwrap_or_else(|err| panic!("failed to render training wrapper log path: {}", err));
-    let tui_log_path = tui_log_path_from_template(&model_cli_name, &config_nickname)
+    let inference_wrapper_log_path = inference_wrapper_log_path(&model_cli_name, &config_nickname)
+        .unwrap_or_else(|err| panic!("failed to render inference wrapper log path: {}", err));
+    let training_wrapper_log_path = training_wrapper_log_path(&model_cli_name, &config_nickname)
+        .unwrap_or_else(|err| panic!("failed to render training wrapper log path: {}", err));
+    let tui_log_path = tui_log_path(&model_cli_name, &config_nickname)
         .unwrap_or_else(|err| panic!("failed to render tui log path: {}", err));
     ensure_parent_dir_exists(&inference_wrapper_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare inference wrapper log directory: {}", err));
@@ -162,7 +151,6 @@ async fn main() {
         &config_nickname,
         &training_rollout_config_path,
         VALIDATION_ROLLOUT_CONFIG_PATH,
-        &posterior_hyperparameters_path,
     )
     .unwrap_or_else(|err| panic!("failed to write config_paths.json: {}", err));
 
@@ -175,14 +163,14 @@ async fn main() {
             model_cli_name, config_nickname
         ));
     }
-    let mut validation_rollout_config: DirectRolloutConfig<Validation> =
+    let validation_rollout_config: DirectRolloutConfig<Validation> =
         read_json(VALIDATION_ROLLOUT_CONFIG_PATH).unwrap();
-    let mut training_set_rollout_config: DirectRolloutConfig<Training> =
+    let training_set_rollout_config: DirectRolloutConfig<Training> =
         read_json(training_rollout_config_path).unwrap();
-    validation_rollout_config.use_tool = use_tool;
-    training_set_rollout_config.use_tool = use_tool;
-    let posterior_hyperparameters =
-        read_json::<PosteriorHyperparameters>(posterior_hyperparameters_path).unwrap();
+    let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
+        credit_assignment::posterior_hyperparameters_path::posterior_hyperparameters_path(),
+    )
+    .unwrap();
     let posterior_calculation_config = PosteriorCalculationConfig {
         hyperparameters: posterior_hyperparameters,
     };
@@ -235,12 +223,12 @@ async fn main() {
         keep_action_logs,
         advantage_calculation_policy,
         positive_advantage_only,
-        adam_fp32,
         training_config_common,
         training_time,
         num_iterations_limit,
         progress,
         num_gpus,
+        use_tool,
     };
 
     let result = match model_name {

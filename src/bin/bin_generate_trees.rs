@@ -9,6 +9,7 @@ use credit_assignment::{
         rollout::{RolloutProgramConfig, rollout_all},
         rollout_config::DirectRolloutConfig,
     },
+    fixed_temperatures,
     json_toml_utils::read_json,
     llm_model::{
         Gemma3_4BIt, InferenceEndpoint, Llama31_8BInstruct, LlmModelMarker, LlmModelName,
@@ -39,10 +40,10 @@ struct Args {
     config_nickname: String,
     #[arg(long)]
     rollout_config_path: String,
+    #[arg(long)]
+    use_tool: bool,
     #[arg(long, value_enum)]
     dataset_split: DatasetSplitEnum,
-    #[arg(long)]
-    posterior_hyperparameters_path: String,
     #[arg(long)]
     epoch: usize, // the epoch index
     #[arg(long)]
@@ -78,6 +79,8 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         max_python_processes: args.max_python_processes,
         total_epochs: args.total_epochs,
         action_log_store_override_path: None,
+        use_tool: args.use_tool,
+        fixed_temperature: fixed_temperatures::default_temperature_for_split::<S>(),
     };
     let _ = rollout_all::<M, S>(program_config).await;
 }
@@ -154,7 +157,7 @@ async fn main() {
     println!("Starting direct rollout evaluation pipeline...");
     let client = Client::new();
     let posterior_hyperparameters =
-        read_json::<PosteriorHyperparameters>(&args.posterior_hyperparameters_path).unwrap();
+        read_json::<PosteriorHyperparameters>(credit_assignment::posterior_hyperparameters_path::posterior_hyperparameters_path()).unwrap();
     let posterior_calculation_config = PosteriorCalculationConfig {
         hyperparameters: posterior_hyperparameters,
     };

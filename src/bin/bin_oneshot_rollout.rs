@@ -12,12 +12,12 @@ use credit_assignment::{
         training_set::generate_training_trajectories_with_path,
         tree_action_log::ActionLogStore,
     },
-    jinja_directories::{
-        action_logs_oneshot_path_from_template, inference_wrapper_log_path_from_template,
-        model_parent_dir_from_template, rollout_summary_oneshot_path_from_template,
-        training_trajectories_oneshot_path_from_template,
-        training_trajectories_stats_oneshot_path_from_template,
+    directories::{
+        action_logs_oneshot_path, inference_wrapper_log_path, model_parent_dir,
+        rollout_summary_oneshot_path, training_trajectories_oneshot_path,
+        training_trajectories_stats_oneshot_path,
     },
+    fixed_temperatures,
     json_toml_utils::read_json,
     launch_inference_wrapper::{
         best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
@@ -49,10 +49,10 @@ struct Args {
     config_nickname_rollout: String,
     #[arg(long)]
     rollout_config_path: String,
+    #[arg(long)]
+    use_tool: bool,
     #[arg(long, value_enum)]
     dataset_split: DatasetSplitEnum,
-    #[arg(long)]
-    posterior_hyperparameters_path: String,
     #[arg(long, default_value_t = 0)]
     epoch: usize,
     #[arg(long, default_value_t = 1)]
@@ -99,7 +99,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     num_gpus: usize,
     inference_wrapper_log_path: &str,
 ) {
-    let action_log_store_override_path = action_logs_oneshot_path_from_template::<S>(
+    let action_log_store_override_path = action_logs_oneshot_path::<S>(
         &args.model_cli_name,
         &args.config_nickname_rollout,
         args.epoch,
@@ -123,7 +123,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
 
     best_effort_shutdown_stale_inference_wrapper().await;
     let model_parent_dir =
-        model_parent_dir_from_template(M::CLI_NAME, &args.config_nickname_rollout, args.epoch)
+        model_parent_dir(M::CLI_NAME, &args.config_nickname_rollout, args.epoch)
             .unwrap_or_else(|err| panic!("failed to resolve model parent dir: {}", err));
     let model_path = format!("{}/model", model_parent_dir);
 
@@ -154,6 +154,8 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         max_python_processes: args.max_python_processes,
         total_epochs: args.total_epochs,
         action_log_store_override_path: Some(action_log_store_override_path),
+        use_tool: args.use_tool,
+        fixed_temperature: fixed_temperatures::default_temperature_for_split::<S>(),
     };
     let summary = rollout_all::<M, S>(program_config).await;
 
@@ -161,7 +163,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     shut_down_inference_wrapper_process(&mut process).await;
     let _ = listener_handle.await;
 
-    let summary_path = rollout_summary_oneshot_path_from_template(
+    let summary_path = rollout_summary_oneshot_path(
         &args.model_cli_name,
         &args.config_nickname_rollout,
     )
@@ -244,7 +246,8 @@ macro_rules! generate_trajectories {
         $rollout_config:expr,
         $posterior_calculation_config:expr,
         $advantage_calculation_policy:expr,
-        $positive_advantage_only:expr;
+        $positive_advantage_only:expr,
+        $use_tool:expr;
         $( $model_enum:path, $model_ty:ty ),+ $(,)?
     ) => {
         match $model_name {
@@ -260,6 +263,7 @@ macro_rules! generate_trajectories {
                         $posterior_calculation_config,
                         $advantage_calculation_policy,
                         $positive_advantage_only,
+                        $use_tool,
                     )
                     .await
                 }
@@ -293,15 +297,17 @@ async fn main() {
 
     println!("Starting one-shot rollout pipeline...");
     let client = Client::new();
-    let posterior_hyperparameters =
-        read_json::<PosteriorHyperparameters>(&args.posterior_hyperparameters_path).unwrap();
+    let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
+        credit_assignment::posterior_hyperparameters_path::posterior_hyperparameters_path(),
+    )
+    .unwrap();
     let posterior_calculation_config = PosteriorCalculationConfig {
         hyperparameters: posterior_hyperparameters,
     };
 
     let model_name = LlmModelName::from_str(&args.model_cli_name, true).unwrap();
 
-    let inference_wrapper_log_path = inference_wrapper_log_path_from_template(
+    let inference_wrapper_log_path = inference_wrapper_log_path(
         &args.model_cli_name,
         &args.config_nickname_rollout,
     )
@@ -341,7 +347,7 @@ async fn main() {
     // Generate training trajectories from one-shot action logs (only for Training split)
     if matches!(args.dataset_split, DatasetSplitEnum::Training) {
         println!("Generating training trajectories from one-shot action logs...");
-        let trajectories_dir = training_trajectories_oneshot_path_from_template(
+        let trajectories_dir = training_trajectories_oneshot_path(
             &args.model_cli_name,
             &args.config_nickname_rollout,
         )
@@ -352,13 +358,13 @@ async fn main() {
             )
         });
         let trajectories_msgpack_path = format!("{}/trajectories.msgpack", trajectories_dir);
-        let stats_path = training_trajectories_stats_oneshot_path_from_template(
+        let stats_path = training_trajectories_stats_oneshot_path(
             &args.model_cli_name,
             &args.config_nickname_rollout,
         )
         .unwrap_or_else(|err| panic!("failed to resolve stats path: {}", err));
         let config_bundle_path = format!("{}/config_bundle.json", trajectories_dir);
-        let action_log_store_path = action_logs_oneshot_path_from_template::<Training>(
+        let action_log_store_path = action_logs_oneshot_path::<Training>(
             &args.model_cli_name,
             &args.config_nickname_rollout,
             args.epoch,
@@ -377,7 +383,8 @@ async fn main() {
             rollout_config,
             posterior_calculation_config_clone,
             args.advantage_calculation_policy,
-            args.positive_advantage_only;
+            args.positive_advantage_only,
+            args.use_tool;
             LlmModelName::Qwen25_7b, Qwen25_7B,
             LlmModelName::Qwen3_06b, Qwen3_06B,
             LlmModelName::Qwen3_4b, Qwen3_4B,

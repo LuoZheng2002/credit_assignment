@@ -64,7 +64,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         tree.next_segment_id += 1;
         let prompt_segment = Self::create_prompt_segment(
             tree.action_log.question.question.clone(),
-            tree.action_log.rollout_config.use_tool,
+            tree.action_log.use_tool,
             root_segment_id,
         );
         tree.segments.insert(root_segment_id, prompt_segment);

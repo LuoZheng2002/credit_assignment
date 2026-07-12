@@ -24,8 +24,9 @@ use crate::{
             ActionLogConfigBundle, ActionLogStore, DirectTreeActionLog, open_action_logs,
         },
     },
-    jinja_directories::{
-        training_trajectories_path_from_template, training_trajectories_stats_path_from_template,
+    fixed_temperatures,
+    directories::{
+        training_trajectories_path, training_trajectories_stats_path,
     },
     json_toml_utils::write_json,
     llm_model::LlmModelMarker,
@@ -366,6 +367,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     statistics_file_path: String,
     advantage_calculation_policy: AdvantageCalculationPolicy,
     positive_advantage_only: bool,
+    use_tool: bool,
 ) {
     action_store.sort().unwrap();
     let (selection_output, question_map, action_store) =
@@ -376,6 +378,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
             posterior_calculation_config.clone(),
             advantage_calculation_policy,
             positive_advantage_only,
+            use_tool,
         )
         .await;
     let TrainingTrajectorySelectionOutput {
@@ -392,6 +395,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         selected_metadata,
         advantage_calculation_policy,
         positive_advantage_only,
+        use_tool,
     )
     .await;
     let adopted_trajectories = training_trajectories.len();
@@ -519,6 +523,7 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
     posterior_calculation_config: PosteriorCalculationConfig,
     advantage_calculation_policy: AdvantageCalculationPolicy,
     positive_advantage_only: bool,
+    use_tool: bool,
 ) -> (
     TrainingTrajectorySelectionOutput<S>,
     BTreeMap<usize, HybridDatasetQuestion<S>>,
@@ -549,6 +554,8 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
                     question,
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
+                    use_tool,
+                    fixed_temperature: fixed_temperatures::default_temperature_for_split::<S>(),
                     actions,
                 };
                 let advantage_calculation_policy = advantage_calculation_policy.clone();
@@ -608,6 +615,7 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
     mut selected_metadata: Vec<TrajectoryMetadata<Training>>,
     advantage_calculation_policy: AdvantageCalculationPolicy,
     positive_advantage_only: bool,
+    use_tool: bool,
 ) -> Vec<DirectTrainingTrajectory<M>> {
     selected_metadata.sort_by(|a, b| {
         b.trajectory_token_length
@@ -657,6 +665,8 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                     question,
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
+                    use_tool,
+                    fixed_temperature: fixed_temperatures::training_temperature(),
                     actions,
                 };
                 let advantage_calculation_policy = advantage_calculation_policy.clone();
@@ -1108,7 +1118,7 @@ pub fn training_trajectories_file_path<M: LlmModelMarker>(
     config_nickname: &str,
     epoch: usize,
 ) -> String {
-    training_trajectories_path_from_template(M::CLI_NAME, config_nickname, epoch)
+    training_trajectories_path(M::CLI_NAME, config_nickname, epoch)
         .unwrap_or_else(|err| {
             panic!(
                 "failed to render training trajectories path for model_cli_name={}, config_nickname={}, epoch={}: {}",
@@ -1147,7 +1157,7 @@ pub fn training_trajectories_stats_file_path<M: LlmModelMarker>(
     config_nickname: &str,
     epoch: usize,
 ) -> String {
-    training_trajectories_stats_path_from_template(M::CLI_NAME, config_nickname, epoch)
+    training_trajectories_stats_path(M::CLI_NAME, config_nickname, epoch)
         .unwrap_or_else(|err| {
             panic!(
                 "failed to render training trajectories stats path for model_cli_name={}, config_nickname={}, epoch={}: {}",
@@ -1205,6 +1215,7 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
     epoch: usize,
     advantage_calculation_policy: AdvantageCalculationPolicy,
     positive_advantage_only: bool,
+    use_tool: bool,
 ) {
     let training_trajectories_path = training_trajectories_file_path::<M>(config_nickname, epoch);
     let training_trajectories_path = Path::new(&training_trajectories_path);
@@ -1235,6 +1246,8 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
         .write_config_bundle_if_missing(&ActionLogConfigBundle {
             rollout_config: rollout_config.clone(),
             posterior_calculation_config: posterior_calculation_config.clone(),
+            use_tool,
+            fixed_temperature: fixed_temperatures::training_temperature(),
         })
         .unwrap();
     rollout_logs_to_training_trajectories::<M>(
@@ -1246,6 +1259,7 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
         stats_file_path,
         advantage_calculation_policy,
         positive_advantage_only,
+        use_tool,
     )
     .await;
     log_info("Finished generating training trajectories file.");
@@ -1263,6 +1277,7 @@ pub async fn generate_training_trajectories_with_path<M: LlmModelMarker>(
     posterior_calculation_config: PosteriorCalculationConfig,
     advantage_calculation_policy: AdvantageCalculationPolicy,
     positive_advantage_only: bool,
+    use_tool: bool,
 ) {
     std::fs::create_dir_all(training_trajectories_dir).unwrap();
     if Path::new(training_trajectories_msgpack_path).exists() {
@@ -1294,6 +1309,8 @@ pub async fn generate_training_trajectories_with_path<M: LlmModelMarker>(
         .write_config_bundle_if_missing(&ActionLogConfigBundle {
             rollout_config: rollout_config.clone(),
             posterior_calculation_config: posterior_calculation_config.clone(),
+            use_tool,
+            fixed_temperature: fixed_temperatures::training_temperature(),
         })
         .unwrap();
     rollout_logs_to_training_trajectories::<M>(
@@ -1305,6 +1322,7 @@ pub async fn generate_training_trajectories_with_path<M: LlmModelMarker>(
         stats_file_path.to_string(),
         advantage_calculation_policy,
         positive_advantage_only,
+        use_tool,
     )
     .await;
     log_info("Finished generating one-shot training trajectories.");

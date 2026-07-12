@@ -10,6 +10,7 @@ use crate::{
         tree::DirectTree,
         tree_action_log::{ActionLogStore, DirectTreeActionLog, open_action_logs},
     },
+    fixed_temperatures,
     llm_model::LlmModelMarker,
 };
 
@@ -113,6 +114,7 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize,
     progress_bar_label: &str,
+    use_tool: bool,
 ) -> AccuracyStats {
     let question_store = open_hybrid_dataset::<S>();
     let question_map: BTreeMap<usize, HybridDatasetQuestion<S>> = question_store
@@ -162,6 +164,8 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
                     question,
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
+                    use_tool,
+                    fixed_temperature: fixed_temperatures::default_temperature_for_split::<S>(),
                     actions,
                 };
 
@@ -233,6 +237,7 @@ pub async fn get_per_question_accuracies<M: LlmModelMarker, S: DatasetSplit>(
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize,
     progress_bar_label: &str,
+    use_tool: bool,
 ) -> Vec<Option<f32>> {
     let question_store = open_hybrid_dataset::<S>();
     let question_map: BTreeMap<usize, HybridDatasetQuestion<S>> = question_store
@@ -273,6 +278,8 @@ pub async fn get_per_question_accuracies<M: LlmModelMarker, S: DatasetSplit>(
                     question,
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
+                    use_tool,
+                    fixed_temperature: fixed_temperatures::default_temperature_for_split::<S>(),
                     actions,
                 };
 
@@ -341,7 +348,8 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize,
     progress_bar_label: &str,
-    max_num_trunks: usize,
+    num_trunks: usize,
+    use_tool: bool,
 ) -> TestAccuracyResult {
     let question_store = open_hybrid_dataset::<S>();
     let question_map: BTreeMap<usize, HybridDatasetQuestion<S>> = question_store
@@ -383,6 +391,8 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
                     question,
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
+                    use_tool,
+                    fixed_temperature: fixed_temperatures::default_temperature_for_split::<S>(),
                     actions,
                 };
 
@@ -399,13 +409,13 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
                     Ok((dataset_name, result)) => {
                         if let Some(trunk_correctness) = result {
                             assert_eq!(
-                                trunk_correctness.len(), max_num_trunks,
+                                trunk_correctness.len(), num_trunks,
                                 "Expected {} trunks per tree but got {}",
-                                max_num_trunks, trunk_correctness.len()
+                                num_trunks, trunk_correctness.len()
                             );
                             let per_trunk = dataset_per_trunk_correct
                                 .entry(dataset_name.clone())
-                                .or_insert_with(|| vec![0usize; max_num_trunks]);
+                                .or_insert_with(|| vec![0usize; num_trunks]);
                             for (i, &is_correct) in trunk_correctness.iter().enumerate() {
                                 if is_correct {
                                     per_trunk[i] += 1;
@@ -466,6 +476,7 @@ pub async fn get_accuracy_at_path<M: LlmModelMarker, S: DatasetSplit>(
     rollout_config: DirectRolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
     progress_bar_label: &str,
+    use_tool: bool,
 ) -> AccuracyStats {
     let question_store = open_hybrid_dataset::<S>();
     let question_map: BTreeMap<usize, HybridDatasetQuestion<S>> = question_store
@@ -519,6 +530,8 @@ pub async fn get_accuracy_at_path<M: LlmModelMarker, S: DatasetSplit>(
                     question,
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
+                    use_tool,
+                    fixed_temperature: fixed_temperatures::default_temperature_for_split::<S>(),
                     actions,
                 };
 

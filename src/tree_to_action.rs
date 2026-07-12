@@ -323,7 +323,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         llm_callable: &M::Callable,
     ) -> Result<DirectTreeAction<M>, StopRequestedError> {
         let trajectory = self.get_trajectory(target_segment_id, cumulative_content_array);
-        match trajectory.try_get_answer(self.action_log.rollout_config.use_tool) {
+        match trajectory.try_get_answer(self.action_log.use_tool) {
             Some(final_answer) => Ok(SubmitAnswer(final_answer)),
             None => {
                 let generation_start_token = if cumulative_content_array.is_empty() {
@@ -335,11 +335,8 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     self.action_log.question.flat_id,
                     &trajectory,
                     generation_start_token,
-                    self.action_log.rollout_config.use_tool,
-                    self.action_log
-                        .rollout_config
-                        .fixed_temperature
-                        .into_inner(),
+                    self.action_log.use_tool,
+                    self.action_log.fixed_temperature.into_inner(),
                     llm_callable,
                 )
                 .await?;
