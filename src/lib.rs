@@ -17,6 +17,7 @@ pub mod python_training_config;
 pub mod token_array;
 pub mod tool_call_python;
 pub mod utils;
+pub mod validation_config_path;
 pub use utils as json_toml_utils;
 pub use utils as util;
 

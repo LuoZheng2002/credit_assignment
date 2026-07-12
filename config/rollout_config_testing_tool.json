@@ -1,9 +1,9 @@
 {
     "split": "Testing",
     "branching_policy": "TreeMappoGuided",
-    "max_num_trunks": 1,
-    "early_stopping_decision_trajectories": 6,
-    "max_num_total_trajectories": 1,
+    "num_trunks": 1,
+    "num_early_stopping_leaves": 6,
+    "num_leaves": 1,
     "fixed_temperature": 0.7,
     "use_tool": true
 }

@@ -23,6 +23,7 @@ use credit_assignment::{
     orchestrator::{OrchestrationProgress, OrchestrationStatus, Orchestrator},
     python_training_config::PythonTrainingConfigCommon,
     utils::configure_mount_dir,
+    validation_config_path::VALIDATION_ROLLOUT_CONFIG_PATH,
 };
 use research_utility::progress_tui_logger::{
     ProgressTuiLogger, log_error, log_exit_hint, log_info, log_window_name,
@@ -42,7 +43,7 @@ struct Args {
     #[arg(long)]
     config_nickname: String,
     #[arg(long)]
-    validation_rollout_config_path: String,
+    use_tool: bool,
     #[arg(long)]
     training_rollout_config_path: String,
     #[arg(long)]
@@ -109,7 +110,7 @@ async fn main() {
         model_cli_name,
         config_nickname,
         max_rollout_concurrency,
-        validation_rollout_config_path,
+        use_tool,
         training_rollout_config_path,
         posterior_hyperparameters_path,
         num_total_epochs,
@@ -160,7 +161,7 @@ async fn main() {
         &model_cli_name,
         &config_nickname,
         &training_rollout_config_path,
-        &validation_rollout_config_path,
+        VALIDATION_ROLLOUT_CONFIG_PATH,
         &posterior_hyperparameters_path,
     )
     .unwrap_or_else(|err| panic!("failed to write config_paths.json: {}", err));
@@ -174,10 +175,12 @@ async fn main() {
             model_cli_name, config_nickname
         ));
     }
-    let validation_rollout_config: DirectRolloutConfig<Validation> =
-        read_json(validation_rollout_config_path).unwrap();
-    let training_set_rollout_config: DirectRolloutConfig<Training> =
+    let mut validation_rollout_config: DirectRolloutConfig<Validation> =
+        read_json(VALIDATION_ROLLOUT_CONFIG_PATH).unwrap();
+    let mut training_set_rollout_config: DirectRolloutConfig<Training> =
         read_json(training_rollout_config_path).unwrap();
+    validation_rollout_config.use_tool = use_tool;
+    training_set_rollout_config.use_tool = use_tool;
     let posterior_hyperparameters =
         read_json::<PosteriorHyperparameters>(posterior_hyperparameters_path).unwrap();
     let posterior_calculation_config = PosteriorCalculationConfig {

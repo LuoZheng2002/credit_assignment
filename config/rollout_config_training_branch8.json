@@ -1,9 +1,9 @@
 {
     "split": "Training",
     "branching_policy": "TreeMappoGuided",
-    "max_num_trunks": 4,
-    "early_stopping_decision_trajectories": 6,
-    "max_num_total_trajectories": 8,
+    "num_trunks": 4,
+    "num_early_stopping_leaves": 6,
+    "num_leaves": 8,
     "fixed_temperature": 0.7,
     "use_tool": true
 }

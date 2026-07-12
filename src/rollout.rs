@@ -736,10 +736,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
             question_keys.len().to_string(),
         );
     }
-    let _rollout_all_guard = RolloutAllGuard::new(
-        rollout_config.max_num_total_trajectories,
-        question_keys.len(),
-    );
+    let _rollout_all_guard = RolloutAllGuard::new(rollout_config.num_leaves, question_keys.len());
     let rollout_stats = RolloutStats::global();
     rollout_stats.reset_model_answer_judgment_cache_hit_rate();
     let (previous_elapsed, deadline, total_secs) = {

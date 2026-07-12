@@ -2,7 +2,7 @@ uv run -m src_py.modal.launch_modal_orchestration \
     --model-cli-name qwen25 \
     --max-rollout-concurrency 300 \
     --config-nickname std \
-    --validation-rollout-config-path config/rollout_config_validation_tool.json \
+    --use-tool true \
     --training-rollout-config-path config/rollout_config_training_std.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --num-total-epochs 20 \

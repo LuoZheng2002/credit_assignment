@@ -123,7 +123,7 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
         posterior_calculation_config,
         testing_config.epoch,
         "Test accuracy",
-        rollout_config.max_num_trunks,
+        rollout_config.num_trunks,
     )
     .await
 }
@@ -229,9 +229,9 @@ async fn run_testing_config(
     let rollout_config: DirectRolloutConfig<Testing> =
         read_json::<DirectRolloutConfig<Testing>>(&testing_config.testing_rollout_config_path)?;
     assert_eq!(
-        rollout_config.max_num_trunks, rollout_config.max_num_total_trajectories,
-        "max_num_trunks ({}) must equal max_num_total_trajectories ({}) for test evaluation (no branching)",
-        rollout_config.max_num_trunks, rollout_config.max_num_total_trajectories,
+        rollout_config.num_trunks, rollout_config.num_leaves,
+        "num_trunks ({}) must equal num_leaves ({}) for test evaluation (no branching)",
+        rollout_config.num_trunks, rollout_config.num_leaves,
     );
 
     if args.ui {

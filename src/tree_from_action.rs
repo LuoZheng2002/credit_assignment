@@ -297,15 +297,15 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         let rollout_config = &self.action_log.rollout_config;
         let leaf_segment_judgments_len = self.leaf_segment_judgments.len();
         let should_early_stop = S::IS_TRAINING
-            && leaf_segment_judgments_len >= rollout_config.early_stopping_decision_trajectories
+            && leaf_segment_judgments_len >= rollout_config.num_early_stopping_leaves
             && !matches!(self.get_correctness(), TreeCorrectness::Mixed);
         if should_early_stop {
             DirectTreeStatus::Complete
-        } else if self.trunk_leaf_segments.len() < rollout_config.max_num_trunks {
+        } else if self.trunk_leaf_segments.len() < rollout_config.num_trunks {
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::CollectingSegmentContents {
                 cumulative_content_array: vec![],
             })
-        } else if leaf_segment_judgments_len < rollout_config.max_num_total_trajectories {
+        } else if leaf_segment_judgments_len < rollout_config.num_leaves {
             match rollout_config.branching_policy {
                 BranchingPolicy::TreeMappoGuided => DirectTreeStatus::WorkingOnGuidedBranching(
                     GuidedBranchingSubStatus::DeterminingBranchingPoint,
