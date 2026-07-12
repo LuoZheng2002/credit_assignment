@@ -15,29 +15,6 @@ Example setup:
 .venv/bin/pip install -r requirements.txt
 ```
 
-## 0.5) Build the non-tool SFT dataset
-
-For the non-tool-calling bootstrap SFT flow, generate `datasets/hybrid_sft.jsonl` from the first 10,000 rows of `datasets/hybrid_train.jsonl` with:
-
-```bash
-python scripts/generate_hybrid_sft_from_gpt41.py
-```
-
-Or generate a parallel dataset with DeepSeek official API:
-
-```bash
-python scripts/generate_hybrid_sft_from_deepseek_v4_pro.py
-```
-
-Notes:
-
-- Default maximum concurrency is `200`.
-- Each script stops after writing `2,000` accepted SFT rows by default.
-- The GPT-4.1 script writes accepted rows to `datasets/hybrid_sft.jsonl` and rejected rows to `datasets/hybrid_sft_rejected.jsonl`.
-- The DeepSeek v4 Pro script writes accepted rows to `datasets/hybrid_sft_deepseek_v4_pro.jsonl` and rejected rows to `datasets/hybrid_sft_deepseek_v4_pro_rejected.jsonl`.
-- The scripts are resumable after crashes/restarts; rerunning them skips already processed `flat_id`s.
-- The existing Rust SFT path (`src/hybrid_sft_dataset.rs` -> `src/sft_training_data.rs`) already reads `datasets/hybrid_sft.jsonl`, so no extra conversion step is needed before orchestrator SFT.
-
 ## 1) Choose Training Plan
 
 - `lora`: default plan (LoRA adapters).

@@ -21,7 +21,6 @@ use crate::{
     jinja_directories::{
         model_checkpoint_dir_from_template, model_metrics_path_from_template,
         model_parent_dir_from_template, progress_save_path_from_template,
-        sft_model_parent_dir_from_template,
     },
     json_toml_utils::write_json,
     launch_inference_wrapper::{
@@ -46,7 +45,6 @@ pub struct Orchestrator {
     pub inference_server_handle: Option<InferenceServerHandle>,
     pub inference_wrapper_log_path: String,
     pub training_wrapper_log_path: String,
-    pub sft_wrapper_log_path: String,
     pub keep_action_logs: bool,
     // for training set generation
     pub advantage_calculation_policy: AdvantageCalculationPolicy,
@@ -61,14 +59,9 @@ pub struct Orchestrator {
     pub progress: OrchestrationProgress,
     // for training
     pub training_config_common: PythonTrainingConfigCommon,
-    pub sft_training_config_common: PythonTrainingConfigCommon,
     pub training_time: f32,
     pub num_iterations_limit: usize,
-    pub sft_training_time: f32,
-    pub sft_num_iterations_limit: usize,
     pub num_gpus: usize,
-    // for sft
-    pub sft_enabled: bool,
 }
 
 pub struct InferenceServerHandle {
@@ -81,7 +74,6 @@ pub struct InferenceServerHandle {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum OrchestrationStatus {
-    WorkingOnSFT,
     WorkingOnValidation,
     WorkingOnTrainingRolloutCollection,
     WorkingOnTrainingSetGeneration,
@@ -207,17 +199,6 @@ impl Orchestrator {
             let progress = self.progress.clone();
             let epoch = progress.epoch;
             match progress.status {
-                OrchestrationStatus::WorkingOnSFT => {
-                    log_state(format!("Epoch {}: Working on SFT", epoch));
-                    assert_eq!(epoch, 0, "SFT should only run at epoch 0");
-                    // SFT does not need inference server
-                    self.ensure_inference_server_shut_down::<M>().await;
-                    self.run_sft::<M>().await?;
-                    self.update_and_save_progress::<M>(
-                        OrchestrationStatus::WorkingOnValidation,
-                        epoch,
-                    );
-                }
                 OrchestrationStatus::WorkingOnValidation => {
                     log_state(format!("Epoch {}: Working on validation", epoch));
                     assert!(epoch <= self.num_total_epochs);
@@ -480,12 +461,8 @@ impl Orchestrator {
             "Inference server is already launched for epoch {}, cannot launch again without shutting down",
             self.inference_server_handle.as_ref().unwrap().epoch
         );
-        let model_parent_dir = if self.sft_enabled && epoch == 0 {
-            log_info("Using SFT model directory for epoch 0 inference");
-            sft_model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname)?
-        } else {
-            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?
-        };
+        let model_parent_dir =
+            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
         let model_path = format!("{}/model", model_parent_dir);
 
         log_info(format!(
@@ -869,15 +846,9 @@ impl Orchestrator {
         }
 
         if epoch == 0 {
-            if self.sft_enabled {
-                log_info(
-                    "Skipping epoch 0 model directory deletion because the epoch 0 starting model (base model or dedicated SFT model) is retained unconditionally",
-                );
-            } else {
-                log_info(
-                    "Skipping epoch 0 model directory deletion because epoch 0 parent path is a shared root",
-                );
-            }
+            log_info(
+                "Skipping epoch 0 model directory deletion because epoch 0 parent path is a shared root",
+            );
             return Ok(());
         }
 
@@ -916,15 +887,9 @@ impl Orchestrator {
                 continue;
             }
             if epoch == 0 {
-                if self.sft_enabled {
-                    log_info(
-                        "Skipping epoch 0 model directory deletion during sweep because the epoch 0 starting model (base model or dedicated SFT model) is retained unconditionally",
-                    );
-                } else {
-                    log_info(
-                        "Skipping epoch 0 model directory deletion during sweep because epoch 0 parent path is a shared root",
-                    );
-                }
+                log_info(
+                    "Skipping epoch 0 model directory deletion during sweep because epoch 0 parent path is a shared root",
+                );
                 continue;
             }
             let model_parent_dir =
@@ -958,97 +923,6 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn run_sft<M: LlmModelMarker>(&mut self) -> Result<(), String> {
-        log_info("Start SFT training.");
-
-        // Generate SFT training data from the SFT dataset (raw text, tokenization deferred to Python)
-        crate::sft_training_data::generate_sft_training_data(M::CLI_NAME, &self.config_nickname)?;
-
-        let sft_training_data_path = crate::sft_training_data::sft_training_data_file_path(
-            M::CLI_NAME,
-            &self.config_nickname,
-        );
-
-        // Verify the SFT training data file exists
-        if !Path::new(&sft_training_data_path).is_file() {
-            return Err(format!(
-                "SFT training data file does not exist after generation: {}",
-                sft_training_data_path
-            ));
-        }
-
-        let artifact_root_dir = storage_large_files_dir()?;
-        let model_parent_dir =
-            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, 0)?;
-        let checkpoints_parent_dir =
-            model_checkpoint_dir_from_template(M::CLI_NAME, &self.config_nickname, 0)?;
-        // SFT outputs to its own dedicated directory (does NOT overwrite the base model)
-        let sft_model_parent_dir =
-            sft_model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname)?;
-        let final_model_output_parent_dir = sft_model_parent_dir.clone();
-
-        // Clean up any previous SFT output
-        if Path::new(&sft_model_parent_dir).exists() {
-            std::fs::remove_dir_all(&sft_model_parent_dir).unwrap_or_else(|err| {
-                log_warning(format!(
-                    "Failed to remove previous SFT output dir {}: {}",
-                    sft_model_parent_dir, err
-                ));
-            });
-        }
-
-        let training_config = PythonTrainingConfig {
-            common: self.sft_training_config_common.clone(),
-            training_time: self.sft_training_time,
-            num_iterations_limit: self.sft_num_iterations_limit,
-            artifact_root_dir,
-            hpc_training_root_dir: None,
-            model_cli_name: M::CLI_NAME.to_string(),
-            config_nickname: self.config_nickname.clone(),
-            adam_fp32: self.adam_fp32,
-            epoch: 0,
-            model_parent_dir: model_parent_dir.clone(),
-            checkpoints_parent_dir: checkpoints_parent_dir.clone(),
-            final_model_output_parent_dir,
-            training_summary_parent_dir: checkpoints_parent_dir,
-            training_mode: "orchestration".to_string(),
-            oneshot_num_epochs: 0,
-            oneshot_start_epoch: 0,
-            oneshot_model_output_root: String::new(),
-        };
-
-        let sft_start_time = Instant::now();
-        crate::launch_sft_wrapper::run_sft_wrapper_and_wait(
-            self.num_gpus,
-            M::API_NAME,
-            &training_config,
-            &sft_training_data_path,
-            self.sft_wrapper_log_path.as_ref(),
-        )
-        .await?;
-        let elapsed_secs = sft_start_time.elapsed().as_secs_f32();
-        log_info(format!(
-            "SFT training completed in {:.3}s; details in {}",
-            elapsed_secs, self.sft_wrapper_log_path
-        ));
-
-        // After SFT, verify the SFT model was written to its dedicated directory
-        let sft_model_dir = format!("{}/model", sft_model_parent_dir);
-        if !Path::new(&sft_model_dir).is_dir() {
-            return Err(format!(
-                "SFT model dir not found after training: {}",
-                sft_model_dir
-            ));
-        }
-        log_info(format!(
-            "SFT model saved to dedicated directory: {}",
-            sft_model_parent_dir
-        ));
-
-        log_info("Finished SFT training.");
-        Ok(())
-    }
-
     async fn generate_training_set<M: LlmModelMarker>(&self, epoch: usize) {
         log_info("Generating training set");
         generate_training_trajectories::<M>(
@@ -1075,12 +949,8 @@ impl Orchestrator {
         let training_trajectory_sqlite_path =
             training_trajectories_msgpack_file_path::<M>(&self.config_nickname, epoch);
         let artifact_root_dir = storage_large_files_dir()?;
-        let model_parent_dir = if self.sft_enabled && epoch == 0 {
-            log_info("Using SFT model directory for epoch 0 training");
-            sft_model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname)?
-        } else {
-            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?
-        };
+        let model_parent_dir =
+            model_parent_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
         let checkpoints_parent_dir =
             model_checkpoint_dir_from_template(M::CLI_NAME, &self.config_nickname, epoch)?;
         let final_model_output_parent_dir =
