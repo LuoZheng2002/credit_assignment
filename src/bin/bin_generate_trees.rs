@@ -3,12 +3,10 @@ use std::backtrace::Backtrace;
 use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
-    direct_tool::{
-        hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
-        posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-        rollout::{RolloutProgramConfig, rollout_all},
-        rollout_config::DirectRolloutConfig,
-    },
+    hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
+    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+    rollout::{RolloutProgramConfig, rollout_all},
+    rollout_config::DirectRolloutConfig,
     fixed_temperatures,
     json_toml_utils::read_json,
     llm_model::{
@@ -16,6 +14,7 @@ use credit_assignment::{
         Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
 };
+use ordered_float::NotNan;
 use reqwest::Client;
 use research_utility::progress_tui_logger::ProgressTuiLogger;
 
@@ -80,9 +79,14 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         total_epochs: args.total_epochs,
         action_log_store_override_path: None,
         use_tool: args.use_tool,
-        fixed_temperature: fixed_temperatures::default_temperature_for_split::<S>(),
+        fixed_temperature: NotNan::new(if S::IS_TRAINING {
+            fixed_temperatures::TRAINING_TEMPERATURE
+        } else {
+            fixed_temperatures::VALIDATION_TEMPERATURE
+        })
+        .unwrap(),
     };
-    let _ = rollout_all::<M, S>(program_config).await;
+    let _ = rollout_all::<M, S>("results", program_config).await;
 }
 
 macro_rules! run_rollout {
@@ -156,8 +160,10 @@ async fn main() {
 
     println!("Starting direct rollout evaluation pipeline...");
     let client = Client::new();
-    let posterior_hyperparameters =
-        read_json::<PosteriorHyperparameters>(credit_assignment::posterior_hyperparameters_path::posterior_hyperparameters_path()).unwrap();
+    let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
+        credit_assignment::directories::POSTERIOR_HYPERPARAMETERS_PATH,
+    )
+    .unwrap();
     let posterior_calculation_config = PosteriorCalculationConfig {
         hyperparameters: posterior_hyperparameters,
     };

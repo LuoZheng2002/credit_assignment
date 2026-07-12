@@ -2,7 +2,7 @@ use std::path::Path;
 
 use clap::ValueEnum;
 
-use crate::direct_tool::hybrid_dataset::DatasetSplitEnum;
+use crate::hybrid_dataset::DatasetSplitEnum;
 use crate::llm_model::LlmModelName;
 
 #[derive(Debug, Clone)]

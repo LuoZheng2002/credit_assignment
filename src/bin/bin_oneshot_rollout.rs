@@ -4,14 +4,12 @@ use std::path::Path;
 use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
-    direct_tool::{
-        hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
-        posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-        rollout::{RolloutProgramConfig, rollout_all},
-        rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
-        training_set::generate_training_trajectories_with_path,
-        tree_action_log::ActionLogStore,
-    },
+    hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
+    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+    rollout::{RolloutProgramConfig, rollout_all},
+    rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+    training_set::generate_training_trajectories_with_path,
+    tree_action_log::ActionLogStore,
     directories::{
         action_logs_oneshot_path, inference_wrapper_log_path, model_parent_dir,
         rollout_summary_oneshot_path, training_trajectories_oneshot_path,
@@ -29,6 +27,7 @@ use credit_assignment::{
     },
     utils::configure_mount_dir,
 };
+use ordered_float::NotNan;
 use reqwest::Client;
 use research_utility::progress_tui_logger::{ProgressTuiLogger, log_info};
 
@@ -100,6 +99,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     inference_wrapper_log_path: &str,
 ) {
     let action_log_store_override_path = action_logs_oneshot_path::<S>(
+        &args.mount_dir,
         &args.model_cli_name,
         &args.config_nickname_rollout,
         args.epoch,
@@ -122,9 +122,12 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     }
 
     best_effort_shutdown_stale_inference_wrapper().await;
-    let model_parent_dir =
-        model_parent_dir(M::CLI_NAME, &args.config_nickname_rollout, args.epoch)
-            .unwrap_or_else(|err| panic!("failed to resolve model parent dir: {}", err));
+    let model_parent_dir = model_parent_dir(
+        &args.mount_dir,
+        M::CLI_NAME,
+        &args.config_nickname_rollout,
+        args.epoch,
+    );
     let model_path = format!("{}/model", model_parent_dir);
 
     let (sglang_port, mut process, listener_stop_signal, listener_handle) =
@@ -155,19 +158,24 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         total_epochs: args.total_epochs,
         action_log_store_override_path: Some(action_log_store_override_path),
         use_tool: args.use_tool,
-        fixed_temperature: fixed_temperatures::default_temperature_for_split::<S>(),
+        fixed_temperature: NotNan::new(if S::IS_TRAINING {
+            fixed_temperatures::TRAINING_TEMPERATURE
+        } else {
+            fixed_temperatures::VALIDATION_TEMPERATURE
+        })
+        .unwrap(),
     };
-    let summary = rollout_all::<M, S>(program_config).await;
+    let summary = rollout_all::<M, S>(&args.mount_dir, program_config).await;
 
     let _ = listener_stop_signal.send(true);
     shut_down_inference_wrapper_process(&mut process).await;
     let _ = listener_handle.await;
 
     let summary_path = rollout_summary_oneshot_path(
+        &args.mount_dir,
         &args.model_cli_name,
         &args.config_nickname_rollout,
-    )
-    .unwrap_or_else(|err| panic!("failed to resolve rollout summary path: {}", err));
+    );
     if let Some(parent) = std::path::Path::new(&summary_path).parent() {
         std::fs::create_dir_all(parent)
             .unwrap_or_else(|err| panic!("failed to create dir {}: {}", parent.display(), err));
@@ -298,7 +306,7 @@ async fn main() {
     println!("Starting one-shot rollout pipeline...");
     let client = Client::new();
     let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
-        credit_assignment::posterior_hyperparameters_path::posterior_hyperparameters_path(),
+        credit_assignment::directories::POSTERIOR_HYPERPARAMETERS_PATH,
     )
     .unwrap();
     let posterior_calculation_config = PosteriorCalculationConfig {
@@ -308,10 +316,10 @@ async fn main() {
     let model_name = LlmModelName::from_str(&args.model_cli_name, true).unwrap();
 
     let inference_wrapper_log_path = inference_wrapper_log_path(
+        &args.mount_dir,
         &args.model_cli_name,
         &args.config_nickname_rollout,
-    )
-    .unwrap_or_else(|err| panic!("failed to render inference wrapper log path: {}", err));
+    );
     ensure_parent_dir_exists(&inference_wrapper_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare inference wrapper log directory: {}", err));
 
@@ -348,23 +356,19 @@ async fn main() {
     if matches!(args.dataset_split, DatasetSplitEnum::Training) {
         println!("Generating training trajectories from one-shot action logs...");
         let trajectories_dir = training_trajectories_oneshot_path(
+            &args.mount_dir,
             &args.model_cli_name,
             &args.config_nickname_rollout,
-        )
-        .unwrap_or_else(|err| {
-            panic!(
-                "failed to resolve one-shot training trajectories path: {}",
-                err
-            )
-        });
+        );
         let trajectories_msgpack_path = format!("{}/trajectories.msgpack", trajectories_dir);
         let stats_path = training_trajectories_stats_oneshot_path(
+            &args.mount_dir,
             &args.model_cli_name,
             &args.config_nickname_rollout,
-        )
-        .unwrap_or_else(|err| panic!("failed to resolve stats path: {}", err));
+        );
         let config_bundle_path = format!("{}/config_bundle.json", trajectories_dir);
         let action_log_store_path = action_logs_oneshot_path::<Training>(
+            &args.mount_dir,
             &args.model_cli_name,
             &args.config_nickname_rollout,
             args.epoch,

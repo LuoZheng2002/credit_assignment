@@ -3,19 +3,14 @@ use std::{backtrace::Backtrace, path::Path};
 use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
-    direct_tool::{
-        hybrid_dataset::Testing,
-        posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-        rollout::{RolloutProgramConfig, rollout_all},
-        rollout_config::DirectRolloutConfig,
-        tree_action_log::open_action_logs,
-    },
+    hybrid_dataset::Testing,
+    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+    rollout::{RolloutProgramConfig, rollout_all},
+    rollout_config::DirectRolloutConfig,
+    tree_action_log::open_action_logs,
+    directories::{inference_wrapper_log_path, model_parent_dir, test_accuracy_path, tui_log_path},
     fixed_temperatures,
     get_accuracy::{TestAccuracyResult, get_test_accuracies},
-    directories::{
-        inference_wrapper_log_path, model_parent_dir,
-        test_accuracy_path, tui_log_path,
-    },
     json_toml_utils::{read_json, write_json},
     launch_inference_wrapper::{
         best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
@@ -27,6 +22,7 @@ use credit_assignment::{
     },
     utils::configure_mount_dir,
 };
+use ordered_float::NotNan;
 use reqwest::Client;
 use research_utility::progress_tui_logger::ProgressTuiLogger;
 use serde::{Deserialize, Serialize};
@@ -115,12 +111,17 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
         total_epochs: testing_config.total_epochs,
         action_log_store_override_path: None,
         use_tool: testing_config.use_tool,
-        fixed_temperature: fixed_temperatures::validation_temperature(),
+        fixed_temperature: NotNan::new(fixed_temperatures::VALIDATION_TEMPERATURE).unwrap(),
     };
-    let _ = rollout_all::<M, Testing>(program_config).await;
+    let _ = rollout_all::<M, Testing>(&testing_config.mount_dir, program_config).await;
 
-    let _ = open_action_logs::<M, Testing>(&testing_config.config_nickname, testing_config.epoch);
+    let _ = open_action_logs::<M, Testing>(
+        &testing_config.mount_dir,
+        &testing_config.config_nickname,
+        testing_config.epoch,
+    );
     get_test_accuracies::<M, Testing>(
+        &testing_config.mount_dir,
         testing_config.config_nickname.clone(),
         rollout_config.clone(),
         posterior_calculation_config,
@@ -142,10 +143,11 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
 ) -> Result<TestAccuracyResult, String> {
     best_effort_shutdown_stale_inference_wrapper().await;
     let model_parent_dir = model_parent_dir(
+        &testing_config.mount_dir,
         M::CLI_NAME,
         &testing_config.config_nickname,
         testing_config.epoch,
-    )?;
+    );
     let model_path = format!("{}/model", model_parent_dir);
     let (sglang_port, mut process, listener_stop_signal, listener_handle) =
         launch_inference_wrapper_process(
@@ -209,8 +211,9 @@ async fn run_testing_config(
     args: &Args,
     client: Client,
 ) -> Result<(), String> {
-    let posterior_hyperparameters =
-        read_json::<PosteriorHyperparameters>(credit_assignment::posterior_hyperparameters_path::posterior_hyperparameters_path())?;
+    let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
+        credit_assignment::directories::POSTERIOR_HYPERPARAMETERS_PATH,
+    )?;
     let posterior_calculation_config = PosteriorCalculationConfig {
         hyperparameters: posterior_hyperparameters,
     };
@@ -219,12 +222,16 @@ async fn run_testing_config(
         .map_err(|err| err.to_string())?;
     let model_cli_name = model_cli_name_to_string(&model_name);
     configure_mount_dir(&testing_config.mount_dir)?;
-    let inference_wrapper_log_path =
-        inference_wrapper_log_path(&model_cli_name, &testing_config.config_nickname)
-            .map_err(|err| format!("failed to render inference wrapper log path: {}", err))?;
-    let progress_tui_log_path =
-        tui_log_path(&model_cli_name, &testing_config.config_nickname)
-            .map_err(|err| format!("failed to render tui log path: {}", err))?;
+    let inference_wrapper_log_path = inference_wrapper_log_path(
+        &testing_config.mount_dir,
+        &model_cli_name,
+        &testing_config.config_nickname,
+    );
+    let progress_tui_log_path = tui_log_path(
+        &testing_config.mount_dir,
+        &model_cli_name,
+        &testing_config.config_nickname,
+    );
     ensure_parent_dir_exists(&inference_wrapper_log_path)
         .map_err(|err| format!("failed to prepare inference wrapper log directory: {}", err))?;
     ensure_parent_dir_exists(&progress_tui_log_path)
@@ -264,19 +271,11 @@ async fn run_testing_config(
         )?;
 
         let output_path = test_accuracy_path(
+            &testing_config.mount_dir,
             &model_cli_name,
             &testing_config.config_nickname,
             testing_config.epoch,
-        )
-        .map_err(|err| {
-            format!(
-                "failed to render test accuracy path for model_cli_name={}, config_nickname={}, epoch={}: {}",
-                model_cli_name,
-                testing_config.config_nickname,
-                testing_config.epoch,
-                err,
-            )
-        })?;
+        );
         write_json(&output_path, &test_result)?;
         println!("Test accuracy results written to {}", output_path);
         Ok::<(), String>(())

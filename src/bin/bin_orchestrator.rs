@@ -6,11 +6,9 @@ use std::{collections::BTreeMap, path::Path};
 
 use credit_assignment::{
     check_python_env::check_sympy_availability,
-    direct_tool::{
-        hybrid_dataset::{Training, Validation},
-        posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-        rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
-    },
+    hybrid_dataset::{Training, Validation},
+    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+    rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
     directories::{inference_wrapper_log_path, training_wrapper_log_path, tui_log_path},
     json_toml_utils::{read_json, read_toml},
     llm_model::{
@@ -20,7 +18,7 @@ use credit_assignment::{
     orchestrator::{OrchestrationProgress, OrchestrationStatus, Orchestrator},
     python_training_config::PythonTrainingConfigCommon,
     utils::configure_mount_dir,
-    validation_config_path::VALIDATION_ROLLOUT_CONFIG_PATH,
+    directories::VALIDATION_ROLLOUT_CONFIG_PATH,
 };
 use research_utility::progress_tui_logger::{
     ProgressTuiLogger, log_error, log_exit_hint, log_info, log_window_name,
@@ -128,12 +126,11 @@ async fn main() {
     );
     configure_mount_dir(&mount_dir)
         .unwrap_or_else(|err| panic!("failed to configure mount dir: {}", err));
-    let inference_wrapper_log_path = inference_wrapper_log_path(&model_cli_name, &config_nickname)
-        .unwrap_or_else(|err| panic!("failed to render inference wrapper log path: {}", err));
-    let training_wrapper_log_path = training_wrapper_log_path(&model_cli_name, &config_nickname)
-        .unwrap_or_else(|err| panic!("failed to render training wrapper log path: {}", err));
-    let tui_log_path = tui_log_path(&model_cli_name, &config_nickname)
-        .unwrap_or_else(|err| panic!("failed to render tui log path: {}", err));
+    let inference_wrapper_log_path =
+        inference_wrapper_log_path(&mount_dir, &model_cli_name, &config_nickname);
+    let training_wrapper_log_path =
+        training_wrapper_log_path(&mount_dir, &model_cli_name, &config_nickname);
+    let tui_log_path = tui_log_path(&mount_dir, &model_cli_name, &config_nickname);
     ensure_parent_dir_exists(&inference_wrapper_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare inference wrapper log directory: {}", err));
     ensure_parent_dir_exists(&training_wrapper_log_path)
@@ -168,7 +165,7 @@ async fn main() {
     let training_set_rollout_config: DirectRolloutConfig<Training> =
         read_json(training_rollout_config_path).unwrap();
     let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
-        credit_assignment::posterior_hyperparameters_path::posterior_hyperparameters_path(),
+        credit_assignment::directories::POSTERIOR_HYPERPARAMETERS_PATH,
     )
     .unwrap();
     let posterior_calculation_config = PosteriorCalculationConfig {
@@ -180,7 +177,7 @@ async fn main() {
     let client = reqwest::Client::new();
     let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
     let progress_save_path =
-        Orchestrator::progress_save_path(&model_name.cli_name(), &config_nickname);
+        Orchestrator::progress_save_path(&mount_dir, &model_name.cli_name(), &config_nickname);
     let progress = match read_json::<OrchestrationProgress>(&progress_save_path) {
         Ok(progress) => {
             log_info(format!(
@@ -229,6 +226,7 @@ async fn main() {
         progress,
         num_gpus,
         use_tool,
+        mount_dir,
     };
 
     let result = match model_name {

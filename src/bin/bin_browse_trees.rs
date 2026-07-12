@@ -8,7 +8,7 @@ use std::{
 
 use clap::{Parser, ValueEnum};
 use credit_assignment::browse_trees;
-use credit_assignment::direct_tool::posterior_calculation_config::PosteriorHyperparameters;
+use credit_assignment::posterior_calculation_config::PosteriorHyperparameters;
 use credit_assignment::json_toml_utils::read_json;
 use crossterm::cursor::Show;
 use crossterm::execute;

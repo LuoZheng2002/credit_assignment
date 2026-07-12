@@ -1,12 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    direct_tool::{
-        hybrid_dataset::DatasetSplit,
-        posterior_calculation_config::PosteriorHyperparameters,
-        tree::{DirectTree, SegmentId},
-        tree_posterior::Posterior,
-    },
+    hybrid_dataset::DatasetSplit,
+    posterior_calculation_config::PosteriorHyperparameters,
+    tree::{DirectTree, SegmentId},
+    tree_posterior::Posterior,
     llm_model::LlmModelMarker,
 };
 

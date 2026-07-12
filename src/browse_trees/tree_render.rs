@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use crate::direct_tool::hybrid_dataset::{DatasetSplit, QuestionFlatId};
-use crate::direct_tool::{
+use crate::hybrid_dataset::{DatasetSplit, QuestionFlatId};
+use crate::{
     posterior_calculation_config::PosteriorHyperparameters,
     tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
     tree_action_log::DirectTreeActionLog,

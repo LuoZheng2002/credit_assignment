@@ -2,12 +2,10 @@ use std::backtrace::Backtrace;
 
 use clap::Parser;
 use credit_assignment::{
-    direct_tool::{
-        hybrid_dataset::Training,
-        posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-        rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
-        training_set::generate_training_trajectories,
-    },
+    hybrid_dataset::Training,
+    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+    rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+    training_set::generate_training_trajectories,
     json_toml_utils::read_json,
     llm_model::{
         Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
@@ -63,8 +61,10 @@ async fn main() {
         )
     });
     let rollout_config: DirectRolloutConfig<Training> = read_json(rollout_config_path).unwrap();
-    let posterior_hyperparameters =
-        read_json::<PosteriorHyperparameters>(credit_assignment::posterior_hyperparameters_path::posterior_hyperparameters_path()).unwrap();
+    let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
+        credit_assignment::directories::POSTERIOR_HYPERPARAMETERS_PATH,
+    )
+    .unwrap();
     let posterior_calculation_config = PosteriorCalculationConfig {
         hyperparameters: posterior_hyperparameters,
     };
@@ -112,6 +112,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         use_tool,
     } = run_program_args;
     generate_training_trajectories::<M>(
+        "results",
         &config_nickname,
         rollout_config,
         posterior_calculation_config,

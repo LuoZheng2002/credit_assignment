@@ -7,10 +7,8 @@ use std::{
 
 use crate::{
     constants::sglang_context_length,
-    direct_tool::{
-        hybrid_dataset::DatasetSplit,
-        tree::{DirectTree, SegmentContent, SegmentId},
-    },
+    hybrid_dataset::DatasetSplit,
+    tree::{DirectTree, SegmentContent, SegmentId},
     llm_model::{LlmModelMarker, MyTokenizer, TokenArrayWithLogprob},
     token_array::TokenArray,
     tool_call_python::extract_python_tool_call,

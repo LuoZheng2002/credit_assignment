@@ -25,22 +25,20 @@ use ordered_float::NotNan;
 
 use crate::{
     atomic_count_guard::AtomicCountGuardRef,
-    direct_tool::tree_action_log::{
+    tree_action_log::{
         ActionLogConfigBundle, ActionLogStore, DirectTreeActionLog, open_action_logs,
     },
-    direct_tool::{
-        hybrid_dataset::{
-            DatasetSplit, HybridDatasetQuestion, QuestionFlatId, open_hybrid_dataset,
-        },
-        posterior_calculation_config::PosteriorCalculationConfig,
-        rollout_config::DirectRolloutConfig,
-        trajectory::{FailureMode, FinalAnswer},
-        tree::{DirectTree, SegmentContent, TreeCorrectness},
-        tree_action::DirectTreeAction,
-        tree_status::{
-            DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus,
-            TrunkSubStatus,
-        },
+    hybrid_dataset::{
+        DatasetSplit, HybridDatasetQuestion, QuestionFlatId, open_hybrid_dataset,
+    },
+    posterior_calculation_config::PosteriorCalculationConfig,
+    rollout_config::DirectRolloutConfig,
+    trajectory::{FailureMode, FinalAnswer},
+    tree::{DirectTree, SegmentContent, TreeCorrectness},
+    tree_action::DirectTreeAction,
+    tree_status::{
+        DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus,
+        TrunkSubStatus,
     },
     llm_model::{InferenceEndpoint, LlmCallable, LlmModelMarker},
     model_answer_judgment_cache::commit_pending_writes_if_any,
@@ -649,6 +647,7 @@ pub struct RolloutExecutionSummary {
 }
 
 pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
+    mount_dir: &str,
     program_config: RolloutProgramConfig<S>,
 ) -> RolloutExecutionSummary {
     let RolloutProgramConfig {
@@ -699,7 +698,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
                 panic!("Failed to open action log store at {override_path}: {e}")
             })
         } else {
-            open_action_logs::<M, S>(&config_nickname, epoch)
+            open_action_logs::<M, S>(mount_dir, &config_nickname, epoch)
         },
     ));
     {

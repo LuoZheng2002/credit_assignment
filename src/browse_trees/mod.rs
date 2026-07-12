@@ -7,12 +7,14 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use ordered_float::NotNan;
+
 use crate::config_paths::{ConfigPaths, config_paths_file_path_from_action_logs_path};
-use crate::direct_tool::hybrid_dataset::{
+use crate::hybrid_dataset::{
     DatasetSplit, DatasetSplitEnum, HybridDatasetStore, QuestionFlatId, Testing, Training,
     Validation, open_hybrid_dataset,
 };
-use crate::direct_tool::{
+use crate::{
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     rollout_config::DirectRolloutConfig,
     tree_action_log::{
@@ -176,7 +178,12 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
                     rollout_config: self.rollout_config.clone(),
                     posterior_calculation_config: self.posterior_calculation_config.clone(),
                     use_tool: self.use_tool,
-                    fixed_temperature: fixed_temperatures::default_temperature_for_split::<S>(),
+                    fixed_temperature: NotNan::new(if S::IS_TRAINING {
+                        fixed_temperatures::TRAINING_TEMPERATURE
+                    } else {
+                        fixed_temperatures::VALIDATION_TEMPERATURE
+                    })
+                    .unwrap(),
                     actions,
                 };
                 let (num_correct, num_leaves, win_rate) =
@@ -1127,17 +1134,15 @@ fn load_action_log_config_bundle<S: DatasetSplit>(
                 ),
             )
         })?;
-    let posterior_hyperparameters =
-        read_json::<PosteriorHyperparameters>(crate::posterior_hyperparameters_path::posterior_hyperparameters_path())
-            .map_err(|err| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "Failed to read posterior hyperparameters file: {}",
-                        err
-                    ),
-                )
-            })?;
+    let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
+        crate::directories::POSTERIOR_HYPERPARAMETERS_PATH,
+    )
+    .map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Failed to read posterior hyperparameters file: {}", err),
+        )
+    })?;
 
     Ok(ActionLogConfigBundle {
         rollout_config,
@@ -1145,7 +1150,12 @@ fn load_action_log_config_bundle<S: DatasetSplit>(
             hyperparameters: posterior_hyperparameters,
         },
         use_tool: false,
-        fixed_temperature: fixed_temperatures::default_temperature_for_split::<S>(),
+        fixed_temperature: NotNan::new(if S::IS_TRAINING {
+            fixed_temperatures::TRAINING_TEMPERATURE
+        } else {
+            fixed_temperatures::VALIDATION_TEMPERATURE
+        })
+        .unwrap(),
     })
 }
 

@@ -3,22 +3,21 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use clap::{ArgAction, Parser, ValueEnum};
+use ordered_float::NotNan;
 use proctitle::set_title;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
 use credit_assignment::{
     check_python_env::check_sympy_availability,
-    direct_tool::{
-        hybrid_dataset::Validation,
-        posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-        rollout::{RolloutProgramConfig, rollout_all},
-        rollout_config::DirectRolloutConfig,
-    },
+    hybrid_dataset::Validation,
+    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+    rollout::{RolloutProgramConfig, rollout_all},
+    rollout_config::DirectRolloutConfig,
     directories::{
         action_logs_oneshot_path, inference_wrapper_log_path, oneshot_model_checkpoint_dir,
         oneshot_model_parent_dir, training_summary_oneshot_parent_dir,
-        training_trajectories_oneshot_path_with_mount, training_wrapper_log_path,
+        training_trajectories_oneshot_path, training_wrapper_log_path,
     },
     fixed_temperatures,
     get_accuracy::get_accuracy_at_path,
@@ -300,6 +299,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     config_nickname_training: &str,
     config_nickname_rollout: &str,
     rollout_mount_dir: &str,
+    mount_dir: &str,
     max_rollout_concurrency: usize,
     validation_rollout_config: DirectRolloutConfig<Validation>,
     posterior_calculation_config: PosteriorCalculationConfig,
@@ -317,17 +317,11 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     let client = Client::new();
 
     // Resolve one-shot paths (use rollout mount dir to find trajectories on the rollout volume)
-    let oneshot_trajectories_dir = training_trajectories_oneshot_path_with_mount(
+    let oneshot_trajectories_dir = training_trajectories_oneshot_path(
+        rollout_mount_dir,
         model_cli_name,
         config_nickname_rollout,
-        rollout_mount_dir,
-    )
-    .unwrap_or_else(|err| {
-        panic!(
-            "failed to resolve one-shot training trajectories path: {}",
-            err
-        )
-    });
+    );
     let oneshot_trajectories_msgpack_path = Path::new(&oneshot_trajectories_dir)
         .join("trajectories.msgpack")
         .to_string_lossy()
@@ -347,13 +341,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     ));
 
     let oneshot_training_summary_parent_dir =
-        training_summary_oneshot_parent_dir(model_cli_name, config_nickname_training)
-            .unwrap_or_else(|err| {
-                panic!(
-                    "failed to resolve one-shot training summary parent dir: {}",
-                    err
-                )
-            });
+        training_summary_oneshot_parent_dir(mount_dir, model_cli_name, config_nickname_training);
     let artifact_root_dir = storage_large_files_dir()
         .unwrap_or_else(|err| panic!("failed to resolve artifact root dir: {}", err));
 
@@ -364,23 +352,14 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     // ================================================================
 
     let shared_checkpoints_parent_dir =
-        oneshot_model_checkpoint_dir(model_cli_name, config_nickname_training, 0).unwrap_or_else(
-            |err| {
-                panic!(
-                    "failed to resolve shared oneshot checkpoints parent dir: {}",
-                    err
-                )
-            },
-        );
+        oneshot_model_checkpoint_dir(mount_dir, model_cli_name, config_nickname_training, 0);
     let oneshot_model_output_root = shared_checkpoints_parent_dir
         .rsplit_once('/')
         .map(|(parent, _)| parent.to_string())
         .unwrap_or_else(|| shared_checkpoints_parent_dir.clone());
 
     let base_model_parent_dir =
-        oneshot_model_parent_dir(model_cli_name, config_nickname_training, 0).unwrap_or_else(
-            |err| panic!("failed to resolve base oneshot model parent dir: {}", err),
-        );
+        oneshot_model_parent_dir(mount_dir, model_cli_name, config_nickname_training, 0);
 
     let mut training_throughputs: BTreeMap<usize, f32> = BTreeMap::new();
     for epoch in 0..num_oneshot_epochs {
@@ -541,14 +520,12 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     } else {
         // Launch inference server ONCE with epoch 0 weights (base model)
         let launch_epoch = 0usize;
-        let launch_model_parent_dir =
-            oneshot_model_parent_dir(model_cli_name, config_nickname_training, launch_epoch)
-                .unwrap_or_else(|err| {
-                    panic!(
-                        "failed to resolve oneshot model parent dir for launch epoch {}: {}",
-                        launch_epoch, err
-                    )
-                });
+        let launch_model_parent_dir = oneshot_model_parent_dir(
+            mount_dir,
+            model_cli_name,
+            config_nickname_training,
+            launch_epoch,
+        );
         let launch_model_path = format!("{}/model", launch_model_parent_dir);
 
         log_info(format!(
@@ -578,14 +555,12 @@ async fn run_oneshot_training<M: LlmModelMarker>(
                 epoch, num_oneshot_epochs
             ));
 
-            let model_parent_dir =
-                oneshot_model_parent_dir(model_cli_name, config_nickname_training, epoch)
-                    .unwrap_or_else(|err| {
-                        panic!(
-                            "failed to resolve oneshot model parent dir for epoch {}: {}",
-                            epoch, err
-                        )
-                    });
+            let model_parent_dir = oneshot_model_parent_dir(
+                mount_dir,
+                model_cli_name,
+                config_nickname_training,
+                epoch,
+            );
             let model_path = format!("{}/model", model_parent_dir);
 
             if epoch > 0 {
@@ -604,6 +579,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
             }
 
             let validation_action_log_path = action_logs_oneshot_path::<Validation>(
+                rollout_mount_dir,
                 model_cli_name,
                 config_nickname_training,
                 epoch,
@@ -627,9 +603,10 @@ async fn run_oneshot_training<M: LlmModelMarker>(
                 total_epochs: num_oneshot_epochs,
                 action_log_store_override_path: Some(validation_action_log_path.clone()),
                 use_tool,
-                fixed_temperature: fixed_temperatures::validation_temperature(),
+                fixed_temperature: NotNan::new(fixed_temperatures::VALIDATION_TEMPERATURE).unwrap(),
             };
-            let validation_summary = rollout_all::<M, Validation>(validation_program_config).await;
+            let validation_summary =
+                rollout_all::<M, Validation>(mount_dir, validation_program_config).await;
             log_info(format!(
                 "Epoch {}: Validation rollout finished ({:.3}s, {} LLM calls)",
                 epoch, validation_summary.elapsed_secs, validation_summary.total_llm_calls,
@@ -797,11 +774,9 @@ async fn main() {
     configure_mount_dir(&mount_dir)
         .unwrap_or_else(|err| panic!("failed to configure mount dir: {}", err));
     let inference_wrapper_log_path =
-        inference_wrapper_log_path(&model_cli_name, &config_nickname_training)
-            .unwrap_or_else(|err| panic!("failed to render inference wrapper log path: {}", err));
+        inference_wrapper_log_path(&mount_dir, &model_cli_name, &config_nickname_training);
     let training_wrapper_log_path =
-        training_wrapper_log_path(&model_cli_name, &config_nickname_training)
-            .unwrap_or_else(|err| panic!("failed to render training wrapper log path: {}", err));
+        training_wrapper_log_path(&mount_dir, &model_cli_name, &config_nickname_training);
     ensure_parent_dir_exists(&inference_wrapper_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare inference wrapper log directory: {}", err));
     ensure_parent_dir_exists(&training_wrapper_log_path)
@@ -821,10 +796,10 @@ async fn main() {
         ProgressTuiLogger::initialize(tui_log_path).await.unwrap();
     }
     let validation_rollout_config: DirectRolloutConfig<Validation> =
-        read_json(credit_assignment::validation_config_path::VALIDATION_ROLLOUT_CONFIG_PATH)
+        read_json(credit_assignment::directories::VALIDATION_ROLLOUT_CONFIG_PATH)
             .unwrap();
     let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
-        credit_assignment::posterior_hyperparameters_path::posterior_hyperparameters_path(),
+        credit_assignment::directories::POSTERIOR_HYPERPARAMETERS_PATH,
     )
     .unwrap();
     let posterior_calculation_config = PosteriorCalculationConfig {
@@ -841,6 +816,7 @@ async fn main() {
                 &config_nickname_training,
                 &config_nickname_rollout,
                 &rollout_mount_dir,
+                &mount_dir,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,
@@ -863,6 +839,7 @@ async fn main() {
                 &config_nickname_training,
                 &config_nickname_rollout,
                 &rollout_mount_dir,
+                &mount_dir,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,
@@ -885,6 +862,7 @@ async fn main() {
                 &config_nickname_training,
                 &config_nickname_rollout,
                 &rollout_mount_dir,
+                &mount_dir,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,
@@ -907,6 +885,7 @@ async fn main() {
                 &config_nickname_training,
                 &config_nickname_rollout,
                 &rollout_mount_dir,
+                &mount_dir,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,
@@ -929,6 +908,7 @@ async fn main() {
                 &config_nickname_training,
                 &config_nickname_rollout,
                 &rollout_mount_dir,
+                &mount_dir,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,
@@ -951,6 +931,7 @@ async fn main() {
                 &config_nickname_training,
                 &config_nickname_rollout,
                 &rollout_mount_dir,
+                &mount_dir,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,
@@ -973,6 +954,7 @@ async fn main() {
                 &config_nickname_training,
                 &config_nickname_rollout,
                 &rollout_mount_dir,
+                &mount_dir,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,
@@ -995,6 +977,7 @@ async fn main() {
                 &config_nickname_training,
                 &config_nickname_rollout,
                 &rollout_mount_dir,
+                &mount_dir,
                 max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,

@@ -14,12 +14,10 @@ use std::{
 use ordered_float::NotNan;
 
 use crate::{
-    direct_tool::{
-        hybrid_dataset::{DatasetSplit, HybridDatasetQuestion, QuestionFlatId},
-        posterior_calculation_config::PosteriorCalculationConfig,
-        rollout_config::DirectRolloutConfig,
-        tree_action::DirectTreeAction,
-    },
+    hybrid_dataset::{DatasetSplit, HybridDatasetQuestion, QuestionFlatId},
+    posterior_calculation_config::PosteriorCalculationConfig,
+    rollout_config::DirectRolloutConfig,
+    tree_action::DirectTreeAction,
     directories::action_logs_path,
     json_toml_utils::write_json,
     llm_model::LlmModelMarker,
@@ -60,12 +58,7 @@ pub struct ActionLogConfigBundle<S: DatasetSplit> {
     pub rollout_config: DirectRolloutConfig<S>,
     pub posterior_calculation_config: PosteriorCalculationConfig,
     pub use_tool: bool,
-    #[serde(default = "default_fixed_temperature")]
     pub fixed_temperature: NotNan<f32>,
-}
-
-fn default_fixed_temperature() -> NotNan<f32> {
-    NotNan::new(0.0).unwrap()
 }
 
 pub struct ActionLogStore<M: LlmModelMarker, S: DatasetSplit> {
@@ -1432,25 +1425,28 @@ fn extsort_storage_dir(base_path: &Path) -> PathBuf {
 }
 
 pub fn action_logs_file_path<M: LlmModelMarker, S: DatasetSplit>(
+    mount_dir: &str,
     config_nickname: &str,
     epoch: usize,
 ) -> String {
-    action_logs_path::<S>(M::CLI_NAME, config_nickname, epoch)
+    action_logs_path::<S>(mount_dir, M::CLI_NAME, config_nickname, epoch)
         .unwrap_or_else(|err| panic!("Failed to resolve action logs path: {}", err))
 }
 
 pub fn open_action_logs<M: LlmModelMarker, S: DatasetSplit>(
+    mount_dir: &str,
     config_nickname: &str,
     epoch: usize,
 ) -> ActionLogStore<M, S> {
     ActionLogStore::<M, S>::initialize_if_missing(action_logs_file_path::<M, S>(
+        mount_dir,
         config_nickname,
         epoch,
     ))
     .unwrap_or_else(|e| {
         panic!(
             "Failed to open direct action log store at {}: {}",
-            action_logs_file_path::<M, S>(config_nickname, epoch),
+            action_logs_file_path::<M, S>(mount_dir, config_nickname, epoch),
             e
         )
     })

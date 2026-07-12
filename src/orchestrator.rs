@@ -3,26 +3,23 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path, time::Instant};
 use tokio::{process::Child, sync::watch};
 
+use ordered_float::NotNan;
+
 use crate::{
     config_paths::{ConfigPaths, config_paths_file_path, derive_testing_rollout_config_path},
-    direct_tool::{
-        hybrid_dataset::{Training, Validation},
-        posterior_calculation_config::PosteriorCalculationConfig,
-        rollout::{RolloutProgramConfig, rollout_all},
-        rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
-        training_set::{
-            generate_training_trajectories, open_training_trajectories,
-            training_trajectories_file_path, training_trajectories_msgpack_file_path,
-            training_trajectories_stats_file_path,
-        },
-        tree_action_log::action_logs_file_path,
+    hybrid_dataset::{Training, Validation},
+    posterior_calculation_config::PosteriorCalculationConfig,
+    rollout::{RolloutProgramConfig, rollout_all},
+    rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+    training_set::{
+        generate_training_trajectories, open_training_trajectories,
+        training_trajectories_file_path, training_trajectories_msgpack_file_path,
+        training_trajectories_stats_file_path,
     },
+    tree_action_log::action_logs_file_path,
+    directories::{model_checkpoint_dir, model_metrics_path, model_parent_dir, progress_save_path},
     fixed_temperatures,
     get_accuracy::get_accuracy,
-    directories::{
-        model_checkpoint_dir, model_metrics_path,
-        model_parent_dir, progress_save_path,
-    },
     json_toml_utils::write_json,
     launch_inference_wrapper::{
         best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
@@ -63,6 +60,7 @@ pub struct Orchestrator {
     pub num_iterations_limit: usize,
     pub num_gpus: usize,
     pub use_tool: bool,
+    pub mount_dir: String,
 }
 
 pub struct InferenceServerHandle {
@@ -163,13 +161,12 @@ impl Orchestrator {
         }
     }
 
-    pub fn progress_save_path(model_cli_name: &str, config_nickname: &str) -> String {
-        progress_save_path(model_cli_name, config_nickname).unwrap_or_else(|err| {
-            panic!(
-                "failed to render progress save path for model_cli_name={}, config_nickname={}: {}",
-                model_cli_name, config_nickname, err
-            )
-        })
+    pub fn progress_save_path(
+        mount_dir: &str,
+        model_cli_name: &str,
+        config_nickname: &str,
+    ) -> String {
+        progress_save_path(mount_dir, model_cli_name, config_nickname)
     }
 
     pub fn write_config_paths_file(
@@ -288,8 +285,11 @@ impl Orchestrator {
     }
 
     fn save_progress<M: LlmModelMarker>(&self) {
-        let progress_save_path =
-            Orchestrator::progress_save_path(M::CLI_NAME.into(), &self.config_nickname);
+        let progress_save_path = Orchestrator::progress_save_path(
+            &self.mount_dir,
+            M::CLI_NAME.into(),
+            &self.config_nickname,
+        );
         write_json(&progress_save_path, &self.progress).unwrap();
     }
 
@@ -309,6 +309,7 @@ impl Orchestrator {
     ) -> Result<(), String> {
         log_info("Reading and logging validation accuracy...");
         let accuracy_stats = get_accuracy::<M, Validation>(
+            &self.mount_dir,
             self.config_nickname.clone(),
             self.validation_rollout_config.clone(),
             self.posterior_calculation_config.clone(),
@@ -354,6 +355,7 @@ impl Orchestrator {
     ) -> Result<(), String> {
         log_info("Reading and logging training rollout accuracy...");
         let accuracy_stats = get_accuracy::<M, Training>(
+            &self.mount_dir,
             self.config_nickname.clone(),
             self.training_set_rollout_config.clone(),
             self.posterior_calculation_config.clone(),
@@ -457,7 +459,7 @@ impl Orchestrator {
             self.inference_server_handle.as_ref().unwrap().epoch
         );
         let model_parent_dir =
-            model_parent_dir(M::CLI_NAME, &self.config_nickname, epoch)?;
+            model_parent_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
         let model_path = format!("{}/model", model_parent_dir);
 
         log_info(format!(
@@ -582,9 +584,10 @@ impl Orchestrator {
             total_epochs: self.num_total_epochs,
             action_log_store_override_path: None,
             use_tool: self.use_tool,
-            fixed_temperature: fixed_temperatures::validation_temperature(),
+            fixed_temperature: NotNan::new(fixed_temperatures::VALIDATION_TEMPERATURE).unwrap(),
         };
-        let rollout_summary = rollout_all::<M, Validation>(validation_rollout_program_config).await;
+        let rollout_summary =
+            rollout_all::<M, Validation>(&self.mount_dir, validation_rollout_program_config).await;
         self.progress
             .validation_rollout_llm_call_throughputs
             .insert(epoch, rollout_summary.llm_call_throughput_per_sec);
@@ -630,9 +633,10 @@ impl Orchestrator {
             total_epochs: self.num_total_epochs,
             action_log_store_override_path: None,
             use_tool: self.use_tool,
-            fixed_temperature: fixed_temperatures::training_temperature(),
+            fixed_temperature: NotNan::new(fixed_temperatures::TRAINING_TEMPERATURE).unwrap(),
         };
-        let rollout_summary = rollout_all::<M, Training>(training_set_rollout_program_config).await;
+        let rollout_summary =
+            rollout_all::<M, Training>(&self.mount_dir, training_set_rollout_program_config).await;
         self.progress
             .training_rollout_llm_call_throughputs
             .insert(epoch, rollout_summary.llm_call_throughput_per_sec);
@@ -661,9 +665,9 @@ impl Orchestrator {
         epoch: usize,
     ) -> Result<(), String> {
         let checkpoint_parent_dir =
-            model_checkpoint_dir(M::CLI_NAME, &self.config_nickname, epoch)?;
+            model_checkpoint_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
         let metrics_path =
-            model_metrics_path(M::CLI_NAME, &self.config_nickname, epoch)?;
+            model_metrics_path(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
         let checkpoints_dir = format!("{}/checkpoints", checkpoint_parent_dir);
         let latest_checkpoint_path = format!("{}/latest_checkpoint.txt", checkpoint_parent_dir);
 
@@ -725,7 +729,7 @@ impl Orchestrator {
         epoch: usize,
     ) -> Result<(), String> {
         let checkpoint_parent_dir =
-            model_checkpoint_dir(M::CLI_NAME, &self.config_nickname, epoch)?;
+            model_checkpoint_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
         let checkpoints_dir = format!("{}/checkpoints", checkpoint_parent_dir);
         let latest_checkpoint_path = format!("{}/latest_checkpoint.txt", checkpoint_parent_dir);
 
@@ -771,12 +775,12 @@ impl Orchestrator {
         }
 
         self.delete_file_if_exists(
-            &action_logs_file_path::<M, Training>(&self.config_nickname, epoch),
+            &action_logs_file_path::<M, Training>(&self.mount_dir, &self.config_nickname, epoch),
             &format!("training rollout action logs for epoch {}", epoch),
         )?;
 
         self.delete_file_if_exists(
-            &action_logs_file_path::<M, Validation>(&self.config_nickname, epoch),
+            &action_logs_file_path::<M, Validation>(&self.mount_dir, &self.config_nickname, epoch),
             &format!("validation rollout action logs for epoch {}", epoch),
         )?;
 
@@ -797,11 +801,19 @@ impl Orchestrator {
 
         for epoch in 1..current_epoch {
             self.delete_dir_if_exists(
-                &training_trajectories_file_path::<M>(&self.config_nickname, epoch),
+                &training_trajectories_file_path::<M>(
+                    &self.mount_dir,
+                    &self.config_nickname,
+                    epoch,
+                ),
                 &format!("training trajectories directory for epoch {}", epoch),
             )?;
             self.delete_file_if_exists(
-                &training_trajectories_stats_file_path::<M>(&self.config_nickname, epoch),
+                &training_trajectories_stats_file_path::<M>(
+                    &self.mount_dir,
+                    &self.config_nickname,
+                    epoch,
+                ),
                 &format!("training trajectories stats for epoch {}", epoch),
             )?;
         }
@@ -852,7 +864,7 @@ impl Orchestrator {
         }
 
         let model_parent_dir =
-            model_parent_dir(M::CLI_NAME, &self.config_nickname, epoch)?;
+            model_parent_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
         self.delete_dir_if_exists(
             &model_parent_dir,
             &format!("model parent directory for epoch {}", epoch),
@@ -892,7 +904,7 @@ impl Orchestrator {
                 continue;
             }
             let model_parent_dir =
-                model_parent_dir(M::CLI_NAME, &self.config_nickname, epoch)?;
+                model_parent_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
             self.delete_dir_if_exists(
                 &model_parent_dir,
                 &format!(
@@ -925,6 +937,7 @@ impl Orchestrator {
     async fn generate_training_set<M: LlmModelMarker>(&self, epoch: usize) {
         log_info("Generating training set");
         generate_training_trajectories::<M>(
+            &self.mount_dir,
             &self.config_nickname,
             self.training_set_rollout_config.clone(),
             self.posterior_calculation_config.clone(),
@@ -944,17 +957,24 @@ impl Orchestrator {
             self.inference_server_handle.is_some()
         ));
         let training_trajectory_store =
-            open_training_trajectories::<M>(&self.config_nickname, epoch);
+            open_training_trajectories::<M>(&self.mount_dir, &self.config_nickname, epoch);
         let num_training_samples = training_trajectory_store.len();
-        let training_trajectory_sqlite_path =
-            training_trajectories_msgpack_file_path::<M>(&self.config_nickname, epoch);
+        let training_trajectory_sqlite_path = training_trajectories_msgpack_file_path::<M>(
+            &self.mount_dir,
+            &self.config_nickname,
+            epoch,
+        );
         let artifact_root_dir = storage_large_files_dir()?;
         let model_parent_dir =
-            model_parent_dir(M::CLI_NAME, &self.config_nickname, epoch)?;
+            model_parent_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
         let checkpoints_parent_dir =
-            model_checkpoint_dir(M::CLI_NAME, &self.config_nickname, epoch)?;
-        let final_model_output_parent_dir =
-            model_checkpoint_dir(M::CLI_NAME, &self.config_nickname, epoch + 1)?;
+            model_checkpoint_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
+        let final_model_output_parent_dir = model_checkpoint_dir(
+            &self.mount_dir,
+            M::CLI_NAME,
+            &self.config_nickname,
+            epoch + 1,
+        );
         let training_config = PythonTrainingConfig {
             common: self.training_config_common.clone(),
             training_time: self.training_time,

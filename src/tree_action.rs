@@ -1,11 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    direct_tool::{
-        trajectory::FinalAnswer,
-        tree::{ContentIndex, SegmentContent, SegmentId},
-        tree_spontaneous_branching::TokenPositionInSegment,
-    },
+    trajectory::FinalAnswer,
+    tree::{ContentIndex, SegmentContent, SegmentId},
+    tree_spontaneous_branching::TokenPositionInSegment,
     judge_correctness::CorrectnessJudgment,
 };
 

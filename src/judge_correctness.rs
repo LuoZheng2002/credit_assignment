@@ -6,7 +6,7 @@ use tokio::time::{Duration, sleep};
 
 use crate::{
     atomic_count_guard::AtomicCountGuardRef,
-    direct_tool::{rollout::RolloutStats, trajectory::FinalAnswer},
+    {rollout::RolloutStats, trajectory::FinalAnswer},
     model_answer_judgment_cache::{get_cached_judgment, store_cached_judgment},
 };
 
