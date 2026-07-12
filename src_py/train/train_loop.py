@@ -651,10 +651,20 @@ def _flush_partial_gradients(
     lr_min_scale: float,
     lr_schedule: str,
     lr_total_steps: int,
+    is_distributed: bool,
 ) -> tuple[int, int, float | None, float]:
+    current_lr = float(optimizer.param_groups[0]["lr"])
     if accumulation_step <= 0:
-        current_lr = float(optimizer.param_groups[0]["lr"])
         return accumulation_step, global_step, None, current_lr
+    if is_distributed:
+        optimizer.zero_grad(set_to_none=True)
+        if _is_primary_rank():
+            _tui_warning(
+                "discarding_partial_gradients=1 "
+                "reason=distributed_unsynced_final_microbatch "
+                f"accumulation_step={accumulation_step} global_step={global_step}"
+            )
+        return 0, global_step, None, current_lr
     clipped_grad_norm = _maybe_clip_gradients(model=model, max_grad_norm=max_grad_norm)
     _assert_pre_step_finite(model, optimizer, clipped_grad_norm)
     optimizer.step()
@@ -1829,6 +1839,7 @@ def _run_unified_loop(
             lr_min_scale=lr_min_scale,
             lr_schedule=lr_schedule,
             lr_total_steps=lr_total_steps,
+            is_distributed=is_distributed,
         )
     )
     if _is_primary_rank() and clipped_grad_norm is not None:

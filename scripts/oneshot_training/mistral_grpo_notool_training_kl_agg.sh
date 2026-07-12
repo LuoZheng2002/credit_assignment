@@ -11,16 +11,16 @@ set -euo pipefail
 #      SGLang endpoint is needed.
 
 uv run -m src_py.modal.launch_modal_oneshot_training \
-    --model-cli-name qwen25 \
+    --model-cli-name mistral \
     --max-rollout-concurrency 300 \
-    --config-nickname-training grpo_notool_training_kl_ema \
+    --config-nickname-training grpo_notool_training_kl_agg \
     --config-nickname-rollout grpo_notool_rollout \
     --validation-rollout-config-path config/rollout_config_validation_notool.json \
     --posterior-hyperparameters-path config/posterior_hyperparameters.json \
     --num-oneshot-epochs 20 \
     --num-iterations-limit 3 \
-    --training-config-common-path config/training/common_fsdp_kl_ema.toml \
-    --oneshot-per-epoch-training-time 600 \
+    --training-config-common-path config/training/common_fsdp_kl_agg.toml \
+    --oneshot-per-epoch-training-time 720 \
     --validation-rollout-time-limit-secs 1200 \
     --max-python-processes 2 \
     --num-gpus 2 \
@@ -28,5 +28,5 @@ uv run -m src_py.modal.launch_modal_oneshot_training \
     --mount-dir "/volume" \
     --rollout-mount-dir "/rollout_volume" \
     --adam-fp32 false \
-    --modal-time-limit-hrs 6 \
+    --modal-time-limit-hrs 7 \
     --ui true

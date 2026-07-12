@@ -11,6 +11,7 @@ from src_py.train.train_loop import (
     TrainingLoopClock,
     _assert_pre_step_finite,
     _extract_nonfinite_trace_suffix,
+    _flush_partial_gradients,
     _plan_distributed_step_control,
     trace_first_nonfinite_backward_signal,
 )
@@ -270,6 +271,42 @@ class TestTrainLoopNonfinite(unittest.TestCase):
         self.assertEqual(9, control.global_sample_cursor)
         self.assertEqual(1, control.iteration_index)
         self.assertEqual(adaptive_state, control.adaptive_state)
+
+    def test_flush_partial_gradients_discards_distributed_unsynced_microbatch(
+        self,
+    ) -> None:
+        model = torch.nn.Linear(3, 2)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+        model.weight.grad = torch.ones_like(model.weight)
+        model.bias.grad = torch.ones_like(model.bias)
+        before_weight = model.weight.detach().clone()
+        before_bias = model.bias.detach().clone()
+
+        accumulation_step, global_step, clipped_grad_norm, current_lr = (
+            _flush_partial_gradients(
+                model=model,
+                optimizer=optimizer,
+                accumulation_step=1,
+                global_step=7,
+                max_grad_norm=1.0,
+                base_learning_rate=1e-3,
+                lr_warmup_steps=0,
+                lr_min_scale=0.1,
+                lr_schedule="cosine",
+                lr_total_steps=100,
+                is_distributed=True,
+            )
+        )
+
+        self.assertEqual(0, accumulation_step)
+        self.assertEqual(7, global_step)
+        self.assertIsNone(clipped_grad_norm)
+        self.assertAlmostEqual(1e-3, current_lr)
+        self.assertTrue(torch.allclose(before_weight, model.weight.detach()))
+        self.assertTrue(torch.allclose(before_bias, model.bias.detach()))
+        self.assertIsNone(model.weight.grad)
+        self.assertIsNone(model.bias.grad)
 
 
 if __name__ == "__main__":

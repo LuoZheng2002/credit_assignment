@@ -1,26 +1,86 @@
-Loaded progress from file: /volume/small_files/qwen2.5-7b/grpo_notool/orchestration_progress.json. Progress: OrchestrationProgress { status: WorkingOnTraining, epoch: 0, validation_accuracies: {0: (0.771, 0.554, 0.81, 0.949)}, training_rollout_accuracies: {0: (0.72649586, 0.5826335, 0.65075433, 0.9457746)}, validation_rollout_llm_call_throughputs: {0: 11.67868}, training_rollout_llm_call_throughputs: {0: 13.718076}, training_throughputs: {} }
-Entering training stage for epoch 0. About to enforce inference-server shutdown.
-ensure_inference_server_shut_down: no inference server handle present; checking for stale local sglang process on configured port
-Inference wrapper stale-shutdown check: no listener on configured port 30000, nothing to clean up
-Inference-server shutdown enforcement finished for epoch 0. Starting training.
-Start training model.
-train_model called for epoch 0 with in-memory inference_server_handle_present=false
+INFO: One-shot training will use num_gpus=2
+Using pre-generated training trajectories at /rollout_volume/medium_files/qwen25/grpo_notool_rollout/training_trajectories/trajectories.msgpack
+Wrote oneshot run manifest to /volume/small_files/qwen25/grpo_notool_training_kl_ema/oneshot_run_manifest.json
 Training wrapper process initialized
 Training wrapper started
-Training wrapper config: model_cli_name=qwen2.5-7b config_nickname=grpo_notool epoch=0 hf_model_name=Qwen/Qwen2.5-7B-Instruct trajectory_sqlite_path=/volume/medium_files/qwen2.5-7b/grpo_notool/epoch_0/training_trajectories_7221044a.sqlite
-Training checkpoints directory: /volume/large_files/qwen2.5-7b/grpo_notool/epoch_0/checkpoints
-Training next model directory: /volume/large_files/qwen2.5-7b/grpo_notool/epoch_1/model
-Training checkpoints will be written under /volume/large_files/qwen2.5-7b/grpo_notool/epoch_0
-Training subprocess started (pid=7375)
-loading_model=1 model_parent_dir=/volume/large_files/qwen2.5-7b
-start_training=1 training_plan=ddp world_size=1 training_time=600.0s model_path=/__modal/volumes/vo-CxOuAIQXCQGe7a1JeVFyEx/large_files/qwen2.5-7b/model
-adaptive_batch_cap=1 train_max_batch_size_env=unset
+Training wrapper config: model_cli_name=qwen25 config_nickname=grpo_notool_training_kl_ema epoch=0 hf_model_name=Qwen/Qwen2.5-7B-Instruct trajectory_sqlite_path=/rollout_volume/medium_files/qwen25/grpo_notool_rollout/training_trajectories/trajectories.msgpack
+Training checkpoints directory: /volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_0/checkpoints
+Training next model directory: /volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_0/model
+Training checkpoints will be written under /volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_0
+Training subprocess started (pid=8047)
+loading_model=1 model_parent_dir=/volume/large_files/qwen25
+start_training=1 training_plan=fsdp world_size=2 training_time=300.0s model_path=/__modal/volumes/vo-lY5mNtRyRgnfzNGMFcpbxV/large_files/qwen25/model
+adaptive_batch_cap=1 train_max_batch_size_env=1
+fsdp_fixed_microbatch=1 next_batch_size_cap=1
 adaptive_batch_wrap_reset=1 train_reset_batch_size_on_wrap=1
-optimization_stability=1 max_grad_norm=1.0000 lr_warmup_micro_batches=100 lr_warmup_steps=3 grad_accum_steps=32 lr_min_scale=0.1000
-rank=0 attention_backend=sdpa
-loading_resume_checkpoint=0 starting_fresh=1
-training_set_advantage_stats=1 samples_available=281 max_average_absolute_advantage=2.639980 min_average_absolute_advantage=1.028773 median_average_absolute_advantage=1.454903
+optimization_stability=1 max_grad_norm=1.0000 lr_warmup_micro_batches=100 lr_warmup_steps=3 grad_accum_steps=32 lr_min_scale=0.1000 lr_schedule=cosine lr_total_steps=0
+optimizer_config=1 adam_beta1=0.9000 adam_beta2=0.9500 
+rank=1 attention_backend=kernels-community/flash-attn2
+fsdp_auto_wrap=1 policy=transformer_auto_wrap_policy layer_classes=Qwen2DecoderLayer
+rank=0 attention_backend=kernels-community/flash-attn2
+fsdp_auto_wrap=1 policy=transformer_auto_wrap_policy layer_classes=Qwen2DecoderLayer
+auxiliary_regularization=1 kl_enabled=1 ema_enabled=1 kl_penalty_coefficient=0.0400 ema_decay=0.9920
+loading_resume_checkpoint=0 oneshot_resume_disabled=1
+oneshot_epoch=0/5 output_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_1 is_final=False
+lr_schedule_config=1 lr_schedule=cosine lr_warmup_steps=3 lr_total_steps=7969 lr_min_scale=0.1000
+adaptive_batch_cap_active=1 max_batch_size=1 sample_count=85012
+training_set_advantage_stats=1 samples_available=85012 max_average_absolute_advantage=2.643077 min_average_absolute_advantage=0.227308 median_average_absolute_advantage=0.725427
 tokenizer special tokens pad_token_id=151643 eos_token_id=151645 bos_token_id=-1
-rank=0 nonfinite=1 nonfinite_tensor=gradients nonfinite_nan_count=6296188160 nonfinite_inf_count=0 batch_index=242 batch_token_length=576 next_batch_size=1 sample_index=242 nonfinite_backward_trace=1 status=first_nonfinite_backward_signal module_name=model.layers.27.self_attn.q_proj module_type=Linear module_grad_input=path=grad_input[0] shape=2x576x3584 dtype=torch.bfloat16 nan_count=4128768 inf_count=0 module_grad_output=path=grad_output[0] shape=2x576x3584 dtype=torch.bfloat16 nan_count=579968 inf_count=0 parameter_name=model.layers.27.self_attn.q_proj.bias parameter_grad=path=grad shape=3584 dtype=torch.bfloat16 nan_count=768 inf_count=0 input_ids_shape=2x576 attention_mask_shape=2x576 labels_shape=2x576 advantages_shape=2x576
-Training failed: torchrun exited with code 1
-Orchestrator exits with error: training wrapper process exited with status exit status: 1; inspect log at /volume/small_files/qwen2.5-7b/grpo_notool/training_wrapper.txt
+preparing_final_output_model=1 output_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_1
+writing_final_output_model=1 output_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_1/model
+written_final_output_model=1 output_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_1/model
+final_model_saved=1 final_model_output_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_1
+training_summary_written=1 training_summary_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_1
+oneshot_epoch=1/5 output_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_2 is_final=False
+lr_schedule_config=1 lr_schedule=cosine lr_warmup_steps=3 lr_total_steps=7969 lr_min_scale=0.1000
+adaptive_batch_cap_active=1 max_batch_size=1 sample_count=85012
+training_set_advantage_stats=1 samples_available=85012 max_average_absolute_advantage=2.643077 min_average_absolute_advantage=0.227308 median_average_absolute_advantage=0.725427
+tokenizer special tokens pad_token_id=151643 eos_token_id=151645 bos_token_id=-1
+preparing_final_output_model=1 output_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_2
+writing_final_output_model=1 output_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_2/model
+written_final_output_model=1 output_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_2/model
+final_model_saved=1 final_model_output_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_2
+training_summary_written=1 training_summary_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_2
+oneshot_epoch=2/5 output_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_3 is_final=False
+lr_schedule_config=1 lr_schedule=cosine lr_warmup_steps=3 lr_total_steps=7969 lr_min_scale=0.1000
+adaptive_batch_cap_active=1 max_batch_size=1 sample_count=85012
+training_set_advantage_stats=1 samples_available=85012 max_average_absolute_advantage=2.643077 min_average_absolute_advantage=0.227308 median_average_absolute_advantage=0.725427
+tokenizer special tokens pad_token_id=151643 eos_token_id=151645 bos_token_id=-1
+preparing_final_output_model=1 output_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_3
+writing_final_output_model=1 output_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_3/model
+written_final_output_model=1 output_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_3/model
+final_model_saved=1 final_model_output_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_3
+training_summary_written=1 training_summary_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_3
+oneshot_epoch=3/5 output_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_4 is_final=False
+lr_schedule_config=1 lr_schedule=cosine lr_warmup_steps=3 lr_total_steps=7969 lr_min_scale=0.1000
+adaptive_batch_cap_active=1 max_batch_size=1 sample_count=85012
+training_set_advantage_stats=1 samples_available=85012 max_average_absolute_advantage=2.643077 min_average_absolute_advantage=0.227308 median_average_absolute_advantage=0.725427
+tokenizer special tokens pad_token_id=151643 eos_token_id=151645 bos_token_id=-1
+preparing_final_output_model=1 output_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_4
+writing_final_output_model=1 output_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_4/model
+written_final_output_model=1 output_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_4/model
+final_model_saved=1 final_model_output_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_4
+training_summary_written=1 training_summary_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_4
+oneshot_epoch=4/5 output_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_5 is_final=True
+lr_schedule_config=1 lr_schedule=cosine lr_warmup_steps=3 lr_total_steps=7969 lr_min_scale=0.1000
+adaptive_batch_cap_active=1 max_batch_size=1 sample_count=85012
+training_set_advantage_stats=1 samples_available=85012 max_average_absolute_advantage=2.643077 min_average_absolute_advantage=0.227308 median_average_absolute_advantage=0.725427
+tokenizer special tokens pad_token_id=151643 eos_token_id=151645 bos_token_id=-1
+preparing_final_output_model=1 output_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_5
+writing_final_output_model=1 output_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_5/model
+written_final_output_model=1 output_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_5/model
+final_model_saved=1 final_model_output_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_5
+training_summary_written=1 training_summary_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_5
+finished_training=1 global_step=83 training_time=300.0s final_model_output_parent_dir=/volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_5
+Training completed; checkpoint state available under /volume/large_files/qwen25/grpo_notool_training_kl_ema/oneshot_epoch_0
+Training wrapper completed successfully; details in /volume/small_files/qwen25/grpo_notool_training_kl_ema/training_wrapper.txt
+Oneshot training of 5 epoch(s) finished in 1983.101s
+Launching inference server once for all validation epochs (initial model: /volume/large_files/qwen25/model)
+Inference wrapper started
+Inference wrapper config: model_cli_name=qwen25 config_nickname=grpo_notool_training_kl_ema epoch=0 hf_model_name=Qwen/Qwen2.5-7B-Instruct listen_port=30000
+Launching local sglang on port 30001 (http://127.0.0.1:30001)
+SGLang server is up at http://127.0.0.1:30001
+Binding inference wrapper server on port 30000
+Inference wrapper server is ready
+Inference server listening on port 30000 for all validation epochs
+rollout_all using fixed_temperature=0 for LLM sampling

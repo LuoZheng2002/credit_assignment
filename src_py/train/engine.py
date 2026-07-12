@@ -1707,15 +1707,22 @@ def _train_oneshot_multiepoch(
 
     for oneshot_epoch in range(config.oneshot_num_epochs):
         is_final = oneshot_epoch == config.oneshot_num_epochs - 1
+        epoch_number = oneshot_epoch + 1
         output_dir = (
-            Path(config.oneshot_model_output_root)
-            / f"oneshot_epoch_{oneshot_epoch + 1}"
+            Path(config.oneshot_model_output_root) / f"oneshot_epoch_{epoch_number}"
         )
+        epoch_start_global_step = resume_state.global_step
+        epoch_start_samples_trained = resume_state.samples_trained
+        epoch_start_next_sample_index = resume_state.next_sample_index
 
         if _is_primary_rank():
             _tui_info(
                 f"oneshot_epoch={oneshot_epoch}/{config.oneshot_num_epochs} "
-                f"output_dir={output_dir} is_final={is_final}"
+                f"oneshot_epoch_number={epoch_number} "
+                f"output_dir={output_dir} is_final={is_final} "
+                f"epoch_start_global_step={epoch_start_global_step} "
+                f"epoch_start_samples_trained={epoch_start_samples_trained} "
+                f"epoch_start_next_sample_index={epoch_start_next_sample_index}"
             )
 
         resume_state = _run_unified_loop(
@@ -1752,6 +1759,36 @@ def _train_oneshot_multiepoch(
             ref_model=ref_model,
             ema_shadows=ema_shadows,
         )
+        epoch_steps_trained = resume_state.global_step - epoch_start_global_step
+        epoch_samples_trained = (
+            resume_state.samples_trained - epoch_start_samples_trained
+        )
+        epoch_samples_available = resume_state.samples_available
+        epoch_sample_coverage_pct = 0.0
+        if epoch_samples_available > 0:
+            epoch_sample_coverage_pct = (
+                100.0 * float(epoch_samples_trained) / float(epoch_samples_available)
+            )
+        if _is_primary_rank():
+            _tui_info(
+                f"oneshot_epoch_complete=1 oneshot_epoch_number={epoch_number} "
+                f"epoch_global_step_start={epoch_start_global_step} "
+                f"epoch_global_step_end={resume_state.global_step} "
+                f"epoch_steps_trained={epoch_steps_trained} "
+                f"epoch_samples_trained={epoch_samples_trained} "
+                f"epoch_samples_available={epoch_samples_available} "
+                f"epoch_sample_coverage_pct={epoch_sample_coverage_pct:.4f} "
+                f"epoch_elapsed_training_time_sec={resume_state.elapsed_training_time_sec:.2f} "
+                f"epoch_next_sample_index_start={epoch_start_next_sample_index} "
+                f"epoch_next_sample_index_end={resume_state.next_sample_index} "
+                f"epoch_accumulation_step_end={resume_state.accumulation_step}"
+            )
+            if epoch_steps_trained <= 0 or epoch_samples_trained <= 0:
+                _tui_warning(
+                    f"oneshot_epoch_low_progress=1 oneshot_epoch_number={epoch_number} "
+                    f"epoch_steps_trained={epoch_steps_trained} "
+                    f"epoch_samples_trained={epoch_samples_trained}"
+                )
         resume_state = _reset_oneshot_epoch_resume_state(resume_state)
 
 
