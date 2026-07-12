@@ -4,18 +4,13 @@ use std::path::Path;
 use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
-    hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
-    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-    rollout::{RolloutProgramConfig, rollout_all},
-    rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
-    training_set::generate_training_trajectories_with_path,
-    tree_action_log::ActionLogStore,
     directories::{
         action_logs_oneshot_path, inference_wrapper_log_path, model_parent_dir,
-        rollout_summary_oneshot_path, training_trajectories_oneshot_path,
-        training_trajectories_stats_oneshot_path,
+        rollout_summary_oneshot_path, text_logger_summary_path, text_logger_verbose_path,
+        training_trajectories_oneshot_path, training_trajectories_stats_oneshot_path,
     },
     fixed_temperatures,
+    hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
     json_toml_utils::read_json,
     launch_inference_wrapper::{
         best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
@@ -25,13 +20,16 @@ use credit_assignment::{
         Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
         Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
+    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+    rollout::{RolloutProgramConfig, rollout_all},
+    rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+    training_set::generate_training_trajectories_with_path,
+    tree_action_log::ActionLogStore,
     utils::configure_mount_dir,
 };
 use ordered_float::NotNan;
 use reqwest::Client;
-use research_utility::progress_tui_logger::{ProgressTuiLogger, log_info};
-
-const DEFAULT_PROGRESS_TUI_LOG_PATH: &str = "progress_tui_log.bin";
+use research_utility::progress_text_logger::{ProgressTextLogger, log_info};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -66,8 +64,6 @@ struct Args {
     rollout_time_limit_secs: usize,
     #[arg(long, default_value_t = 1)]
     max_python_processes: usize,
-    #[arg(long, default_value = DEFAULT_PROGRESS_TUI_LOG_PATH)]
-    progress_tui_log_path: String,
     #[arg(long)]
     mount_dir: String,
     #[arg(long)]
@@ -324,7 +320,17 @@ async fn main() {
         .unwrap_or_else(|err| panic!("failed to prepare inference wrapper log directory: {}", err));
 
     if args.ui {
-        ProgressTuiLogger::initialize(args.progress_tui_log_path.clone())
+        let text_log_summary_path = text_logger_summary_path(
+            &args.mount_dir,
+            &args.model_cli_name,
+            &args.config_nickname_rollout,
+        );
+        let text_log_verbose_path = text_logger_verbose_path(
+            &args.mount_dir,
+            &args.model_cli_name,
+            &args.config_nickname_rollout,
+        );
+        ProgressTextLogger::initialize(text_log_summary_path, text_log_verbose_path)
             .await
             .unwrap();
     }
@@ -405,6 +411,6 @@ async fn main() {
     }
 
     if args.ui {
-        ProgressTuiLogger::shutdown().await.unwrap();
+        ProgressTextLogger::shutdown().await.unwrap();
     }
 }

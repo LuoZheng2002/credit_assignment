@@ -124,6 +124,22 @@ pub fn tui_log_path(mount_dir: &str, model_cli_name: &str, config_nickname: &str
     format!("{mount_dir}/small_files/{model_cli_name}/{config_nickname}/tui_log.bin")
 }
 
+pub fn text_logger_summary_path(
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
+) -> String {
+    format!("{mount_dir}/small_files/{model_cli_name}/{config_nickname}/text_log_summary.txt")
+}
+
+pub fn text_logger_verbose_path(
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
+) -> String {
+    format!("{mount_dir}/small_files/{model_cli_name}/{config_nickname}/text_log_verbose.txt")
+}
+
 // ---- One-shot path functions ----
 
 pub fn action_logs_oneshot_path<S: DatasetSplit>(

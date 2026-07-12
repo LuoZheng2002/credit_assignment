@@ -10,17 +10,15 @@ use tokio::time::Instant;
 
 use credit_assignment::{
     check_python_env::check_sympy_availability,
-    hybrid_dataset::Validation,
-    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-    rollout::{RolloutProgramConfig, rollout_all},
-    rollout_config::DirectRolloutConfig,
     directories::{
         action_logs_oneshot_path, inference_wrapper_log_path, oneshot_model_checkpoint_dir,
-        oneshot_model_parent_dir, training_summary_oneshot_parent_dir,
-        training_trajectories_oneshot_path, training_wrapper_log_path,
+        oneshot_model_parent_dir, text_logger_summary_path, text_logger_verbose_path,
+        training_summary_oneshot_parent_dir, training_trajectories_oneshot_path,
+        training_wrapper_log_path,
     },
     fixed_temperatures,
     get_accuracy::get_accuracy_at_path,
+    hybrid_dataset::Validation,
     json_toml_utils::read_json,
     launch_inference_wrapper::{self, shut_down_inference_wrapper_process, update_inference_model},
     launch_training_wrapper::run_training_wrapper_and_wait,
@@ -28,12 +26,15 @@ use credit_assignment::{
         Gemma3_4BIt, InferenceEndpoint, Llama31_8BInstruct, LlmModelMarker, LlmModelName,
         Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
+    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     python_training_config::PythonTrainingConfig,
+    rollout::{RolloutProgramConfig, rollout_all},
+    rollout_config::DirectRolloutConfig,
     utils::{configure_mount_dir, storage_large_files_dir},
 };
 use reqwest::Client;
-use research_utility::progress_tui_logger::{
-    ProgressTuiLogger, log_info, log_key_value_pair, log_state, log_warning,
+use research_utility::progress_text_logger::{
+    ProgressTextLogger, log_info, log_key_value_pair, log_state, log_warning,
 };
 
 #[derive(Parser, Debug)]
@@ -789,15 +790,16 @@ async fn main() {
     log_info(format!("One-shot training will use num_gpus={}", num_gpus));
 
     if ui {
-        let tui_log_path = format!(
-            "progress_tui_log_oneshot_training_{}_{}.bin",
-            model_cli_name, config_nickname_training
-        );
-        ProgressTuiLogger::initialize(tui_log_path).await.unwrap();
+        let text_log_summary_path =
+            text_logger_summary_path(&mount_dir, &model_cli_name, &config_nickname_training);
+        let text_log_verbose_path =
+            text_logger_verbose_path(&mount_dir, &model_cli_name, &config_nickname_training);
+        ProgressTextLogger::initialize(text_log_summary_path, text_log_verbose_path)
+            .await
+            .unwrap();
     }
     let validation_rollout_config: DirectRolloutConfig<Validation> =
-        read_json(credit_assignment::directories::VALIDATION_ROLLOUT_CONFIG_PATH)
-            .unwrap();
+        read_json(credit_assignment::directories::VALIDATION_ROLLOUT_CONFIG_PATH).unwrap();
     let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
         credit_assignment::directories::POSTERIOR_HYPERPARAMETERS_PATH,
     )
@@ -997,6 +999,6 @@ async fn main() {
     }
 
     if ui {
-        ProgressTuiLogger::shutdown().await.unwrap();
+        ProgressTextLogger::shutdown().await.unwrap();
     }
 }

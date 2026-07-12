@@ -6,22 +6,25 @@ use std::{collections::BTreeMap, path::Path};
 
 use credit_assignment::{
     check_python_env::check_sympy_availability,
+    directories::VALIDATION_ROLLOUT_CONFIG_PATH,
+    directories::{
+        inference_wrapper_log_path, text_logger_summary_path, text_logger_verbose_path,
+        training_wrapper_log_path,
+    },
     hybrid_dataset::{Training, Validation},
-    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-    rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
-    directories::{inference_wrapper_log_path, training_wrapper_log_path, tui_log_path},
     json_toml_utils::{read_json, read_toml},
     llm_model::{
         Gemma3_4BIt, Llama31_8BInstruct, LlmModelName, Mistral7BInstructV03, Qwen3_4B, Qwen3_06B,
         Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
     orchestrator::{OrchestrationProgress, OrchestrationStatus, Orchestrator},
+    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     python_training_config::PythonTrainingConfigCommon,
+    rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
     utils::configure_mount_dir,
-    directories::VALIDATION_ROLLOUT_CONFIG_PATH,
 };
-use research_utility::progress_tui_logger::{
-    ProgressTuiLogger, log_error, log_exit_hint, log_info, log_window_name,
+use research_utility::progress_text_logger::{
+    ProgressTextLogger, log_error, log_exit_hint, log_info, log_window_name,
 };
 
 #[derive(Parser, Debug)]
@@ -130,13 +133,18 @@ async fn main() {
         inference_wrapper_log_path(&mount_dir, &model_cli_name, &config_nickname);
     let training_wrapper_log_path =
         training_wrapper_log_path(&mount_dir, &model_cli_name, &config_nickname);
-    let tui_log_path = tui_log_path(&mount_dir, &model_cli_name, &config_nickname);
+    let text_log_summary_path =
+        text_logger_summary_path(&mount_dir, &model_cli_name, &config_nickname);
+    let text_log_verbose_path =
+        text_logger_verbose_path(&mount_dir, &model_cli_name, &config_nickname);
     ensure_parent_dir_exists(&inference_wrapper_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare inference wrapper log directory: {}", err));
     ensure_parent_dir_exists(&training_wrapper_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare training wrapper log directory: {}", err));
-    ensure_parent_dir_exists(&tui_log_path)
-        .unwrap_or_else(|err| panic!("failed to prepare tui log directory: {}", err));
+    ensure_parent_dir_exists(&text_log_summary_path)
+        .unwrap_or_else(|err| panic!("failed to prepare text log summary directory: {}", err));
+    ensure_parent_dir_exists(&text_log_verbose_path)
+        .unwrap_or_else(|err| panic!("failed to prepare text log verbose directory: {}", err));
     assert!(num_gpus > 0, "--num-gpus must be positive");
     log_info(format!(
         "Local wrapper-managed inference/training will use num_gpus={}",
@@ -152,9 +160,12 @@ async fn main() {
     .unwrap_or_else(|err| panic!("failed to write config_paths.json: {}", err));
 
     if ui {
-        ProgressTuiLogger::initialize(tui_log_path.clone())
-            .await
-            .unwrap();
+        ProgressTextLogger::initialize(
+            text_log_summary_path.clone(),
+            text_log_verbose_path.clone(),
+        )
+        .await
+        .unwrap();
         log_window_name(format!(
             "Orchestrator Program. model: {}, config_nickname: {}",
             model_cli_name, config_nickname
@@ -246,6 +257,6 @@ async fn main() {
         log_error(format!("Orchestrator exits with error: {}", e));
     }
     if ui {
-        ProgressTuiLogger::shutdown().await.unwrap();
+        ProgressTextLogger::shutdown().await.unwrap();
     }
 }
