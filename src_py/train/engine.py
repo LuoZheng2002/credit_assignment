@@ -180,13 +180,6 @@ class ResumeState:
     next_batch_cursor: int
     accumulation_step: int
     next_sample_index: int = 0
-    next_batch_size: int = 0
-    adaptive_velocity: float = 0.0
-    adaptive_throughput_ema: float = 0.0
-    adaptive_best_throughput_ema: float = 0.0
-    adaptive_memory_utilization_ema: float = 0.0
-    adaptive_previous_tokens_per_sample: float = 0.0
-    adaptive_next_batch_size_float: float = 0.0
     elapsed_training_time_sec: float = 0.0
     samples_trained: int = 0
     samples_available: int = 0
@@ -195,24 +188,14 @@ class ResumeState:
     median_average_absolute_advantage: float = -1.0
 
 
-@dataclass(frozen=True)
-class AdaptiveBatchState:
-    next_batch_size: int
-    next_batch_size_float: float
-    velocity: float
-    throughput_ema: float
-    best_throughput_ema: float
-    memory_utilization_ema: float
-    previous_tokens_per_sample: float
-
 
 def _reset_oneshot_epoch_resume_state(resume_state: ResumeState) -> ResumeState:
     """Reset per-epoch budget counters while preserving optimizer/data cursor state.
 
     One-shot multi-epoch training intentionally carries model weights, optimizer
-    state, sample cursor, and adaptive batch state across epochs. However, the
-    wall-clock budget and dataset-pass limit are defined per epoch, so those
-    counters must be reset before starting the next epoch.
+    state, and sample cursor across epochs. However, the wall-clock budget and
+    dataset-pass limit are defined per epoch, so those counters must be reset
+    before starting the next epoch.
     """
     return ResumeState(
         global_step=resume_state.global_step,
@@ -220,13 +203,6 @@ def _reset_oneshot_epoch_resume_state(resume_state: ResumeState) -> ResumeState:
         next_batch_cursor=resume_state.next_batch_cursor,
         accumulation_step=resume_state.accumulation_step,
         next_sample_index=resume_state.next_sample_index,
-        next_batch_size=resume_state.next_batch_size,
-        adaptive_velocity=resume_state.adaptive_velocity,
-        adaptive_throughput_ema=resume_state.adaptive_throughput_ema,
-        adaptive_best_throughput_ema=resume_state.adaptive_best_throughput_ema,
-        adaptive_memory_utilization_ema=resume_state.adaptive_memory_utilization_ema,
-        adaptive_previous_tokens_per_sample=resume_state.adaptive_previous_tokens_per_sample,
-        adaptive_next_batch_size_float=resume_state.adaptive_next_batch_size_float,
         elapsed_training_time_sec=0.0,
         samples_trained=resume_state.samples_trained,
         samples_available=resume_state.samples_available,
@@ -599,32 +575,6 @@ def _print_cuda_oom_diagnostics_stderr(
     )
 
 
-def _resolve_max_batch_size_cap_from_env() -> int | None:
-    raw_value = os.environ.get("TRAIN_MAX_BATCH_SIZE")
-    if raw_value is None:
-        return None
-    normalized = raw_value.strip()
-    if len(normalized) == 0:
-        return None
-    parsed = int(normalized)
-    assert parsed > 0, "TRAIN_MAX_BATCH_SIZE must be a positive integer when set"
-    return parsed
-
-
-def _resolve_reset_batch_size_on_wrap_from_env() -> bool:
-    raw_value = os.environ.get("TRAIN_RESET_BATCH_SIZE_ON_WRAP")
-    if raw_value is None:
-        return True
-    normalized = raw_value.strip().lower()
-    if len(normalized) == 0:
-        return True
-    if normalized in {"1", "true", "yes", "y", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "n", "off"}:
-        return False
-    raise AssertionError(
-        "TRAIN_RESET_BATCH_SIZE_ON_WRAP must be a boolean-like value when set"
-    )
 
 
 def _resolve_max_grad_norm_from_env() -> float:
@@ -872,141 +822,6 @@ def _compute_next_position(
         next_batch_cursor = 0
     return next_iteration_index, next_batch_cursor
 
-
-def _update_adaptive_batch_state(
-    adaptive_state: AdaptiveBatchState,
-    measured_throughput: float,
-    measured_memory_utilization: float,
-    measured_tokens_per_sample: float,
-    target_memory_utilization: float,
-    min_batch_size: int,
-    max_batch_size: int,
-) -> AdaptiveBatchState:
-    assert measured_throughput > 0.0, "measured_throughput must be positive"
-    assert measured_memory_utilization >= 0.0, (
-        "measured_memory_utilization must be non-negative"
-    )
-    assert measured_tokens_per_sample > 0.0, (
-        "measured_tokens_per_sample must be positive"
-    )
-    assert 0.0 < target_memory_utilization < 1.0, (
-        "target_memory_utilization must be in (0, 1)"
-    )
-    assert min_batch_size > 0, "min_batch_size must be positive"
-    assert max_batch_size >= min_batch_size, "max_batch_size must be >= min_batch_size"
-
-    ema_alpha = 0.2
-    momentum = 0.8
-    min_improvement_ratio = 0.01
-    base_step = 0.08
-    max_velocity = 0.35
-    memory_ema_alpha = 0.3
-    max_growth_ratio = 1.2
-
-    current_batch_size_float = adaptive_state.next_batch_size_float
-    if current_batch_size_float <= 0.0:
-        current_batch_size_float = float(adaptive_state.next_batch_size)
-    current_batch_size_float = max(
-        float(min_batch_size), min(float(max_batch_size), current_batch_size_float)
-    )
-
-    updated_ema = adaptive_state.throughput_ema
-    if updated_ema <= 0.0:
-        updated_ema = measured_throughput
-    else:
-        updated_ema = (
-            1.0 - ema_alpha
-        ) * adaptive_state.throughput_ema + ema_alpha * measured_throughput
-
-    previous_best_ema = adaptive_state.best_throughput_ema
-    best_ema = max(previous_best_ema, updated_ema)
-    improvement_ratio = 0.0
-    if previous_best_ema > 0.0:
-        improvement_ratio = (updated_ema - previous_best_ema) / previous_best_ema
-
-    direction = -1.0
-    if improvement_ratio > -min_improvement_ratio:
-        direction = 1.0
-
-    velocity = momentum * adaptive_state.velocity + direction * base_step
-    velocity = min(max_velocity, max(-max_velocity, velocity))
-
-    throughput_candidate_batch_size_float = current_batch_size_float * (1.0 + velocity)
-    throughput_candidate_batch_size_float = max(
-        float(min_batch_size),
-        min(float(max_batch_size), throughput_candidate_batch_size_float),
-    )
-
-    if (
-        throughput_candidate_batch_size_float >= float(max_batch_size)
-        and velocity > 0.0
-    ):
-        velocity = 0.0
-    if (
-        throughput_candidate_batch_size_float <= float(min_batch_size)
-        and velocity < 0.0
-    ):
-        velocity = 0.0
-
-    updated_memory_utilization_ema = adaptive_state.memory_utilization_ema
-    if updated_memory_utilization_ema <= 0.0:
-        updated_memory_utilization_ema = measured_memory_utilization
-    else:
-        updated_memory_utilization_ema = (
-            (1.0 - memory_ema_alpha) * adaptive_state.memory_utilization_ema
-            + memory_ema_alpha * measured_memory_utilization
-        )
-
-    safe_memory_utilization = max(updated_memory_utilization_ema, 1e-4)
-    memory_scale = target_memory_utilization / safe_memory_utilization
-    memory_target_batch_size_float = current_batch_size_float * memory_scale
-    if int(round(memory_target_batch_size_float)) == adaptive_state.next_batch_size:
-        if updated_memory_utilization_ema < target_memory_utilization:
-            memory_target_batch_size_float += 1.0
-        elif updated_memory_utilization_ema > target_memory_utilization:
-            memory_target_batch_size_float -= 1.0
-
-    previous_tokens_per_sample = max(adaptive_state.previous_tokens_per_sample, 1.0)
-    token_growth_ratio = max(
-        1.0, measured_tokens_per_sample / previous_tokens_per_sample
-    )
-    memory_target_batch_size_float = memory_target_batch_size_float / token_growth_ratio
-
-    candidate_batch_size_float = (
-        0.2 * throughput_candidate_batch_size_float
-        + 0.8 * memory_target_batch_size_float
-    )
-    if updated_memory_utilization_ema > target_memory_utilization:
-        candidate_batch_size_float = min(
-            candidate_batch_size_float, memory_target_batch_size_float
-        )
-
-    max_allowed_next_float = current_batch_size_float * max_growth_ratio
-    candidate_batch_size_float = min(candidate_batch_size_float, max_allowed_next_float)
-    candidate_batch_size_float = max(
-        float(min_batch_size),
-        min(float(max_batch_size), candidate_batch_size_float),
-    )
-
-    candidate_batch_size = int(round(candidate_batch_size_float))
-    candidate_batch_size = max(
-        min_batch_size, min(max_batch_size, candidate_batch_size)
-    )
-
-    updated_previous_tokens_per_sample = max(
-        adaptive_state.previous_tokens_per_sample,
-        measured_tokens_per_sample,
-    )
-
-    return AdaptiveBatchState(
-        next_batch_size=candidate_batch_size,
-        next_batch_size_float=candidate_batch_size_float,
-        velocity=velocity,
-        throughput_ema=updated_ema,
-        best_throughput_ema=max(best_ema, updated_ema),
-        memory_utilization_ema=updated_memory_utilization_ema,
-        previous_tokens_per_sample=updated_previous_tokens_per_sample,
-    )
 
 
 def _shard_batches_for_rank(
@@ -1277,11 +1092,6 @@ def _train_oneshot_multiepoch(
     training_summary_parent_dir: str,
     resolved_model_path: str,
     tokenizer: Any,
-    initial_batch_size: int,
-    initial_adaptive_velocity: float,
-    target_gpu_memory_utilization: float,
-    max_batch_size_cap: int | None,
-    reset_batch_size_on_wrap: bool,
     max_grad_norm: float,
     lr_warmup_steps: int,
     lr_min_scale: float,
@@ -1289,9 +1099,9 @@ def _train_oneshot_multiepoch(
 ) -> None:
     """Multi-epoch oneshot training: all oneshot epochs in a single process.
 
-    Model weights, optimizer state, sample cursor, and adaptive batch state
-    persist across epochs entirely in memory. One-shot training does not write
-    training-state checkpoints and does not support resume from prior runs.
+    Model weights, optimizer state, and sample cursor persist across epochs
+    entirely in memory. One-shot training does not write training-state
+    checkpoints and does not support resume from prior runs.
 
     Each epoch runs for config.training_time seconds independently.
     """
@@ -1309,9 +1119,6 @@ def _train_oneshot_multiepoch(
         next_batch_cursor=0,
         accumulation_step=0,
         next_sample_index=0,
-        next_batch_size=initial_batch_size,
-        adaptive_velocity=initial_adaptive_velocity,
-        adaptive_next_batch_size_float=float(initial_batch_size),
         samples_trained=0,
     )
 
@@ -1355,11 +1162,6 @@ def _train_oneshot_multiepoch(
             training_summary_parent_dir=str(output_dir),
             resolved_model_path=resolved_model_path,
             tokenizer=tokenizer,
-            initial_batch_size=initial_batch_size,
-            initial_adaptive_velocity=initial_adaptive_velocity,
-            target_gpu_memory_utilization=target_gpu_memory_utilization,
-            max_batch_size_cap=max_batch_size_cap,
-            reset_batch_size_on_wrap=reset_batch_size_on_wrap,
             max_grad_norm=max_grad_norm,
             lr_warmup_steps=lr_warmup_steps,
             lr_min_scale=lr_min_scale,
@@ -1432,11 +1234,6 @@ def train(config: TrainConfig) -> None:
     _set_seed(config.seed)
     device = _init_distributed_device()
     rank, world_size = _get_rank_world_size()
-    initial_batch_size = 1
-    initial_adaptive_velocity = 0.12
-    target_gpu_memory_utilization = 0.8
-    max_batch_size_cap = _resolve_max_batch_size_cap_from_env()
-    reset_batch_size_on_wrap = _resolve_reset_batch_size_on_wrap_from_env()
     max_grad_norm = _resolve_max_grad_norm_from_env()
     lr_warmup_micro_batches = _resolve_lr_warmup_steps_from_env()
     lr_warmup_steps = 0
@@ -1447,27 +1244,12 @@ def train(config: TrainConfig) -> None:
     if _is_primary_rank():
         _tui_info(f"loading_model=1 model_parent_dir={config.model_parent_dir}")
     resolved_model_path = _resolve_local_model_path(config.model_parent_dir)
-    if training_plan == TRAINING_PLAN_FSDP:
-        if max_batch_size_cap is None:
-            max_batch_size_cap = 1
-        else:
-            max_batch_size_cap = min(max_batch_size_cap, 1)
 
     if _is_primary_rank():
         _tui_info(
             f"start_training=1 training_plan={training_plan} "
             f"world_size={world_size} training_time={config.training_time:.1f}s "
             f"model_path={resolved_model_path}"
-        )
-        _tui_info(
-            "adaptive_batch_cap=1 "
-            f"train_max_batch_size_env={max_batch_size_cap if max_batch_size_cap is not None else 'unset'}"
-        )
-        if training_plan == TRAINING_PLAN_FSDP:
-            _tui_info("fsdp_fixed_microbatch=1 next_batch_size_cap=1")
-        _tui_info(
-            "adaptive_batch_wrap_reset=1 "
-            f"train_reset_batch_size_on_wrap={1 if reset_batch_size_on_wrap else 0}"
         )
         _tui_info(
             "optimization_stability=1 "
@@ -1562,9 +1344,6 @@ def train(config: TrainConfig) -> None:
         next_batch_cursor=0,
         accumulation_step=0,
         next_sample_index=0,
-        next_batch_size=initial_batch_size,
-        adaptive_velocity=initial_adaptive_velocity,
-        adaptive_next_batch_size_float=float(initial_batch_size),
         samples_trained=0,
     )
 
@@ -1592,11 +1371,6 @@ def train(config: TrainConfig) -> None:
                 training_summary_parent_dir=config.training_summary_parent_dir,
                 resolved_model_path=resolved_model_path,
                 tokenizer=tokenizer,
-                initial_batch_size=initial_batch_size,
-                initial_adaptive_velocity=initial_adaptive_velocity,
-                target_gpu_memory_utilization=target_gpu_memory_utilization,
-                max_batch_size_cap=max_batch_size_cap,
-                reset_batch_size_on_wrap=reset_batch_size_on_wrap,
                 max_grad_norm=max_grad_norm,
                 lr_warmup_steps=lr_warmup_steps,
                 lr_min_scale=lr_min_scale,
@@ -1622,11 +1396,6 @@ def train(config: TrainConfig) -> None:
                 training_summary_parent_dir=config.training_summary_parent_dir,
                 resolved_model_path=resolved_model_path,
                 tokenizer=tokenizer,
-                initial_batch_size=initial_batch_size,
-                initial_adaptive_velocity=initial_adaptive_velocity,
-                target_gpu_memory_utilization=target_gpu_memory_utilization,
-                max_batch_size_cap=max_batch_size_cap,
-                reset_batch_size_on_wrap=reset_batch_size_on_wrap,
                 max_grad_norm=max_grad_norm,
                 lr_warmup_steps=lr_warmup_steps,
                 lr_min_scale=lr_min_scale,

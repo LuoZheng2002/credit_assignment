@@ -47,35 +47,6 @@ class TrainingRequestArgs(BaseModel):
     oneshot_model_output_root: str = ""
 
 
-class SftTrainingRequestArgs(BaseModel):
-    """Simplified training request args for SFT (no advantage_clip, advantage-related fields)."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    training_plan: str
-    learning_rate: float
-    weight_decay: float
-    grad_accum_steps: int
-    log_time_interval: float
-    checkpoint_save_time_interval: float
-    seed: int
-    adam_beta1: float = 0.9
-    adam_beta2: float = 0.95
-    training_time: float
-    num_iterations_limit: int
-    artifact_root_dir: str
-    model_cli_name: str
-    config_nickname: str
-    model_parent_dir: str
-    checkpoints_parent_dir: str
-    final_model_output_parent_dir: str
-    hpc_training_root_dir: str | None = None
-    lora_rank: int | None = None
-    lora_alpha: int | None = None
-    lora_dropout: float | None = None
-    lora_target_modules_csv: str | None = None
-    resume_checkpoint_tag: str | None = None
-    adam_fp32: bool
 
 
 class TrainingWrapperLaunchArgs(BaseModel):
@@ -89,22 +60,6 @@ class TrainingWrapperLaunchArgs(BaseModel):
     test_sleep_secs: float = 0.0
 
 
-class SftWrapperLaunchArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    num_gpus: int
-    sft_training_data_path: str
-    hf_model_name: str
-    wrapper_log_path: str
-    orchestrator_socket_path: str = ""
-
-
-class SftTrainProcessLaunchArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    sft_training_data_path: str
-    training_request_json_path: str
-    orchestrator_socket_path: str = ""
 
 
 class TrainProcessLaunchArgs(BaseModel):

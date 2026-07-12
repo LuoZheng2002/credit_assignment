@@ -39,23 +39,12 @@ class TrainingLoopClock:
 
 
 @dataclass(frozen=True)
-class AdaptiveBatchState:
-    next_batch_size: int
-    next_batch_size_float: float
-    velocity: float
-    throughput_ema: float
-    best_throughput_ema: float
-    memory_utilization_ema: float
-    previous_tokens_per_sample: float
-
-
-@dataclass(frozen=True)
 class DistributedStepControl:
     opcode: int
     requested_batch_size: int
     global_sample_cursor: int
     iteration_index: int
-    adaptive_state: AdaptiveBatchState
+
 
 
 DEFAULT_TRAJECTORY_LENGTH_CAP = 4096
@@ -500,9 +489,6 @@ def _plan_distributed_step_control(
     sample_count: int,
     global_sample_cursor: int,
     world_size: int,
-    adaptive_state: AdaptiveBatchState,
-    reset_batch_size_on_wrap: bool,
-    initial_adaptive_velocity: float,
 ) -> DistributedStepControl:
     if not _should_continue_training(
         clock=clock,
@@ -514,40 +500,23 @@ def _plan_distributed_step_control(
             requested_batch_size=0,
             global_sample_cursor=global_sample_cursor,
             iteration_index=iteration_index,
-            adaptive_state=adaptive_state,
         )
 
     remaining_samples = sample_count - global_sample_cursor
     max_feasible_batch_size = remaining_samples // world_size
     if max_feasible_batch_size <= 0:
-        next_iteration_index = iteration_index + 1
-        next_adaptive_state = adaptive_state
-        if reset_batch_size_on_wrap:
-            next_adaptive_state = AdaptiveBatchState(
-                next_batch_size=1,
-                next_batch_size_float=1.0,
-                velocity=initial_adaptive_velocity,
-                throughput_ema=adaptive_state.throughput_ema,
-                best_throughput_ema=adaptive_state.best_throughput_ema,
-                memory_utilization_ema=adaptive_state.memory_utilization_ema,
-                previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-            )
         return DistributedStepControl(
             opcode=_DISTRIBUTED_CONTROL_SKIP,
             requested_batch_size=0,
             global_sample_cursor=0,
-            iteration_index=next_iteration_index,
-            adaptive_state=next_adaptive_state,
+            iteration_index=iteration_index + 1,
         )
 
     return DistributedStepControl(
         opcode=_DISTRIBUTED_CONTROL_RUN,
-        requested_batch_size=max(
-            1, min(adaptive_state.next_batch_size, max_feasible_batch_size)
-        ),
+        requested_batch_size=1,
         global_sample_cursor=global_sample_cursor,
         iteration_index=iteration_index,
-        adaptive_state=adaptive_state,
     )
 
 
@@ -701,33 +670,7 @@ def _finalize_training_run(
     eng._shutdown_distributed_process_group()
 
 
-def _broadcast_adaptive_state_distributed(
-    *, adaptive_state: AdaptiveBatchState
-) -> AdaptiveBatchState:
-    payload_box: list[dict[str, float | int]] = [{}]
-    if _is_primary_rank():
-        payload_box[0] = {
-            "next_batch_size": int(adaptive_state.next_batch_size),
-            "next_batch_size_float": float(adaptive_state.next_batch_size_float),
-            "velocity": float(adaptive_state.velocity),
-            "throughput_ema": float(adaptive_state.throughput_ema),
-            "best_throughput_ema": float(adaptive_state.best_throughput_ema),
-            "memory_utilization_ema": float(adaptive_state.memory_utilization_ema),
-            "previous_tokens_per_sample": float(
-                adaptive_state.previous_tokens_per_sample
-            ),
-        }
-    torch.distributed.broadcast_object_list(payload_box, src=0)
-    payload = payload_box[0]
-    return AdaptiveBatchState(
-        next_batch_size=int(payload["next_batch_size"]),
-        next_batch_size_float=float(payload["next_batch_size_float"]),
-        velocity=float(payload["velocity"]),
-        throughput_ema=float(payload["throughput_ema"]),
-        best_throughput_ema=float(payload["best_throughput_ema"]),
-        memory_utilization_ema=float(payload["memory_utilization_ema"]),
-        previous_tokens_per_sample=float(payload["previous_tokens_per_sample"]),
-    )
+
 
 
 def _sample_average_supervised_advantage(
@@ -818,11 +761,6 @@ def _run_unified_loop(
     training_summary_parent_dir: str,
     resolved_model_path: str,
     tokenizer: Any,
-    initial_batch_size: int,
-    initial_adaptive_velocity: float,
-    target_gpu_memory_utilization: float,
-    max_batch_size_cap: int | None,
-    reset_batch_size_on_wrap: bool,
     max_grad_norm: float,
     lr_warmup_steps: int,
     lr_min_scale: float,
@@ -904,80 +842,9 @@ def _run_unified_loop(
             median_average_absolute_advantage,
         ) = _compute_abs_advantage_stats_for_available_samples(lazy_loader=lazy_loader)
 
-    distributed_batch_limit = (sample_count // world_size) if is_distributed else -1
-    fallback_sample_index = max(0, resume_state.next_batch_cursor) * max(
-        1, initial_batch_size
-    )
     global_sample_cursor = resume_state.next_sample_index
-    if global_sample_cursor == 0 and resume_state.next_batch_cursor > 0:
-        global_sample_cursor = fallback_sample_index
     if global_sample_cursor >= sample_count:
         global_sample_cursor = 0
-
-    adaptive_state = AdaptiveBatchState(
-        next_batch_size=max(
-            1,
-            min(
-                distributed_batch_limit if is_distributed else sample_count,
-                resume_state.next_batch_size,
-            ),
-        ),
-        next_batch_size_float=max(
-            1.0,
-            min(
-                float(distributed_batch_limit if is_distributed else sample_count),
-                resume_state.adaptive_next_batch_size_float
-                if resume_state.adaptive_next_batch_size_float > 0.0
-                else float(
-                    max(
-                        1,
-                        min(
-                            distributed_batch_limit if is_distributed else sample_count,
-                            resume_state.next_batch_size,
-                        ),
-                    )
-                ),
-            ),
-        ),
-        velocity=(
-            resume_state.adaptive_velocity
-            if resume_state.adaptive_velocity > 0.0
-            else initial_adaptive_velocity
-        ),
-        throughput_ema=resume_state.adaptive_throughput_ema,
-        best_throughput_ema=resume_state.adaptive_best_throughput_ema,
-        memory_utilization_ema=resume_state.adaptive_memory_utilization_ema,
-        previous_tokens_per_sample=resume_state.adaptive_previous_tokens_per_sample,
-    )
-
-    if max_batch_size_cap is None:
-        max_allowed_batch_size = (
-            distributed_batch_limit if is_distributed else sample_count
-        )
-    else:
-        max_allowed_batch_size = max(
-            1,
-            min(
-                distributed_batch_limit if is_distributed else sample_count,
-                max_batch_size_cap,
-            ),
-        )
-    if adaptive_state.next_batch_size > max_allowed_batch_size:
-        adaptive_state = AdaptiveBatchState(
-            next_batch_size=max_allowed_batch_size,
-            next_batch_size_float=float(max_allowed_batch_size),
-            velocity=adaptive_state.velocity,
-            throughput_ema=adaptive_state.throughput_ema,
-            best_throughput_ema=adaptive_state.best_throughput_ema,
-            memory_utilization_ema=adaptive_state.memory_utilization_ema,
-            previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-        )
-
-    if _is_primary_rank() and max_batch_size_cap is not None:
-        _tui_info(
-            f"adaptive_batch_cap_active=1 max_batch_size={max_allowed_batch_size} "
-            f"sample_count={sample_count}"
-        )
 
     max_input_token_id = -1
     max_label_token_id = -1
@@ -1010,10 +877,6 @@ def _run_unified_loop(
                 "bos_token_id": bos_token_id,
                 "rank": rank,
                 "world_size": world_size,
-                "local_batch_count": distributed_batch_limit if is_distributed else -1,
-                "next_batch_size": adaptive_state.next_batch_size,
-                "next_batch_size_int": adaptive_state.next_batch_size,
-                "next_batch_size_float": adaptive_state.next_batch_size_float,
             },
         )
 
@@ -1053,21 +916,9 @@ def _run_unified_loop(
                     sample_count=sample_count,
                     global_sample_cursor=global_sample_cursor,
                     world_size=world_size,
-                    adaptive_state=adaptive_state,
-                    reset_batch_size_on_wrap=reset_batch_size_on_wrap,
-                    initial_adaptive_velocity=initial_adaptive_velocity,
                 )
                 global_sample_cursor = control.global_sample_cursor
                 iteration_index = control.iteration_index
-                adaptive_state = control.adaptive_state
-                if (
-                    control.opcode == _DISTRIBUTED_CONTROL_SKIP
-                    and reset_batch_size_on_wrap
-                ):
-                    _tui_info(
-                        "adaptive_batch_wrap_reset_applied=1 "
-                        f"iteration={iteration_index} next_batch_size={adaptive_state.next_batch_size}"
-                    )
                 control_tensor[0] = control.opcode
                 control_tensor[1] = control.requested_batch_size
                 control_tensor[2] = global_sample_cursor
@@ -1078,10 +929,6 @@ def _run_unified_loop(
             requested_batch_size = int(control_tensor[1].item())
             global_sample_cursor = int(control_tensor[2].item())
             iteration_index = int(control_tensor[3].item())
-            if control_opcode == _DISTRIBUTED_CONTROL_SKIP and reset_batch_size_on_wrap:
-                adaptive_state = _broadcast_adaptive_state_distributed(
-                    adaptive_state=adaptive_state
-                )
             if control_opcode == _DISTRIBUTED_CONTROL_STOP:
                 break
             if control_opcode != _DISTRIBUTED_CONTROL_RUN:
@@ -1111,9 +958,7 @@ def _run_unified_loop(
                 num_iterations_limit=config.num_iterations_limit,
             ):
                 break
-            requested_batch_size = min(
-                adaptive_state.next_batch_size, sample_count - global_sample_cursor
-            )
+            requested_batch_size = min(1, sample_count - global_sample_cursor)
             if requested_batch_size <= 0:
                 global_sample_cursor = 0
                 iteration_index += 1
@@ -1261,63 +1106,24 @@ def _run_unified_loop(
                         "ranks can diverge into mismatched collectives; rerun with a smaller fixed "
                         "batch size or shorter trajectory length"
                     ) from exc
-                reduced_batch_size = max(1, adaptive_state.next_batch_size // 2)
+                batch_token_length = max(
+                    sample.input_length for sample in step_batch.samples
+                )
                 eng._print_cuda_oom_stderr(
                     rank=rank,
                     iteration_index=iteration_index,
                     batch_index=step_batch.batch_index,
-                    batch_token_length=max(
-                        sample.input_length for sample in step_batch.samples
-                    ),
-                    next_batch_size=(
-                        adaptive_state.next_batch_size
-                        if requested_batch_size <= 1
-                        else reduced_batch_size
-                    ),
-                    will_retry=requested_batch_size > 1,
+                    batch_token_length=batch_token_length,
+                    next_batch_size=1,
+                    will_retry=False,
                 )
-                should_skip_sample = requested_batch_size <= 1
-                if should_skip_sample:
-                    skipped_samples = (
-                        requested_batch_size * world_size
-                        if is_distributed
-                        else requested_batch_size
-                    )
-                    if _is_primary_rank():
-                        _tui_warning(
-                            "oom_at_batch_size_1=1 "
-                            f"skipped_samples={skipped_samples} "
-                            f"sample_index={global_sample_cursor}"
-                        )
-                        eng._log_json_line(
-                            logs_path,
-                            {
-                                "step": global_step,
-                                "iteration": iteration_index,
-                                "batch_index": step_batch.batch_index,
-                                "oom": 1,
-                                "oom_skipped_sample": 1,
-                                "skipped_samples": skipped_samples,
-                                "next_batch_size": adaptive_state.next_batch_size,
-                                "next_batch_size_float": adaptive_state.next_batch_size_float,
-                            },
-                        )
-                    global_sample_cursor += skipped_samples
-                elif _is_primary_rank():
-                    adaptive_state = AdaptiveBatchState(
-                        next_batch_size=reduced_batch_size,
-                        next_batch_size_float=float(reduced_batch_size),
-                        velocity=0.0,
-                        throughput_ema=adaptive_state.throughput_ema,
-                        best_throughput_ema=adaptive_state.best_throughput_ema,
-                        memory_utilization_ema=adaptive_state.memory_utilization_ema,
-                        previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-                    )
-                if is_distributed:
-                    adaptive_state = _broadcast_adaptive_state_distributed(
-                        adaptive_state=adaptive_state
-                    )
+                skipped_samples = requested_batch_size
                 if _is_primary_rank():
+                    _tui_warning(
+                        "oom_at_batch_size_1=1 "
+                        f"skipped_samples={skipped_samples} "
+                        f"sample_index={global_sample_cursor}"
+                    )
                     eng._log_json_line(
                         logs_path,
                         {
@@ -1325,10 +1131,11 @@ def _run_unified_loop(
                             "iteration": iteration_index,
                             "batch_index": step_batch.batch_index,
                             "oom": 1,
-                            "next_batch_size": adaptive_state.next_batch_size,
-                            "next_batch_size_float": adaptive_state.next_batch_size_float,
+                            "oom_skipped_sample": 1,
+                            "skipped_samples": skipped_samples,
                         },
                     )
+                global_sample_cursor += skipped_samples
                 if torch.cuda.is_available() and device.type == "cuda":
                     torch.cuda.synchronize(device=device)
                 continue
@@ -1392,14 +1199,8 @@ def _run_unified_loop(
             loss_output = None
             loss = None
             eng._release_step_memory(device)
-            reduced_batch_size = max(1, adaptive_state.next_batch_size // 2)
             batch_token_length = max(
                 sample.input_length for sample in step_batch.samples
-            )
-            next_batch_size = (
-                adaptive_state.next_batch_size
-                if requested_batch_size <= 1
-                else reduced_batch_size
             )
             nonfinite_trace_extra = _extract_nonfinite_trace_suffix(str(exc))
             if nonfinite_forward_trace is not None:
@@ -1412,7 +1213,6 @@ def _run_unified_loop(
                 f"nonfinite_inf_count={nonfinite_inf_count} "
                 f"batch_index={step_batch.batch_index} "
                 f"batch_token_length={batch_token_length} "
-                f"next_batch_size={next_batch_size} "
                 f"sample_index={global_sample_cursor}"
                 f"{nonfinite_trace_extra}"
             )
@@ -1430,8 +1230,6 @@ def _run_unified_loop(
                         ),
                         "nonfinite_nan_count": nonfinite_nan_count,
                         "nonfinite_inf_count": nonfinite_inf_count,
-                        "next_batch_size": next_batch_size,
-                        "next_batch_size_float": adaptive_state.next_batch_size_float,
                     },
                 )
             if torch.cuda.is_available() and device.type == "cuda":
@@ -1445,9 +1243,6 @@ def _run_unified_loop(
 
         step_elapsed_sec = max(time.perf_counter() - step_start, 1e-6)
         throughput_samples_per_sec = float(len(step_batch.samples)) / step_elapsed_sec
-        measured_tokens_per_sample = float(
-            collated.attention_mask.sum(dim=1).float().mean().item()
-        )
         gpu_memory_usage_pct = 100.0 * eng._gpu_memory_utilization(device)
         if torch.cuda.is_available() and device.type == "cuda":
             torch.cuda.synchronize(device=device)
@@ -1459,11 +1254,6 @@ def _run_unified_loop(
         _tui_key_value("batch_size", str(len(step_batch.samples)))
         _tui_key_value("batch_token_length", str(int(input_ids.shape[1])))
         _tui_key_value("requested_batch_size", str(requested_batch_size))
-        _tui_key_value("next_batch_size", str(adaptive_state.next_batch_size))
-        _tui_key_value("next_batch_size_int", str(adaptive_state.next_batch_size))
-        _tui_key_value(
-            "next_batch_size_float", f"{adaptive_state.next_batch_size_float:.2f}"
-        )
         _tui_key_value("trajectory_length_cap", str(trajectory_length_cap))
         _tui_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}")
         _tui_key_value("gpu_memory_allocated_pct", f"{gpu_memory_allocated_pct:.2f}")
@@ -1486,44 +1276,11 @@ def _run_unified_loop(
             if global_sample_cursor >= sample_count:
                 global_sample_cursor = 0
                 iteration_index += 1
-                if _is_primary_rank() and reset_batch_size_on_wrap:
-                    adaptive_state = AdaptiveBatchState(
-                        next_batch_size=1,
-                        next_batch_size_float=1.0,
-                        velocity=initial_adaptive_velocity,
-                        throughput_ema=adaptive_state.throughput_ema,
-                        best_throughput_ema=adaptive_state.best_throughput_ema,
-                        memory_utilization_ema=adaptive_state.memory_utilization_ema,
-                        previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-                    )
-                    _tui_info(
-                        "adaptive_batch_wrap_reset_applied=1 "
-                        f"iteration={iteration_index} next_batch_size={adaptive_state.next_batch_size}"
-                    )
-                if reset_batch_size_on_wrap:
-                    adaptive_state = _broadcast_adaptive_state_distributed(
-                        adaptive_state=adaptive_state
-                    )
         else:
             global_sample_cursor = window.next_sample_index
             if global_sample_cursor >= sample_count:
                 global_sample_cursor = 0
                 iteration_index += 1
-                if reset_batch_size_on_wrap:
-                    adaptive_state = AdaptiveBatchState(
-                        next_batch_size=1,
-                        next_batch_size_float=1.0,
-                        velocity=initial_adaptive_velocity,
-                        throughput_ema=adaptive_state.throughput_ema,
-                        best_throughput_ema=adaptive_state.best_throughput_ema,
-                        memory_utilization_ema=adaptive_state.memory_utilization_ema,
-                        previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-                    )
-                    if _is_primary_rank():
-                        _tui_info(
-                            "adaptive_batch_wrap_reset_applied=1 "
-                            f"iteration={iteration_index} next_batch_size={adaptive_state.next_batch_size}"
-                        )
 
         if accumulation_step == config.grad_accum_steps:
             try:
@@ -1600,8 +1357,6 @@ def _run_unified_loop(
                                 ),
                                 "nonfinite_nan_count": nonfinite_nan_count,
                                 "nonfinite_inf_count": nonfinite_inf_count,
-                                "next_batch_size": adaptive_state.next_batch_size,
-                                "next_batch_size_float": adaptive_state.next_batch_size_float,
                             },
                         )
                     raise RuntimeError(
@@ -1625,63 +1380,24 @@ def _run_unified_loop(
                         "ranks can diverge into mismatched collectives; rerun with a smaller fixed "
                         "batch size or shorter trajectory length"
                     ) from exc
-                reduced_batch_size = max(1, adaptive_state.next_batch_size // 2)
+                batch_token_length = max(
+                    sample.input_length for sample in step_batch.samples
+                )
                 eng._print_cuda_oom_stderr(
                     rank=rank,
                     iteration_index=iteration_index,
                     batch_index=step_batch.batch_index,
-                    batch_token_length=max(
-                        sample.input_length for sample in step_batch.samples
-                    ),
-                    next_batch_size=(
-                        adaptive_state.next_batch_size
-                        if requested_batch_size <= 1
-                        else reduced_batch_size
-                    ),
-                    will_retry=requested_batch_size > 1,
+                    batch_token_length=batch_token_length,
+                    next_batch_size=1,
+                    will_retry=False,
                 )
-                should_skip_sample = requested_batch_size <= 1
-                if should_skip_sample:
-                    skipped_samples = (
-                        requested_batch_size * world_size
-                        if is_distributed
-                        else requested_batch_size
-                    )
-                    if _is_primary_rank():
-                        _tui_warning(
-                            "oom_at_batch_size_1=1 "
-                            f"skipped_samples={skipped_samples} "
-                            f"sample_index={global_sample_cursor}"
-                        )
-                        eng._log_json_line(
-                            logs_path,
-                            {
-                                "step": global_step,
-                                "iteration": iteration_index,
-                                "batch_index": step_batch.batch_index,
-                                "oom": 1,
-                                "oom_skipped_sample": 1,
-                                "skipped_samples": skipped_samples,
-                                "next_batch_size": adaptive_state.next_batch_size,
-                                "next_batch_size_float": adaptive_state.next_batch_size_float,
-                            },
-                        )
-                    global_sample_cursor += skipped_samples
-                elif _is_primary_rank():
-                    adaptive_state = AdaptiveBatchState(
-                        next_batch_size=reduced_batch_size,
-                        next_batch_size_float=float(reduced_batch_size),
-                        velocity=0.0,
-                        throughput_ema=adaptive_state.throughput_ema,
-                        best_throughput_ema=adaptive_state.best_throughput_ema,
-                        memory_utilization_ema=adaptive_state.memory_utilization_ema,
-                        previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-                    )
-                if is_distributed:
-                    adaptive_state = _broadcast_adaptive_state_distributed(
-                        adaptive_state=adaptive_state
-                    )
+                skipped_samples = requested_batch_size
                 if _is_primary_rank():
+                    _tui_warning(
+                        "oom_at_batch_size_1=1 "
+                        f"skipped_samples={skipped_samples} "
+                        f"sample_index={global_sample_cursor}"
+                    )
                     eng._log_json_line(
                         logs_path,
                         {
@@ -1689,10 +1405,11 @@ def _run_unified_loop(
                             "iteration": iteration_index,
                             "batch_index": step_batch.batch_index,
                             "oom": 1,
-                            "next_batch_size": adaptive_state.next_batch_size,
-                            "next_batch_size_float": adaptive_state.next_batch_size_float,
+                            "oom_skipped_sample": 1,
+                            "skipped_samples": skipped_samples,
                         },
                     )
+                global_sample_cursor += skipped_samples
                 eng._release_step_memory(device)
                 accumulation_step = 0
                 if torch.cuda.is_available() and device.type == "cuda":
@@ -1711,21 +1428,6 @@ def _run_unified_loop(
                 total_steps=lr_total_steps,
             )
 
-            if (not is_distributed) or _is_primary_rank():
-                adaptive_state = eng._update_adaptive_batch_state(
-                    adaptive_state=adaptive_state,
-                    measured_throughput=throughput_samples_per_sec,
-                    measured_memory_utilization=gpu_memory_allocated_pct / 100.0,
-                    measured_tokens_per_sample=measured_tokens_per_sample,
-                    target_memory_utilization=target_gpu_memory_utilization,
-                    min_batch_size=1,
-                    max_batch_size=max_allowed_batch_size,
-                )
-            if is_distributed:
-                adaptive_state = _broadcast_adaptive_state_distributed(
-                    adaptive_state=adaptive_state
-                )
-
             now = time.monotonic()
             elapsed_since_last_log_sec = now - clock.last_log_time
             if (
@@ -1736,8 +1438,6 @@ def _run_unified_loop(
                     "step": global_step,
                     "iteration": iteration_index,
                     "batch_index": step_batch.batch_index,
-                    "next_batch_size": adaptive_state.next_batch_size,
-                    "next_batch_size_float": adaptive_state.next_batch_size_float,
                     "actual_batch_size": len(step_batch.samples),
                     "step_time_sec": float(step_elapsed_sec),
                     "throughput_samples_per_sec": throughput_samples_per_sec,
@@ -1804,13 +1504,6 @@ def _run_unified_loop(
         next_batch_cursor=global_sample_cursor,
         accumulation_step=accumulation_step,
         next_sample_index=global_sample_cursor,
-        next_batch_size=adaptive_state.next_batch_size,
-        adaptive_velocity=adaptive_state.velocity,
-        adaptive_throughput_ema=adaptive_state.throughput_ema,
-        adaptive_best_throughput_ema=adaptive_state.best_throughput_ema,
-        adaptive_memory_utilization_ema=adaptive_state.memory_utilization_ema,
-        adaptive_previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-        adaptive_next_batch_size_float=adaptive_state.next_batch_size_float,
         elapsed_training_time_sec=total_training_time_sec,
         samples_trained=samples_trained,
         samples_available=samples_available,
@@ -1851,11 +1544,6 @@ def run_training_loop(
     training_summary_parent_dir: str,
     resolved_model_path: str,
     tokenizer: Any,
-    initial_batch_size: int,
-    initial_adaptive_velocity: float,
-    target_gpu_memory_utilization: float,
-    max_batch_size_cap: int | None,
-    reset_batch_size_on_wrap: bool,
     max_grad_norm: float,
     lr_warmup_steps: int,
     lr_min_scale: float,
@@ -1884,11 +1572,6 @@ def run_training_loop(
         training_summary_parent_dir=training_summary_parent_dir,
         resolved_model_path=resolved_model_path,
         tokenizer=tokenizer,
-        initial_batch_size=initial_batch_size,
-        initial_adaptive_velocity=initial_adaptive_velocity,
-        target_gpu_memory_utilization=target_gpu_memory_utilization,
-        max_batch_size_cap=max_batch_size_cap,
-        reset_batch_size_on_wrap=reset_batch_size_on_wrap,
         max_grad_norm=max_grad_norm,
         lr_warmup_steps=lr_warmup_steps,
         lr_min_scale=lr_min_scale,
