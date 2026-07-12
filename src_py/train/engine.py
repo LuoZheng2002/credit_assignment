@@ -161,7 +161,6 @@ class TrainConfig:
     lora_alpha: int
     lora_dropout: float
     lora_target_modules_csv: str
-    resume_checkpoint_tag: str
     seed: int
     adam_fp32: bool
     adam_beta1: float
@@ -172,10 +171,6 @@ class TrainConfig:
     oneshot_num_epochs: int = 0
     oneshot_start_epoch: int = 0
     oneshot_model_output_root: str = ""
-    kl_enabled: bool = False
-    ema_enabled: bool = False
-    kl_penalty_coefficient: float = 0.04
-    ema_decay: float = 0.992
 
 
 @dataclass(frozen=True)
@@ -743,134 +738,6 @@ def _unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
     return model
 
 
-def _save_checkpoint(
-    model: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
-    output_dir: Path,
-    checkpoint_tag: str,
-    training_plan: str,
-    global_step: int,
-    next_iteration_index: int,
-    next_batch_cursor: int,
-    accumulation_step: int,
-    next_sample_index: int = 0,
-    next_batch_size: int = 0,
-    adaptive_velocity: float = 0.0,
-    adaptive_throughput_ema: float = 0.0,
-    adaptive_best_throughput_ema: float = 0.0,
-    adaptive_memory_utilization_ema: float = 0.0,
-    adaptive_previous_tokens_per_sample: float = 0.0,
-    adaptive_next_batch_size_float: float = 0.0,
-    elapsed_training_time_sec: float = 0.0,
-    samples_trained: int = 0,
-    samples_available: int = 0,
-    max_average_absolute_advantage: float = -1.0,
-    min_average_absolute_advantage: float = -1.0,
-    median_average_absolute_advantage: float = -1.0,
-) -> None:
-    training_plan = assert_supported_training_plan(training_plan)
-    assert global_step >= 0, "global_step must be non-negative"
-    assert next_iteration_index >= 0, "next_iteration_index must be non-negative"
-    assert next_batch_cursor >= 0, "next_batch_cursor must be non-negative"
-    assert accumulation_step == 0, (
-        "checkpointing with partial gradient accumulation is not supported"
-    )
-    assert next_sample_index >= 0, "next_sample_index must be non-negative"
-    assert next_batch_size >= 0, "next_batch_size must be non-negative"
-    assert elapsed_training_time_sec >= 0.0, (
-        "elapsed_training_time_sec must be non-negative"
-    )
-    assert np.isfinite(elapsed_training_time_sec), (
-        "elapsed_training_time_sec must be finite"
-    )
-    assert samples_trained >= 0, "samples_trained must be non-negative"
-    assert samples_available >= 0, "samples_available must be non-negative"
-    assert np.isfinite(max_average_absolute_advantage), (
-        "max_average_absolute_advantage must be finite"
-    )
-    assert np.isfinite(min_average_absolute_advantage), (
-        "min_average_absolute_advantage must be finite"
-    )
-    assert np.isfinite(median_average_absolute_advantage), (
-        "median_average_absolute_advantage must be finite"
-    )
-
-    rank, _ = _get_rank_world_size()
-    checkpoint_dir = output_dir / "checkpoints"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    metadata_payload = {
-        "global_step": global_step,
-        "next_iteration_index": next_iteration_index,
-        "next_batch_cursor": next_batch_cursor,
-        "next_sample_index": next_sample_index,
-        "next_batch_size": next_batch_size,
-        "adaptive_velocity": adaptive_velocity,
-        "adaptive_throughput_ema": adaptive_throughput_ema,
-        "adaptive_best_throughput_ema": adaptive_best_throughput_ema,
-        "adaptive_memory_utilization_ema": adaptive_memory_utilization_ema,
-        "adaptive_previous_tokens_per_sample": adaptive_previous_tokens_per_sample,
-        "adaptive_next_batch_size_float": adaptive_next_batch_size_float,
-        "elapsed_training_time_sec": elapsed_training_time_sec,
-        "samples_trained": samples_trained,
-        "samples_available": samples_available,
-        "max_average_absolute_advantage": max_average_absolute_advantage,
-        "min_average_absolute_advantage": min_average_absolute_advantage,
-        "median_average_absolute_advantage": median_average_absolute_advantage,
-        "accumulation_step": accumulation_step,
-        "training_plan": training_plan,
-        "rank": rank,
-        "checkpoint_tag": checkpoint_tag,
-    }
-    torch.save(metadata_payload, checkpoint_dir / f"training_state.rank{rank}.pt")
-    torch.save(
-        optimizer.state_dict(), checkpoint_dir / f"optimizer_state.rank{rank}.pt"
-    )
-
-    if training_plan in {TRAINING_PLAN_LORA, TRAINING_PLAN_DDP}:
-        if rank == 0:
-            unwrapped = _unwrap_model(model)
-            state_dict = (
-                _extract_lora_checkpoint_state_dict(unwrapped)
-                if training_plan == TRAINING_PLAN_LORA
-                else unwrapped.state_dict()
-            )
-            torch.save(state_dict, checkpoint_dir / "model_state.pt")
-            _write_latest_checkpoint_pointer(
-                output_dir=output_dir, checkpoint_tag=checkpoint_tag
-            )
-        _distributed_barrier()
-        return
-
-    assert training_plan == TRAINING_PLAN_FSDP, (
-        "unknown training plan for checkpointing"
-    )
-    from torch.distributed.fsdp import (
-        FullStateDictConfig,
-        StateDictType,
-    )
-    from torch.distributed.fsdp import (
-        FullyShardedDataParallel as FSDP,
-    )
-
-    assert isinstance(model, FSDP), "fsdp checkpoint expects FSDP model"
-    save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
-        state_dict = model.state_dict()
-    if rank == 0:
-        torch.save(state_dict, checkpoint_dir / "model_state.pt")
-        _write_latest_checkpoint_pointer(
-            output_dir=output_dir, checkpoint_tag=checkpoint_tag
-        )
-    _distributed_barrier()
-
-
-def _write_latest_checkpoint_pointer(output_dir: Path, checkpoint_tag: str) -> None:
-    assert output_dir.exists(), f"output_dir must exist: {output_dir}"
-    assert len(checkpoint_tag.strip()) > 0, "checkpoint_tag cannot be empty"
-    latest_path = output_dir / "latest_checkpoint.txt"
-    latest_path.write_text(checkpoint_tag.strip() + "\n", encoding="utf-8")
-
-
 def _save_final_model_folder(
     model: torch.nn.Module,
     training_plan: str,
@@ -986,261 +853,6 @@ def _save_final_model_folder(
         )
         _tui_info(f"written_final_output_model=1 output_dir={final_model_output_path}")
     _distributed_barrier()
-
-
-def _read_latest_checkpoint_pointer(output_dir: Path) -> str:
-    latest_path = output_dir / "latest_checkpoint.txt"
-    assert latest_path.exists(), f"latest checkpoint pointer not found: {latest_path}"
-    checkpoint_tag = latest_path.read_text(encoding="utf-8").strip()
-    assert len(checkpoint_tag) > 0, f"latest checkpoint pointer is empty: {latest_path}"
-    return checkpoint_tag
-
-
-def _resolve_resume_checkpoint_tag(output_dir: Path, resume_checkpoint_tag: str) -> str:
-    normalized_tag = resume_checkpoint_tag.strip()
-    assert len(normalized_tag) > 0, "resume_checkpoint_tag cannot be empty"
-    if normalized_tag == "none":
-        return ""
-    if normalized_tag in {"latest", "auto"}:
-        latest_path = output_dir / "latest_checkpoint.txt"
-        if not latest_path.exists():
-            if normalized_tag == "auto":
-                return ""
-            assert latest_path.exists(), (
-                f"latest checkpoint pointer not found: {latest_path}"
-            )
-        return _read_latest_checkpoint_pointer(output_dir=output_dir)
-    assert normalized_tag == "checkpoints", (
-        "explicit resume_checkpoint_tag must be 'checkpoints' for single-epoch run layout"
-    )
-    return normalized_tag
-
-
-def _extract_lora_checkpoint_state_dict(
-    model: torch.nn.Module,
-) -> dict[str, torch.Tensor]:
-    if hasattr(model, "peft_config"):
-        try:
-            from peft import get_peft_model_state_dict
-
-            return get_peft_model_state_dict(model)
-        except ImportError:
-            pass
-    return model.state_dict()
-
-
-def _load_lora_checkpoint_state_dict(
-    model: torch.nn.Module, state_dict: dict[str, torch.Tensor]
-) -> None:
-    if hasattr(model, "peft_config"):
-        try:
-            from peft import set_peft_model_state_dict
-
-            set_peft_model_state_dict(model, state_dict)
-            return
-        except ImportError:
-            pass
-
-    incompatible = model.load_state_dict(state_dict, strict=True)
-    assert len(incompatible.missing_keys) == 0, "checkpoint model state is missing keys"
-    assert len(incompatible.unexpected_keys) == 0, (
-        "checkpoint model state has unexpected keys"
-    )
-
-
-def _load_checkpoint(
-    model: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
-    output_dir: Path,
-    checkpoint_tag: str,
-    training_plan: str,
-    *,
-    adam_fp32: bool,
-) -> ResumeState:
-    training_plan = assert_supported_training_plan(training_plan)
-    assert len(checkpoint_tag.strip()) > 0, "checkpoint_tag cannot be empty"
-
-    rank, _ = _get_rank_world_size()
-    checkpoint_dir = output_dir / "checkpoints"
-    _tui_info(
-        f"rank={rank} "
-        f"loading_checkpoint=1 "
-        f"checkpoint_tag={checkpoint_tag} "
-        f"checkpoint_dir={checkpoint_dir}"
-    )
-    assert checkpoint_dir.exists(), f"checkpoint directory not found: {checkpoint_dir}"
-    model_state_path = checkpoint_dir / "model_state.pt"
-    optimizer_state_path = checkpoint_dir / f"optimizer_state.rank{rank}.pt"
-    training_state_path = checkpoint_dir / f"training_state.rank{rank}.pt"
-
-    assert model_state_path.exists(), f"missing model state: {model_state_path}"
-    assert optimizer_state_path.exists(), (
-        f"missing optimizer state: {optimizer_state_path}"
-    )
-    assert training_state_path.exists(), (
-        f"missing training state: {training_state_path}"
-    )
-
-    model_state_dict = torch.load(model_state_path, map_location="cpu")
-    incompatible: Any = None
-    if training_plan in {TRAINING_PLAN_LORA, TRAINING_PLAN_DDP}:
-        unwrapped = _unwrap_model(model)
-        assert isinstance(model_state_dict, dict), (
-            "checkpoint model state must be a state_dict"
-        )
-        if training_plan == TRAINING_PLAN_LORA:
-            _load_lora_checkpoint_state_dict(unwrapped, model_state_dict)
-        else:
-            incompatible = unwrapped.load_state_dict(model_state_dict, strict=True)
-    else:
-        assert training_plan == TRAINING_PLAN_FSDP, (
-            "unknown training plan for checkpoint loading"
-        )
-        from torch.distributed.fsdp import (
-            FullStateDictConfig,
-            StateDictType,
-        )
-        from torch.distributed.fsdp import (
-            FullyShardedDataParallel as FSDP,
-        )
-
-        assert isinstance(model, FSDP), "fsdp loading expects FSDP model"
-        load_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=False)
-        with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, load_policy):
-            incompatible = model.load_state_dict(model_state_dict, strict=True)
-
-    if training_plan in {TRAINING_PLAN_DDP, TRAINING_PLAN_FSDP}:
-        assert len(incompatible.missing_keys) == 0, (
-            "checkpoint model state is missing keys"
-        )
-        assert len(incompatible.unexpected_keys) == 0, (
-            "checkpoint model state has unexpected keys"
-        )
-
-    optimizer_state = torch.load(optimizer_state_path, map_location="cpu")
-    if adam_fp32:
-        optimizer_state = _convert_optimizer_state_dict_to_fp32(optimizer_state)
-    optimizer.load_state_dict(optimizer_state)
-
-    training_state = torch.load(training_state_path, map_location="cpu")
-    checkpoint_training_plan = assert_supported_training_plan(
-        str(training_state["training_plan"])
-    )
-    assert checkpoint_training_plan == training_plan, (
-        "checkpoint training plan mismatch"
-    )
-    next_iteration_index_obj = training_state.get("next_iteration_index")
-    if next_iteration_index_obj is None:
-        next_iteration_index_obj = training_state.get("next_epoch_index")
-    assert next_iteration_index_obj is not None, (
-        "checkpoint missing next_iteration_index"
-    )
-    resume_state = ResumeState(
-        global_step=int(training_state["global_step"]),
-        next_iteration_index=int(next_iteration_index_obj),
-        next_batch_cursor=int(training_state["next_batch_cursor"]),
-        accumulation_step=int(training_state["accumulation_step"]),
-        next_sample_index=int(training_state.get("next_sample_index", 0)),
-        next_batch_size=int(training_state.get("next_batch_size", 0)),
-        adaptive_velocity=float(training_state.get("adaptive_velocity", 0.0)),
-        adaptive_throughput_ema=float(
-            training_state.get("adaptive_throughput_ema", 0.0)
-        ),
-        adaptive_best_throughput_ema=float(
-            training_state.get("adaptive_best_throughput_ema", 0.0)
-        ),
-        adaptive_memory_utilization_ema=float(
-            training_state.get("adaptive_memory_utilization_ema", 0.0)
-        ),
-        adaptive_previous_tokens_per_sample=float(
-            training_state.get("adaptive_previous_tokens_per_sample", 0.0)
-        ),
-        adaptive_next_batch_size_float=float(
-            training_state.get(
-                "adaptive_next_batch_size_float",
-                float(training_state.get("next_batch_size", 0)),
-            )
-        ),
-        elapsed_training_time_sec=float(
-            training_state.get("elapsed_training_time_sec", 0.0)
-        ),
-        samples_trained=int(training_state.get("samples_trained", 0)),
-        samples_available=int(training_state.get("samples_available", 0)),
-        max_average_absolute_advantage=float(
-            training_state.get("max_average_absolute_advantage", -1.0)
-        ),
-        min_average_absolute_advantage=float(
-            training_state.get("min_average_absolute_advantage", -1.0)
-        ),
-        median_average_absolute_advantage=float(
-            training_state.get("median_average_absolute_advantage", -1.0)
-        ),
-    )
-    assert resume_state.global_step >= 0, "resume global_step must be non-negative"
-    assert resume_state.next_iteration_index >= 0, (
-        "resume iteration index must be non-negative"
-    )
-    assert resume_state.next_batch_cursor >= 0, (
-        "resume batch cursor must be non-negative"
-    )
-    assert resume_state.next_sample_index >= 0, (
-        "resume sample index must be non-negative"
-    )
-    assert resume_state.next_batch_size >= 0, (
-        "resume next_batch_size must be non-negative"
-    )
-    assert np.isfinite(resume_state.adaptive_velocity), (
-        "resume adaptive_velocity must be finite"
-    )
-    assert np.isfinite(resume_state.adaptive_throughput_ema), (
-        "resume adaptive_throughput_ema must be finite"
-    )
-    assert np.isfinite(resume_state.adaptive_best_throughput_ema), (
-        "resume adaptive_best_throughput_ema must be finite"
-    )
-    assert np.isfinite(resume_state.adaptive_memory_utilization_ema), (
-        "resume adaptive_memory_utilization_ema must be finite"
-    )
-    assert np.isfinite(resume_state.adaptive_previous_tokens_per_sample), (
-        "resume adaptive_previous_tokens_per_sample must be finite"
-    )
-    assert np.isfinite(resume_state.adaptive_next_batch_size_float), (
-        "resume adaptive_next_batch_size_float must be finite"
-    )
-    assert np.isfinite(resume_state.elapsed_training_time_sec), (
-        "resume elapsed_training_time_sec must be finite"
-    )
-    assert resume_state.elapsed_training_time_sec >= 0.0, (
-        "resume elapsed_training_time_sec must be non-negative"
-    )
-    assert resume_state.samples_trained >= 0, (
-        "resume samples_trained must be non-negative"
-    )
-    assert resume_state.samples_available >= 0, (
-        "resume samples_available must be non-negative"
-    )
-    assert np.isfinite(resume_state.max_average_absolute_advantage), (
-        "resume max_average_absolute_advantage must be finite"
-    )
-    assert np.isfinite(resume_state.min_average_absolute_advantage), (
-        "resume min_average_absolute_advantage must be finite"
-    )
-    assert np.isfinite(resume_state.median_average_absolute_advantage), (
-        "resume median_average_absolute_advantage must be finite"
-    )
-    assert resume_state.accumulation_step == 0, (
-        "resuming from partial gradient accumulation is not supported"
-    )
-    _tui_info(
-        f"rank={rank} "
-        f"loaded_checkpoint=1 "
-        f"global_step={resume_state.global_step} "
-        f"next_iteration={resume_state.next_iteration_index} "
-        f"next_batch_cursor={resume_state.next_batch_cursor} "
-        f"next_sample_index={resume_state.next_sample_index}"
-    )
-    _distributed_barrier()
-    return resume_state
 
 
 def _compute_next_position(
@@ -1674,8 +1286,6 @@ def _train_oneshot_multiepoch(
     lr_warmup_steps: int,
     lr_min_scale: float,
     lazy_loader: LazyResolvedBatchLoader,
-    ref_model: torch.nn.Module | None = None,
-    ema_shadows: dict[str, torch.Tensor] | None = None,
 ) -> None:
     """Multi-epoch oneshot training: all oneshot epochs in a single process.
 
@@ -1755,9 +1365,6 @@ def _train_oneshot_multiepoch(
             lr_min_scale=lr_min_scale,
             eng=eng,
             finalize_training=is_final,
-            persist_training_state=False,
-            ref_model=ref_model,
-            ema_shadows=ema_shadows,
         )
         epoch_steps_trained = resume_state.global_step - epoch_start_global_step
         epoch_samples_trained = (
@@ -1806,9 +1413,6 @@ def train(config: TrainConfig) -> None:
     )
     assert 0.0 < config.adam_beta1 < 1.0, "adam_beta1 must be in (0, 1)"
     assert 0.0 < config.adam_beta2 < 1.0, "adam_beta2 must be in (0, 1)"
-    assert len(config.resume_checkpoint_tag.strip()) > 0, (
-        "resume_checkpoint_tag cannot be empty"
-    )
     assert len(config.checkpoints_parent_dir.strip()) > 0, (
         "checkpoints_parent_dir cannot be empty"
     )
@@ -1911,7 +1515,6 @@ def train(config: TrainConfig) -> None:
         model, raw_model, attention_backend = _build_fsdp_model(
             model_path=resolved_model_path,
             device=device,
-            include_raw_model=config.kl_enabled,
         )
 
     _tui_info(f"rank={rank} attention_backend={attention_backend}")
@@ -1940,37 +1543,6 @@ def train(config: TrainConfig) -> None:
             find_unused_parameters=False,
         )
 
-    ref_model: torch.nn.Module | None = None
-    ema_shadows: dict[str, torch.Tensor] | None = None
-    if config.kl_enabled:
-        assert raw_model is not None, "FSDP KL path requires pre-wrap raw model copy"
-        ref_raw = copy.deepcopy(raw_model)
-        ref_raw.eval()
-        for param in ref_raw.parameters():
-            param.requires_grad_(False)
-        if training_plan == TRAINING_PLAN_FSDP:
-            ref_model = _wrap_as_fsdp(ref_raw, device)
-        else:
-            ref_model = ref_raw
-    if config.ema_enabled:
-        ema_shadows = {}
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                ema_shadows[name] = param.data.detach().cpu().clone()
-    raw_model = None
-    if training_plan == TRAINING_PLAN_FSDP:
-        gc.collect()
-        if torch.cuda.is_available() and device.type == "cuda":
-            torch.cuda.empty_cache()
-    if _is_primary_rank() and (config.kl_enabled or config.ema_enabled):
-        _tui_info(
-            "auxiliary_regularization=1 "
-            f"kl_enabled={1 if config.kl_enabled else 0} "
-            f"ema_enabled={1 if config.ema_enabled else 0} "
-            f"kl_penalty_coefficient={config.kl_penalty_coefficient:.4f} "
-            f"ema_decay={config.ema_decay:.4f}"
-        )
-
     checkpoints_parent_dir = Path(config.checkpoints_parent_dir)
     checkpoints_parent_dir.mkdir(parents=True, exist_ok=True)
     final_model_output_parent_dir = Path(config.final_model_output_parent_dir)
@@ -1984,13 +1556,6 @@ def train(config: TrainConfig) -> None:
         "tokenizer name_or_path must exactly match model_path"
     )
 
-    resolved_resume_tag = ""
-    if not (config.training_mode == "oneshot" and config.oneshot_num_epochs > 0):
-        resolved_resume_tag = _resolve_resume_checkpoint_tag(
-            output_dir=checkpoints_parent_dir,
-            resume_checkpoint_tag=config.resume_checkpoint_tag,
-        )
-
     resume_state = ResumeState(
         global_step=0,
         next_iteration_index=0,
@@ -2002,45 +1567,6 @@ def train(config: TrainConfig) -> None:
         adaptive_next_batch_size_float=float(initial_batch_size),
         samples_trained=0,
     )
-    if len(resolved_resume_tag) > 0:
-        if _is_primary_rank():
-            _tui_info(
-                f"loading_resume_checkpoint=1 checkpoint_tag={resolved_resume_tag}"
-            )
-        resume_state = _load_checkpoint(
-            model=model,
-            optimizer=optimizer,
-            output_dir=checkpoints_parent_dir,
-            checkpoint_tag=resolved_resume_tag,
-            training_plan=training_plan,
-            adam_fp32=config.adam_fp32,
-        )
-        if resume_state.next_batch_size == 0:
-            resume_state = ResumeState(
-                global_step=resume_state.global_step,
-                next_iteration_index=resume_state.next_iteration_index,
-                next_batch_cursor=resume_state.next_batch_cursor,
-                accumulation_step=resume_state.accumulation_step,
-                next_sample_index=resume_state.next_sample_index,
-                next_batch_size=initial_batch_size,
-                adaptive_velocity=initial_adaptive_velocity,
-                adaptive_throughput_ema=resume_state.adaptive_throughput_ema,
-                adaptive_best_throughput_ema=resume_state.adaptive_best_throughput_ema,
-                adaptive_memory_utilization_ema=resume_state.adaptive_memory_utilization_ema,
-                adaptive_previous_tokens_per_sample=resume_state.adaptive_previous_tokens_per_sample,
-                adaptive_next_batch_size_float=float(initial_batch_size),
-                elapsed_training_time_sec=resume_state.elapsed_training_time_sec,
-                samples_trained=resume_state.samples_trained,
-                samples_available=resume_state.samples_available,
-                max_average_absolute_advantage=resume_state.max_average_absolute_advantage,
-                min_average_absolute_advantage=resume_state.min_average_absolute_advantage,
-                median_average_absolute_advantage=resume_state.median_average_absolute_advantage,
-            )
-    elif _is_primary_rank():
-        if config.training_mode == "oneshot" and config.oneshot_num_epochs > 0:
-            _tui_info("loading_resume_checkpoint=0 oneshot_resume_disabled=1")
-        else:
-            _tui_info("loading_resume_checkpoint=0 starting_fresh=1")
 
     lazy_loader = LazyResolvedBatchLoader(
         training_trajectory_sqlite_path=config.training_trajectory_sqlite_path,
@@ -2075,8 +1601,6 @@ def train(config: TrainConfig) -> None:
                 lr_warmup_steps=lr_warmup_steps,
                 lr_min_scale=lr_min_scale,
                 lazy_loader=lazy_loader,
-                ref_model=ref_model,
-                ema_shadows=ema_shadows,
             )
         else:
             run_training_loop(
@@ -2107,8 +1631,6 @@ def train(config: TrainConfig) -> None:
                 lr_warmup_steps=lr_warmup_steps,
                 lr_min_scale=lr_min_scale,
                 lazy_loader=lazy_loader,
-                ref_model=ref_model,
-                ema_shadows=ema_shadows,
             )
     finally:
         lazy_loader.close()

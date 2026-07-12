@@ -6,7 +6,7 @@ from pathlib import Path
 from types import UnionType
 from typing import Any, TypeVar, Union, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict
 
 
 class TrainingRequestArgs(BaseModel):
@@ -45,23 +45,6 @@ class TrainingRequestArgs(BaseModel):
     oneshot_num_epochs: int = 0
     oneshot_start_epoch: int = 0
     oneshot_model_output_root: str = ""
-    kl_and_ema_enabled: bool = False
-    kl_enabled: bool | None = None
-    ema_enabled: bool | None = None
-    kl_penalty_coefficient: float = 0.04
-    ema_decay: float = 0.992
-
-    @model_validator(mode="after")
-    def _resolve_legacy_kl_ema_flags(self) -> "TrainingRequestArgs":
-        kl_enabled = self.kl_enabled
-        ema_enabled = self.ema_enabled
-        if kl_enabled is None:
-            kl_enabled = self.kl_and_ema_enabled
-        if ema_enabled is None:
-            ema_enabled = self.kl_and_ema_enabled
-        object.__setattr__(self, "kl_enabled", bool(kl_enabled))
-        object.__setattr__(self, "ema_enabled", bool(ema_enabled))
-        return self
 
 
 class SftTrainingRequestArgs(BaseModel):

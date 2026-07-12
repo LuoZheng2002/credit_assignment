@@ -828,9 +828,6 @@ def _run_unified_loop(
     lr_min_scale: float,
     eng: Any,
     finalize_training: bool = True,
-    persist_training_state: bool = True,
-    ref_model: torch.nn.Module | None = None,
-    ema_shadows: dict[str, torch.Tensor] | None = None,
 ) -> Any:
     assert lazy_loader.sample_count > 0, "training set must be non-empty"
     training_plan = assert_supported_training_plan(config.training_plan)
@@ -1183,7 +1180,6 @@ def _run_unified_loop(
         attention_mask = None
         advantages = None
         logits = None
-        ref_logits = None
         loss_output = None
         loss = None
         try:
@@ -1197,12 +1193,6 @@ def _run_unified_loop(
             )
             advantages = collated.advantages.to(device=device, non_blocking=True)
 
-            if ref_model is not None:
-                with torch.no_grad():
-                    ref_logits = eng._forward_logits(
-                        ref_model, input_ids=input_ids, attention_mask=attention_mask
-                    )
-
             with sync_context:
                 logits = eng._forward_logits(
                     model, input_ids=input_ids, attention_mask=attention_mask
@@ -1212,10 +1202,6 @@ def _run_unified_loop(
                     labels=labels,
                     advantages=advantages,
                     advantage_clip=config.advantage_clip,
-                    ref_logits=ref_logits,
-                    kl_penalty_coefficient=config.kl_penalty_coefficient
-                    if ref_model is not None
-                    else 0.0,
                 )
                 loss = loss_output.loss / config.grad_accum_steps
                 loss.backward()
@@ -1260,7 +1246,6 @@ def _run_unified_loop(
                 attention_mask = None
                 advantages = None
                 logits = None
-                ref_logits = None
                 loss_output = None
                 loss = None
                 eng._print_cuda_oom_diagnostics_stderr(
@@ -1381,7 +1366,6 @@ def _run_unified_loop(
                 and attention_mask is not None
             ):
                 logits = None
-                ref_logits = None
                 loss_output = None
                 loss = None
                 collated = None
@@ -1405,7 +1389,6 @@ def _run_unified_loop(
             attention_mask = None
             advantages = None
             logits = None
-            ref_logits = None
             loss_output = None
             loss = None
             eng._release_step_memory(device)
@@ -1549,16 +1532,6 @@ def _run_unified_loop(
                 )
                 _assert_pre_step_finite(model, optimizer, clipped_grad_norm)
                 optimizer.step()
-                if ema_shadows is not None:
-                    ema_decay = config.ema_decay
-                    for name, param in model.named_parameters():
-                        if param.requires_grad and name in ema_shadows:
-                            ema_shadows[name].mul_(ema_decay).add_(
-                                param.data.detach().to(
-                                    device="cpu", dtype=ema_shadows[name].dtype
-                                ),
-                                alpha=1.0 - ema_decay,
-                            )
             except (RuntimeError, AssertionError) as exc:
                 if isinstance(exc, RuntimeError) and (
                     not eng._is_cuda_oom_exception(exc)
@@ -1779,54 +1752,6 @@ def _run_unified_loop(
                 eng._log_json_line(logs_path, log_payload)
                 clock.last_log_time = now
 
-            elapsed_since_last_checkpoint_sec = now - clock.last_checkpoint_save_time
-            if (
-                persist_training_state
-                and elapsed_since_last_checkpoint_sec
-                >= config.checkpoint_save_time_interval
-            ):
-                checkpoint_tag = "checkpoints"
-                if _is_primary_rank():
-                    _tui_info(
-                        f"saving_periodic_checkpoint=1 elapsed_sec={elapsed_since_last_checkpoint_sec:.2f} "
-                        f"global_step={global_step} iteration={iteration_index} "
-                        f"batch_index={step_batch.batch_index} next_sample_index={global_sample_cursor}"
-                    )
-                eng._save_checkpoint(
-                    model=model,
-                    optimizer=optimizer,
-                    output_dir=checkpoints_parent_dir,
-                    checkpoint_tag=checkpoint_tag,
-                    training_plan=training_plan,
-                    global_step=global_step,
-                    next_iteration_index=iteration_index,
-                    next_batch_cursor=global_sample_cursor,
-                    accumulation_step=accumulation_step,
-                    next_sample_index=global_sample_cursor,
-                    next_batch_size=adaptive_state.next_batch_size,
-                    adaptive_velocity=adaptive_state.velocity,
-                    adaptive_throughput_ema=adaptive_state.throughput_ema,
-                    adaptive_best_throughput_ema=adaptive_state.best_throughput_ema,
-                    adaptive_memory_utilization_ema=adaptive_state.memory_utilization_ema,
-                    adaptive_previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-                    adaptive_next_batch_size_float=adaptive_state.next_batch_size_float,
-                    elapsed_training_time_sec=_elapsed_training_time_sec(
-                        clock=clock, now=now
-                    ),
-                    samples_trained=samples_trained,
-                    samples_available=samples_available,
-                    max_average_absolute_advantage=max_average_absolute_advantage,
-                    min_average_absolute_advantage=min_average_absolute_advantage,
-                    median_average_absolute_advantage=median_average_absolute_advantage,
-                )
-                if _is_primary_rank():
-                    _tui_info(
-                        f"checkpoint_saved=1 checkpoint_tag={checkpoint_tag} "
-                        f"global_step={global_step} iteration={iteration_index} "
-                        f"batch_index={step_batch.batch_index} next_sample_index={global_sample_cursor}"
-                    )
-                clock.last_checkpoint_save_time = now
-
     accumulation_step, global_step, clipped_grad_norm, current_learning_rate = (
         _flush_partial_gradients(
             model=model,
@@ -1848,37 +1773,6 @@ def _run_unified_loop(
         _tui_key_value("learning_rate", f"{current_learning_rate:.10f}")
 
     total_training_time_sec = _elapsed_training_time_sec(clock=clock)
-    if persist_training_state:
-        eng._save_checkpoint(
-            model=model,
-            optimizer=optimizer,
-            output_dir=checkpoints_parent_dir,
-            checkpoint_tag="checkpoints",
-            training_plan=training_plan,
-            global_step=global_step,
-            next_iteration_index=iteration_index,
-            next_batch_cursor=global_sample_cursor,
-            accumulation_step=accumulation_step,
-            next_sample_index=global_sample_cursor,
-            next_batch_size=adaptive_state.next_batch_size,
-            adaptive_velocity=adaptive_state.velocity,
-            adaptive_throughput_ema=adaptive_state.throughput_ema,
-            adaptive_best_throughput_ema=adaptive_state.best_throughput_ema,
-            adaptive_memory_utilization_ema=adaptive_state.memory_utilization_ema,
-            adaptive_previous_tokens_per_sample=adaptive_state.previous_tokens_per_sample,
-            adaptive_next_batch_size_float=adaptive_state.next_batch_size_float,
-            elapsed_training_time_sec=total_training_time_sec,
-            samples_trained=samples_trained,
-            samples_available=samples_available,
-            max_average_absolute_advantage=max_average_absolute_advantage,
-            min_average_absolute_advantage=min_average_absolute_advantage,
-            median_average_absolute_advantage=median_average_absolute_advantage,
-        )
-        if _is_primary_rank():
-            _tui_info(
-                f"checkpoint_saved=1 checkpoint_tag=checkpoints global_step={global_step} "
-                f"iteration={iteration_index} next_sample_index={global_sample_cursor} final=1"
-            )
     eng._save_final_model_folder(
         model=model,
         training_plan=training_plan,
@@ -1966,8 +1860,6 @@ def run_training_loop(
     lr_warmup_steps: int,
     lr_min_scale: float,
     lazy_loader: LazyResolvedBatchLoader | None,
-    ref_model: torch.nn.Module | None = None,
-    ema_shadows: dict[str, torch.Tensor] | None = None,
 ) -> None:
     from . import engine as eng
 
@@ -2001,6 +1893,4 @@ def run_training_loop(
         lr_warmup_steps=lr_warmup_steps,
         lr_min_scale=lr_min_scale,
         eng=eng,
-        ref_model=ref_model,
-        ema_shadows=ema_shadows,
     )

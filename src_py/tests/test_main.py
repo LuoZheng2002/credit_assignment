@@ -27,7 +27,6 @@ class TestMain(unittest.TestCase):
             "lora_alpha": 16,
             "lora_dropout": 0.0,
             "lora_target_modules_csv": "q_proj,k_proj",
-            "resume_checkpoint_tag": "auto",
             "seed": 42,
             "adam_fp32": False,
             "training_summary_parent_dir": "/tmp/storage_root/results/qwen35_08b/run_a/summary",
@@ -66,7 +65,6 @@ class TestMain(unittest.TestCase):
             request = self._training_request()
             config = _load_train_config(launch_args, request)
             self.assertEqual("lora", config.training_plan)
-            self.assertEqual("auto", config.resume_checkpoint_tag)
             self.assertEqual(10, int(config.training_time))
             self.assertEqual(
                 str(trajectory_path), config.training_trajectory_sqlite_path
@@ -102,36 +100,6 @@ class TestMain(unittest.TestCase):
                 "/tmp/storage_root/results/qwen35_08b/run_a/epoch_0",
                 config.checkpoints_parent_dir,
             )
-
-    def test_load_train_config_legacy_kl_and_ema_flag_enables_both(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            trajectory_path = Path(tmp_dir) / "training_trajectories.msgpack"
-            trajectory_path.write_bytes(b"msgpack")
-            launch_args = TrainProcessLaunchArgs(
-                training_trajectory_sqlite_path=str(trajectory_path),
-                training_request_json_path="/tmp/request.json",
-            )
-            request = self._training_request(kl_and_ema_enabled=True)
-            config = _load_train_config(launch_args, request)
-            self.assertTrue(config.kl_enabled)
-            self.assertTrue(config.ema_enabled)
-
-    def test_load_train_config_split_kl_ema_flags_override_legacy_flag(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            trajectory_path = Path(tmp_dir) / "training_trajectories.msgpack"
-            trajectory_path.write_bytes(b"msgpack")
-            launch_args = TrainProcessLaunchArgs(
-                training_trajectory_sqlite_path=str(trajectory_path),
-                training_request_json_path="/tmp/request.json",
-            )
-            request = self._training_request(
-                kl_and_ema_enabled=True,
-                kl_enabled=False,
-                ema_enabled=True,
-            )
-            config = _load_train_config(launch_args, request)
-            self.assertFalse(config.kl_enabled)
-            self.assertTrue(config.ema_enabled)
 
     def test_load_train_config_requires_uploaded_sqlite(self) -> None:
         launch_args = TrainProcessLaunchArgs(

@@ -21,7 +21,6 @@ from .cli_args import (
     parse_model_json_file,
 )
 from .engine import (
-    ResumeState,
     _build_fsdp_model,
     _build_full_model,
     _build_lora_model,
@@ -31,8 +30,6 @@ from .engine import (
     _make_adam_fp32_aware,
     _resolve_local_model_path,
     _resolve_pad_token_id,
-    _resolve_resume_checkpoint_tag,
-    _save_checkpoint,
     _save_final_model_folder,
     _set_seed,
 )
@@ -245,49 +242,16 @@ def _run_sft_training(
         "tokenizer name_or_path must exactly match model_path"
     )
 
-    resolved_resume_tag = _resolve_resume_checkpoint_tag(
-        output_dir=checkpoints_parent_dir,
-        resume_checkpoint_tag=request.resume_checkpoint_tag or "auto",
-    )
-
-    # Load checkpoint if available
-    resume_state = ResumeState(
-        global_step=0,
-        next_iteration_index=0,
-        next_batch_cursor=0,
-        accumulation_step=0,
-        next_sample_index=0,
-        next_batch_size=1,
-    )
-    if len(resolved_resume_tag) > 0:
-        if _is_primary_rank():
-            _tui_info(
-                f"loading_resume_checkpoint=1 checkpoint_tag={resolved_resume_tag}"
-            )
-        from .engine import _load_checkpoint
-
-        resume_state = _load_checkpoint(
-            model=model,
-            optimizer=optimizer,
-            output_dir=checkpoints_parent_dir,
-            checkpoint_tag=resolved_resume_tag,
-            training_plan=training_plan,
-            adam_fp32=request.adam_fp32,
-        )
-    elif _is_primary_rank():
-        _tui_info("loading_resume_checkpoint=0 starting_fresh=1")
-
     batch_size = 4
     grad_accum_steps = request.grad_accum_steps
     model.train()
 
-    training_start_time = time.time() - resume_state.elapsed_training_time_sec
-    sample_index = resume_state.next_sample_index
-    global_step = resume_state.global_step
-    accumulation_step = resume_state.accumulation_step
-    trained_samples = resume_state.samples_trained
+    training_start_time = time.time()
+    sample_index = 0
+    global_step = 0
+    accumulation_step = 0
+    trained_samples = 0
     last_log_time = training_start_time
-    last_checkpoint_time = training_start_time
 
     try:
         while True:
@@ -366,51 +330,6 @@ def _run_sft_training(
                                 )
                                 + "\n"
                             )
-
-                # Checkpointing
-                now = time.time()
-                if now - last_checkpoint_time >= request.checkpoint_save_time_interval:
-                    last_checkpoint_time = now
-                    # Ensure no partial accumulation when checkpointing
-                    if accumulation_step != 0:
-                        torch.nn.utils.clip_grad_norm_(
-                            [p for p in model.parameters() if p.requires_grad],
-                            max_norm=1.0,
-                        )
-                        optimizer.step()
-                        optimizer.zero_grad()
-                        global_step += 1
-                        trained_samples += batch_size * accumulation_step
-                        accumulation_step = 0
-                    if _is_primary_rank():
-                        _tui_info(
-                            f"saving_sft_checkpoint=1 global_step={global_step} sample_index={sample_index}"
-                        )
-                    _save_checkpoint(
-                        model=model,
-                        optimizer=optimizer,
-                        output_dir=checkpoints_parent_dir,
-                        checkpoint_tag="latest",
-                        training_plan=training_plan,
-                        global_step=global_step,
-                        next_iteration_index=global_step,
-                        next_batch_cursor=sample_index,
-                        accumulation_step=accumulation_step,
-                        next_sample_index=sample_index,
-                        next_batch_size=batch_size,
-                        adaptive_velocity=0.0,
-                        adaptive_throughput_ema=0.0,
-                        adaptive_best_throughput_ema=0.0,
-                        adaptive_memory_utilization_ema=0.0,
-                        adaptive_previous_tokens_per_sample=0.0,
-                        adaptive_next_batch_size_float=float(batch_size),
-                        elapsed_training_time_sec=time.time() - training_start_time,
-                        samples_trained=trained_samples,
-                        samples_available=sample_count,
-                        max_average_absolute_advantage=-1.0,
-                        min_average_absolute_advantage=-1.0,
-                        median_average_absolute_advantage=-1.0,
-                    )
     finally:
         pass  # No lazy loader to close — all data is in memory
 

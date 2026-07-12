@@ -7,7 +7,6 @@ import torch.nn.functional as F
 
 IGNORE_LABEL = -100
 STD_EPS = 1e-6
-KL_VOCAB_CHUNK_SIZE = 4096
 
 
 @dataclass(frozen=True)
@@ -51,47 +50,12 @@ def _local_weighted_mean(
     return local_sum / local_count
 
 
-def _chunked_forward_kl_divergence(
-    current_logits: torch.Tensor,
-    reference_logits: torch.Tensor,
-    *,
-    vocab_chunk_size: int = KL_VOCAB_CHUNK_SIZE,
-) -> torch.Tensor:
-    assert current_logits.ndim == 3, "current_logits must be [batch, seq_len, vocab]"
-    assert reference_logits.ndim == 3, (
-        "reference_logits must be [batch, seq_len, vocab]"
-    )
-    assert current_logits.shape == reference_logits.shape, (
-        "current_logits and reference_logits must match"
-    )
-    assert vocab_chunk_size > 0, "vocab_chunk_size must be positive"
-
-    curr_log_denom = torch.logsumexp(current_logits.to(torch.float32), dim=-1)
-    ref_log_denom = torch.logsumexp(reference_logits.to(torch.float32), dim=-1)
-    per_token_kl = torch.zeros_like(curr_log_denom, dtype=torch.float32)
-    vocab_size = current_logits.shape[-1]
-
-    for start in range(0, vocab_size, vocab_chunk_size):
-        end = min(vocab_size, start + vocab_chunk_size)
-        curr_chunk = current_logits[:, :, start:end].to(torch.float32)
-        ref_chunk = reference_logits[:, :, start:end].to(torch.float32)
-        curr_log_probs_chunk = curr_chunk - curr_log_denom.unsqueeze(-1)
-        ref_log_probs_chunk = ref_chunk - ref_log_denom.unsqueeze(-1)
-        ref_probs_chunk = torch.exp(ref_log_probs_chunk)
-        per_token_kl = per_token_kl + (
-            ref_probs_chunk * (ref_log_probs_chunk - curr_log_probs_chunk)
-        ).sum(dim=-1)
-
-    return per_token_kl
-
 
 def compute_advantage_weighted_causal_lm_loss(
     logits: torch.Tensor,
     labels: torch.Tensor,
     advantages: torch.Tensor,
     advantage_clip: float,
-    ref_logits: torch.Tensor | None = None,
-    kl_penalty_coefficient: float = 0.0,
 ) -> AdvantageWeightedLossOutput:
     assert logits.ndim == 3, "logits must be [batch, seq_len, vocab]"
     assert labels.ndim == 2, "labels must be [batch, seq_len]"
@@ -143,24 +107,6 @@ def compute_advantage_weighted_causal_lm_loss(
     _assert_tensor_finite(weighted_loss, "weighted_loss")
 
     total_loss = weighted_loss
-    kl_div_mean: torch.Tensor | None = None
-    if ref_logits is not None and kl_penalty_coefficient > 0.0:
-        shifted_ref_logits = ref_logits[:, :-1, :].contiguous()
-        assert shifted_ref_logits.shape == shifted_logits.shape, (
-            "ref_logits shape must match logits shape"
-        )
-        _assert_tensor_finite(shifted_ref_logits, "ref_logits")
-
-        per_token_kl = _chunked_forward_kl_divergence(
-            current_logits=shifted_logits,
-            reference_logits=shifted_ref_logits,
-        )
-        kl_div_mean = (
-            per_token_kl.masked_select(supervised_mask).to(torch.float32).sum()
-            / supervised_count_fp
-        )
-        _assert_tensor_finite(kl_div_mean, "kl_div")
-        total_loss = total_loss + kl_penalty_coefficient * kl_div_mean
 
     _assert_tensor_finite(total_loss, "total_loss")
 
@@ -202,8 +148,6 @@ def compute_advantage_weighted_causal_lm_loss(
         "supervised_tokens_per_sample": float(local_tokens_per_sample.item()),
         "batch_size_per_rank": float(batch_size),
     }
-    if kl_div_mean is not None:
-        stats["kl_div"] = float(kl_div_mean.item())
 
     return AdvantageWeightedLossOutput(loss=total_loss, stats=stats)
 

@@ -58,7 +58,6 @@ def _load_train_config(
         lora_dropout=request.lora_dropout or 0.05,
         lora_target_modules_csv=request.lora_target_modules_csv
         or "q_proj,k_proj,v_proj,o_proj",
-        resume_checkpoint_tag=request.resume_checkpoint_tag or "auto",
         seed=request.seed,
         adam_fp32=request.adam_fp32,
         adam_beta1=request.adam_beta1,
@@ -69,10 +68,6 @@ def _load_train_config(
         oneshot_num_epochs=request.oneshot_num_epochs,
         oneshot_start_epoch=request.oneshot_start_epoch,
         oneshot_model_output_root=request.oneshot_model_output_root,
-        kl_enabled=bool(request.kl_enabled),
-        ema_enabled=bool(request.ema_enabled),
-        kl_penalty_coefficient=request.kl_penalty_coefficient,
-        ema_decay=request.ema_decay,
     )
 
 
