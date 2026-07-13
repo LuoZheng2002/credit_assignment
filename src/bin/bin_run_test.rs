@@ -1,6 +1,6 @@
 use std::{backtrace::Backtrace, path::Path};
 
-use clap::{ArgAction, Parser, ValueEnum};
+use clap::{Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
     directories::{inference_wrapper_log_path, model_parent_dir, test_accuracy_path, tui_log_path},
@@ -18,7 +18,7 @@ use credit_assignment::{
     },
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     rollout::{RolloutProgramConfig, rollout_all},
-    rollout_config::DirectRolloutConfig,
+    rollout_config::RolloutConfig,
     tree_action_log::open_action_logs,
     utils::configure_mount_dir,
 };
@@ -38,13 +38,7 @@ struct Args {
     testing_configs_path: String,
 
     #[arg(long)]
-    max_rollout_concurrency: usize,
-    #[arg(long, action = ArgAction::Set)]
-    ui: bool,
-    #[arg(long)]
-    rollout_time_limit_secs: usize,
-    #[arg(long, default_value_t = 1)]
-    max_python_processes: usize,
+    rollout_secs: usize,
     #[arg(long, default_value_t = 1)]
     num_gpus: usize,
 }
@@ -91,7 +85,7 @@ fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
 }
 
 async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
-    rollout_config: DirectRolloutConfig<Testing>,
+    rollout_config: RolloutConfig<Testing>,
     testing_config: &TestingConfig,
     args: &Args,
     client: Client,
@@ -104,14 +98,13 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
         posterior_calculation_config: posterior_calculation_config.clone(),
         epoch: testing_config.epoch,
         client,
-        max_rollout_concurrency: args.max_rollout_concurrency,
         inference_endpoint,
-        rollout_time_limit_secs: args.rollout_time_limit_secs,
-        max_python_processes: args.max_python_processes,
+        rollout_secs: args.rollout_secs,
         total_epochs: testing_config.total_epochs,
         action_log_store_override_path: None,
         use_tool: testing_config.use_tool,
         fixed_temperature: NotNan::new(fixed_temperatures::VALIDATION_TEMPERATURE).unwrap(),
+        max_concurrent_rollout: 300,
     };
     let _ = rollout_all::<M, Testing>(&testing_config.mount_dir, program_config).await;
 
@@ -134,7 +127,7 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
 }
 
 async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
-    rollout_config: DirectRolloutConfig<Testing>,
+    rollout_config: RolloutConfig<Testing>,
     testing_config: &TestingConfig,
     args: &Args,
     client: Client,
@@ -236,19 +229,17 @@ async fn run_testing_config(
     ensure_parent_dir_exists(&progress_tui_log_path)
         .map_err(|err| format!("failed to prepare tui log directory: {}", err))?;
 
-    let rollout_config: DirectRolloutConfig<Testing> =
-        read_json::<DirectRolloutConfig<Testing>>(&testing_config.testing_rollout_config_path)?;
+    let rollout_config: RolloutConfig<Testing> =
+        read_json::<RolloutConfig<Testing>>(&testing_config.testing_rollout_config_path)?;
     assert_eq!(
         rollout_config.num_trunks, rollout_config.num_leaves,
         "num_trunks ({}) must equal num_leaves ({}) for test evaluation (no branching)",
         rollout_config.num_trunks, rollout_config.num_leaves,
     );
 
-    if args.ui {
-        ProgressTuiLogger::initialize(progress_tui_log_path.clone())
-            .await
-            .map_err(|err| err.to_string())?;
-    }
+    ProgressTuiLogger::initialize(progress_tui_log_path.clone())
+        .await
+        .map_err(|err| err.to_string())?;
 
     let result = async {
         let test_result = run_model_for_testing!(
@@ -281,19 +272,17 @@ async fn run_testing_config(
     }
     .await;
 
-    if args.ui {
-        if let Err(err) = ProgressTuiLogger::shutdown()
-            .await
-            .map_err(|err| err.to_string())
-        {
-            if result.is_ok() {
-                return Err(err);
-            }
-            eprintln!(
-                "warning: progress TUI shutdown failed after config failure: {}",
-                err
-            );
+    if let Err(err) = ProgressTuiLogger::shutdown()
+        .await
+        .map_err(|err| err.to_string())
+    {
+        if result.is_ok() {
+            return Err(err);
         }
+        eprintln!(
+            "warning: progress TUI shutdown failed after config failure: {}",
+            err
+        );
     }
 
     result
@@ -313,10 +302,6 @@ async fn main() {
     dotenvy::dotenv().ok();
     let args = Args::parse();
     check_sympy_availability().unwrap();
-    assert!(
-        args.max_python_processes > 0,
-        "max_python_processes must be positive"
-    );
     assert!(args.num_gpus > 0, "num_gpus must be positive");
 
     println!("Starting test accuracy evaluation pipeline...");

@@ -16,7 +16,7 @@ use crate::hybrid_dataset::{
 };
 use crate::{
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-    rollout_config::DirectRolloutConfig,
+    rollout_config::RolloutConfig,
     tree_action_log::{
         ActionLogConfigBundle, ActionLogStore, DirectTreeActionLog,
         action_log_config_bundle_file_path,
@@ -57,7 +57,7 @@ struct HomePageLoadRequest {
 struct App<M: LlmModelMarker, S: DatasetSplit> {
     _model_marker: PhantomData<M>,
     override_hyperparameters: Option<PosteriorHyperparameters>,
-    rollout_config: DirectRolloutConfig<S>,
+    rollout_config: RolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
     use_tool: bool,
     question_store: HybridDatasetStore<S>,
@@ -89,7 +89,7 @@ struct App<M: LlmModelMarker, S: DatasetSplit> {
 impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
     async fn new(
         _config_nickname: String,
-        rollout_config: DirectRolloutConfig<S>,
+        rollout_config: RolloutConfig<S>,
         posterior_calculation_config: PosteriorCalculationConfig,
         use_tool: bool,
         _epoch: usize,
@@ -1044,7 +1044,7 @@ fn run_app<M: LlmModelMarker, S: DatasetSplit>(
 
 async fn run_model_app<M: LlmModelMarker, S: DatasetSplit>(
     config_nickname: String,
-    rollout_config: DirectRolloutConfig<S>,
+    rollout_config: RolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
     use_tool: bool,
     epoch: usize,
@@ -1125,7 +1125,7 @@ fn load_action_log_config_bundle<S: DatasetSplit>(
         }
     };
     let rollout_config =
-        read_json::<DirectRolloutConfig<S>>(&rollout_config_path).map_err(|err| {
+        read_json::<RolloutConfig<S>>(&rollout_config_path).map_err(|err| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(

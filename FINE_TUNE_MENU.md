@@ -65,22 +65,8 @@ Its internal files are owned by training/resume logic and treated as opaque exte
 - `optimizer_state.rank{rank}.pt`
 - `training_state.rank{rank}.pt`
 
-Resume modes via `resume_checkpoint_tag`:
+Resume mode: always resume from the latest checkpoint if a pointer file exists, otherwise start fresh.
 
-- `auto` (default): resume from latest if pointer exists, else start fresh.
-- `latest`: require pointer file and resume from it.
-- `none`: always start fresh.
-- explicit tag: use `checkpoints`.
-
-Resume examples:
-
-```bash
-# 1) Edit the config field "resume_checkpoint_tag"
-#    auto | latest | none | checkpoints
-
-# 2) Launch using config-path-only entry
-bash scripts/train/smoke_test_lora.sh 1 train_config/lora_qwen25.toml
-```
 
 ## 4) TOML Config Entry details
 
@@ -106,9 +92,8 @@ MASTER_PORT=29501 torchrun --nproc_per_node 1 --master_port "${MASTER_PORT}" -m 
 Job folder rules:
 
 - The job folder must contain `train_request.toml` at its root.
-- The job folder must contain `input/training_trajectories.sqlite`.
+- The job folder must contain `input/training_trajectories.msgpack`.
 - The TOML root table must contain exactly all `TrainConfig` keys (no missing keys, no extra keys).
-- Resume mode in TOML uses the same `resume_checkpoint_tag` values: `auto`, `latest`, `none`, or an explicit checkpoint tag.
 - Use `num_iterations` for the number of passes over loaded training batches.
 - Optional sample limit for smoke tests: set `first_n_training_samples > 0` to cap visible trajectories; `0` means no limit.
 

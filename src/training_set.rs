@@ -17,7 +17,7 @@ use crate::hybrid_dataset::{QuestionFlatId, Training, open_hybrid_dataset};
 use crate::{
     hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
     posterior_calculation_config::PosteriorCalculationConfig,
-    rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+    rollout_config::{TrainingAdvantagePolicy, RolloutConfig},
     tree::{DirectTree, SegmentContent, SegmentId, TreeCorrectness},
     tree_action_log::{
         ActionLogConfigBundle, ActionLogStore, DirectTreeActionLog, open_action_logs,
@@ -357,11 +357,11 @@ fn supervised_content_advantage_stats<M: LlmModelMarker>(
 pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     question_map: BTreeMap<usize, HybridDatasetQuestion<Training>>,
     action_store: ActionLogStore<M, Training>,
-    rollout_config: DirectRolloutConfig<Training>,
+    rollout_config: RolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
     training_trajectories_file_path: String,
     statistics_file_path: String,
-    advantage_calculation_policy: AdvantageCalculationPolicy,
+    training_advantage_policy: TrainingAdvantagePolicy,
     positive_advantage_only: bool,
     use_tool: bool,
 ) {
@@ -372,7 +372,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
             action_store,
             rollout_config.clone(),
             posterior_calculation_config.clone(),
-            advantage_calculation_policy,
+            training_advantage_policy,
             positive_advantage_only,
             use_tool,
         )
@@ -389,7 +389,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         rollout_config,
         posterior_calculation_config,
         selected_metadata,
-        advantage_calculation_policy,
+        training_advantage_policy,
         positive_advantage_only,
         use_tool,
     )
@@ -515,9 +515,9 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
 async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: DatasetSplit>(
     question_map: BTreeMap<usize, HybridDatasetQuestion<S>>,
     action_store: ActionLogStore<M, S>,
-    rollout_config: DirectRolloutConfig<S>,
+    rollout_config: RolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
-    advantage_calculation_policy: AdvantageCalculationPolicy,
+    training_advantage_policy: TrainingAdvantagePolicy,
     positive_advantage_only: bool,
     use_tool: bool,
 ) -> (
@@ -558,12 +558,12 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
                     }).unwrap(),
                     actions,
                 };
-                let advantage_calculation_policy = advantage_calculation_policy.clone();
+                let training_advantage_policy = training_advantage_policy.clone();
                 join_set.spawn(async move {
                     let _permit = permit;
                     let trajectory_summaries = action_log_to_candidate_summaries::<M, S>(
                         action_log,
-                        advantage_calculation_policy,
+                        training_advantage_policy,
                         positive_advantage_only,
                     );
                     trajectory_summaries
@@ -610,10 +610,10 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
 async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
     question_map: BTreeMap<usize, HybridDatasetQuestion<Training>>,
     action_store: ActionLogStore<M, Training>,
-    rollout_config: DirectRolloutConfig<Training>,
+    rollout_config: RolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
     mut selected_metadata: Vec<TrajectoryMetadata<Training>>,
-    advantage_calculation_policy: AdvantageCalculationPolicy,
+    training_advantage_policy: TrainingAdvantagePolicy,
     positive_advantage_only: bool,
     use_tool: bool,
 ) -> Vec<DirectTrainingTrajectory<M>> {
@@ -669,7 +669,7 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                     fixed_temperature: NotNan::new(fixed_temperatures::TRAINING_TEMPERATURE).unwrap(),
                     actions,
                 };
-                let advantage_calculation_policy = advantage_calculation_policy.clone();
+                let training_advantage_policy = training_advantage_policy.clone();
                 join_set.spawn(async move {
                     let _permit = permit;
                     let selected_trajectory_indices: BTreeSet<usize> = selected_for_question
@@ -684,7 +684,7 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                     );
                     let reconstructed_trajectories = action_log_to_selected_trajectories::<M>(
                         action_log,
-                        advantage_calculation_policy,
+                        training_advantage_policy,
                         &selected_trajectory_indices,
                         positive_advantage_only,
                     );
@@ -840,7 +840,7 @@ pub fn write_training_trajectories_msgpack_file<M: LlmModelMarker>(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "", deserialize = ""))]
 pub struct TrainingTrajectoryConfigBundle<S: DatasetSplit> {
-    pub rollout_config: DirectRolloutConfig<S>,
+    pub rollout_config: RolloutConfig<S>,
     pub posterior_calculation_config: PosteriorCalculationConfig,
 }
 
@@ -876,13 +876,13 @@ fn default_advantage_multiplier() -> f32 {
 
 fn initialize_training_segment_advantages<M: LlmModelMarker, S: DatasetSplit>(
     tree: &DirectTree<'_, M, S>,
-    advantage_calculation_policy: AdvantageCalculationPolicy,
+    training_advantage_policy: TrainingAdvantagePolicy,
 ) -> BTreeMap<SegmentId, f32> {
-    let mut segment_advantages = match advantage_calculation_policy {
-        AdvantageCalculationPolicy::TreeMappoPosterior => {
+    let mut segment_advantages = match training_advantage_policy {
+        TrainingAdvantagePolicy::TreeMappoPosterior => {
             tree.calculate_segment_advantages_from_posteriors(None)
         }
-        AdvantageCalculationPolicy::TreeRpoWinRate => {
+        TrainingAdvantagePolicy::TreeRpoWinRate => {
             tree.calculate_segment_advantages_from_win_rate()
         }
     };
@@ -967,7 +967,7 @@ fn zero_taken_segment_advantages(
 
 fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
     action_log: DirectTreeActionLog<M, S>,
-    advantage_calculation_policy: AdvantageCalculationPolicy,
+    training_advantage_policy: TrainingAdvantagePolicy,
     positive_advantage_only: bool,
 ) -> Vec<TrajectorySummary<S>> {
     let tree = DirectTree::from_action_log(&action_log);
@@ -978,7 +978,7 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
         return Vec::new();
     }
     let mut segment_advantages =
-        initialize_training_segment_advantages(&tree, advantage_calculation_policy);
+        initialize_training_segment_advantages(&tree, training_advantage_policy);
     if positive_advantage_only {
         clamp_negative_advantages_to_zero(&mut segment_advantages);
     }
@@ -1009,7 +1009,7 @@ fn action_log_to_candidate_summaries<M: LlmModelMarker, S: DatasetSplit>(
 
 fn action_log_to_selected_trajectories<M: LlmModelMarker>(
     action_log: DirectTreeActionLog<M, Training>,
-    advantage_calculation_policy: AdvantageCalculationPolicy,
+    training_advantage_policy: TrainingAdvantagePolicy,
     selected_trajectory_indices: &BTreeSet<usize>,
     positive_advantage_only: bool,
 ) -> Vec<(usize, DirectTrainingTrajectory<M>)> {
@@ -1024,7 +1024,7 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
         return Vec::new();
     }
     let mut segment_advantages =
-        initialize_training_segment_advantages(&tree, advantage_calculation_policy);
+        initialize_training_segment_advantages(&tree, training_advantage_policy);
     if positive_advantage_only {
         clamp_negative_advantages_to_zero(&mut segment_advantages);
     }
@@ -1207,10 +1207,10 @@ pub fn open_training_trajectories<M: LlmModelMarker>(
 pub async fn generate_training_trajectories<M: LlmModelMarker>(
     mount_dir: &str,
     config_nickname: &str,
-    rollout_config: DirectRolloutConfig<Training>,
+    rollout_config: RolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize,
-    advantage_calculation_policy: AdvantageCalculationPolicy,
+    training_advantage_policy: TrainingAdvantagePolicy,
     positive_advantage_only: bool,
     use_tool: bool,
 ) {
@@ -1256,7 +1256,7 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
         posterior_calculation_config,
         file_path,
         stats_file_path,
-        advantage_calculation_policy,
+        training_advantage_policy,
         positive_advantage_only,
         use_tool,
     )
@@ -1272,9 +1272,9 @@ pub async fn generate_training_trajectories_with_path<M: LlmModelMarker>(
     training_trajectories_msgpack_path: &str,
     stats_file_path: &str,
     config_bundle_path: &str,
-    rollout_config: DirectRolloutConfig<Training>,
+    rollout_config: RolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
-    advantage_calculation_policy: AdvantageCalculationPolicy,
+    training_advantage_policy: TrainingAdvantagePolicy,
     positive_advantage_only: bool,
     use_tool: bool,
 ) {
@@ -1319,7 +1319,7 @@ pub async fn generate_training_trajectories_with_path<M: LlmModelMarker>(
         posterior_calculation_config,
         training_trajectories_msgpack_path.to_string(),
         stats_file_path.to_string(),
-        advantage_calculation_policy,
+        training_advantage_policy,
         positive_advantage_only,
         use_tool,
     )

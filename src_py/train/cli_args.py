@@ -3,47 +3,66 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from types import UnionType
-from typing import Any, TypeVar, Union, get_args, get_origin
+from typing import Annotated, Any, Literal, TypeVar, Union, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class TrainingRequestArgs(BaseModel):
+class TrainingHyperparametersRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    training_plan: str
+    lora_or_full: str
+    distributed_strategy: str
     advantage_clip: float
     learning_rate: float
     weight_decay: float
     grad_accum_steps: int
     log_time_interval: float
-    checkpoint_save_time_interval: float
     seed: int
     adam_beta1: float = 0.9
     adam_beta2: float = 0.95
-    training_time: float
-    num_iterations_limit: int
-    model_cli_name: str
-    config_nickname: str
-    epoch: int
-    model_parent_dir: str
-    checkpoints_parent_dir: str
-    final_model_output_parent_dir: str
-    training_summary_parent_dir: str
-    hpc_training_root_dir: str | None = None
+    lr_total_steps: int = 0
     lora_rank: int | None = None
     lora_alpha: int | None = None
     lora_dropout: float | None = None
-    lora_target_modules_csv: str | None = None
-    resume_checkpoint_tag: str | None = None
+
+
+class TrainingModeOrchestration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["orchestration"]
+    epoch: int
+    training_time: float
+    input_model_parent_dir: str
+    output_model_parent_dir: str
+    training_summary_dir: str
+
+
+class TrainingModeOneShot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["oneshot"]
+    per_epoch_training_time: float
+    num_oneshot_epochs: int
+    model_output_root: str
+    training_summary_dir: str
+    base_model_parent_dir: str
+
+
+TrainingMode = Annotated[
+    Union[TrainingModeOrchestration, TrainingModeOneShot],
+    Field(discriminator="type"),
+]
+
+
+class TrainingRequestArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    hyperparameters: TrainingHyperparametersRequest
+    num_iterations_limit: int
+    model_cli_name: str
+    config_nickname: str
+    hpc_training_root_dir: str | None = None
     lr_schedule: str = "cosine"
-    lr_total_steps: int = 0
-    training_mode: str = "orchestration"
-    oneshot_num_epochs: int = 0
-    oneshot_start_epoch: int = 0
-    oneshot_model_output_root: str = ""
-
-
+    training_mode: TrainingMode
 
 
 class TrainProcessLaunchArgs(BaseModel):

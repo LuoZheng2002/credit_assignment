@@ -1,7 +1,8 @@
 use std::backtrace::Backtrace;
 
-use clap::{ArgAction, Parser, ValueEnum};
+use clap::{Parser, ValueEnum};
 use proctitle::set_title;
+use serde::Deserialize;
 use std::{collections::BTreeMap, path::Path};
 
 use credit_assignment::{
@@ -11,16 +12,16 @@ use credit_assignment::{
         inference_wrapper_log_path, text_logger_summary_path, text_logger_verbose_path,
         training_wrapper_log_path,
     },
-    hybrid_dataset::{Training, Validation},
-    json_toml_utils::{read_json, read_toml},
+    hybrid_dataset::Validation,
+    json_toml_utils::read_json,
     llm_model::{
         Gemma3_4BIt, Llama31_8BInstruct, LlmModelName, Mistral7BInstructV03, Qwen3_4B, Qwen3_06B,
         Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
     orchestrator::{OrchestrationProgress, OrchestrationStatus, Orchestrator},
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-    python_training_config::PythonTrainingConfigCommon,
-    rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+    python_training_config::TrainingHyperparameters,
+    rollout_config::{RolloutConfig, TrainingRolloutConfig},
     utils::configure_mount_dir,
 };
 use research_utility::progress_text_logger::{
@@ -34,41 +35,25 @@ use research_utility::progress_text_logger::{
     about = "Run direct tree rollout and save action logs"
 )]
 struct Args {
-    #[arg(long)]
+    #[arg(short = 'c', long)]
+    config_path: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct OrchestratorConfig {
     model_cli_name: String,
-    #[arg(long)]
-    max_rollout_concurrency: usize,
-    #[arg(long)]
     config_nickname: String,
-    #[arg(long)]
     use_tool: bool,
-    #[arg(long)]
     training_rollout_config_path: String,
-    #[arg(long)]
     num_total_epochs: usize,
-    #[arg(long, value_enum)]
-    advantage_calculation_policy: AdvantageCalculationPolicy,
-    #[arg(long)]
-    training_config_common_path: String,
-    #[arg(long)]
-    training_time: f32,
-    #[arg(long)]
+    training_hyperparameters: TrainingHyperparameters,
     num_iterations_limit: usize,
-    #[arg(long)]
-    training_rollout_time_limit_secs: usize,
-    #[arg(long)]
-    validation_rollout_time_limit_secs: usize,
-    #[arg(long, default_value_t = 1)]
-    max_python_processes: usize,
-    #[arg(long)]
+    training_rollout_secs: usize,
+    validation_rollout_secs: usize,
+    training_time: f32,
     num_gpus: usize,
-    #[arg(long)]
     mount_dir: String,
-    #[arg(long, action = ArgAction::Set)]
-    ui: bool,
-    #[arg(long, action = ArgAction::Set, default_value_t = true)]
     keep_action_logs: bool,
-    #[arg(long, action = ArgAction::Set)]
     positive_advantage_only: bool,
 }
 
@@ -100,33 +85,29 @@ async fn main() {
         std::process::abort();
     }));
     dotenvy::dotenv().ok();
-    let Args {
+    let Args { config_path } = Args::parse();
+    let config_contents = std::fs::read_to_string(&config_path)
+        .unwrap_or_else(|err| panic!("failed to read config file '{}': {}", config_path, err));
+    let OrchestratorConfig {
         model_cli_name,
         config_nickname,
-        max_rollout_concurrency,
         use_tool,
         training_rollout_config_path,
         num_total_epochs,
-        ui,
-        training_rollout_time_limit_secs,
-        validation_rollout_time_limit_secs,
-        max_python_processes,
-        advantage_calculation_policy,
-        training_config_common_path,
+        training_hyperparameters,
+        training_rollout_secs,
+        validation_rollout_secs,
         training_time,
         num_iterations_limit,
         num_gpus,
         mount_dir,
         keep_action_logs,
         positive_advantage_only,
-    } = Args::parse();
+    } = toml::from_str(&config_contents)
+        .unwrap_or_else(|err| panic!("failed to parse config file '{}': {}", config_path, err));
     let process_title = format!("orchestrator_{}_{}", model_cli_name, config_nickname);
     set_title(&process_title);
     check_sympy_availability().unwrap();
-    assert!(
-        max_python_processes > 0,
-        "max_python_processes must be positive"
-    );
     configure_mount_dir(&mount_dir)
         .unwrap_or_else(|err| panic!("failed to configure mount dir: {}", err));
     let inference_wrapper_log_path =
@@ -159,21 +140,16 @@ async fn main() {
     )
     .unwrap_or_else(|err| panic!("failed to write config_paths.json: {}", err));
 
-    if ui {
-        ProgressTextLogger::initialize(
-            text_log_summary_path.clone(),
-            text_log_verbose_path.clone(),
-        )
+    ProgressTextLogger::initialize(text_log_summary_path.clone(), text_log_verbose_path.clone())
         .await
         .unwrap();
-        log_window_name(format!(
-            "Orchestrator Program. model: {}, config_nickname: {}",
-            model_cli_name, config_nickname
-        ));
-    }
-    let validation_rollout_config: DirectRolloutConfig<Validation> =
+    log_window_name(format!(
+        "Orchestrator Program. model: {}, config_nickname: {}",
+        model_cli_name, config_nickname
+    ));
+    let validation_rollout_config: RolloutConfig<Validation> =
         read_json(VALIDATION_ROLLOUT_CONFIG_PATH).unwrap();
-    let training_set_rollout_config: DirectRolloutConfig<Training> =
+    let training_set_rollout_config: TrainingRolloutConfig =
         read_json(training_rollout_config_path).unwrap();
     let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
         credit_assignment::directories::POSTERIOR_HYPERPARAMETERS_PATH,
@@ -182,8 +158,6 @@ async fn main() {
     let posterior_calculation_config = PosteriorCalculationConfig {
         hyperparameters: posterior_hyperparameters,
     };
-    let training_config_common: PythonTrainingConfigCommon =
-        read_toml(training_config_common_path).unwrap();
     // do the rest of the orchestrator work here
     let client = reqwest::Client::new();
     let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
@@ -220,18 +194,15 @@ async fn main() {
         training_set_rollout_config,
         posterior_calculation_config,
         num_total_epochs,
-        training_rollout_time_limit_secs,
-        validation_rollout_time_limit_secs,
-        max_python_processes,
+        training_rollout_secs,
+        validation_rollout_secs,
         client,
-        max_rollout_concurrency,
         inference_server_handle: None,
         inference_wrapper_log_path,
         training_wrapper_log_path,
         keep_action_logs,
-        advantage_calculation_policy,
         positive_advantage_only,
-        training_config_common,
+        training_hyperparameters,
         training_time,
         num_iterations_limit,
         progress,
@@ -256,7 +227,5 @@ async fn main() {
         log_exit_hint(format!("Orchestrator exits with error: {}", e));
         log_error(format!("Orchestrator exits with error: {}", e));
     }
-    if ui {
-        ProgressTextLogger::shutdown().await.unwrap();
-    }
+    ProgressTextLogger::shutdown().await.unwrap();
 }

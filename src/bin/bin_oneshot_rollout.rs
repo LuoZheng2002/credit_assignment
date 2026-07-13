@@ -1,9 +1,10 @@
 use std::backtrace::Backtrace;
 use std::path::Path;
 
-use clap::{ArgAction, Parser, ValueEnum};
+use clap::{Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
+    constants::get_max_concurrent_rollout,
     directories::{
         action_logs_oneshot_path, inference_wrapper_log_path, model_parent_dir,
         rollout_summary_oneshot_path, text_logger_summary_path, text_logger_verbose_path,
@@ -22,7 +23,7 @@ use credit_assignment::{
     },
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     rollout::{RolloutProgramConfig, rollout_all},
-    rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+    rollout_config::{RolloutConfig, TrainingAdvantagePolicy},
     training_set::generate_training_trajectories_with_path,
     tree_action_log::ActionLogStore,
     utils::configure_mount_dir,
@@ -30,44 +31,35 @@ use credit_assignment::{
 use ordered_float::NotNan;
 use reqwest::Client;
 use research_utility::progress_text_logger::{ProgressTextLogger, log_info};
+use serde::Deserialize;
 
 #[derive(Parser, Debug)]
-#[command(
-    author,
-    version,
-    about = "Run one-shot tree rollout and save action logs to one-shot paths"
-)]
+struct CliArgs {
+    #[arg(short = 'c', long)]
+    config_path: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 struct Args {
-    #[arg(long)]
     model_cli_name: String,
-    #[arg(long)]
-    max_rollout_concurrency: usize,
-    #[arg(long)]
     config_nickname_rollout: String,
-    #[arg(long)]
     rollout_config_path: String,
-    #[arg(long)]
     use_tool: bool,
-    #[arg(long, value_enum)]
     dataset_split: DatasetSplitEnum,
-    #[arg(long, default_value_t = 0)]
+    #[serde(default)]
     epoch: usize,
-    #[arg(long, default_value_t = 1)]
+    #[serde(default = "default_total_epochs")]
     total_epochs: usize,
-    #[arg(long, value_enum)]
-    advantage_calculation_policy: AdvantageCalculationPolicy,
-    #[arg(long, action = ArgAction::Set)]
+    training_advantage_policy: TrainingAdvantagePolicy,
     positive_advantage_only: bool,
-    #[arg(long, action = ArgAction::Set)]
-    ui: bool,
-    #[arg(long)]
-    rollout_time_limit_secs: usize,
-    #[arg(long, default_value_t = 1)]
-    max_python_processes: usize,
-    #[arg(long)]
+    rollout_secs: usize,
     mount_dir: String,
-    #[arg(long)]
     num_gpus: usize,
+}
+
+fn default_total_epochs() -> usize {
+    1
 }
 
 fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
@@ -87,7 +79,7 @@ fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
 }
 
 async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
-    rollout_config: DirectRolloutConfig<S>,
+    rollout_config: RolloutConfig<S>,
     args: &Args,
     client: Client,
     posterior_calculation_config: PosteriorCalculationConfig,
@@ -108,11 +100,11 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         ActionLogStore::<M, S>::initialize_if_missing(&action_log_store_override_path)
             .and_then(|store| store.read_elapsed_time())
             .unwrap_or(0.0);
-    if prev_elapsed >= args.rollout_time_limit_secs as f32 {
+    if prev_elapsed >= args.rollout_secs as f32 {
         log_info(format!(
             "Skipping rollout: previous elapsed time ({prev_elapsed:.1}s) already meets \
              or exceeds the time limit ({}s). No new actions will be added.",
-            args.rollout_time_limit_secs
+            args.rollout_secs
         ));
         return;
     }
@@ -144,12 +136,10 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         posterior_calculation_config,
         epoch: args.epoch,
         client,
-        max_rollout_concurrency: args.max_rollout_concurrency,
         inference_endpoint: credit_assignment::llm_model::InferenceEndpoint::SglangPort(
             sglang_port,
         ),
-        rollout_time_limit_secs: args.rollout_time_limit_secs,
-        max_python_processes: args.max_python_processes,
+        rollout_secs: args.rollout_secs,
         total_epochs: args.total_epochs,
         action_log_store_override_path: Some(action_log_store_override_path),
         use_tool: args.use_tool,
@@ -159,6 +149,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
             fixed_temperatures::VALIDATION_TEMPERATURE
         })
         .unwrap(),
+        max_concurrent_rollout: get_max_concurrent_rollout(num_gpus),
     };
     let summary = rollout_all::<M, S>(&args.mount_dir, program_config).await;
 
@@ -229,7 +220,7 @@ macro_rules! run_rollout {
         match dataset_split {
             $(
                 $split_enum => {
-                    let rollout_config: DirectRolloutConfig<$split_ty> =
+                    let rollout_config: RolloutConfig<$split_ty> =
                         read_json(&args.rollout_config_path).unwrap();
                     run_model_for_split!(rollout_config, $split_ty)
                 }
@@ -248,7 +239,7 @@ macro_rules! generate_trajectories {
         $config_bundle_path:expr,
         $rollout_config:expr,
         $posterior_calculation_config:expr,
-        $advantage_calculation_policy:expr,
+        $training_advantage_policy:expr,
         $positive_advantage_only:expr,
         $use_tool:expr;
         $( $model_enum:path, $model_ty:ty ),+ $(,)?
@@ -264,7 +255,7 @@ macro_rules! generate_trajectories {
                         $config_bundle_path,
                         $rollout_config,
                         $posterior_calculation_config,
-                        $advantage_calculation_policy,
+                        $training_advantage_policy,
                         $positive_advantage_only,
                         $use_tool,
                     )
@@ -287,12 +278,12 @@ async fn main() {
         std::process::abort();
     }));
     dotenvy::dotenv().ok();
-    let args = Args::parse();
+    let CliArgs { config_path } = CliArgs::parse();
+    let config_contents = std::fs::read_to_string(&config_path)
+        .unwrap_or_else(|err| panic!("failed to read config file '{}': {}", config_path, err));
+    let args: Args = toml::from_str(&config_contents)
+        .unwrap_or_else(|err| panic!("failed to parse config file '{}': {}", config_path, err));
     check_sympy_availability().unwrap();
-    assert!(
-        args.max_python_processes > 0,
-        "max_python_processes must be positive"
-    );
     assert!(args.total_epochs > 0, "total_epochs must be positive");
     assert!(args.num_gpus > 0, "--num-gpus must be positive");
     configure_mount_dir(&args.mount_dir)
@@ -318,21 +309,19 @@ async fn main() {
     ensure_parent_dir_exists(&inference_wrapper_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare inference wrapper log directory: {}", err));
 
-    if args.ui {
-        let text_log_summary_path = text_logger_summary_path(
-            &args.mount_dir,
-            &args.model_cli_name,
-            &args.config_nickname_rollout,
-        );
-        let text_log_verbose_path = text_logger_verbose_path(
-            &args.mount_dir,
-            &args.model_cli_name,
-            &args.config_nickname_rollout,
-        );
-        ProgressTextLogger::initialize(text_log_summary_path, text_log_verbose_path)
-            .await
-            .unwrap();
-    }
+    let text_log_summary_path = text_logger_summary_path(
+        &args.mount_dir,
+        &args.model_cli_name,
+        &args.config_nickname_rollout,
+    );
+    let text_log_verbose_path = text_logger_verbose_path(
+        &args.mount_dir,
+        &args.model_cli_name,
+        &args.config_nickname_rollout,
+    );
+    ProgressTextLogger::initialize(text_log_summary_path, text_log_verbose_path)
+        .await
+        .unwrap();
 
     let posterior_calculation_config_clone = posterior_calculation_config.clone();
 
@@ -379,8 +368,7 @@ async fn main() {
             args.epoch,
         )
         .unwrap_or_else(|err| panic!("failed to resolve action logs path: {}", err));
-        let rollout_config: DirectRolloutConfig<Training> =
-            read_json(&args.rollout_config_path).unwrap();
+        let rollout_config: RolloutConfig<Training> = read_json(&args.rollout_config_path).unwrap();
 
         generate_trajectories!(
             model_name,
@@ -391,7 +379,7 @@ async fn main() {
             &config_bundle_path,
             rollout_config,
             posterior_calculation_config_clone,
-            args.advantage_calculation_policy,
+            args.training_advantage_policy,
             args.positive_advantage_only,
             args.use_tool;
             LlmModelName::Qwen25_7b, Qwen25_7B,
@@ -409,7 +397,5 @@ async fn main() {
         );
     }
 
-    if args.ui {
-        ProgressTextLogger::shutdown().await.unwrap();
-    }
+    ProgressTextLogger::shutdown().await.unwrap();
 }

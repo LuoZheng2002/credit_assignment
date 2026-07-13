@@ -16,7 +16,7 @@ use ordered_float::NotNan;
 use crate::{
     hybrid_dataset::{DatasetSplit, HybridDatasetQuestion, QuestionFlatId},
     posterior_calculation_config::PosteriorCalculationConfig,
-    rollout_config::DirectRolloutConfig,
+    rollout_config::RolloutConfig,
     tree_action::DirectTreeAction,
     directories::action_logs_path,
     json_toml_utils::write_json,
@@ -45,7 +45,7 @@ fn elapsed_time_file_path(base_path: &Path) -> PathBuf {
 #[derive(Clone)]
 pub struct DirectTreeActionLog<M: LlmModelMarker, S: DatasetSplit> {
     pub question: HybridDatasetQuestion<S>,
-    pub rollout_config: DirectRolloutConfig<S>,
+    pub rollout_config: RolloutConfig<S>,
     pub posterior_calculation_config: PosteriorCalculationConfig,
     pub use_tool: bool,
     pub fixed_temperature: NotNan<f32>,
@@ -55,7 +55,7 @@ pub struct DirectTreeActionLog<M: LlmModelMarker, S: DatasetSplit> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "", deserialize = ""))]
 pub struct ActionLogConfigBundle<S: DatasetSplit> {
-    pub rollout_config: DirectRolloutConfig<S>,
+    pub rollout_config: RolloutConfig<S>,
     pub posterior_calculation_config: PosteriorCalculationConfig,
     pub use_tool: bool,
     pub fixed_temperature: NotNan<f32>,

@@ -4,7 +4,6 @@ learning_rate = 1e-06
 weight_decay = 0.01
 grad_accum_steps = 32
 log_time_interval = 30
-checkpoint_save_time_interval = 1800
 seed = 42
 adam_beta1 = 0.9
 adam_beta2 = 0.95
@@ -12,8 +11,7 @@ adam_beta2 = 0.95
 lora_rank = 64
 lora_alpha = 128
 lora_dropout = 0.1
-lora_target_modules_csv = "q_proj,k_proj,v_proj,o_proj"
-resume_checkpoint_tag = "auto"
+
 kl_and_ema_enabled = true
 kl_penalty_coefficient = 0.04
 ema_decay = 0.992

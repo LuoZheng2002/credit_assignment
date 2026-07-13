@@ -6,7 +6,11 @@ use ordered_float::NotNan;
 
 use crate::{
     config_paths::{ConfigPaths, config_paths_file_path, derive_testing_rollout_config_path},
-    directories::{model_checkpoint_dir, model_metrics_path, model_parent_dir, progress_save_path},
+    constants::get_max_concurrent_rollout,
+    directories::{
+        model_checkpoint_dir, model_metrics_path, model_parent_dir, progress_save_path,
+        training_summary_parent_dir,
+    },
     fixed_temperatures,
     get_accuracy::get_accuracy,
     hybrid_dataset::{Training, Validation},
@@ -18,9 +22,9 @@ use crate::{
     launch_training_wrapper::run_training_wrapper_and_wait,
     llm_model::{InferenceEndpoint, LlmModelMarker},
     posterior_calculation_config::PosteriorCalculationConfig,
-    python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
+    python_training_config::{PythonTrainingConfig, TrainingHyperparameters, TrainingMode},
     rollout::{RolloutProgramConfig, rollout_all},
-    rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+    rollout_config::{RolloutConfig, TrainingRolloutConfig},
     training_set::{
         generate_training_trajectories, open_training_trajectories,
         training_trajectories_file_path, training_trajectories_msgpack_file_path,
@@ -33,28 +37,25 @@ use research_utility::launch_python_process::PythonProcessHandle;
 pub struct Orchestrator {
     // for rollout
     pub config_nickname: String,
-    pub validation_rollout_config: DirectRolloutConfig<Validation>,
-    pub training_set_rollout_config: DirectRolloutConfig<Training>,
+    pub validation_rollout_config: RolloutConfig<Validation>,
+    pub training_set_rollout_config: TrainingRolloutConfig,
     pub posterior_calculation_config: PosteriorCalculationConfig,
-    pub training_rollout_time_limit_secs: usize,
-    pub validation_rollout_time_limit_secs: usize,
-    pub max_python_processes: usize,
+    pub training_rollout_secs: usize,
+    pub validation_rollout_secs: usize,
     pub inference_server_handle: Option<InferenceServerHandle>,
     pub inference_wrapper_log_path: String,
     pub training_wrapper_log_path: String,
     pub keep_action_logs: bool,
     // for training set generation
-    pub advantage_calculation_policy: AdvantageCalculationPolicy,
     pub positive_advantage_only: bool,
     // for orchestration
     pub num_total_epochs: usize,
     // utilities
     pub client: reqwest::Client,
-    pub max_rollout_concurrency: usize,
     // state
     pub progress: OrchestrationProgress,
     // for training
-    pub training_config_common: PythonTrainingConfigCommon,
+    pub training_hyperparameters: TrainingHyperparameters,
     pub training_time: f32,
     pub num_iterations_limit: usize,
     pub num_gpus: usize,
@@ -354,7 +355,7 @@ impl Orchestrator {
         let accuracy_stats = get_accuracy::<M, Training>(
             &self.mount_dir,
             self.config_nickname.clone(),
-            self.training_set_rollout_config.clone(),
+            self.training_set_rollout_config.to_rollout_config(),
             self.posterior_calculation_config.clone(),
             epoch,
             "Training rollout accuracy",
@@ -559,7 +560,6 @@ impl Orchestrator {
             posterior_calculation_config: self.posterior_calculation_config.clone(),
             epoch,
             client: self.client.clone(),
-            max_rollout_concurrency: self.max_rollout_concurrency,
             inference_endpoint: self
                 .inference_server_handle
                 .as_ref()
@@ -567,12 +567,12 @@ impl Orchestrator {
                 .expect(
                     "Orchestrator did not launch the inference server before validation rollout",
                 ),
-            rollout_time_limit_secs: self.validation_rollout_time_limit_secs,
-            max_python_processes: self.max_python_processes,
+            rollout_secs: self.validation_rollout_secs,
             total_epochs: self.num_total_epochs,
             action_log_store_override_path: None,
             use_tool: self.use_tool,
             fixed_temperature: NotNan::new(fixed_temperatures::VALIDATION_TEMPERATURE).unwrap(),
+            max_concurrent_rollout: get_max_concurrent_rollout(self.num_gpus),
         };
         let rollout_summary =
             rollout_all::<M, Validation>(&self.mount_dir, validation_rollout_program_config).await;
@@ -610,18 +610,17 @@ impl Orchestrator {
         // assert!(self.training_set_rollout_config.split == DatasetSplit::Training);
         let training_set_rollout_program_config = RolloutProgramConfig {
             config_nickname: self.config_nickname.clone(),
-            rollout_config: self.training_set_rollout_config.clone(),
+            rollout_config: self.training_set_rollout_config.to_rollout_config(),
             posterior_calculation_config: self.posterior_calculation_config.clone(),
             epoch,
             client: self.client.clone(),
-            max_rollout_concurrency: self.max_rollout_concurrency,
             inference_endpoint,
-            rollout_time_limit_secs: self.training_rollout_time_limit_secs,
-            max_python_processes: self.max_python_processes,
+            rollout_secs: self.training_rollout_secs,
             total_epochs: self.num_total_epochs,
             action_log_store_override_path: None,
             use_tool: self.use_tool,
             fixed_temperature: NotNan::new(fixed_temperatures::TRAINING_TEMPERATURE).unwrap(),
+            max_concurrent_rollout: get_max_concurrent_rollout(self.num_gpus),
         };
         let rollout_summary =
             rollout_all::<M, Training>(&self.mount_dir, training_set_rollout_program_config).await;
@@ -927,10 +926,10 @@ impl Orchestrator {
         generate_training_trajectories::<M>(
             &self.mount_dir,
             &self.config_nickname,
-            self.training_set_rollout_config.clone(),
+            self.training_set_rollout_config.to_rollout_config(),
             self.posterior_calculation_config.clone(),
             epoch,
-            self.advantage_calculation_policy,
+            self.training_set_rollout_config.training_advantage_policy,
             self.positive_advantage_only,
             self.use_tool,
         )
@@ -954,29 +953,26 @@ impl Orchestrator {
         );
         let model_parent_dir =
             model_parent_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
-        let checkpoints_parent_dir =
-            model_checkpoint_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
         let final_model_output_parent_dir = model_checkpoint_dir(
             &self.mount_dir,
             M::CLI_NAME,
             &self.config_nickname,
             epoch + 1,
         );
+        let training_summary_dir =
+            training_summary_parent_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
         let training_config = PythonTrainingConfig {
-            common: self.training_config_common.clone(),
-            training_time: self.training_time,
+            hyperparameters: self.training_hyperparameters.clone(),
             num_iterations_limit: self.num_iterations_limit,
             model_cli_name: M::CLI_NAME.to_string(),
             config_nickname: self.config_nickname.clone(),
-            epoch,
-            model_parent_dir: model_parent_dir.clone(),
-            checkpoints_parent_dir: checkpoints_parent_dir.clone(),
-            final_model_output_parent_dir,
-            training_summary_parent_dir: checkpoints_parent_dir,
-            training_mode: "orchestration".to_string(),
-            oneshot_num_epochs: 0,
-            oneshot_start_epoch: 0,
-            oneshot_model_output_root: String::new(),
+            training_mode: TrainingMode::Orchestration {
+                epoch,
+                training_time: self.training_time,
+                input_model_parent_dir: model_parent_dir.clone(),
+                output_model_parent_dir: final_model_output_parent_dir,
+                training_summary_dir,
+            },
         };
 
         let training_start_time = Instant::now();

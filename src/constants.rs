@@ -8,3 +8,7 @@ pub fn sglang_context_length(use_tool: bool) -> usize {
         SGLANG_CONTEXT_LENGTH_NO_TOOL
     }
 }
+
+pub fn get_max_concurrent_rollout(num_gpus: usize) -> usize {
+    200 * num_gpus
+}

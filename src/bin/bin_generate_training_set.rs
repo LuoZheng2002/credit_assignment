@@ -4,7 +4,7 @@ use clap::Parser;
 use credit_assignment::{
     hybrid_dataset::Training,
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-    rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
+    rollout_config::{TrainingAdvantagePolicy, RolloutConfig},
     training_set::generate_training_trajectories,
     json_toml_utils::read_json,
     llm_model::{
@@ -28,7 +28,7 @@ struct Args {
     #[arg(long)]
     epoch: usize, // the epoch index
     #[arg(long, value_enum)]
-    advantage_calculation_policy: AdvantageCalculationPolicy,
+    training_advantage_policy: TrainingAdvantagePolicy,
     #[arg(long)]
     positive_advantage_only: bool,
 }
@@ -51,7 +51,7 @@ async fn main() {
         rollout_config_path,
         use_tool,
         epoch,
-        advantage_calculation_policy,
+        training_advantage_policy,
         positive_advantage_only,
     } = Args::parse();
     configure_mount_dir("results").unwrap_or_else(|err| {
@@ -60,7 +60,7 @@ async fn main() {
             err
         )
     });
-    let rollout_config: DirectRolloutConfig<Training> = read_json(rollout_config_path).unwrap();
+    let rollout_config: RolloutConfig<Training> = read_json(rollout_config_path).unwrap();
     let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
         credit_assignment::directories::POSTERIOR_HYPERPARAMETERS_PATH,
     )
@@ -73,7 +73,7 @@ async fn main() {
         rollout_config,
         posterior_calculation_config,
         epoch,
-        advantage_calculation_policy,
+        training_advantage_policy,
         positive_advantage_only,
         use_tool,
     };
@@ -93,10 +93,10 @@ async fn main() {
 
 struct RunProgramArgs {
     config_nickname: String,
-    rollout_config: DirectRolloutConfig<Training>,
+    rollout_config: RolloutConfig<Training>,
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize, // the epoch index
-    advantage_calculation_policy: AdvantageCalculationPolicy,
+    training_advantage_policy: TrainingAdvantagePolicy,
     positive_advantage_only: bool,
     use_tool: bool,
 }
@@ -107,7 +107,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         rollout_config,
         posterior_calculation_config,
         epoch,
-        advantage_calculation_policy,
+        training_advantage_policy,
         positive_advantage_only,
         use_tool,
     } = run_program_args;
@@ -117,7 +117,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         rollout_config,
         posterior_calculation_config,
         epoch,
-        advantage_calculation_policy,
+        training_advantage_policy,
         positive_advantage_only,
         use_tool,
     )

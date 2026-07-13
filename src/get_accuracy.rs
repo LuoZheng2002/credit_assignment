@@ -7,7 +7,7 @@ use ordered_float::NotNan;
 use crate::{
     hybrid_dataset::{DatasetSplit, HybridDatasetQuestion, open_hybrid_dataset},
     posterior_calculation_config::PosteriorCalculationConfig,
-    rollout_config::DirectRolloutConfig,
+    rollout_config::RolloutConfig,
     tree::DirectTree,
     tree_action_log::{ActionLogStore, DirectTreeActionLog, open_action_logs},
     fixed_temperatures,
@@ -111,7 +111,7 @@ fn tree_accuracy<M: LlmModelMarker, S: DatasetSplit>(
 pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
     mount_dir: &str,
     config_nickname: String,
-    rollout_config: DirectRolloutConfig<S>,
+    rollout_config: RolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize,
     progress_bar_label: &str,
@@ -239,7 +239,7 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
 pub async fn get_per_question_accuracies<M: LlmModelMarker, S: DatasetSplit>(
     mount_dir: &str,
     config_nickname: String,
-    rollout_config: DirectRolloutConfig<S>,
+    rollout_config: RolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize,
     progress_bar_label: &str,
@@ -355,7 +355,7 @@ pub struct TestAccuracyResult {
 pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
     mount_dir: &str,
     config_nickname: String,
-    rollout_config: DirectRolloutConfig<S>,
+    rollout_config: RolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
     epoch: usize,
     progress_bar_label: &str,
@@ -488,7 +488,7 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
 /// Like `get_accuracy` but reads action logs from an explicit store path.
 pub async fn get_accuracy_at_path<M: LlmModelMarker, S: DatasetSplit>(
     action_log_store_path: &str,
-    rollout_config: DirectRolloutConfig<S>,
+    rollout_config: RolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
     progress_bar_label: &str,
     use_tool: bool,

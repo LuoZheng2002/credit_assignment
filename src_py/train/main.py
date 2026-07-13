@@ -8,6 +8,7 @@ from torch.distributed.elastic.multiprocessing.errors import record
 from .cli_args import (
     TrainingRequestArgs,
     TrainProcessLaunchArgs,
+    TrainingModeOneShot,
     add_model_arguments,
     parse_model_args,
     parse_model_json_file,
@@ -32,41 +33,54 @@ def _load_train_config(
         f"training trajectory file not found: {training_trajectory_path}"
     )
 
-    model_parent_dir_path = Path(request.model_parent_dir)
-    checkpoints_parent_dir_path = Path(request.checkpoints_parent_dir)
-    final_model_output_parent_dir_path = Path(request.final_model_output_parent_dir)
+    hp = request.hyperparameters
 
-    training_summary_parent_dir = request.training_summary_parent_dir
+    if isinstance(request.training_mode, TrainingModeOneShot):
+        training_mode = "oneshot"
+        training_time = request.training_mode.per_epoch_training_time
+        model_parent_dir = request.training_mode.base_model_parent_dir
+        training_summary_parent_dir = request.training_mode.training_summary_dir
+        final_model_output_parent_dir = request.training_mode.training_summary_dir
+        oneshot_num_epochs = request.training_mode.num_oneshot_epochs
+        oneshot_model_output_root = request.training_mode.model_output_root
+    else:
+        training_mode = "orchestration"
+        training_time = request.training_mode.training_time
+        model_parent_dir = request.training_mode.input_model_parent_dir
+        training_summary_parent_dir = request.training_mode.training_summary_dir
+        final_model_output_parent_dir = request.training_mode.output_model_parent_dir
+        oneshot_num_epochs = 0
+        oneshot_model_output_root = ""
+
+    model_parent_dir_path = Path(model_parent_dir)
+    training_summary_parent_dir_path = Path(training_summary_parent_dir)
+    final_model_output_parent_dir_path = Path(final_model_output_parent_dir)
 
     return TrainConfig(
-        training_plan=request.training_plan,
+        lora_or_full=hp.lora_or_full,
+        distributed_strategy=hp.distributed_strategy,
         model_parent_dir=str(model_parent_dir_path),
         training_trajectory_path=str(training_trajectory_path),
-        checkpoints_parent_dir=str(checkpoints_parent_dir_path),
+        training_summary_parent_dir=str(training_summary_parent_dir_path),
         final_model_output_parent_dir=str(final_model_output_parent_dir_path),
-        training_summary_parent_dir=str(training_summary_parent_dir),
-        advantage_clip=request.advantage_clip,
-        learning_rate=request.learning_rate,
-        weight_decay=request.weight_decay,
-        training_time=request.training_time,
+        advantage_clip=hp.advantage_clip,
+        learning_rate=hp.learning_rate,
+        weight_decay=hp.weight_decay,
+        training_time=training_time,
         num_iterations_limit=request.num_iterations_limit,
-        grad_accum_steps=request.grad_accum_steps,
-        log_time_interval=request.log_time_interval,
-        checkpoint_save_time_interval=request.checkpoint_save_time_interval,
-        lora_rank=request.lora_rank or 64,
-        lora_alpha=request.lora_alpha or 128,
-        lora_dropout=request.lora_dropout or 0.05,
-        lora_target_modules_csv=request.lora_target_modules_csv
-        or "q_proj,k_proj,v_proj,o_proj",
-        seed=request.seed,
-        adam_beta1=request.adam_beta1,
-        adam_beta2=request.adam_beta2,
+        grad_accum_steps=hp.grad_accum_steps,
+        log_time_interval=hp.log_time_interval,
+        lora_rank=hp.lora_rank or 64,
+        lora_alpha=hp.lora_alpha or 128,
+        lora_dropout=hp.lora_dropout or 0.05,
+        seed=hp.seed,
+        adam_beta1=hp.adam_beta1,
+        adam_beta2=hp.adam_beta2,
         lr_schedule=request.lr_schedule,
-        lr_total_steps=request.lr_total_steps,
-        training_mode=request.training_mode,
-        oneshot_num_epochs=request.oneshot_num_epochs,
-        oneshot_start_epoch=request.oneshot_start_epoch,
-        oneshot_model_output_root=request.oneshot_model_output_root,
+        lr_total_steps=hp.lr_total_steps,
+        training_mode=training_mode,
+        oneshot_num_epochs=oneshot_num_epochs,
+        oneshot_model_output_root=oneshot_model_output_root,
     )
 
 

@@ -12,7 +12,6 @@ set -euo pipefail
 
 uv run -m src_py.modal.launch_modal_oneshot_training \
     --model-cli-name qwen25 \
-    --max-rollout-concurrency 300 \
     --config-nickname-training grpo_notool_training_lora_lr5 \
     --config-nickname-rollout grpo_notool_rollout \
     --num-oneshot-epochs 20 \
@@ -20,10 +19,8 @@ uv run -m src_py.modal.launch_modal_oneshot_training \
     --training-config-common-path config/training/common_lora_lr5.toml \
     --oneshot-per-epoch-training-time 600 \
     --validation-rollout-time-limit-secs 1200 \
-    --max-python-processes 2 \
     --num-gpus 1 \
     --gpu-name H200 \
     --mount-dir "/volume" \
     --rollout-mount-dir "/rollout_volume" \
     --modal-time-limit-hrs 4 \
-    --ui true

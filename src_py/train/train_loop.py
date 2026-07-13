@@ -24,7 +24,10 @@ from .batch_dataset import LazyResolvedBatchLoader, ResolvedTrainingBatch
 from .collator import IGNORE_LABEL, collate_training_samples
 from .data_msgpack import TrainingSampleTokenized
 from .losses import compute_advantage_weighted_causal_lm_loss
-from .training_plan import assert_supported_training_plan
+from .training_plan import (
+    assert_supported_distributed_strategy,
+    assert_supported_lora_or_full,
+)
 
 
 @dataclass
@@ -756,7 +759,6 @@ def _run_unified_loop(
     model_vocab_size: int,
     expected_model_name: str,
     logs_path: Path,
-    checkpoints_parent_dir: Path,
     final_model_output_parent_dir: Path,
     training_summary_parent_dir: str,
     resolved_model_path: str,
@@ -768,7 +770,8 @@ def _run_unified_loop(
     finalize_training: bool = True,
 ) -> Any:
     assert lazy_loader.sample_count > 0, "training set must be non-empty"
-    training_plan = assert_supported_training_plan(config.training_plan)
+    lora_or_full = assert_supported_lora_or_full(config.lora_or_full)
+    distributed_strategy = assert_supported_distributed_strategy(config.distributed_strategy)
     is_distributed = world_size > 1
     if is_distributed:
         assert lazy_loader.sample_count >= world_size, (
@@ -1475,7 +1478,8 @@ def _run_unified_loop(
     total_training_time_sec = _elapsed_training_time_sec(clock=clock)
     eng._save_final_model_folder(
         model=model,
-        training_plan=training_plan,
+        lora_or_full=lora_or_full,
+        distributed_strategy=distributed_strategy,
         final_model_output_parent_dir=final_model_output_parent_dir,
         source_model_path=resolved_model_path,
         tokenizer=tokenizer,
@@ -1539,7 +1543,6 @@ def run_training_loop(
     model_vocab_size: int,
     expected_model_name: str,
     logs_path: Path,
-    checkpoints_parent_dir: Path,
     final_model_output_parent_dir: Path,
     training_summary_parent_dir: str,
     resolved_model_path: str,
@@ -1567,7 +1570,6 @@ def run_training_loop(
         model_vocab_size=model_vocab_size,
         expected_model_name=expected_model_name,
         logs_path=logs_path,
-        checkpoints_parent_dir=checkpoints_parent_dir,
         final_model_output_parent_dir=final_model_output_parent_dir,
         training_summary_parent_dir=training_summary_parent_dir,
         resolved_model_path=resolved_model_path,

@@ -21,10 +21,12 @@ from ..tui_logging import _tui_error, _tui_info, _tui_warning
 from .batch_dataset import LazyResolvedBatchLoader, ResolvedTrainingBatch
 from .train_loop import run_training_loop
 from .training_plan import (
-    TRAINING_PLAN_DDP,
-    TRAINING_PLAN_FSDP,
-    TRAINING_PLAN_LORA,
-    assert_supported_training_plan,
+    DIST_STRATEGY_DDP,
+    DIST_STRATEGY_FSDP,
+    USE_LORA,
+    USE_FULL,
+    assert_supported_distributed_strategy,
+    assert_supported_lora_or_full,
 )
 
 
@@ -53,12 +55,12 @@ _FSDP_TRANSFORMER_BLOCK_CLASS_NAMES = {
 
 @dataclass(frozen=True)
 class TrainConfig:
-    training_plan: str
+    lora_or_full: str
+    distributed_strategy: str
     model_parent_dir: str
     training_trajectory_path: str
-    checkpoints_parent_dir: str
-    final_model_output_parent_dir: str
     training_summary_parent_dir: str
+    final_model_output_parent_dir: str
     advantage_clip: float
     learning_rate: float
     weight_decay: float
@@ -66,11 +68,9 @@ class TrainConfig:
     num_iterations_limit: int
     grad_accum_steps: int
     log_time_interval: float
-    checkpoint_save_time_interval: float
     lora_rank: int
     lora_alpha: int
     lora_dropout: float
-    lora_target_modules_csv: str
     seed: int
     adam_beta1: float
     adam_beta2: float
@@ -78,7 +78,6 @@ class TrainConfig:
     lr_total_steps: int
     training_mode: str = "orchestration"
     oneshot_num_epochs: int = 0
-    oneshot_start_epoch: int = 0
     oneshot_model_output_root: str = ""
 
 
@@ -599,12 +598,14 @@ def _unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
 
 def _save_final_model_folder(
     model: torch.nn.Module,
-    training_plan: str,
+    lora_or_full: str,
+    distributed_strategy: str,
     final_model_output_parent_dir: Path,
     source_model_path: str,
     tokenizer: object,
 ) -> None:
-    training_plan = assert_supported_training_plan(training_plan)
+    lora_or_full = assert_supported_lora_or_full(lora_or_full)
+    distributed_strategy = assert_supported_distributed_strategy(distributed_strategy)
     final_model_output_path = final_model_output_parent_dir / "model"
     source_model_folder = Path(source_model_path).expanduser().resolve()
     rank, _ = _get_rank_world_size()
@@ -659,12 +660,12 @@ def _save_final_model_folder(
 
     _distributed_barrier()
 
-    if training_plan in {TRAINING_PLAN_LORA, TRAINING_PLAN_DDP}:
+    if distributed_strategy != DIST_STRATEGY_FSDP:
         if rank == 0:
             unwrapped = _unwrap_model(model)
             export_model: Any = unwrapped
             merge_and_unload = getattr(unwrapped, "merge_and_unload", None)
-            if training_plan == TRAINING_PLAN_LORA and callable(merge_and_unload):
+            if lora_or_full == USE_LORA and callable(merge_and_unload):
                 export_model = merge_and_unload()
             export_model.save_pretrained(
                 final_model_output_path,
@@ -677,8 +678,8 @@ def _save_final_model_folder(
         _distributed_barrier()
         return
 
-    assert training_plan == TRAINING_PLAN_FSDP, (
-        "unknown training plan for final model export"
+    assert distributed_strategy == DIST_STRATEGY_FSDP, (
+        "unknown distributed strategy for final model export"
     )
     from torch.distributed.fsdp import (
         FullStateDictConfig,
@@ -852,21 +853,19 @@ def _resolve_local_model_path(model_parent_dir: str) -> str:
     return str(normalized)
 
 
+LORA_TARGET_MODULES: list[str] = ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+
 def _build_lora_model(
     model_path: str,
     lora_rank: int,
     lora_alpha: int,
     lora_dropout: float,
-    lora_target_modules_csv: str,
     device: torch.device,
 ) -> tuple[torch.nn.Module, str]:
     assert lora_rank > 0, "lora_rank must be positive"
     assert lora_alpha > 0, "lora_alpha must be positive"
     assert lora_dropout >= 0.0 and lora_dropout < 1.0, "lora_dropout must be in [0, 1)"
-    targets = [
-        value.strip() for value in lora_target_modules_csv.split(",") if value.strip()
-    ]
-    assert len(targets) > 0, "lora_target_modules_csv must contain at least one module"
 
     from peft import LoraConfig, get_peft_model
 
@@ -880,7 +879,7 @@ def _build_lora_model(
         r=lora_rank,
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
-        target_modules=targets,
+        target_modules=LORA_TARGET_MODULES,
         bias="none",
         task_type="CAUSAL_LM",
     )
@@ -997,7 +996,6 @@ def _train_oneshot_multiepoch(
     model_vocab_size: int,
     expected_model_name: str,
     logs_path: Path,
-    checkpoints_parent_dir: Path,
     training_summary_parent_dir: str,
     resolved_model_path: str,
     tokenizer: Any,
@@ -1017,9 +1015,6 @@ def _train_oneshot_multiepoch(
     from . import engine as eng
     from .train_loop import _run_unified_loop
 
-    assert config.oneshot_start_epoch == 0, (
-        "oneshot_start_epoch must be zero because oneshot resume is disabled"
-    )
     assert config.oneshot_num_epochs > 0, "oneshot_num_epochs must be positive"
 
     resume_state = ResumeState(
@@ -1066,7 +1061,6 @@ def _train_oneshot_multiepoch(
             model_vocab_size=model_vocab_size,
             expected_model_name=expected_model_name,
             logs_path=logs_path,
-            checkpoints_parent_dir=checkpoints_parent_dir,
             final_model_output_parent_dir=output_dir,
             training_summary_parent_dir=str(output_dir),
             resolved_model_path=resolved_model_path,
@@ -1111,7 +1105,8 @@ def _train_oneshot_multiepoch(
 
 
 def train(config: TrainConfig) -> None:
-    training_plan = assert_supported_training_plan(config.training_plan)
+    lora_or_full = assert_supported_lora_or_full(config.lora_or_full)
+    distributed_strategy = assert_supported_distributed_strategy(config.distributed_strategy)
     assert config.advantage_clip > 0.0, "advantage_clip must be positive"
     assert config.learning_rate > 0.0, "learning_rate must be positive"
     assert config.weight_decay >= 0.0, "weight_decay must be non-negative"
@@ -1119,19 +1114,13 @@ def train(config: TrainConfig) -> None:
     assert config.num_iterations_limit > 0, "num_iterations_limit must be positive"
     assert config.grad_accum_steps > 0, "grad_accum_steps must be positive"
     assert config.log_time_interval > 0.0, "log_time_interval must be positive"
-    assert config.checkpoint_save_time_interval > 0.0, (
-        "checkpoint_save_time_interval must be positive"
-    )
     assert 0.0 < config.adam_beta1 < 1.0, "adam_beta1 must be in (0, 1)"
     assert 0.0 < config.adam_beta2 < 1.0, "adam_beta2 must be in (0, 1)"
-    assert len(config.checkpoints_parent_dir.strip()) > 0, (
-        "checkpoints_parent_dir cannot be empty"
+    assert len(config.training_summary_parent_dir.strip()) > 0, (
+        "training_summary_parent_dir cannot be empty"
     )
     assert len(config.final_model_output_parent_dir.strip()) > 0, (
         "final_model_output_parent_dir cannot be empty"
-    )
-    assert len(config.training_summary_parent_dir.strip()) > 0, (
-        "training_summary_parent_dir cannot be empty"
     )
 
     from transformers import AutoTokenizer
@@ -1156,7 +1145,8 @@ def train(config: TrainConfig) -> None:
 
     if _is_primary_rank():
         _tui_info(
-            f"start_training=1 training_plan={training_plan} "
+            f"start_training=1 lora_or_full={lora_or_full} "
+            f"distributed_strategy={distributed_strategy} "
             f"world_size={world_size} training_time={config.training_time:.1f}s "
             f"model_path={resolved_model_path}"
         )
@@ -1187,26 +1177,27 @@ def train(config: TrainConfig) -> None:
                 f"fallback_source=eos_token_id pad_token_id={tokenizer.pad_token_id}"
             )
 
-    if training_plan == TRAINING_PLAN_LORA:
+    if lora_or_full == USE_LORA:
         model, attention_backend = _build_lora_model(
             model_path=resolved_model_path,
             lora_rank=config.lora_rank,
             lora_alpha=config.lora_alpha,
             lora_dropout=config.lora_dropout,
-            lora_target_modules_csv=config.lora_target_modules_csv,
             device=device,
-        )
-        raw_model = model
-    elif training_plan == TRAINING_PLAN_DDP:
-        model, attention_backend = _build_full_model(
-            model_path=resolved_model_path, device=device
         )
         raw_model = model
     else:
-        model, raw_model, attention_backend = _build_fsdp_model(
-            model_path=resolved_model_path,
-            device=device,
-        )
+        assert lora_or_full == USE_FULL, f"unexpected lora_or_full value: {lora_or_full}"
+        if distributed_strategy == DIST_STRATEGY_FSDP:
+            model, raw_model, attention_backend = _build_fsdp_model(
+                model_path=resolved_model_path,
+                device=device,
+            )
+        else:
+            model, attention_backend = _build_full_model(
+                model_path=resolved_model_path, device=device
+            )
+            raw_model = model
 
     _tui_info(f"rank={rank} attention_backend={attention_backend}")
 
@@ -1224,7 +1215,7 @@ def train(config: TrainConfig) -> None:
         betas=(config.adam_beta1, config.adam_beta2),
     )
 
-    if training_plan in {TRAINING_PLAN_LORA, TRAINING_PLAN_DDP} and world_size > 1:
+    if distributed_strategy == DIST_STRATEGY_DDP and world_size > 1:
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[device.index],
@@ -1232,10 +1223,10 @@ def train(config: TrainConfig) -> None:
             find_unused_parameters=False,
         )
 
-    checkpoints_parent_dir = Path(config.checkpoints_parent_dir)
-    checkpoints_parent_dir.mkdir(parents=True, exist_ok=True)
+    training_summary_parent_dir = Path(config.training_summary_parent_dir)
+    training_summary_parent_dir.mkdir(parents=True, exist_ok=True)
     final_model_output_parent_dir = Path(config.final_model_output_parent_dir)
-    logs_path = checkpoints_parent_dir / "train_metrics.jsonl"
+    logs_path = training_summary_parent_dir / "train_metrics.jsonl"
 
     expected_model_name = resolved_model_path
     tokenizer_name = tokenizer.name_or_path.strip()
@@ -1274,7 +1265,6 @@ def train(config: TrainConfig) -> None:
                 model_vocab_size=model_vocab_size,
                 expected_model_name=expected_model_name,
                 logs_path=logs_path,
-                checkpoints_parent_dir=checkpoints_parent_dir,
                 training_summary_parent_dir=config.training_summary_parent_dir,
                 resolved_model_path=resolved_model_path,
                 tokenizer=tokenizer,
@@ -1298,7 +1288,6 @@ def train(config: TrainConfig) -> None:
                 model_vocab_size=model_vocab_size,
                 expected_model_name=expected_model_name,
                 logs_path=logs_path,
-                checkpoints_parent_dir=checkpoints_parent_dir,
                 final_model_output_parent_dir=final_model_output_parent_dir,
                 training_summary_parent_dir=config.training_summary_parent_dir,
                 resolved_model_path=resolved_model_path,

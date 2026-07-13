@@ -1,18 +1,18 @@
 use std::backtrace::Backtrace;
 
-use clap::{ArgAction, Parser, ValueEnum};
+use clap::{Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
-    hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
-    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-    rollout::{RolloutProgramConfig, rollout_all},
-    rollout_config::DirectRolloutConfig,
     fixed_temperatures,
+    hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
     json_toml_utils::read_json,
     llm_model::{
         Gemma3_4BIt, InferenceEndpoint, Llama31_8BInstruct, LlmModelMarker, LlmModelName,
         Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
+    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+    rollout::{RolloutProgramConfig, rollout_all},
+    rollout_config::RolloutConfig,
 };
 use ordered_float::NotNan;
 use reqwest::Client;
@@ -34,8 +34,6 @@ struct Args {
     #[arg(long, conflicts_with = "sglang_port")]
     sglang_base_url: Option<String>,
     #[arg(long)]
-    max_rollout_concurrency: usize,
-    #[arg(long)]
     config_nickname: String,
     #[arg(long)]
     rollout_config_path: String,
@@ -47,12 +45,8 @@ struct Args {
     epoch: usize, // the epoch index
     #[arg(long)]
     total_epochs: usize,
-    #[arg(long, action = ArgAction::Set)]
-    ui: bool,
     #[arg(long)]
-    rollout_time_limit_secs: usize,
-    #[arg(long, default_value_t = 1)]
-    max_python_processes: usize,
+    rollout_secs: usize,
     #[arg(long)]
     inference_wrapper_log_path: String,
     #[arg(long, default_value = DEFAULT_PROGRESS_TUI_LOG_PATH)]
@@ -60,7 +54,7 @@ struct Args {
 }
 
 async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
-    rollout_config: DirectRolloutConfig<S>,
+    rollout_config: RolloutConfig<S>,
     args: &Args,
     client: Client,
     posterior_calculation_config: PosteriorCalculationConfig,
@@ -72,10 +66,8 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         posterior_calculation_config,
         epoch: args.epoch,
         client,
-        max_rollout_concurrency: args.max_rollout_concurrency,
         inference_endpoint,
-        rollout_time_limit_secs: args.rollout_time_limit_secs,
-        max_python_processes: args.max_python_processes,
+        rollout_secs: args.rollout_secs,
         total_epochs: args.total_epochs,
         action_log_store_override_path: None,
         use_tool: args.use_tool,
@@ -85,6 +77,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
             fixed_temperatures::VALIDATION_TEMPERATURE
         })
         .unwrap(),
+        max_concurrent_rollout: 300,
     };
     let _ = rollout_all::<M, S>("results", program_config).await;
 }
@@ -129,7 +122,7 @@ macro_rules! run_rollout {
         match dataset_split {
             $(
                 $split_enum => {
-                    let rollout_config: DirectRolloutConfig<$split_ty> =
+                    let rollout_config: RolloutConfig<$split_ty> =
                         read_json(&args.rollout_config_path).unwrap();
                     run_model_for_split!(rollout_config, $split_ty, inference_endpoint.clone())
                 }
@@ -152,10 +145,6 @@ async fn main() {
     dotenvy::dotenv().ok();
     let args = Args::parse();
     check_sympy_availability().unwrap();
-    assert!(
-        args.max_python_processes > 0,
-        "max_python_processes must be positive"
-    );
     assert!(args.total_epochs > 0, "total_epochs must be positive");
 
     println!("Starting direct rollout evaluation pipeline...");
@@ -172,11 +161,9 @@ async fn main() {
     let inference_endpoint =
         InferenceEndpoint::from_cli_options(args.sglang_port, args.sglang_base_url.clone())
             .unwrap();
-    if args.ui {
-        ProgressTuiLogger::initialize(args.progress_tui_log_path.clone())
-            .await
-            .unwrap();
-    }
+    ProgressTuiLogger::initialize(args.progress_tui_log_path.clone())
+        .await
+        .unwrap();
     run_rollout!(
         model_name,
         args.dataset_split,
@@ -196,7 +183,5 @@ async fn main() {
         DatasetSplitEnum::Validation, Validation,
         DatasetSplitEnum::Testing, Testing
     );
-    if args.ui {
-        ProgressTuiLogger::shutdown().await.unwrap();
-    }
+    ProgressTuiLogger::shutdown().await.unwrap();
 }

@@ -25,24 +25,21 @@ use ordered_float::NotNan;
 
 use crate::{
     atomic_count_guard::AtomicCountGuardRef,
-    tree_action_log::{
-        ActionLogConfigBundle, ActionLogStore, DirectTreeActionLog, open_action_logs,
-    },
-    hybrid_dataset::{
-        DatasetSplit, HybridDatasetQuestion, QuestionFlatId, open_hybrid_dataset,
-    },
+    hybrid_dataset::{DatasetSplit, HybridDatasetQuestion, QuestionFlatId, open_hybrid_dataset},
+    llm_model::{InferenceEndpoint, LlmCallable, LlmModelMarker},
+    model_answer_judgment_cache::commit_pending_writes_if_any,
     posterior_calculation_config::PosteriorCalculationConfig,
-    rollout_config::DirectRolloutConfig,
+    rollout_config::RolloutConfig,
+    tool_call_python::init_python_tool_pool,
     trajectory::{FailureMode, FinalAnswer},
     tree::{DirectTree, SegmentContent, TreeCorrectness},
     tree_action::DirectTreeAction,
-    tree_status::{
-        DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus,
-        TrunkSubStatus,
+    tree_action_log::{
+        ActionLogConfigBundle, ActionLogStore, DirectTreeActionLog, open_action_logs,
     },
-    llm_model::{InferenceEndpoint, LlmCallable, LlmModelMarker},
-    model_answer_judgment_cache::commit_pending_writes_if_any,
-    tool_call_python::init_python_tool_pool,
+    tree_status::{
+        DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus, TrunkSubStatus,
+    },
 };
 
 pub(crate) struct DistributionStats {
@@ -619,19 +616,18 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
 
 pub struct RolloutProgramConfig<S: DatasetSplit> {
     pub config_nickname: String,
-    pub rollout_config: DirectRolloutConfig<S>,
+    pub rollout_config: RolloutConfig<S>,
     pub posterior_calculation_config: PosteriorCalculationConfig,
     pub epoch: usize, // the epoch index
     pub client: Client,
-    pub max_rollout_concurrency: usize,
     pub inference_endpoint: InferenceEndpoint,
-    pub rollout_time_limit_secs: usize,
-    pub max_python_processes: usize,
+    pub rollout_secs: usize,
     pub total_epochs: usize,
     /// If set, open the action log store at this path instead of the default orchestrator path.
     pub action_log_store_override_path: Option<String>,
     pub use_tool: bool,
     pub fixed_temperature: NotNan<f32>,
+    pub max_concurrent_rollout: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -656,26 +652,17 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         posterior_calculation_config,
         epoch,
         client,
-        max_rollout_concurrency,
         inference_endpoint,
-        rollout_time_limit_secs,
-        max_python_processes,
+        rollout_secs,
         total_epochs,
         action_log_store_override_path,
         use_tool,
         fixed_temperature,
+        max_concurrent_rollout,
     } = program_config;
     assert!(
-        max_python_processes > 0,
-        "max_python_processes must be positive"
-    );
-    assert!(
-        rollout_time_limit_secs > 0,
-        "rollout_time_limit_secs must be positive"
-    );
-    assert!(
-        max_rollout_concurrency > 0,
-        "max_rollout_concurrency must be positive"
+        rollout_secs > 0,
+        "rollout_secs must be positive"
     );
     assert!(total_epochs > 0, "total_epochs must be positive");
     log_info(format!(
@@ -685,7 +672,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     let start_time = Instant::now();
 
     if use_tool {
-        init_python_tool_pool(max_python_processes)
+        init_python_tool_pool(4)
             .await
             .expect("failed to initialize python tool server pool");
     }
@@ -748,7 +735,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     rollout_stats.reset_model_answer_judgment_cache_hit_rate();
     let (previous_elapsed, deadline, total_secs) = {
         let prev = action_store.lock().await.read_elapsed_time().unwrap_or(0.0);
-        let remaining = (rollout_time_limit_secs as f32 - prev).max(0.0);
+        let remaining = (rollout_secs as f32 - prev).max(0.0);
         let deadline = start_time + Duration::from_secs_f32(remaining);
         if prev > 0.0 {
             log_info(format!(
@@ -759,7 +746,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     };
     let _progress_timer_handle = tokio::spawn(run_progress_timer(start_time, deadline, total_secs));
 
-    let semaphore = Arc::new(Semaphore::new(max_rollout_concurrency));
+    let semaphore = Arc::new(Semaphore::new(max_concurrent_rollout));
     let mut join_set = JoinSet::new();
     let mut next_question_index = 0;
     let halfway_time = start_time + (deadline - start_time) / 2;

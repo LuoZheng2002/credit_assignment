@@ -11,16 +11,13 @@ set -euo pipefail
 
 uv run -m src_py.modal.launch_modal_oneshot_rollout \
     --model-cli-name qwen25 \
-    --max-rollout-concurrency 300 \
     --config-nickname-rollout notool_rollout \
     --rollout-config-path config/rollout_config_training_notool.json \
     --dataset-split training \
     --rollout-time-limit-secs 28800 \
-    --max-python-processes 2 \
     --advantage-calculation-policy tree-mappo-posterior \
     --positive-advantage-only false \
     --mount-dir "/volume" \
     --num-gpus 1 \
     --gpu-name H200 \
     --modal-time-limit-hrs 12 \
-    --ui true

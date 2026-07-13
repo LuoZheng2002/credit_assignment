@@ -10,7 +10,9 @@ import unittest
 from pathlib import Path
 
 from src_py.train.cli_args import (
+    TrainingHyperparametersRequest,
     TrainingRequestArgs,
+    TrainingModeOneShot,
     model_to_json_bytes,
 )
 from src_py.wrappers.training_wrapper import TrainingWrapperStdinArgs
@@ -25,23 +27,27 @@ class TestTrainingWrapperSigterm(unittest.TestCase):
         wrapper_log_path = Path(temp_dir) / "training_wrapper.log"
 
         training_request = TrainingRequestArgs(
-            training_plan="lora",
-            advantage_clip=1.0,
-            learning_rate=1e-4,
-            weight_decay=0.01,
-            grad_accum_steps=1,
-            log_time_interval=5.0,
-            checkpoint_save_time_interval=60.0,
-            seed=7,
-            training_time=60.0,
+            hyperparameters=TrainingHyperparametersRequest(
+                lora_or_full="lora",
+                distributed_strategy="ddp",
+                advantage_clip=1.0,
+                learning_rate=1e-4,
+                weight_decay=0.01,
+                grad_accum_steps=1,
+                log_time_interval=5.0,
+                seed=7,
+            ),
+            training_mode=TrainingModeOneShot(
+                type="oneshot",
+                per_epoch_training_time=60.0,
+                num_oneshot_epochs=0,
+                model_output_root="",
+                training_summary_dir="/tmp/results/qwen35_4b/sigterm_test/epoch_1",
+                base_model_parent_dir="/tmp/results/qwen35_4b/sigterm_test/epoch_1",
+            ),
             num_iterations_limit=10,
             model_cli_name="qwen35_4b",
             config_nickname="sigterm_test",
-            epoch=1,
-            model_parent_dir="/tmp/results/qwen35_4b/sigterm_test/epoch_1",
-            checkpoints_parent_dir="/tmp/results/qwen35_4b/sigterm_test/epoch_1",
-            final_model_output_parent_dir="/tmp/results/qwen35_4b/sigterm_test/epoch_2",
-            training_summary_parent_dir="/tmp/results/qwen35_4b/sigterm_test/summary",
         )
         stdin_args = TrainingWrapperStdinArgs(
             training_config=training_request,
