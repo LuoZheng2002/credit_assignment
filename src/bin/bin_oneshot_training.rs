@@ -1,15 +1,16 @@
 use std::backtrace::Backtrace;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use clap::{ArgAction, Parser, ValueEnum};
+use clap::{Parser, ValueEnum};
 use ordered_float::NotNan;
 use proctitle::set_title;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::time::Instant;
 
 use credit_assignment::{
     check_python_env::check_sympy_availability,
+    constants::get_max_concurrent_rollout,
     directories::{
         action_logs_oneshot_path, inference_wrapper_log_path, oneshot_model_checkpoint_dir,
         oneshot_model_parent_dir, text_logger_summary_path, text_logger_verbose_path,
@@ -26,10 +27,15 @@ use credit_assignment::{
         Gemma3_4BIt, InferenceEndpoint, Llama31_8BInstruct, LlmModelMarker, LlmModelName,
         Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
+    oneshot_utils::{
+        all_expected_oneshot_model_outputs_exist, detect_oneshot_artifacts,
+        oneshot_aggregated_summary_path, read_oneshot_epoch_count_from_summary,
+        read_oneshot_run_manifest, write_oneshot_run_manifest,
+    },
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-    python_training_config::PythonTrainingConfig,
+    python_training_config::{PythonTrainingConfig, TrainingHyperparameters, TrainingMode},
     rollout::{RolloutProgramConfig, rollout_all},
-    rollout_config::DirectRolloutConfig,
+    rollout_config::RolloutConfig,
     utils::configure_mount_dir,
 };
 use reqwest::Client;
@@ -38,42 +44,26 @@ use research_utility::progress_text_logger::{
 };
 
 #[derive(Parser, Debug)]
-#[command(
-    author,
-    version,
-    about = "One-shot training: uses fixed rollout trajectories, trains all epochs first, then validates all models (including base model)"
-)]
+struct CliArgs {
+    #[arg(short = 'c', long)]
+    config_path: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 struct Args {
-    #[arg(long)]
     model_cli_name: String,
-    #[arg(long)]
-    max_rollout_concurrency: usize,
-    #[arg(long)]
     config_nickname_training: String,
-    #[arg(long)]
     config_nickname_rollout: String,
-    #[arg(long)]
     use_tool: bool,
-    #[arg(long)]
     num_oneshot_epochs: usize,
-    #[arg(long)]
-    training_config_common_path: String,
-    #[arg(long)]
+    validation_rollout_secs: usize,
+    training_hyperparameters: TrainingHyperparameters,
     oneshot_per_epoch_training_time: f32,
-    #[arg(long)]
     num_iterations_limit: usize,
-    #[arg(long)]
-    validation_rollout_time_limit_secs: usize,
-    #[arg(long, default_value_t = 1)]
-    max_python_processes: usize,
-    #[arg(long)]
     num_gpus: usize,
-    #[arg(long)]
     mount_dir: String,
-    #[arg(long)]
     rollout_mount_dir: String,
-    #[arg(long, action = ArgAction::Set)]
-    ui: bool,
 }
 
 fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
@@ -89,112 +79,6 @@ fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
             parent.display(),
             err
         )
-    })
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-struct OneshotRunManifest {
-    num_oneshot_epochs: usize,
-}
-
-fn oneshot_run_manifest_path(summary_parent_dir: &str) -> PathBuf {
-    Path::new(summary_parent_dir).join("oneshot_run_manifest.json")
-}
-
-fn oneshot_aggregated_summary_path(summary_parent_dir: &str) -> PathBuf {
-    Path::new(summary_parent_dir).join("oneshot_aggregated_summary.json")
-}
-
-fn write_oneshot_run_manifest(summary_parent_dir: &str, num_oneshot_epochs: usize) {
-    std::fs::create_dir_all(summary_parent_dir).unwrap_or_else(|err| {
-        panic!(
-            "Failed to create oneshot summary parent dir {}: {}",
-            summary_parent_dir, err
-        )
-    });
-    let manifest_path = oneshot_run_manifest_path(summary_parent_dir);
-    let payload = OneshotRunManifest { num_oneshot_epochs };
-    std::fs::write(
-        &manifest_path,
-        serde_json::to_string_pretty(&payload).unwrap() + "\n",
-    )
-    .unwrap_or_else(|err| {
-        panic!(
-            "Failed to write oneshot run manifest to {}: {}",
-            manifest_path.display(),
-            err
-        )
-    });
-    log_info(format!(
-        "Wrote oneshot run manifest to {}",
-        manifest_path.display()
-    ));
-}
-
-fn read_oneshot_run_manifest(summary_parent_dir: &str) -> Option<OneshotRunManifest> {
-    let manifest_path = oneshot_run_manifest_path(summary_parent_dir);
-    if !manifest_path.exists() {
-        return None;
-    }
-    std::fs::read_to_string(&manifest_path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<OneshotRunManifest>(&content).ok())
-}
-
-fn read_oneshot_epoch_count_from_summary(summary_parent_dir: &str) -> Option<usize> {
-    let aggregated_path = oneshot_aggregated_summary_path(summary_parent_dir);
-    if !aggregated_path.exists() {
-        return None;
-    }
-    std::fs::read_to_string(&aggregated_path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-        .and_then(|parsed| parsed.get("num_oneshot_epochs").and_then(|v| v.as_u64()))
-        .and_then(|value| usize::try_from(value).ok())
-}
-
-fn detect_oneshot_artifacts(summary_parent_dir: &str, model_output_root: &str) -> bool {
-    if oneshot_run_manifest_path(summary_parent_dir).exists()
-        || oneshot_aggregated_summary_path(summary_parent_dir).exists()
-    {
-        return true;
-    }
-
-    if let Ok(entries) = std::fs::read_dir(summary_parent_dir) {
-        for entry in entries.flatten() {
-            let file_name = entry.file_name();
-            if file_name
-                .to_str()
-                .is_some_and(|name| name.starts_with("oneshot_per_epoch_summary_epoch_"))
-            {
-                return true;
-            }
-        }
-    }
-
-    if let Ok(entries) = std::fs::read_dir(model_output_root) {
-        for entry in entries.flatten() {
-            let file_name = entry.file_name();
-            if file_name
-                .to_str()
-                .is_some_and(|name| name.starts_with("oneshot_epoch_"))
-            {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-fn all_expected_oneshot_model_outputs_exist(
-    model_output_root: &str,
-    num_oneshot_epochs: usize,
-) -> bool {
-    (1..=num_oneshot_epochs).all(|epoch_index| {
-        Path::new(model_output_root)
-            .join(format!("oneshot_epoch_{}/model", epoch_index))
-            .exists()
     })
 }
 
@@ -301,13 +185,11 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     config_nickname_rollout: &str,
     rollout_mount_dir: &str,
     mount_dir: &str,
-    max_rollout_concurrency: usize,
-    validation_rollout_config: DirectRolloutConfig<Validation>,
+    validation_rollout_config: RolloutConfig<Validation>,
     posterior_calculation_config: PosteriorCalculationConfig,
     num_oneshot_epochs: usize,
-    validation_rollout_time_limit_secs: usize,
-    max_python_processes: usize,
-    training_config_common: credit_assignment::python_training_config::PythonTrainingConfigCommon,
+    validation_rollout_secs: usize,
+    training_hyperparameters: TrainingHyperparameters,
     oneshot_per_epoch_training_time: f32,
     num_iterations_limit: usize,
     num_gpus: usize,
@@ -413,20 +295,17 @@ async fn run_oneshot_training<M: LlmModelMarker>(
         ));
 
         let training_config = PythonTrainingConfig {
-            common: training_config_common.clone(),
-            training_time: oneshot_per_epoch_training_time,
+            hyperparameters: training_hyperparameters.clone(),
             num_iterations_limit,
             model_cli_name: model_cli_name.to_string(),
             config_nickname: config_nickname_training.to_string(),
-            epoch: 0,
-            model_parent_dir: base_model_parent_dir,
-            checkpoints_parent_dir: shared_checkpoints_parent_dir.clone(),
-            final_model_output_parent_dir: shared_checkpoints_parent_dir.clone(),
-            training_summary_parent_dir: shared_checkpoints_parent_dir.clone(),
-            training_mode: "oneshot".to_string(),
-            oneshot_num_epochs: num_oneshot_epochs,
-            oneshot_start_epoch: 0,
-            oneshot_model_output_root: oneshot_model_output_root.clone(),
+            training_mode: TrainingMode::OneShot {
+                per_epoch_training_time: oneshot_per_epoch_training_time,
+                num_oneshot_epochs,
+                model_output_root: oneshot_model_output_root.clone(),
+                training_summary_dir: shared_checkpoints_parent_dir.clone(),
+                base_model_parent_dir,
+            },
         };
 
         let training_start_time = Instant::now();
@@ -550,15 +429,16 @@ async fn run_oneshot_training<M: LlmModelMarker>(
                 epoch, num_oneshot_epochs
             ));
 
-            let model_parent_dir = oneshot_model_parent_dir(
-                mount_dir,
-                model_cli_name,
-                config_nickname_training,
-                epoch,
-            );
-            let model_path = format!("{}/model", model_parent_dir);
-
             if epoch > 0 {
+                let model_path = format!(
+                    "{}/model",
+                    oneshot_model_parent_dir(
+                        mount_dir,
+                        model_cli_name,
+                        config_nickname_training,
+                        epoch,
+                    )
+                );
                 log_info(format!(
                     "Epoch {}: Updating inference model weights to {}",
                     epoch, model_path
@@ -591,14 +471,13 @@ async fn run_oneshot_training<M: LlmModelMarker>(
                 posterior_calculation_config: posterior_calculation_config.clone(),
                 epoch,
                 client: client.clone(),
-                max_rollout_concurrency,
                 inference_endpoint: InferenceEndpoint::SglangPort(sglang_port),
-                rollout_time_limit_secs: validation_rollout_time_limit_secs,
-                max_python_processes,
+                rollout_secs: validation_rollout_secs,
                 total_epochs: num_oneshot_epochs,
                 action_log_store_override_path: Some(validation_action_log_path.clone()),
                 use_tool,
                 fixed_temperature: NotNan::new(fixed_temperatures::VALIDATION_TEMPERATURE).unwrap(),
+                max_concurrent_rollout: get_max_concurrent_rollout(num_gpus),
             };
             let validation_summary =
                 rollout_all::<M, Validation>(mount_dir, validation_program_config).await;
@@ -673,60 +552,6 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     log_state("One-shot training completed for all epochs");
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        OneshotRunManifest, all_expected_oneshot_model_outputs_exist, detect_oneshot_artifacts,
-        read_oneshot_run_manifest, write_oneshot_run_manifest,
-    };
-
-    #[test]
-    fn oneshot_manifest_roundtrips() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let summary_parent_dir = temp_dir.path().join("summary");
-        let summary_parent_dir_str = summary_parent_dir.to_string_lossy().into_owned();
-
-        write_oneshot_run_manifest(&summary_parent_dir_str, 7);
-        let manifest = read_oneshot_run_manifest(&summary_parent_dir_str);
-        assert_eq!(
-            manifest,
-            Some(OneshotRunManifest {
-                num_oneshot_epochs: 7
-            })
-        );
-    }
-
-    #[test]
-    fn detect_oneshot_artifacts_notices_epoch_output_dirs() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let summary_parent_dir = temp_dir.path().join("summary");
-        let model_output_root = temp_dir.path().join("models");
-        std::fs::create_dir_all(model_output_root.join("oneshot_epoch_1/model")).unwrap();
-
-        assert!(detect_oneshot_artifacts(
-            &summary_parent_dir.to_string_lossy(),
-            &model_output_root.to_string_lossy(),
-        ));
-    }
-
-    #[test]
-    fn expected_oneshot_outputs_require_all_epochs() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let model_output_root = temp_dir.path().join("models");
-        std::fs::create_dir_all(model_output_root.join("oneshot_epoch_1/model")).unwrap();
-        std::fs::create_dir_all(model_output_root.join("oneshot_epoch_2/model")).unwrap();
-
-        assert!(all_expected_oneshot_model_outputs_exist(
-            &model_output_root.to_string_lossy(),
-            2,
-        ));
-        assert!(!all_expected_oneshot_model_outputs_exist(
-            &model_output_root.to_string_lossy(),
-            3,
-        ));
-    }
-}
-
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
     std::panic::set_hook(Box::new(|info| {
@@ -739,33 +564,30 @@ async fn main() {
         std::process::abort();
     }));
     dotenvy::dotenv().ok();
+    let CliArgs { config_path } = CliArgs::parse();
+    let config_contents = std::fs::read_to_string(&config_path)
+        .unwrap_or_else(|err| panic!("failed to read config file '{}': {}", config_path, err));
     let Args {
         model_cli_name,
         config_nickname_training,
         config_nickname_rollout,
-        max_rollout_concurrency,
         use_tool,
         num_oneshot_epochs,
-        ui,
-        validation_rollout_time_limit_secs,
-        max_python_processes,
-        training_config_common_path,
+        validation_rollout_secs,
+        training_hyperparameters,
         oneshot_per_epoch_training_time,
         num_iterations_limit,
         num_gpus,
         mount_dir,
         rollout_mount_dir,
-    } = Args::parse();
+    } = toml::from_str(&config_contents)
+        .unwrap_or_else(|err| panic!("failed to parse config file '{}': {}", config_path, err));
     let process_title = format!(
         "oneshot_training_{}_{}",
         model_cli_name, config_nickname_training
     );
     set_title(&process_title);
     check_sympy_availability().unwrap();
-    assert!(
-        max_python_processes > 0,
-        "max_python_processes must be positive"
-    );
     configure_mount_dir(&mount_dir)
         .unwrap_or_else(|err| panic!("failed to configure mount dir: {}", err));
     let inference_wrapper_log_path =
@@ -783,16 +605,14 @@ async fn main() {
     );
     log_info(format!("One-shot training will use num_gpus={}", num_gpus));
 
-    if ui {
-        let text_log_summary_path =
-            text_logger_summary_path(&mount_dir, &model_cli_name, &config_nickname_training);
-        let text_log_verbose_path =
-            text_logger_verbose_path(&mount_dir, &model_cli_name, &config_nickname_training);
-        ProgressTextLogger::initialize(text_log_summary_path, text_log_verbose_path)
-            .await
-            .unwrap();
-    }
-    let validation_rollout_config: DirectRolloutConfig<Validation> =
+    let text_log_summary_path =
+        text_logger_summary_path(&mount_dir, &model_cli_name, &config_nickname_training);
+    let text_log_verbose_path =
+        text_logger_verbose_path(&mount_dir, &model_cli_name, &config_nickname_training);
+    ProgressTextLogger::initialize(text_log_summary_path, text_log_verbose_path)
+        .await
+        .unwrap();
+    let validation_rollout_config: RolloutConfig<Validation> =
         read_json(credit_assignment::directories::VALIDATION_ROLLOUT_CONFIG_PATH).unwrap();
     let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
         credit_assignment::directories::POSTERIOR_HYPERPARAMETERS_PATH,
@@ -801,8 +621,6 @@ async fn main() {
     let posterior_calculation_config = PosteriorCalculationConfig {
         hyperparameters: posterior_hyperparameters,
     };
-    let training_config_common: credit_assignment::python_training_config::PythonTrainingConfigCommon =
-        credit_assignment::json_toml_utils::read_toml(&training_config_common_path).unwrap();
     let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
 
     match model_name {
@@ -813,13 +631,11 @@ async fn main() {
                 &config_nickname_rollout,
                 &rollout_mount_dir,
                 &mount_dir,
-                max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,
                 num_oneshot_epochs,
-                validation_rollout_time_limit_secs,
-                max_python_processes,
-                training_config_common,
+                validation_rollout_secs,
+                training_hyperparameters,
                 oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
@@ -836,13 +652,11 @@ async fn main() {
                 &config_nickname_rollout,
                 &rollout_mount_dir,
                 &mount_dir,
-                max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,
                 num_oneshot_epochs,
-                validation_rollout_time_limit_secs,
-                max_python_processes,
-                training_config_common,
+                validation_rollout_secs,
+                training_hyperparameters,
                 oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
@@ -859,13 +673,11 @@ async fn main() {
                 &config_nickname_rollout,
                 &rollout_mount_dir,
                 &mount_dir,
-                max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,
                 num_oneshot_epochs,
-                validation_rollout_time_limit_secs,
-                max_python_processes,
-                training_config_common,
+                validation_rollout_secs,
+                training_hyperparameters,
                 oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
@@ -882,13 +694,11 @@ async fn main() {
                 &config_nickname_rollout,
                 &rollout_mount_dir,
                 &mount_dir,
-                max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,
                 num_oneshot_epochs,
-                validation_rollout_time_limit_secs,
-                max_python_processes,
-                training_config_common,
+                validation_rollout_secs,
+                training_hyperparameters,
                 oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
@@ -905,13 +715,11 @@ async fn main() {
                 &config_nickname_rollout,
                 &rollout_mount_dir,
                 &mount_dir,
-                max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,
                 num_oneshot_epochs,
-                validation_rollout_time_limit_secs,
-                max_python_processes,
-                training_config_common,
+                validation_rollout_secs,
+                training_hyperparameters,
                 oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
@@ -928,13 +736,11 @@ async fn main() {
                 &config_nickname_rollout,
                 &rollout_mount_dir,
                 &mount_dir,
-                max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,
                 num_oneshot_epochs,
-                validation_rollout_time_limit_secs,
-                max_python_processes,
-                training_config_common,
+                validation_rollout_secs,
+                training_hyperparameters,
                 oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
@@ -951,13 +757,11 @@ async fn main() {
                 &config_nickname_rollout,
                 &rollout_mount_dir,
                 &mount_dir,
-                max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,
                 num_oneshot_epochs,
-                validation_rollout_time_limit_secs,
-                max_python_processes,
-                training_config_common,
+                validation_rollout_secs,
+                training_hyperparameters,
                 oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
@@ -974,13 +778,11 @@ async fn main() {
                 &config_nickname_rollout,
                 &rollout_mount_dir,
                 &mount_dir,
-                max_rollout_concurrency,
                 validation_rollout_config,
                 posterior_calculation_config,
                 num_oneshot_epochs,
-                validation_rollout_time_limit_secs,
-                max_python_processes,
-                training_config_common,
+                validation_rollout_secs,
+                training_hyperparameters,
                 oneshot_per_epoch_training_time,
                 num_iterations_limit,
                 num_gpus,
@@ -992,7 +794,5 @@ async fn main() {
         }
     }
 
-    if ui {
-        ProgressTextLogger::shutdown().await.unwrap();
-    }
+    ProgressTextLogger::shutdown().await.unwrap();
 }
