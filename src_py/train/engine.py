@@ -55,7 +55,7 @@ _FSDP_TRANSFORMER_BLOCK_CLASS_NAMES = {
 class TrainConfig:
     training_plan: str
     model_parent_dir: str
-    training_trajectory_sqlite_path: str
+    training_trajectory_path: str
     checkpoints_parent_dir: str
     final_model_output_parent_dir: str
     training_summary_parent_dir: str
@@ -1255,7 +1255,7 @@ def train(config: TrainConfig) -> None:
     )
 
     lazy_loader = LazyResolvedBatchLoader(
-        training_trajectory_sqlite_path=config.training_trajectory_sqlite_path,
+        training_trajectory_path=config.training_trajectory_path,
         model_official_name=expected_model_name,
         first_n_training_samples=0,
     )

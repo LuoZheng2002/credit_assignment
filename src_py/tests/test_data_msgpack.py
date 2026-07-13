@@ -18,7 +18,7 @@ def _write_entries(msgpack_path: str, entries: list[object]) -> None:
             )
 
 
-class TestDataSqlite(unittest.TestCase):
+class TestDataMsgpack(unittest.TestCase):
     def test_iter_training_trajectories_preserves_file_order(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".msgpack") as temp_file:
             payload_zero = {

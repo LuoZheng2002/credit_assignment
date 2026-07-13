@@ -27,9 +27,9 @@ def _build_parser() -> argparse.ArgumentParser:
 def _load_train_config(
     launch_args: TrainProcessLaunchArgs, request: TrainingRequestArgs
 ) -> TrainConfig:
-    training_trajectory_sqlite_path = Path(launch_args.training_trajectory_sqlite_path)
-    assert training_trajectory_sqlite_path.exists(), (
-        f"training trajectory file not found: {training_trajectory_sqlite_path}"
+    training_trajectory_path = Path(launch_args.training_trajectory_path)
+    assert training_trajectory_path.exists(), (
+        f"training trajectory file not found: {training_trajectory_path}"
     )
 
     model_parent_dir_path = Path(request.model_parent_dir)
@@ -41,7 +41,7 @@ def _load_train_config(
     return TrainConfig(
         training_plan=request.training_plan,
         model_parent_dir=str(model_parent_dir_path),
-        training_trajectory_sqlite_path=str(training_trajectory_sqlite_path),
+        training_trajectory_path=str(training_trajectory_path),
         checkpoints_parent_dir=str(checkpoints_parent_dir_path),
         final_model_output_parent_dir=str(final_model_output_parent_dir_path),
         training_summary_parent_dir=str(training_summary_parent_dir),

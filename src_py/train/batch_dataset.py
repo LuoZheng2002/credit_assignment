@@ -29,7 +29,7 @@ def _question_node_key(sample_id: QuestionNodeId) -> tuple[int, int]:
 
 
 def load_resolved_training_batches(
-    training_trajectory_sqlite_path: str,
+    training_trajectory_path: str,
     batch_size: int,
     model_official_name: str,
     first_n_training_samples: int,
@@ -43,7 +43,7 @@ def load_resolved_training_batches(
     trajectories: list[TrainingSampleTokenized] = []
     tokenized_by_id: dict[tuple[int, int], TrainingSampleTokenized] = {}
     previous_input_length = -1
-    for sample in iter_training_trajectories(training_trajectory_sqlite_path):
+    for sample in iter_training_trajectories(training_trajectory_path):
         key = _question_node_key(sample.id)
         assert key not in tokenized_by_id, f"duplicate sample id detected: {sample.id}"
         assert (
@@ -97,7 +97,7 @@ def load_resolved_training_batches(
 class LazyResolvedBatchLoader:
     def __init__(
         self,
-        training_trajectory_sqlite_path: str,
+        training_trajectory_path: str,
         model_official_name: str,
         first_n_training_samples: int,
     ):
@@ -105,7 +105,7 @@ class LazyResolvedBatchLoader:
             "model_official_name cannot be empty"
         )
         self._store = LazyTrainingTrajectoryStore(
-            msgpack_path=training_trajectory_sqlite_path,
+            msgpack_path=training_trajectory_path,
             first_n_training_samples=first_n_training_samples,
         )
         self.sample_count = self._store.sample_count

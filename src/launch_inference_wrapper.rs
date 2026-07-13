@@ -2,13 +2,23 @@ use std::{fs, net::SocketAddr, path::Path, time::Duration};
 
 use research_utility::progress_tui_logger::{log_info, log_warning};
 use tokio::process::{Child, Command};
-use tokio::sync::watch;
 use tokio::time::{Instant, sleep, timeout};
 
-use crate::launch_backend_wrapper_shared::{
-    bind_wrapper_tui_listener, socket_path_to_arg, spawn_wrapper_command,
-    spawn_wrapper_tui_listener,
-};
+use serde::Serialize;
+
+use research_utility::launch_python_process::{PythonProcessHandle, PythonProcessLauncher};
+
+#[derive(Serialize)]
+struct InferenceWrapperArgs {
+    listen_port: u16,
+    num_gpus: usize,
+    epoch: usize,
+    model_cli_name: String,
+    config_nickname: String,
+    hf_model_name: String,
+    model_path: String,
+    wrapper_log_path: String,
+}
 
 pub async fn launch_inference_wrapper_process(
     model_path: &str,
@@ -18,36 +28,10 @@ pub async fn launch_inference_wrapper_process(
     hf_model_name: &str,
     num_gpus: usize,
     wrapper_log_path: &str,
-) -> Result<(u16, Child, watch::Sender<bool>, tokio::task::JoinHandle<()>), String> {
+) -> Result<(u16, PythonProcessHandle), String> {
     let listen_port = 30000u16;
     ensure_wrapper_port_available(listen_port).await?;
-    let (socket_path, listener) = bind_wrapper_tui_listener("inference")?;
-    let socket_path_arg = socket_path_to_arg(&socket_path)?;
 
-    let mut command = Command::new("uv");
-    command
-        .arg("run")
-        .arg("python")
-        .arg("-m")
-        .arg("src_py.wrappers.inference_wrapper")
-        .arg("--listen-port")
-        .arg(listen_port.to_string())
-        .arg("--num-gpus")
-        .arg(num_gpus.to_string())
-        .arg("--epoch")
-        .arg(epoch.to_string())
-        .arg("--model-cli-name")
-        .arg(model_cli_name)
-        .arg("--config-nickname")
-        .arg(config_nickname)
-        .arg("--orchestrator-socket-path")
-        .arg(&socket_path_arg)
-        .arg("--hf-model-name")
-        .arg(hf_model_name)
-        .arg("--model-path")
-        .arg(model_path);
-
-    command.arg("--wrapper-log-path").arg(wrapper_log_path);
     if let Some(parent) = Path::new(wrapper_log_path).parent() {
         fs::create_dir_all(parent).unwrap_or_else(|err| {
             panic!(
@@ -57,17 +41,25 @@ pub async fn launch_inference_wrapper_process(
         });
     }
 
-    #[cfg(unix)]
-    command.process_group(0);
+    let args = InferenceWrapperArgs {
+        listen_port,
+        num_gpus,
+        epoch,
+        model_cli_name: model_cli_name.to_string(),
+        config_nickname: config_nickname.to_string(),
+        hf_model_name: hf_model_name.to_string(),
+        model_path: model_path.to_string(),
+        wrapper_log_path: wrapper_log_path.to_string(),
+    };
 
-    let mut process = spawn_wrapper_command(&mut command, &socket_path, "inference wrapper")?;
+    let mut handle = PythonProcessLauncher::new("inference", "src_py.wrappers.inference_wrapper")
+        .with_stdin_json(&args)?
+        .with_process_group(true)
+        .launch()
+        .await?;
 
-    let (stop_signal_tx, stop_signal_rx) = watch::channel(false);
-    let listener_handle =
-        spawn_wrapper_tui_listener(listener, socket_path, "inference wrapper", stop_signal_rx);
-
-    wait_for_wrapper_health(listen_port, Some(&mut process), wrapper_log_path).await?;
-    Ok((listen_port, process, stop_signal_tx, listener_handle))
+    wait_for_wrapper_health(listen_port, Some(&mut handle.child), wrapper_log_path).await?;
+    Ok((listen_port, handle))
 }
 
 pub async fn update_inference_model(
@@ -232,7 +224,7 @@ pub async fn best_effort_shutdown_stale_inference_wrapper() {
 
 async fn wait_for_wrapper_health(
     port: u16,
-    mut process: Option<&mut Child>,
+    mut handle: Option<&mut Child>,
     log_path: &str,
 ) -> Result<(), String> {
     let timeout_secs = std::env::var("INFERENCE_WRAPPER_HEALTH_TIMEOUT_SECS")
@@ -246,7 +238,7 @@ async fn wait_for_wrapper_health(
     let url = format!("http://127.0.0.1:{}/health", port);
 
     loop {
-        if let Some(proc) = process.as_mut() {
+        if let Some(proc) = handle.as_mut() {
             if let Ok(Some(status)) = proc.try_wait() {
                 return Err(format!(
                     "inference wrapper process exited before becoming healthy: {}; inspect wrapper log at {}",

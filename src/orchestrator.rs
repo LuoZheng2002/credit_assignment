@@ -1,14 +1,24 @@
 use research_utility::progress_tui_logger::{log_info, log_key_value_pair, log_state, log_warning};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path, time::Instant};
-use tokio::{process::Child, sync::watch};
 
 use ordered_float::NotNan;
 
 use crate::{
     config_paths::{ConfigPaths, config_paths_file_path, derive_testing_rollout_config_path},
+    directories::{model_checkpoint_dir, model_metrics_path, model_parent_dir, progress_save_path},
+    fixed_temperatures,
+    get_accuracy::get_accuracy,
     hybrid_dataset::{Training, Validation},
+    json_toml_utils::write_json,
+    launch_inference_wrapper::{
+        best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
+        shut_down_inference_wrapper_process,
+    },
+    launch_training_wrapper::run_training_wrapper_and_wait,
+    llm_model::{InferenceEndpoint, LlmModelMarker},
     posterior_calculation_config::PosteriorCalculationConfig,
+    python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
     rollout::{RolloutProgramConfig, rollout_all},
     rollout_config::{AdvantageCalculationPolicy, DirectRolloutConfig},
     training_set::{
@@ -17,19 +27,8 @@ use crate::{
         training_trajectories_stats_file_path,
     },
     tree_action_log::action_logs_file_path,
-    directories::{model_checkpoint_dir, model_metrics_path, model_parent_dir, progress_save_path},
-    fixed_temperatures,
-    get_accuracy::get_accuracy,
-    json_toml_utils::write_json,
-    launch_inference_wrapper::{
-        best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
-        shut_down_inference_wrapper_process,
-    },
-    launch_training_wrapper::run_training_wrapper_and_wait,
-    llm_model::{InferenceEndpoint, LlmModelMarker},
-    python_training_config::{PythonTrainingConfig, PythonTrainingConfigCommon},
-    utils::storage_large_files_dir,
 };
+use research_utility::launch_python_process::PythonProcessHandle;
 
 pub struct Orchestrator {
     // for rollout
@@ -67,9 +66,7 @@ pub struct InferenceServerHandle {
     pub epoch: usize,
     pub use_tool: bool,
     pub inference_endpoint: InferenceEndpoint,
-    pub process: Option<Child>,
-    pub listener_stop_signal: Option<watch::Sender<bool>>,
-    pub listener_handle: Option<tokio::task::JoinHandle<()>>,
+    pub wrapper_handle: Option<PythonProcessHandle>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum OrchestrationStatus {
@@ -123,11 +120,11 @@ impl Orchestrator {
             let Some(handle) = self.inference_server_handle.as_mut() else {
                 return Ok(());
             };
-            let Some(process) = handle.process.as_mut() else {
+            let Some(ref mut wrapper) = handle.wrapper_handle else {
                 return Ok(());
             };
-            let pid_for_log = process.id();
-            match process.try_wait() {
+            let pid_for_log = wrapper.child.id();
+            match wrapper.child.try_wait() {
                 Ok(Some(status)) => Probe::Exited {
                     pid: pid_for_log,
                     status,
@@ -143,9 +140,9 @@ impl Orchestrator {
         match probe {
             Probe::Alive => Ok(()),
             Probe::Exited { pid, status } => {
-                if let Some(handle) = self.inference_server_handle.as_mut() {
-                    if let Some(stop_signal) = handle.listener_stop_signal.as_ref() {
-                        let _ = stop_signal.send(true);
+                if let Some(handle) = self.inference_server_handle.as_ref() {
+                    if let Some(ref wrapper) = handle.wrapper_handle {
+                        let _ = wrapper.stop_signal_tx.send(true);
                     }
                 }
                 self.inference_server_handle = None;
@@ -409,7 +406,7 @@ impl Orchestrator {
                 handle.epoch,
                 handle.use_tool,
                 handle.inference_endpoint,
-                handle.process.is_some(),
+                handle.wrapper_handle.is_some(),
                 epoch,
                 use_tool,
             ));
@@ -466,17 +463,16 @@ impl Orchestrator {
             "Launching local inference wrapper for model {}",
             M::CLI_NAME,
         ));
-        let (sglang_port, process, listener_stop_signal, listener_handle) =
-            launch_inference_wrapper_process(
-                model_path.as_ref(),
-                M::CLI_NAME,
-                &self.config_nickname,
-                epoch,
-                M::API_NAME,
-                self.num_gpus,
-                self.inference_wrapper_log_path.as_ref(),
-            )
-            .await?;
+        let (sglang_port, handle) = launch_inference_wrapper_process(
+            model_path.as_ref(),
+            M::CLI_NAME,
+            &self.config_nickname,
+            epoch,
+            M::API_NAME,
+            self.num_gpus,
+            self.inference_wrapper_log_path.as_ref(),
+        )
+        .await?;
         log_info(format!(
             "Inference wrapper is listening on port {}",
             sglang_port
@@ -486,9 +482,7 @@ impl Orchestrator {
             epoch,
             use_tool,
             inference_endpoint: InferenceEndpoint::SglangPort(sglang_port),
-            process: Some(process),
-            listener_stop_signal: Some(listener_stop_signal),
-            listener_handle: Some(listener_handle),
+            wrapper_handle: Some(handle),
         });
         log_info("Inference wrapper launched");
         Ok(())
@@ -500,23 +494,19 @@ impl Orchestrator {
                 epoch,
                 use_tool,
                 inference_endpoint,
-                process,
-                listener_stop_signal,
-                listener_handle,
+                wrapper_handle,
             } = handle;
             log_info(format!(
                 "Shutting down inference server (stored_epoch={}, stored_use_tool={}, endpoint={:?}, has_process={})...",
                 epoch,
                 use_tool,
                 inference_endpoint,
-                process.is_some(),
+                wrapper_handle.is_some(),
             ));
-            if let Some(stop_signal) = listener_stop_signal.as_ref() {
-                let _ = stop_signal.send(true);
-            }
-            if let Some(mut process) = process {
-                let pid_for_log = process.id();
-                match process.try_wait() {
+            if let Some(mut proc_handle) = wrapper_handle {
+                let pid_for_log = proc_handle.child.id();
+                let _ = proc_handle.stop_signal_tx.send(true);
+                match proc_handle.child.try_wait() {
                     Ok(Some(status)) => log_info(format!(
                         "Inference server process already exited before shutdown (pid={:?}, status={})",
                         pid_for_log, status
@@ -530,22 +520,20 @@ impl Orchestrator {
                         pid_for_log, err
                     )),
                 }
-                shut_down_inference_wrapper_process(&mut process).await;
+                shut_down_inference_wrapper_process(&mut proc_handle.child).await;
                 log_info(format!(
                     "Completed shutdown call for inference server process (pid={:?})",
                     pid_for_log
                 ));
-            } else {
-                log_info("Inference server handle had no process to shut down");
-            }
-            if let Some(listener_handle) = listener_handle {
-                match listener_handle.await {
+                match proc_handle.listener_handle.await {
                     Ok(()) => log_info("Inference server TUI listener joined successfully"),
                     Err(err) => log_warning(format!(
                         "Inference server TUI listener join failed: {}",
                         err
                     )),
                 }
+            } else {
+                log_info("Inference server handle had no process to shut down");
             }
             log_info("Inference server shut down");
         } else {
@@ -959,12 +947,11 @@ impl Orchestrator {
         let training_trajectory_store =
             open_training_trajectories::<M>(&self.mount_dir, &self.config_nickname, epoch);
         let num_training_samples = training_trajectory_store.len();
-        let training_trajectory_sqlite_path = training_trajectories_msgpack_file_path::<M>(
+        let training_trajectory_path = training_trajectories_msgpack_file_path::<M>(
             &self.mount_dir,
             &self.config_nickname,
             epoch,
         );
-        let artifact_root_dir = storage_large_files_dir()?;
         let model_parent_dir =
             model_parent_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
         let checkpoints_parent_dir =
@@ -979,8 +966,6 @@ impl Orchestrator {
             common: self.training_config_common.clone(),
             training_time: self.training_time,
             num_iterations_limit: self.num_iterations_limit,
-            artifact_root_dir,
-            hpc_training_root_dir: None,
             model_cli_name: M::CLI_NAME.to_string(),
             config_nickname: self.config_nickname.clone(),
             epoch,
@@ -999,7 +984,7 @@ impl Orchestrator {
             self.num_gpus,
             M::API_NAME,
             &training_config,
-            &training_trajectory_sqlite_path,
+            &training_trajectory_path,
             self.training_wrapper_log_path.as_ref(),
         )
         .await?;
@@ -1028,11 +1013,9 @@ impl Orchestrator {
 impl Drop for Orchestrator {
     fn drop(&mut self) {
         if let Some(handle) = self.inference_server_handle.as_mut() {
-            if let Some(stop_signal) = handle.listener_stop_signal.as_ref() {
-                let _ = stop_signal.send(true);
-            }
-            if let Some(process) = handle.process.as_mut() {
-                let _ = process.start_kill();
+            if let Some(ref mut wrapper) = handle.wrapper_handle {
+                let _ = wrapper.stop_signal_tx.send(true);
+                let _ = wrapper.child.start_kill();
             }
         }
         self.inference_server_handle = None;

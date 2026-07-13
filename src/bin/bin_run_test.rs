@@ -3,14 +3,10 @@ use std::{backtrace::Backtrace, path::Path};
 use clap::{ArgAction, Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
-    hybrid_dataset::Testing,
-    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-    rollout::{RolloutProgramConfig, rollout_all},
-    rollout_config::DirectRolloutConfig,
-    tree_action_log::open_action_logs,
     directories::{inference_wrapper_log_path, model_parent_dir, test_accuracy_path, tui_log_path},
     fixed_temperatures,
     get_accuracy::{TestAccuracyResult, get_test_accuracies},
+    hybrid_dataset::Testing,
     json_toml_utils::{read_json, write_json},
     launch_inference_wrapper::{
         best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
@@ -20,6 +16,10 @@ use credit_assignment::{
         Gemma3_4BIt, InferenceEndpoint, Llama31_8BInstruct, LlmModelMarker, LlmModelName,
         Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
+    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+    rollout::{RolloutProgramConfig, rollout_all},
+    rollout_config::DirectRolloutConfig,
+    tree_action_log::open_action_logs,
     utils::configure_mount_dir,
 };
 use ordered_float::NotNan;
@@ -149,17 +149,16 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
         testing_config.epoch,
     );
     let model_path = format!("{}/model", model_parent_dir);
-    let (sglang_port, mut process, listener_stop_signal, listener_handle) =
-        launch_inference_wrapper_process(
-            &model_path,
-            M::CLI_NAME,
-            &testing_config.config_nickname,
-            testing_config.epoch,
-            M::API_NAME,
-            args.num_gpus,
-            inference_wrapper_log_path,
-        )
-        .await?;
+    let (sglang_port, mut handle) = launch_inference_wrapper_process(
+        &model_path,
+        M::CLI_NAME,
+        &testing_config.config_nickname,
+        testing_config.epoch,
+        M::API_NAME,
+        args.num_gpus,
+        inference_wrapper_log_path,
+    )
+    .await?;
 
     let test_result = run_rollout_and_compute_accuracy::<M>(
         rollout_config,
@@ -171,9 +170,9 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
     )
     .await;
 
-    let _ = listener_stop_signal.send(true);
-    shut_down_inference_wrapper_process(&mut process).await;
-    let _ = listener_handle.await;
+    let _ = handle.stop_signal_tx.send(true);
+    shut_down_inference_wrapper_process(&mut handle.child).await;
+    let _ = handle.listener_handle.await;
     Ok(test_result)
 }
 

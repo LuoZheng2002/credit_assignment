@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 from types import UnionType
 from typing import Any, TypeVar, Union, get_args, get_origin
@@ -24,7 +23,6 @@ class TrainingRequestArgs(BaseModel):
     adam_beta2: float = 0.95
     training_time: float
     num_iterations_limit: int
-    artifact_root_dir: str
     model_cli_name: str
     config_nickname: str
     epoch: int
@@ -48,23 +46,10 @@ class TrainingRequestArgs(BaseModel):
 
 
 
-class TrainingWrapperLaunchArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    num_gpus: int
-    trajectory_sqlite_path: str
-    hf_model_name: str
-    wrapper_log_path: str
-    orchestrator_socket_path: str = ""
-    test_sleep_secs: float = 0.0
-
-
-
-
 class TrainProcessLaunchArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    training_trajectory_sqlite_path: str
+    training_trajectory_path: str
     training_request_json_path: str
     orchestrator_socket_path: str = ""
 
@@ -102,13 +87,6 @@ def add_model_arguments(
 def parse_model_args(parser: argparse.ArgumentParser, model_type: type[T]) -> T:
     namespace = parser.parse_args()
     return model_type.model_validate(vars(namespace))
-
-
-def parse_model_stdin(model_type: type[T]) -> T:
-    raw = sys.stdin.buffer.read()
-    if not raw or not raw.strip():
-        raise ValueError(f"expected JSON payload on stdin for {model_type.__name__}")
-    return model_type.model_validate_json(raw)
 
 
 def parse_model_json_file(model_type: type[T], json_path: str | Path) -> T:

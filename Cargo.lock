@@ -2981,6 +2981,7 @@ dependencies = [
  "rmp-serde",
  "rusqlite",
  "serde",
+ "serde_json",
  "tokio",
 ]
 

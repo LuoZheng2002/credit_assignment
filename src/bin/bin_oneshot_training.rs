@@ -30,7 +30,7 @@ use credit_assignment::{
     python_training_config::PythonTrainingConfig,
     rollout::{RolloutProgramConfig, rollout_all},
     rollout_config::DirectRolloutConfig,
-    utils::{configure_mount_dir, storage_large_files_dir},
+    utils::configure_mount_dir,
 };
 use reqwest::Client;
 use research_utility::progress_text_logger::{
@@ -343,9 +343,6 @@ async fn run_oneshot_training<M: LlmModelMarker>(
 
     let oneshot_training_summary_parent_dir =
         training_summary_oneshot_parent_dir(mount_dir, model_cli_name, config_nickname_training);
-    let artifact_root_dir = storage_large_files_dir()
-        .unwrap_or_else(|err| panic!("failed to resolve artifact root dir: {}", err));
-
     // ================================================================
     // Phase 1: Train all oneshot epochs in a single process
     //        (optimizer/data-cursor continuity is kept in memory only;
@@ -419,8 +416,6 @@ async fn run_oneshot_training<M: LlmModelMarker>(
             common: training_config_common.clone(),
             training_time: oneshot_per_epoch_training_time,
             num_iterations_limit,
-            artifact_root_dir: artifact_root_dir.clone(),
-            hpc_training_root_dir: None,
             model_cli_name: model_cli_name.to_string(),
             config_nickname: config_nickname_training.to_string(),
             epoch: 0,
@@ -533,18 +528,17 @@ async fn run_oneshot_training<M: LlmModelMarker>(
             "Launching inference server once for all validation epochs (initial model: {})",
             launch_model_path
         ));
-        let (sglang_port, mut inference_process, listener_stop_signal, listener_handle) =
-            launch_inference_wrapper::launch_inference_wrapper_process(
-                &launch_model_path,
-                model_cli_name,
-                config_nickname_training,
-                launch_epoch,
-                M::API_NAME,
-                num_gpus,
-                inference_wrapper_log_path,
-            )
-            .await
-            .unwrap_or_else(|err| panic!("failed to launch inference server: {}", err));
+        let (sglang_port, mut handle) = launch_inference_wrapper::launch_inference_wrapper_process(
+            &launch_model_path,
+            model_cli_name,
+            config_nickname_training,
+            launch_epoch,
+            M::API_NAME,
+            num_gpus,
+            inference_wrapper_log_path,
+        )
+        .await
+        .unwrap_or_else(|err| panic!("failed to launch inference server: {}", err));
         log_info(format!(
             "Inference server listening on port {} for all validation epochs",
             sglang_port
@@ -670,9 +664,9 @@ async fn run_oneshot_training<M: LlmModelMarker>(
 
         // Shut down inference server once after all validation epochs
         log_info("Shutting down inference server after all validation epochs");
-        let _ = listener_stop_signal.send(true);
-        shut_down_inference_wrapper_process(&mut inference_process).await;
-        let _ = listener_handle.await;
+        let _ = handle.stop_signal_tx.send(true);
+        shut_down_inference_wrapper_process(&mut handle.child).await;
+        let _ = handle.listener_handle.await;
         log_info("Inference server shut down");
     }
 

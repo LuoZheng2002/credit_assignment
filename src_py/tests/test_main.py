@@ -11,7 +11,6 @@ class TestMain(unittest.TestCase):
     def _training_request(self, **overrides: object) -> TrainingRequestArgs:
         payload: dict[str, object] = {
             "training_plan": "lora",
-            "artifact_root_dir": "/tmp/storage_root",
             "model_cli_name": "qwen35_08b",
             "config_nickname": "run_a",
             "epoch": 3,
@@ -32,7 +31,7 @@ class TestMain(unittest.TestCase):
         }
         payload.update(overrides)
         epoch = cast(int, payload["epoch"])
-        root_dir = cast(str, payload["artifact_root_dir"])
+        root_dir = "/tmp/storage_root"
         model_cli_name = cast(str, payload["model_cli_name"])
         config_nickname = cast(str, payload["config_nickname"])
         if epoch == 0:
@@ -58,7 +57,7 @@ class TestMain(unittest.TestCase):
             trajectory_path = Path(tmp_dir) / "training_trajectories.msgpack"
             trajectory_path.write_bytes(b"msgpack")
             launch_args = TrainProcessLaunchArgs(
-                training_trajectory_sqlite_path=str(trajectory_path),
+                training_trajectory_path=str(trajectory_path),
                 training_request_json_path="/tmp/request.json",
             )
             request = self._training_request()
@@ -66,7 +65,7 @@ class TestMain(unittest.TestCase):
             self.assertEqual("lora", config.training_plan)
             self.assertEqual(10, int(config.training_time))
             self.assertEqual(
-                str(trajectory_path), config.training_trajectory_sqlite_path
+                str(trajectory_path), config.training_trajectory_path
             )
             self.assertEqual(
                 "/tmp/storage_root/results/qwen35_08b/run_a/epoch_3",
@@ -86,7 +85,7 @@ class TestMain(unittest.TestCase):
             trajectory_path = Path(tmp_dir) / "training_trajectories.msgpack"
             trajectory_path.write_bytes(b"msgpack")
             launch_args = TrainProcessLaunchArgs(
-                training_trajectory_sqlite_path=str(trajectory_path),
+                training_trajectory_path=str(trajectory_path),
                 training_request_json_path="/tmp/request.json",
             )
             request = self._training_request(epoch=0)
@@ -100,9 +99,9 @@ class TestMain(unittest.TestCase):
                 config.checkpoints_parent_dir,
             )
 
-    def test_load_train_config_requires_uploaded_sqlite(self) -> None:
+    def test_load_train_config_requires_uploaded_msgpack(self) -> None:
         launch_args = TrainProcessLaunchArgs(
-            training_trajectory_sqlite_path="/tmp/missing_training_trajectories.msgpack",
+            training_trajectory_path="/tmp/missing_training_trajectories.msgpack",
             training_request_json_path="/tmp/request.json",
         )
         request = self._training_request(epoch=2)
@@ -114,11 +113,10 @@ class TestMain(unittest.TestCase):
             trajectory_path = Path(tmp_dir) / "training_trajectories.msgpack"
             trajectory_path.write_bytes(b"msgpack")
             launch_args = TrainProcessLaunchArgs(
-                training_trajectory_sqlite_path=str(trajectory_path),
+                training_trajectory_path=str(trajectory_path),
                 training_request_json_path="/tmp/request.json",
             )
             request = self._training_request(
-                artifact_root_dir="/tmp/storage_root",
                 hpc_training_root_dir="/tmp/hpc_volume_root",
                 epoch=1,
             )

@@ -11,27 +11,19 @@ from pathlib import Path
 
 from src_py.train.cli_args import (
     TrainingRequestArgs,
-    TrainingWrapperLaunchArgs,
-    model_to_cli_args,
     model_to_json_bytes,
 )
+from src_py.wrappers.training_wrapper import TrainingWrapperStdinArgs
 
 
 class TestTrainingWrapperSigterm(unittest.TestCase):
     def _run_wrapper_and_collect_events(
         self, temp_dir: str
     ) -> tuple[list[dict[str, object]], int, str]:
-        trajectory_path = Path(temp_dir) / "training.sqlite"
-        trajectory_path.write_bytes(b"sqlite")
+        trajectory_path = Path(temp_dir) / "training.msgpack"
+        trajectory_path.write_bytes(b"msgpack")
         wrapper_log_path = Path(temp_dir) / "training_wrapper.log"
 
-        launch_args = TrainingWrapperLaunchArgs(
-            num_gpus=1,
-            trajectory_sqlite_path=str(trajectory_path),
-            hf_model_name="Qwen/Qwen3.5-4B",
-            wrapper_log_path=str(wrapper_log_path),
-            test_sleep_secs=30,
-        )
         training_request = TrainingRequestArgs(
             training_plan="lora",
             advantage_clip=1.0,
@@ -43,7 +35,6 @@ class TestTrainingWrapperSigterm(unittest.TestCase):
             seed=7,
             training_time=60.0,
             num_iterations_limit=10,
-            artifact_root_dir="/tmp",
             model_cli_name="qwen35_4b",
             config_nickname="sigterm_test",
             epoch=1,
@@ -52,11 +43,18 @@ class TestTrainingWrapperSigterm(unittest.TestCase):
             final_model_output_parent_dir="/tmp/results/qwen35_4b/sigterm_test/epoch_2",
             training_summary_parent_dir="/tmp/results/qwen35_4b/sigterm_test/summary",
         )
+        stdin_args = TrainingWrapperStdinArgs(
+            training_config=training_request,
+            num_gpus=1,
+            trajectory_path=str(trajectory_path),
+            hf_model_name="Qwen/Qwen3.5-4B",
+            wrapper_log_path=str(wrapper_log_path),
+            test_sleep_secs=30,
+        )
         command = [
             sys.executable,
             "-m",
             "src_py.wrappers.training_wrapper",
-            *model_to_cli_args(launch_args),
         ]
         process = subprocess.Popen(
             command,
@@ -65,7 +63,7 @@ class TestTrainingWrapperSigterm(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
         assert process.stdin is not None
-        process.stdin.write(model_to_json_bytes(training_request))
+        process.stdin.write(model_to_json_bytes(stdin_args))
         process.stdin.close()
         process.stdin = None
 

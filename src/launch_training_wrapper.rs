@@ -1,66 +1,54 @@
-use std::{path::Path, process::Stdio};
+use std::path::Path;
 
 use research_utility::progress_tui_logger::log_info;
-use tokio::process::Command;
-use tokio::sync::watch;
 
-use crate::{
-    launch_backend_wrapper_shared::{
-        bind_wrapper_tui_listener, socket_path_to_arg, spawn_wrapper_command,
-        spawn_wrapper_tui_listener, write_json_payload_to_child_stdin,
-    },
-    python_training_config::PythonTrainingConfig,
-};
+use serde::Serialize;
+
+use research_utility::launch_python_process::PythonProcessLauncher;
+
+use crate::python_training_config::PythonTrainingConfig;
+
+#[derive(Serialize)]
+struct TrainingWrapperStdinArgs {
+    training_config: PythonTrainingConfig,
+    num_gpus: usize,
+    trajectory_path: String,
+    hf_model_name: String,
+    wrapper_log_path: String,
+    #[serde(default)]
+    test_sleep_secs: f32,
+}
 
 pub async fn run_training_wrapper_and_wait(
     num_gpus: usize,
     hf_model_name: &str,
     training_config: &PythonTrainingConfig,
-    trajectory_sqlite_path: &str,
+    trajectory_path: &str,
     wrapper_log_path: &str,
 ) -> Result<(), String> {
     assert!(num_gpus > 0, "num_gpus must be positive");
-    if !Path::new(trajectory_sqlite_path).is_file() {
+    if !Path::new(trajectory_path).is_file() {
         return Err(format!(
             "training trajectory file does not exist: {}",
-            trajectory_sqlite_path
+            trajectory_path
         ));
     }
-    let (socket_path, listener) = bind_wrapper_tui_listener("training")?;
-    let socket_path_arg = socket_path_to_arg(&socket_path)?;
 
-    let mut command = Command::new("uv");
-    command
-        .arg("run")
-        .arg("python")
-        .arg("-m")
-        .arg("src_py.wrappers.training_wrapper")
-        .arg("--num-gpus")
-        .arg(num_gpus.to_string())
-        .arg("--trajectory-sqlite-path")
-        .arg(trajectory_sqlite_path)
-        .arg("--hf-model-name")
-        .arg(hf_model_name)
-        .arg("--wrapper-log-path")
-        .arg(wrapper_log_path)
-        .arg("--orchestrator-socket-path")
-        .arg(&socket_path_arg)
-        .stdin(Stdio::piped());
+    let args = TrainingWrapperStdinArgs {
+        training_config: training_config.clone(),
+        num_gpus,
+        trajectory_path: trajectory_path.to_string(),
+        hf_model_name: hf_model_name.to_string(),
+        wrapper_log_path: wrapper_log_path.to_string(),
+        test_sleep_secs: 0.0,
+    };
 
-    let mut process = spawn_wrapper_command(&mut command, &socket_path, "training wrapper")?;
-    write_json_payload_to_child_stdin(&mut process, training_config, "training wrapper").await?;
+    let handle = PythonProcessLauncher::new("training", "src_py.wrappers.training_wrapper")
+        .with_stdin_json(&args)?
+        .launch()
+        .await?;
 
-    let (stop_signal_tx, stop_signal_rx) = watch::channel(false);
-    let listener_handle =
-        spawn_wrapper_tui_listener(listener, socket_path, "training wrapper", stop_signal_rx);
-
-    let status = process
-        .wait()
-        .await
-        .map_err(|err| format!("failed while waiting for training wrapper process: {}", err))?;
-
-    let _ = stop_signal_tx.send(true);
-    let _ = listener_handle.await;
+    let status = handle.wait_and_shutdown().await?;
 
     if status.success() {
         log_info(format!(

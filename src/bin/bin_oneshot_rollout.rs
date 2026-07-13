@@ -126,18 +126,17 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     );
     let model_path = format!("{}/model", model_parent_dir);
 
-    let (sglang_port, mut process, listener_stop_signal, listener_handle) =
-        launch_inference_wrapper_process(
-            &model_path,
-            M::CLI_NAME,
-            &args.config_nickname_rollout,
-            args.epoch,
-            M::API_NAME,
-            num_gpus,
-            inference_wrapper_log_path,
-        )
-        .await
-        .unwrap_or_else(|err| panic!("failed to launch inference server: {}", err));
+    let (sglang_port, mut handle) = launch_inference_wrapper_process(
+        &model_path,
+        M::CLI_NAME,
+        &args.config_nickname_rollout,
+        args.epoch,
+        M::API_NAME,
+        num_gpus,
+        inference_wrapper_log_path,
+    )
+    .await
+    .unwrap_or_else(|err| panic!("failed to launch inference server: {}", err));
 
     let program_config = RolloutProgramConfig {
         config_nickname: args.config_nickname_rollout.clone(),
@@ -163,9 +162,9 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     };
     let summary = rollout_all::<M, S>(&args.mount_dir, program_config).await;
 
-    let _ = listener_stop_signal.send(true);
-    shut_down_inference_wrapper_process(&mut process).await;
-    let _ = listener_handle.await;
+    let _ = handle.stop_signal_tx.send(true);
+    shut_down_inference_wrapper_process(&mut handle.child).await;
+    let _ = handle.listener_handle.await;
 
     let summary_path = rollout_summary_oneshot_path(
         &args.mount_dir,

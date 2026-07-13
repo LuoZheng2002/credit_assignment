@@ -66,7 +66,7 @@ class TestBatchDataset(unittest.TestCase):
             )
 
             batches = load_resolved_training_batches(
-                training_trajectory_sqlite_path=trajectory_db.name,
+                training_trajectory_path=trajectory_db.name,
                 batch_size=2,
                 model_official_name="Qwen/Qwen2.5-7B-Instruct",
                 first_n_training_samples=0,
@@ -114,7 +114,7 @@ class TestBatchDataset(unittest.TestCase):
 
             with self.assertRaises(AssertionError):
                 load_resolved_training_batches(
-                    training_trajectory_sqlite_path=trajectory_db.name,
+                    training_trajectory_path=trajectory_db.name,
                     batch_size=2,
                     model_official_name="Qwen/Qwen2.5-7B-Instruct",
                     first_n_training_samples=0,
@@ -144,7 +144,7 @@ class TestBatchDataset(unittest.TestCase):
             _write_entries(trajectory_db.name, trajectory_entries)
 
             batches = load_resolved_training_batches(
-                training_trajectory_sqlite_path=trajectory_db.name,
+                training_trajectory_path=trajectory_db.name,
                 batch_size=2,
                 model_official_name="Qwen/Qwen2.5-7B-Instruct",
                 first_n_training_samples=3,
