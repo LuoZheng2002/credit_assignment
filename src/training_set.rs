@@ -547,6 +547,8 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
                 let question = question_map.get(&key.0).unwrap().clone();
                 let actions = action_store.load_action_log(key).unwrap();
                 let action_log = DirectTreeActionLog {
+                    mount_dir: String::new(),
+                    config_nickname: String::new(),
                     question,
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
@@ -658,6 +660,8 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                 let question = question_map.get(&key.0).unwrap().clone();
                 let actions = action_store.load_action_log(key).unwrap();
                 let action_log = DirectTreeActionLog{
+                    mount_dir: String::new(),
+                    config_nickname: String::new(),
                     question,
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),

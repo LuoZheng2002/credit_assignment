@@ -146,7 +146,14 @@ fn trajectory_length_being_judged<M: LlmModelMarker, S: DatasetSplit>(
     }
 }
 
-async fn run_progress_timer(start_time: Instant, deadline: Instant, total_secs: f32) {
+async fn run_progress_timer(
+    start_time: Instant,
+    deadline: Instant,
+    total_secs: f32,
+    mount_dir: String,
+    model_cli_name: String,
+    config_nickname: String,
+) {
     let rollout_stats = RolloutStats::global();
     let log_time_progress = |now: Instant| {
         let elapsed_secs = (now - start_time).as_secs_f32().min(total_secs);
@@ -205,7 +212,9 @@ async fn run_progress_timer(start_time: Instant, deadline: Instant, total_secs: 
         }
 
         if now >= next_model_answer_judgment_cache_commit_time {
-            if let Err(error) = commit_pending_writes_if_any() {
+            if let Err(error) =
+                commit_pending_writes_if_any(&mount_dir, &model_cli_name, &config_nickname)
+            {
                 log_warning(format!(
                     "Failed to commit model answer judgment cache during rollout: {}",
                     error
@@ -660,10 +669,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         fixed_temperature,
         max_concurrent_rollout,
     } = program_config;
-    assert!(
-        rollout_secs > 0,
-        "rollout_secs must be positive"
-    );
+    assert!(rollout_secs > 0, "rollout_secs must be positive");
     assert!(total_epochs > 0, "total_epochs must be positive");
     log_info(format!(
         "rollout_all using fixed_temperature={} for LLM sampling",
@@ -744,7 +750,14 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         }
         (prev, deadline, remaining)
     };
-    let _progress_timer_handle = tokio::spawn(run_progress_timer(start_time, deadline, total_secs));
+    let _progress_timer_handle = tokio::spawn(run_progress_timer(
+        start_time,
+        deadline,
+        total_secs,
+        mount_dir.to_string(),
+        M::CLI_NAME.to_string(),
+        config_nickname.clone(),
+    ));
 
     let semaphore = Arc::new(Semaphore::new(max_concurrent_rollout));
     let mut join_set = JoinSet::new();
@@ -786,6 +799,8 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
                 };
 
                 let action_log = DirectTreeActionLog {
+                    mount_dir: mount_dir.to_string(),
+                    config_nickname: config_nickname.clone(),
                     question: question.clone(),
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
@@ -836,7 +851,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     rollout_stats.log_final_tree_correctness_summary();
     rollout_stats.log_model_answer_counts();
 
-    if let Err(error) = commit_pending_writes_if_any() {
+    if let Err(error) = commit_pending_writes_if_any(mount_dir, M::CLI_NAME, &config_nickname) {
         log_warning(format!(
             "Failed to commit model answer judgment cache at the end of rollout_all: {}",
             error

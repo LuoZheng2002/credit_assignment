@@ -21,7 +21,12 @@ static QWEN25_TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(|| {
 
 static QWEN25_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment<'static>> =
     LazyLock::new(|| {
-        load_jinja_template_environment("tokenizers/qwen25/chat_template.jinja", "chat").unwrap()
+        load_jinja_template_environment(
+            "tokenizers/qwen25/chat_template.jinja",
+            "chat",
+            Qwen25_7B::API_NAME,
+        )
+        .unwrap()
     });
 
 #[derive(Serialize)]

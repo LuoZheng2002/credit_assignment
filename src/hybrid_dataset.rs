@@ -15,6 +15,8 @@ use research_utility::{
 use serde::{Deserialize, Serialize};
 use serde_jsonlines::BufReadExt;
 
+use crate::utils::run_python_script;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(bound = "S: DatasetSplit")]
 pub struct HybridDatasetQuestion<S: DatasetSplit> {
@@ -324,11 +326,34 @@ pub fn hybrid_dataset_file_path<S: DatasetSplit>() -> String {
     format!("datasets/hybrid_{}.jsonl", S::dataset_file_postfix())
 }
 
+/// Ensure the hybrid dataset JSONL file exists. If it's missing, run the
+/// corresponding Python download script from `scripts/download_datasets/`.
+pub fn ensure_hybrid_dataset_jsonl<S: DatasetSplit>() -> Result<(), String> {
+    let file_path = hybrid_dataset_file_path::<S>();
+    if Path::new(&file_path).exists() {
+        return Ok(());
+    }
+    let script = format!(
+        "scripts/download_datasets/download_hybrid_{}.py",
+        S::dataset_file_postfix()
+    );
+    run_python_script(&script, &[])
+}
+
 pub fn hybrid_dataset_hash<S: DatasetSplit>() -> Base64Hash {
     hash_file(hybrid_dataset_file_path::<S>()).unwrap()
 }
 
 pub fn open_hybrid_dataset<S: DatasetSplit>() -> HybridDatasetStore<S> {
+    // JIT: generate the JSONL file if it doesn't exist yet.
+    if let Err(e) = ensure_hybrid_dataset_jsonl::<S>() {
+        panic!(
+            "Failed to JIT-generate hybrid dataset JSONL at {}: {}",
+            hybrid_dataset_file_path::<S>(),
+            e
+        );
+    }
+
     HybridDatasetStore::open(hybrid_dataset_file_path::<S>()).unwrap_or_else(|e| {
         panic!(
             "Failed to open hybrid dataset JSONL store at {}: {}",

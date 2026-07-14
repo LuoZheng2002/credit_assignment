@@ -236,6 +236,9 @@ pub async fn judge_final_answer(
     final_answer: &FinalAnswer,
     correct_answer: &str,
     question: &str,
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
     client: Client,
 ) -> CorrectnessJudgment {
     let rollout_stats = RolloutStats::global();
@@ -256,7 +259,13 @@ pub async fn judge_final_answer(
                 "judge_waiting_workers".to_string(),
             );
 
-            let cache_lookup = get_cached_judgment(question, model_answer.clone());
+            let cache_lookup = get_cached_judgment(
+                mount_dir,
+                model_cli_name,
+                config_nickname,
+                question,
+                model_answer.clone(),
+            );
             match cache_lookup {
                 Ok(Some(is_correct)) => {
                     rollout_stats.record_model_answer_judgment_cache_read_attempt(true);
@@ -271,9 +280,14 @@ pub async fn judge_final_answer(
                         client,
                     )
                     .await;
-                    if let Err(error) =
-                        store_cached_judgment(question, model_answer.clone(), is_correct)
-                    {
+                    if let Err(error) = store_cached_judgment(
+                        mount_dir,
+                        model_cli_name,
+                        config_nickname,
+                        question,
+                        model_answer.clone(),
+                        is_correct,
+                    ) {
                         log_warning(format!(
                             "Failed to store model answer judgment cache entry for question {:?}: {}",
                             question, error
@@ -294,9 +308,14 @@ pub async fn judge_final_answer(
                         client,
                     )
                     .await;
-                    if let Err(error) =
-                        store_cached_judgment(question, model_answer.clone(), is_correct)
-                    {
+                    if let Err(error) = store_cached_judgment(
+                        mount_dir,
+                        model_cli_name,
+                        config_nickname,
+                        question,
+                        model_answer.clone(),
+                        is_correct,
+                    ) {
                         log_warning(format!(
                             "Failed to store model answer judgment cache entry for question {:?}: {}",
                             question, error

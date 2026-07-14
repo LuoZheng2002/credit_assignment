@@ -23,6 +23,12 @@ pub fn action_logs_path<S: DatasetSplit>(
     ))
 }
 
+pub fn judgment_cache_path(mount_dir: &str, model_cli_name: &str, config_nickname: &str) -> String {
+    format!(
+        "{mount_dir}/medium_files/{model_cli_name}/{config_nickname}/model_answer_judgment.redb"
+    )
+}
+
 pub fn inference_wrapper_log_path(
     mount_dir: &str,
     model_cli_name: &str,

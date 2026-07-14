@@ -123,6 +123,7 @@ async fn compute_accuracy_stats<M: LlmModelMarker, S: DatasetSplit>(
     posterior_calculation_config: PosteriorCalculationConfig,
     progress_bar_label: &str,
     use_tool: bool,
+    config_nickname: String,
 ) -> AccuracyStats {
     let num_keys = keys.len();
     let mut weighted_num_wins = 0.0f32;
@@ -150,6 +151,8 @@ async fn compute_accuracy_stats<M: LlmModelMarker, S: DatasetSplit>(
                 let dataset_name = dataset_bucket_name(&question.dataset_name).to_string();
                 let actions = action_store.load_action_log(key).unwrap();
                 let action_log = DirectTreeActionLog {
+                    mount_dir: String::new(),
+                    config_nickname: config_nickname.clone(),
                     question,
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
@@ -251,6 +254,7 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
         posterior_calculation_config,
         progress_bar_label,
         use_tool,
+        config_nickname,
     )
     .await
 }
@@ -324,6 +328,8 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
                 let dataset_name = question.dataset_name.clone();
                 let actions = action_store.load_action_log(key).unwrap();
                 let action_log = DirectTreeActionLog {
+                    mount_dir: String::new(),
+                    config_nickname: config_nickname.clone(),
                     question,
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
@@ -440,6 +446,7 @@ pub async fn get_accuracy_at_path<M: LlmModelMarker, S: DatasetSplit>(
         posterior_calculation_config,
         progress_bar_label,
         use_tool,
+        "".to_string(),
     )
     .await
 }

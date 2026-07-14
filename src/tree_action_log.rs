@@ -14,13 +14,13 @@ use std::{
 use ordered_float::NotNan;
 
 use crate::{
+    directories::action_logs_path,
     hybrid_dataset::{DatasetSplit, HybridDatasetQuestion, QuestionFlatId},
+    json_toml_utils::write_json,
+    llm_model::LlmModelMarker,
     posterior_calculation_config::PosteriorCalculationConfig,
     rollout_config::RolloutConfig,
     tree_action::DirectTreeAction,
-    directories::action_logs_path,
-    json_toml_utils::write_json,
-    llm_model::LlmModelMarker,
 };
 
 const SORT_GENERATIONS_DIR_NAME: &str = "sorted_generations";
@@ -44,6 +44,8 @@ fn elapsed_time_file_path(base_path: &Path) -> PathBuf {
 
 #[derive(Clone)]
 pub struct DirectTreeActionLog<M: LlmModelMarker, S: DatasetSplit> {
+    pub mount_dir: String,
+    pub config_nickname: String,
     pub question: HybridDatasetQuestion<S>,
     pub rollout_config: RolloutConfig<S>,
     pub posterior_calculation_config: PosteriorCalculationConfig,

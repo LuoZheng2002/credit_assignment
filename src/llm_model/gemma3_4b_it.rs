@@ -16,7 +16,12 @@ static GEMMA3_4B_IT_TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(|| {
 
 static GEMMA3_4B_IT_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment<'static>> =
     LazyLock::new(|| {
-        load_jinja_template_environment("tokenizers/gemma3/chat_template.jinja", "chat").unwrap()
+        load_jinja_template_environment(
+            "tokenizers/gemma3/chat_template.jinja",
+            "chat",
+            Gemma3_4BIt::API_NAME,
+        )
+        .unwrap()
     });
 
 #[derive(Serialize)]

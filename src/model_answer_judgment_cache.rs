@@ -1,21 +1,27 @@
 use std::{
     cmp::Ordering,
-    fs,
-    path::PathBuf,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex},
 };
 
+use arc_swap::ArcSwapOption;
 use redb::{
     Database, Key as RedbKey, ReadableTable, TableDefinition, TableError as RedbTableError,
     TypeName, Value as RedbValue, WriteTransaction,
 };
 use research_utility::progress_tui_logger::log_info;
 
-const MODEL_ANSWER_JUDGMENT_CACHE_DB_PATH: &str = "cache/model_answer_judgment.redb";
+use crate::directories::judgment_cache_path;
+
 const MODEL_ANSWER_JUDGMENT_TABLE_NAME: &str = "model_answer_judgment_cache";
 
-static MODEL_ANSWER_JUDGMENT_CACHE: OnceLock<Mutex<ModelAnswerJudgmentCacheStore>> =
-    OnceLock::new();
+struct ModelAnswerJudgmentCacheSlot {
+    store: Arc<Mutex<ModelAnswerJudgmentCacheStore>>,
+    model_cli_name: String,
+    config_nickname: String,
+}
+
+static MODEL_ANSWER_JUDGMENT_CACHE_SLOT: ArcSwapOption<ModelAnswerJudgmentCacheSlot> =
+    ArcSwapOption::const_empty();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ModelAnswerJudgmentCacheKey {
@@ -123,25 +129,84 @@ fn cache_table_def() -> TableDefinition<'static, ModelAnswerJudgmentCacheKey, u8
     TableDefinition::new(MODEL_ANSWER_JUDGMENT_TABLE_NAME)
 }
 
-fn cache_db_path() -> PathBuf {
-    PathBuf::from(MODEL_ANSWER_JUDGMENT_CACHE_DB_PATH)
-}
+fn get_or_init_store(
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
+) -> Arc<Mutex<ModelAnswerJudgmentCacheStore>> {
+    // Fast path: already initialized.
+    let guard = MODEL_ANSWER_JUDGMENT_CACHE_SLOT.load();
+    if let Some(slot) = guard.as_ref() {
+        assert_eq!(
+            slot.model_cli_name, model_cli_name,
+            "Model answer judgment cache was already initialized with model_cli_name={}, \
+             but a different model_cli_name={} was requested. \
+             Only one (model_cli_name, config_nickname) tuple is supported per program instance.",
+            slot.model_cli_name, model_cli_name,
+        );
+        assert_eq!(
+            slot.config_nickname, config_nickname,
+            "Model answer judgment cache was already initialized with config_nickname={}, \
+             but a different config_nickname={} was requested. \
+             Only one (model_cli_name, config_nickname) tuple is supported per program instance.",
+            slot.config_nickname, config_nickname,
+        );
+        return Arc::clone(&slot.store);
+    }
+    drop(guard);
 
-fn cache_store() -> &'static Mutex<ModelAnswerJudgmentCacheStore> {
-    MODEL_ANSWER_JUDGMENT_CACHE.get_or_init(|| {
-        Mutex::new(
-            ModelAnswerJudgmentCacheStore::initialize_if_missing(cache_db_path()).unwrap_or_else(
-                |error| panic!("failed to initialize model answer judgment cache: {error}"),
-            ),
-        )
-    })
+    // Slow path: create the store and try to install it atomically.
+    let db_path = std::path::PathBuf::from(judgment_cache_path(
+        mount_dir,
+        model_cli_name,
+        config_nickname,
+    ));
+    let store =
+        ModelAnswerJudgmentCacheStore::initialize_if_missing(db_path).unwrap_or_else(|error| {
+            panic!("failed to initialize model answer judgment cache: {error}")
+        });
+
+    let new_slot = Arc::new(ModelAnswerJudgmentCacheSlot {
+        store: Arc::new(Mutex::new(store)),
+        model_cli_name: model_cli_name.to_string(),
+        config_nickname: config_nickname.to_string(),
+    });
+
+    let prev_guard = MODEL_ANSWER_JUDGMENT_CACHE_SLOT.compare_and_swap(
+        &None::<Arc<ModelAnswerJudgmentCacheSlot>>,
+        Some(Arc::clone(&new_slot)),
+    );
+    if prev_guard.is_none() {
+        // We won the race — our new_slot was installed.
+        Arc::clone(&new_slot.store)
+    } else {
+        // Another thread beat us. Use their store; drop ours.
+        let existing = prev_guard.as_ref().unwrap();
+        assert_eq!(
+            existing.model_cli_name, model_cli_name,
+            "Model answer judgment cache was concurrently initialized with model_cli_name={}, \
+             but a different model_cli_name={} was requested.",
+            existing.model_cli_name, model_cli_name,
+        );
+        assert_eq!(
+            existing.config_nickname, config_nickname,
+            "Model answer judgment cache was concurrently initialized with config_nickname={}, \
+             but a different config_nickname={} was requested.",
+            existing.config_nickname, config_nickname,
+        );
+        Arc::clone(&existing.store)
+    }
 }
 
 pub fn get_cached_judgment(
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
     question_text: impl Into<String>,
     model_answer_string: impl Into<String>,
 ) -> Result<Option<bool>, String> {
-    let mut cache = cache_store()
+    let store_mutex = get_or_init_store(mount_dir, model_cli_name, config_nickname);
+    let mut cache = store_mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.get_cached_judgment(ModelAnswerJudgmentCacheKey::new(
@@ -151,11 +216,15 @@ pub fn get_cached_judgment(
 }
 
 pub fn store_cached_judgment(
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
     question_text: impl Into<String>,
     model_answer_string: impl Into<String>,
     is_correct: bool,
 ) -> Result<(), String> {
-    let mut cache = cache_store()
+    let store_mutex = get_or_init_store(mount_dir, model_cli_name, config_nickname);
+    let mut cache = store_mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.store_cached_judgment(
@@ -164,24 +233,29 @@ pub fn store_cached_judgment(
     )
 }
 
-pub fn commit_pending_writes_if_any() -> Result<bool, String> {
-    let mut cache = cache_store()
+pub fn commit_pending_writes_if_any(
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
+) -> Result<bool, String> {
+    let store_mutex = get_or_init_store(mount_dir, model_cli_name, config_nickname);
+    let mut cache = store_mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.commit_pending_writes_if_any()
 }
 
 struct ModelAnswerJudgmentCacheStore {
-    db_path: PathBuf,
+    db_path: std::path::PathBuf,
     db: Database,
     write_txn: Option<WriteTransaction>,
     has_pending_writes: bool,
 }
 
 impl ModelAnswerJudgmentCacheStore {
-    fn initialize_if_missing(db_path: PathBuf) -> Result<Self, String> {
+    fn initialize_if_missing(db_path: std::path::PathBuf) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
+            std::fs::create_dir_all(parent).map_err(|e| {
                 format!(
                     "Failed to create parent directory for model answer judgment cache at {}: {}",
                     db_path.display(),
@@ -205,7 +279,10 @@ impl ModelAnswerJudgmentCacheStore {
         })
     }
 
-    fn begin_write_txn(db: &Database, db_path: &PathBuf) -> Result<WriteTransaction, String> {
+    fn begin_write_txn(
+        db: &Database,
+        db_path: &std::path::PathBuf,
+    ) -> Result<WriteTransaction, String> {
         db.begin_write().map_err(|e| {
             format!(
                 "Failed to begin model answer judgment cache write transaction at {}: {}",

@@ -5,6 +5,7 @@ use std::{
     future::Future,
     io::BufReader,
     path::{Path, PathBuf},
+    process::Command,
     sync::OnceLock,
 };
 use tokenizers::Tokenizer;
@@ -59,7 +60,14 @@ pub fn block_on_async<F: Future>(future: F) -> F::Output {
 pub fn load_jinja_template_environment(
     template_path: &str,
     template_name: &'static str,
+    api_name: &str,
 ) -> Result<minijinja::Environment<'static>, String> {
+    // JIT: if the template file doesn't exist, try to download the tokenizer first
+    // (the download script creates both tokenizer.json and chat_template.jinja).
+    if !Path::new(template_path).exists() {
+        ensure_tokenizer_files(api_name)?;
+    }
+
     let template_source = std::fs::read_to_string(template_path)
         .map_err(|err| format!("Failed to read {}: {}", template_path, err))?;
     let mut env = minijinja::Environment::new();
@@ -69,6 +77,9 @@ pub fn load_jinja_template_environment(
 }
 
 pub fn load_tokenizer_from_local_or_hf(local_tokenizer_path: &str, api_name: &str) -> Tokenizer {
+    // JIT: if the local tokenizer directory doesn't exist, run the download script first.
+    let _ = ensure_tokenizer_files(api_name);
+
     if Path::new(local_tokenizer_path).exists() {
         return Tokenizer::from_file(local_tokenizer_path).unwrap_or_else(|err| {
             panic!(
@@ -206,4 +217,75 @@ pub fn storage_medium_files_dir() -> Result<String, String> {
 
 pub fn storage_small_files_dir() -> Result<String, String> {
     storage_dir_from_mount_dir("small_files")
+}
+
+// ---------------------------------------------------------------------------
+// JIT (Just-In-Time) resource helpers
+// ---------------------------------------------------------------------------
+
+/// Root directory of the repository, derived from `CARGO_MANIFEST_DIR` at compile time.
+pub(crate) fn repo_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Blocking helper that runs a Python script via `uv run python` from the repo root.
+pub(crate) fn run_python_script(script_path: &str, args: &[&str]) -> Result<(), String> {
+    let mut command = Command::new("uv");
+    command
+        .arg("run")
+        .arg("python")
+        .arg(script_path)
+        .current_dir(repo_root());
+
+    for arg in args {
+        command.arg(arg);
+    }
+
+    let output = command
+        .output()
+        .map_err(|err| format!("Failed to execute 'uv run python {}': {}", script_path, err))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!(
+            "Script '{}' failed with exit code {}\nstdout: {}\nstderr: {}",
+            script_path,
+            output.status.code().unwrap_or(-1),
+            stdout.trim(),
+            stderr.trim(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Map a HuggingFace model ID to its local tokenizer subdirectory name under
+/// `tokenizers/`.  Variants sharing the same tokenizer (e.g. Qwen3-4B /
+/// Qwen3-0.6B) return the same directory.
+fn tokenizer_dir_name(api_name: &str) -> &str {
+    match api_name {
+        "google/gemma-3-4b-it" => "gemma3",
+        "meta-llama/Llama-3.1-8B-Instruct" => "llama31",
+        "mistralai/Mistral-7B-Instruct-v0.3" => "mistral7b",
+        "Qwen/Qwen2.5-7B-Instruct" => "qwen25",
+        "Qwen/Qwen3-4B" | "Qwen/Qwen3-0.6B" => "qwen3",
+        "Qwen/Qwen3.5-4B" | "Qwen/Qwen3.5-0.8B" => "qwen35",
+        other => panic!("Unknown tokenizer model: {}", other),
+    }
+}
+
+/// Ensure the tokenizer files (tokenizer.json, chat_template.jinja, etc.) exist
+/// locally for the given HuggingFace model.  If they are missing the unified
+/// `scripts/download_tokenizer.py` script is run to download them.
+pub fn ensure_tokenizer_files(api_name: &str) -> Result<(), String> {
+    let dir_name = tokenizer_dir_name(api_name);
+    let tokenizer_json = format!("tokenizers/{}/tokenizer.json", dir_name);
+    let chat_template = format!("tokenizers/{}/chat_template.jinja", dir_name);
+
+    if Path::new(&tokenizer_json).exists() && Path::new(&chat_template).exists() {
+        return Ok(());
+    }
+
+    run_python_script("scripts/download_tokenizer.py", &["--model", api_name])
 }

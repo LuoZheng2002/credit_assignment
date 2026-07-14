@@ -56,6 +56,7 @@ struct HomePageLoadRequest {
 
 struct App<M: LlmModelMarker, S: DatasetSplit> {
     _model_marker: PhantomData<M>,
+    config_nickname: String,
     override_hyperparameters: Option<PosteriorHyperparameters>,
     rollout_config: RolloutConfig<S>,
     posterior_calculation_config: PosteriorCalculationConfig,
@@ -89,7 +90,7 @@ struct App<M: LlmModelMarker, S: DatasetSplit> {
 
 impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
     async fn new(
-        _config_nickname: String,
+        config_nickname: String,
         rollout_config: RolloutConfig<S>,
         posterior_calculation_config: PosteriorCalculationConfig,
         use_tool: bool,
@@ -117,6 +118,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
             .collect();
         Self {
             _model_marker: PhantomData,
+            config_nickname,
             override_hyperparameters,
             rollout_config,
             posterior_calculation_config,
@@ -177,6 +179,8 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
             Ok(actions) => {
                 let question = self.question_store.get(key).unwrap().unwrap();
                 let action_log = DirectTreeActionLog {
+                    mount_dir: String::new(),
+                    config_nickname: self.config_nickname.clone(),
                     question,
                     rollout_config: self.rollout_config.clone(),
                     posterior_calculation_config: self.posterior_calculation_config.clone(),
