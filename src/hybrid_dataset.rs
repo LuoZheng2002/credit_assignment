@@ -7,9 +7,7 @@ use std::{
 };
 
 use parking_lot::Mutex;
-use research_utility::{
-    asset_file::{Base64Hash, hash_file},
-};
+use research_utility::asset_file::{Base64Hash, hash_file};
 use serde::{Deserialize, Serialize};
 use serde_jsonlines::BufReadExt;
 
@@ -116,6 +114,11 @@ impl<S: DatasetSplit> HybridDatasetStore<S> {
             if bytes_read == 0 {
                 break;
             }
+            // Skip metadata header line (e.g. {"num_rows": 15000})
+            if line.trim_start().starts_with("{\"num_rows\"") {
+                offset += bytes_read as u64;
+                continue;
+            }
             line_offsets.push(offset);
             offset += bytes_read as u64;
         }
@@ -145,7 +148,29 @@ impl<S: DatasetSplit> HybridDatasetStore<S> {
                 err
             )
         })?;
-        let reader = BufReader::new(file);
+        let mut reader = BufReader::new(file);
+        // Skip metadata header line (e.g. {"num_rows": 15000}) if present
+        let mut first_line = String::new();
+        reader.read_line(&mut first_line).map_err(|err| {
+            format!(
+                "Failed to read hybrid dataset JSONL file {}: {}",
+                self.file_path.display(),
+                err
+            )
+        })?;
+        let reader = if first_line.trim_start().starts_with("{\"num_rows\"") {
+            reader
+        } else {
+            // File doesn't have metadata — re-open from the beginning
+            let file = File::open(&self.file_path).map_err(|err| {
+                format!(
+                    "Failed to open hybrid dataset JSONL file {}: {}",
+                    self.file_path.display(),
+                    err
+                )
+            })?;
+            BufReader::new(file)
+        };
         let inner = reader.json_lines::<HybridDatasetQuestion<S>>();
         Ok(HybridDatasetIter {
             inner: Box::new(inner),

@@ -58,7 +58,6 @@ struct Args {
     num_gpus: usize,
     #[serde(default)]
     total_time_limit_hours: f32,
-    #[serde(default)]
     training_set_sort_mode: TrainingSetSortMode,
 }
 

@@ -58,7 +58,6 @@ struct OrchestratorConfig {
     mount_dir: String,
     keep_action_logs: bool,
     positive_advantage_only: bool,
-    #[serde(default)]
     training_set_sort_mode: TrainingSetSortMode,
 }
 

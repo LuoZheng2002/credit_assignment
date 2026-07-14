@@ -5,31 +5,33 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = "==3.12.*"
 dependencies = [
-    # Pin to the torch version required by your sglang release.
-    # Example: "torch==2.8.0"
     "torch",
     "torchvision",
     "torchaudio",
-    # "pybase64",
-    "transformers==v5.6.0",
+    # transformers pinned to match sglang 0.5.10.post1 requirement
+    "transformers==v5.3.0",
     "kernels>=0.12.0,<0.13",
     "flashinfer-python",
-    "sglang==v0.5.12.post1",
-    # "sglang-kernel",
-    "sglang-kernel @ https://github.com/sgl-project/whl/releases/download/v0.4.2.post2/sglang_kernel-0.4.2.post2+cu130-cp310-abi3-manylinux2014_x86_64.whl#sha256=4e7ce619274234d182b20da883fcf1d20e7e55cbea90d62244e2b6a3d6c0fc85",
-    #
+    # sglang 0.5.10.post1 is the last version fully compatible with CUDA 12.x.
+    # 0.5.11+ requires cuda-python>=13.0 which is CUDA 13.x only.
+    "sglang==v0.5.10.post1",
+    # ninja is required by flashinfer JIT kernel compilation at runtime
+    "ninja",
 ]
 
 [tool.uv]
 environments = ["sys_platform == 'linux'"]
 prerelease = "allow"
 
+# Delta HPC has CUDA 12.8 — use the cu128 PyTorch index
 [[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu130" }
-torchvision = { index = "pytorch-cu130" }
-torchaudio = { index = "pytorch-cu130" }
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+# sglang-kernel 0.4.1 only ships as cu130 — patch 0.4.2+cu129 to version 0.4.1 locally
+sglang-kernel = { path = "wheels/sglang_kernel-0.4.1-cp310-abi3-manylinux2014_x86_64.whl" }

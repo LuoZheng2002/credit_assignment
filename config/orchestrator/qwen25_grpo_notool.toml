@@ -1,4 +1,4 @@
-model_cli_name = "qwen25_7b"
+model_cli_name = "qwen25"
 config_nickname = "grpo_notool"
 use_tool = false
 training_rollout_config_path = "config/rollout_config_training_grpo.json"

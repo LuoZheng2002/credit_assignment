@@ -24,10 +24,12 @@ if [[ -n "$NOTIFY_MSG" ]]; then
     trap 'python research-utility/scripts/pushover_notify.py "$NOTIFY_MSG"' EXIT
 fi
 
-# Resolve to the repository root (this script lives in slurm/)
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Resolve to the repository root (sbatch copies script, so use SLURM_SUBMIT_DIR)
+REPO_ROOT="$SLURM_SUBMIT_DIR"
 cd "$REPO_ROOT"
+
+# Ensure venv bin dirs are on PATH (needed for ninja, etc.)
+export PATH="$REPO_ROOT/pyprojects/sglang/.venv/bin:$PATH"
 
 echo "Running oneshot rollout with config: $CONFIG_PATH"
 echo "Repo root: $REPO_ROOT"
