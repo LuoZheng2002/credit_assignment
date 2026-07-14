@@ -5,6 +5,4 @@
     "num_early_stopping_leaves": 6,
     "num_leaves": 32,
     "training_advantage_policy": "TreeMappoPosterior",
-    "fixed_temperature": 0.7,
-    "use_tool": true
 }

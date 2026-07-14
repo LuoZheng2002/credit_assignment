@@ -1,5 +1,5 @@
 model_cli_name = "qwen25_7b"
-config_nickname = "qwen25_grpo_notool"
+config_nickname = "grpo_notool"
 use_tool = false
 training_rollout_config_path = "config/rollout_config_training_grpo_notool.json"
 num_total_epochs = 10
