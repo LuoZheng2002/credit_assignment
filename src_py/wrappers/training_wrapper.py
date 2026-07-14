@@ -24,7 +24,8 @@ from research_utility.connect_rust_parent import (
 from pydantic import BaseModel, ConfigDict
 
 from src_py.load_model_to_path import ensure_model_snapshot
-from src_py.train.cli_args import (
+from src_py.training_config_models import (
+    TrainingModeOneShot,
     TrainingRequestArgs,
     TrainProcessLaunchArgs,
     model_to_cli_args,
@@ -136,14 +137,17 @@ def _configure_wrapper_log_path(raw_path: str) -> None:
 
 
 def _emit_training_identity(
-    training_config: TrainingRequestArgs, hf_model_name: str, trajectory_path: Path
+    training_config: TrainingRequestArgs,
+    hf_model_name: str,
+    trajectory_path: Path,
+    epoch: int,
 ) -> None:
     if _CONN is not None:
         _CONN.send_info(
             "Training wrapper config: "
             f"model_cli_name={training_config.model_cli_name} "
             f"config_nickname={training_config.config_nickname} "
-            f"epoch={training_config.epoch} "
+            f"epoch={epoch} "
             f"hf_model_name={hf_model_name} "
             f"trajectory_path={trajectory_path}"
         )
@@ -224,13 +228,13 @@ class TrainingWrapperStdinArgs(BaseModel):
 
 def _ensure_initial_model_if_missing(
     backend: str,
-    training_config: TrainingRequestArgs,
+    epoch: int,
+    model_parent_dir: str,
     hf_model_name: str,
 ) -> None:
-    epoch = training_config.epoch
     if epoch != 0:
         return
-    parent_dir = Path(training_config.model_parent_dir)
+    parent_dir = Path(model_parent_dir)
     model_dir = parent_dir / "model"
     if model_dir.exists():
         return
@@ -242,8 +246,8 @@ def _ensure_initial_model_if_missing(
     ensure_model_snapshot(parent_dir, hf_model_name)
 
 
-def _training_request_json_path(training_config: TrainingRequestArgs) -> Path:
-    checkpoints_root = Path(training_config.checkpoints_parent_dir)
+def _training_request_json_path(checkpoints_parent_dir: str) -> Path:
+    checkpoints_root = Path(checkpoints_parent_dir)
     checkpoints_root.mkdir(parents=True, exist_ok=True)
     return checkpoints_root / "training_request.json"
 
@@ -294,17 +298,32 @@ def _run_hpc_training(
     training_config = stdin_data.training_config
     trajectory_path = Path(stdin_data.trajectory_path)
     hf_model_name = stdin_data.hf_model_name
+
+    # Resolve training-mode-dependent fields via explicit isinstance check
+    # instead of @property fallbacks on the Pydantic model.
+    mode = training_config.training_mode
+    if isinstance(mode, TrainingModeOneShot):
+        epoch: int = 0
+        model_parent_dir: str = mode.base_model_parent_dir
+        checkpoints_parent_dir: str = mode.model_output_root
+        final_model_output_parent_dir: str = mode.model_output_root
+    else:
+        epoch = mode.epoch
+        model_parent_dir = mode.input_model_parent_dir
+        checkpoints_parent_dir = mode.output_model_parent_dir
+        final_model_output_parent_dir = mode.output_model_parent_dir
+
     _emit_status(backend, "starting", "preparing HPC training job")
     if _CONN is not None:
         _CONN.send_info("Training wrapper started")
-    _emit_training_identity(training_config, hf_model_name, trajectory_path)
-    checkpoints_root = Path(training_config.checkpoints_parent_dir)
-    next_model_root = Path(training_config.final_model_output_parent_dir)
+    _emit_training_identity(training_config, hf_model_name, trajectory_path, epoch)
+    checkpoints_path = Path(checkpoints_parent_dir)
+    next_model_path = Path(final_model_output_parent_dir)
     if _CONN is not None:
-        _CONN.send_info(f"Training checkpoints directory: {checkpoints_root / 'checkpoints'}")
-        _CONN.send_info(f"Training next model directory: {next_model_root / 'model'}")
-        _CONN.send_info(f"Training checkpoints will be written under {checkpoints_root}")
-    _ensure_initial_model_if_missing(backend, training_config, hf_model_name)
+        _CONN.send_info(f"Training checkpoints directory: {checkpoints_path / 'checkpoints'}")
+        _CONN.send_info(f"Training next model directory: {next_model_path / 'model'}")
+        _CONN.send_info(f"Training checkpoints will be written under {checkpoints_path}")
+    _ensure_initial_model_if_missing(backend, epoch, model_parent_dir, hf_model_name)
     if stdin_data.test_sleep_secs > 0:
         cmd = [
             sys.executable,
@@ -313,7 +332,7 @@ def _run_hpc_training(
         ]
         training_request_json_path = None
     else:
-        training_request_json_path = _training_request_json_path(training_config)
+        training_request_json_path = _training_request_json_path(checkpoints_parent_dir)
         write_model_json_file(training_config, training_request_json_path)
         # Ranks relay TUI messages via stdout to the wrapper instead of
         # opening their own socket connections.
@@ -385,7 +404,7 @@ def _run_hpc_training(
     if return_code == 0:
         if _CONN is not None:
             _CONN.send_info(
-                f"Training completed; checkpoint state available under {checkpoints_root}"
+                f"Training completed; checkpoint state available under {checkpoints_path}"
             )
         _emit_result_ok(backend, "training completed", duration_secs)
         return 0

@@ -9,7 +9,7 @@ import time
 import unittest
 from pathlib import Path
 
-from src_py.train.cli_args import (
+from src_py.training_config_models import (
     TrainingHyperparametersRequest,
     TrainingRequestArgs,
     TrainingModeOneShot,
