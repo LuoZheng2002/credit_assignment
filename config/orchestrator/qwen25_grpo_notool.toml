@@ -9,7 +9,7 @@ validation_rollout_secs = 300
 training_time = 600.0
 num_gpus = 4
 total_time_limit_hours = 1.0
-mount_dir = "/work/nvme/bfsl/zluo8/credit_assignment/results"
+mount_dir = "/work/nvme/bhph/zluo8/credit_assignment/results"
 keep_action_logs = true
 positive_advantage_only = false
 
