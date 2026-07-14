@@ -2983,6 +2983,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "ureq",
+ "url",
 ]
 
 [[package]]

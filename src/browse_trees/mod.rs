@@ -20,7 +20,7 @@ use crate::llm_model::{
     Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
 };
 use crate::{
-    fixed_temperatures,
+    constants,
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     rollout_config::RolloutConfig,
     tree_action_log::{
@@ -1148,7 +1148,7 @@ fn load_action_log_config_bundle<S: DatasetSplit>(
             hyperparameters: posterior_hyperparameters,
         },
         use_tool: false,
-        fixed_temperature: fixed_temperatures::temperature_by_split::<S>(),
+        fixed_temperature: constants::temperature_by_split::<S>(),
     })
 }
 

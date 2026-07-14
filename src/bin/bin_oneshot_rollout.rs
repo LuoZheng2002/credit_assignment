@@ -4,13 +4,13 @@ use std::path::Path;
 use clap::{Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
+    constants,
     constants::get_max_concurrent_rollout,
     directories::{
         action_logs_oneshot_path, base_model_dir, inference_wrapper_log_path, model_parent_dir,
         rollout_summary_oneshot_path, text_logger_summary_path, text_logger_verbose_path,
         training_trajectories_oneshot_path, training_trajectories_stats_oneshot_path,
     },
-    fixed_temperatures,
     hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
     json_toml_utils::read_json,
     launch_inference_wrapper::{
@@ -146,7 +146,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         total_epochs: args.total_epochs,
         action_log_store_override_path: Some(action_log_store_override_path),
         use_tool: args.use_tool,
-        fixed_temperature: fixed_temperatures::temperature_by_split::<S>(),
+        fixed_temperature: constants::temperature_by_split::<S>(),
         max_concurrent_rollout: get_max_concurrent_rollout(num_gpus),
     };
     let summary = rollout_all::<M, S>(&args.mount_dir, program_config).await;

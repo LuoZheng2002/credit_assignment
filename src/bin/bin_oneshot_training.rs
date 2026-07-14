@@ -17,7 +17,7 @@ use credit_assignment::{
         text_logger_verbose_path, training_summary_oneshot_parent_dir,
         training_trajectories_oneshot_path, training_wrapper_log_path,
     },
-    fixed_temperatures,
+    constants,
     get_accuracy::get_accuracy_at_path,
     hybrid_dataset::Validation,
     json_toml_utils::read_json,
@@ -465,7 +465,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
                 total_epochs: num_oneshot_epochs,
                 action_log_store_override_path: Some(validation_action_log_path.clone()),
                 use_tool,
-                fixed_temperature: NotNan::new(fixed_temperatures::VALIDATION_TEMPERATURE).unwrap(),
+                fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
                 max_concurrent_rollout: get_max_concurrent_rollout(num_gpus),
             };
             let validation_summary =

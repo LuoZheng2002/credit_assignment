@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::{
-    fixed_temperatures::temperature_by_split,
-    hybrid_dataset::{DatasetSplit, HybridDatasetQuestion, open_hybrid_dataset},
+    constants::temperature_by_split,
+    hybrid_dataset::{DatasetSplit, HybridDatasetQuestion, QuestionFlatId, open_hybrid_dataset},
     llm_model::LlmModelMarker,
     posterior_calculation_config::PosteriorCalculationConfig,
     rollout_config::RolloutConfig,
@@ -106,34 +106,24 @@ fn tree_accuracy<M: LlmModelMarker, S: DatasetSplit>(
     Some((num_correct_trajectories, total_trajectories))
 }
 
-pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
-    mount_dir: &str,
-    config_nickname: String,
-    rollout_config: RolloutConfig<S>,
-    posterior_calculation_config: PosteriorCalculationConfig,
-    epoch: usize,
-    progress_bar_label: &str,
-    use_tool: bool,
-) -> AccuracyStats {
+fn build_question_map<S: DatasetSplit>() -> BTreeMap<usize, HybridDatasetQuestion<S>> {
     let question_store = open_hybrid_dataset::<S>();
-    let question_map: BTreeMap<usize, HybridDatasetQuestion<S>> = question_store
+    question_store
         .iter()
         .expect("failed to iterate hybrid dataset")
         .map(|r| r.expect("failed to read question from hybrid dataset"))
-        .collect();
-    log_info(format!(
-        "get_accuracy: opening action logs for config={config_nickname}, epoch={epoch}"
-    ));
-    let action_store = open_action_logs::<M, S>(mount_dir, &config_nickname, epoch);
-    action_store.sort().unwrap();
-    log_info(format!(
-        "get_accuracy: action logs opened for config={config_nickname}, epoch={epoch}"
-    ));
-    let mut keys = action_store.get_keys().unwrap();
-    keys.sort();
+        .collect()
+}
 
-    log_master_progress(0.0, format!("{}: Calculating", progress_bar_label));
-
+async fn compute_accuracy_stats<M: LlmModelMarker, S: DatasetSplit>(
+    keys: Vec<QuestionFlatId<S>>,
+    question_map: &BTreeMap<usize, HybridDatasetQuestion<S>>,
+    action_store: &ActionLogStore<M, S>,
+    rollout_config: RolloutConfig<S>,
+    posterior_calculation_config: PosteriorCalculationConfig,
+    progress_bar_label: &str,
+    use_tool: bool,
+) -> AccuracyStats {
     let num_keys = keys.len();
     let mut weighted_num_wins = 0.0f32;
     let mut weighted_total_plays = 0.0f32;
@@ -230,7 +220,7 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
     }
 }
 
-pub async fn get_per_question_accuracies<M: LlmModelMarker, S: DatasetSplit>(
+pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
     mount_dir: &str,
     config_nickname: String,
     rollout_config: RolloutConfig<S>,
@@ -238,81 +228,31 @@ pub async fn get_per_question_accuracies<M: LlmModelMarker, S: DatasetSplit>(
     epoch: usize,
     progress_bar_label: &str,
     use_tool: bool,
-) -> Vec<Option<f32>> {
-    let question_store = open_hybrid_dataset::<S>();
-    let question_map: BTreeMap<usize, HybridDatasetQuestion<S>> = question_store
-        .iter()
-        .expect("failed to iterate hybrid dataset")
-        .map(|r| r.expect("failed to read question from hybrid dataset"))
-        .collect();
+) -> AccuracyStats {
+    let question_map = build_question_map::<S>();
+    log_info(format!(
+        "get_accuracy: opening action logs for config={config_nickname}, epoch={epoch}"
+    ));
     let action_store = open_action_logs::<M, S>(mount_dir, &config_nickname, epoch);
     action_store.sort().unwrap();
+    log_info(format!(
+        "get_accuracy: action logs opened for config={config_nickname}, epoch={epoch}"
+    ));
     let mut keys = action_store.get_keys().unwrap();
     keys.sort();
 
-    log_master_progress(
-        0.0,
-        format!("{}: Calculating per-question", progress_bar_label),
-    );
+    log_master_progress(0.0, format!("{}: Calculating", progress_bar_label));
 
-    let num_keys = keys.len();
-    let mut results = vec![None; num_keys];
-    let mut finished = 0usize;
-
-    const MAX_CONCURRENT_TASKS: usize = 200;
-    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS));
-    let mut join_set = JoinSet::new();
-    let mut next_key_index = 0usize;
-
-    while next_key_index < keys.len() || !join_set.is_empty() {
-        tokio::select! {
-            permit_result = semaphore.clone().acquire_owned(), if next_key_index < keys.len() => {
-                let permit = permit_result.expect("accuracy semaphore should not be closed");
-                let key = keys[next_key_index];
-                let idx = next_key_index;
-                next_key_index += 1;
-
-                let question = question_map.get(&key.0).unwrap().clone();
-                let actions = action_store.load_action_log(key).unwrap();
-                let action_log = DirectTreeActionLog {
-                    question,
-                    rollout_config: rollout_config.clone(),
-                    posterior_calculation_config: posterior_calculation_config.clone(),
-                    use_tool,
-                    fixed_temperature: temperature_by_split::<S>(),
-                    actions,
-                };
-
-                join_set.spawn(async move {
-                    let _permit = permit;
-                    let result = tree_accuracy::<M, S>(&action_log);
-                    (idx, result)
-                });
-            }
-            joined = join_set.join_next(), if !join_set.is_empty() => {
-                finished += 1;
-
-                match joined.expect("join_set must have at least one task") {
-                    Ok((idx, result)) => {
-                        if let Some((num_correct, total)) = result {
-                            results[idx] = Some(num_correct as f32 / total as f32);
-                        }
-                    }
-                    Err(join_err) => panic!("accuracy task panicked: {join_err}"),
-                }
-
-                let progress = if num_keys == 0 {
-                    1.0
-                } else {
-                    finished as f32 / num_keys as f32
-                };
-                log_master_progress(progress, format!("{}: Calculating per-question", progress_bar_label));
-            }
-        }
-    }
-
-    log_master_progress(1.0, format!("{}: Done", progress_bar_label));
-    results
+    compute_accuracy_stats(
+        keys,
+        &question_map,
+        &action_store,
+        rollout_config,
+        posterior_calculation_config,
+        progress_bar_label,
+        use_tool,
+    )
+    .await
 }
 
 fn tree_per_trunk_correctness<M: LlmModelMarker, S: DatasetSplit>(
@@ -352,12 +292,7 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
     num_trunks: usize,
     use_tool: bool,
 ) -> TestAccuracyResult {
-    let question_store = open_hybrid_dataset::<S>();
-    let question_map: BTreeMap<usize, HybridDatasetQuestion<S>> = question_store
-        .iter()
-        .expect("failed to iterate hybrid dataset")
-        .map(|r| r.expect("failed to read question from hybrid dataset"))
-        .collect();
+    let question_map = build_question_map::<S>();
     let action_store = open_action_logs::<M, S>(mount_dir, &config_nickname, epoch);
     action_store.sort().unwrap();
     let mut keys = action_store.get_keys().unwrap();
@@ -479,12 +414,7 @@ pub async fn get_accuracy_at_path<M: LlmModelMarker, S: DatasetSplit>(
     progress_bar_label: &str,
     use_tool: bool,
 ) -> AccuracyStats {
-    let question_store = open_hybrid_dataset::<S>();
-    let question_map: BTreeMap<usize, HybridDatasetQuestion<S>> = question_store
-        .iter()
-        .expect("failed to iterate hybrid dataset")
-        .map(|r| r.expect("failed to read question from hybrid dataset"))
-        .collect();
+    let question_map = build_question_map::<S>();
     log_info(format!(
         "get_accuracy_at_path: opening action logs at {action_log_store_path}"
     ));
@@ -502,98 +432,14 @@ pub async fn get_accuracy_at_path<M: LlmModelMarker, S: DatasetSplit>(
 
     log_master_progress(0.0, format!("{}: Calculating", progress_bar_label));
 
-    let num_keys = keys.len();
-    let mut weighted_num_wins = 0.0f32;
-    let mut weighted_total_plays = 0.0f32;
-    let mut num_trees_with_judgments = 0usize;
-    let mut num_trajectories_judged = 0usize;
-    let mut deepmath_stats = DatasetBucketStats::new();
-    let mut math_stats = DatasetBucketStats::new();
-    let mut numinamath_stats = DatasetBucketStats::new();
-
-    const MAX_CONCURRENT_TASKS: usize = 200;
-    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS));
-    let mut join_set = JoinSet::new();
-    let mut next_key_index = 0usize;
-
-    let mut finished = 0usize;
-    while next_key_index < keys.len() || !join_set.is_empty() {
-        tokio::select! {
-            permit_result = semaphore.clone().acquire_owned(), if next_key_index < keys.len() => {
-                let permit = permit_result.expect("accuracy semaphore should not be closed");
-                let key = keys[next_key_index];
-                next_key_index += 1;
-
-                let question = question_map.get(&key.0).unwrap().clone();
-                let dataset_name = dataset_bucket_name(&question.dataset_name).to_string();
-                let actions = action_store.load_action_log(key).unwrap();
-                let action_log = DirectTreeActionLog {
-                    question,
-                    rollout_config: rollout_config.clone(),
-                    posterior_calculation_config: posterior_calculation_config.clone(),
-                    use_tool,
-                    fixed_temperature: temperature_by_split::<S>(),
-                    actions,
-                };
-
-                join_set.spawn(async move {
-                    let _permit = permit;
-                    (dataset_name, tree_accuracy::<M, S>(&action_log))
-                });
-            }
-            joined = join_set.join_next(), if !join_set.is_empty() => {
-                finished += 1;
-
-                match joined.expect("join_set must have at least one task") {
-                    Ok((dataset_name, result)) => {
-                        if let Some((num_correct_trajectories, total_trajectories)) = result {
-                            weighted_num_wins +=
-                                num_correct_trajectories as f32 / total_trajectories as f32;
-                            weighted_total_plays += 1.0;
-                            num_trees_with_judgments += 1;
-                            num_trajectories_judged += total_trajectories;
-                            match dataset_name.as_str() {
-                                DEEPMATH_DATASET_NAME => {
-                                    deepmath_stats
-                                        .update(num_correct_trajectories, total_trajectories)
-                                }
-                                MATH_DATASET_NAME => {
-                                    math_stats.update(num_correct_trajectories, total_trajectories)
-                                }
-                                NUMINAMATH_DATASET_NAME => {
-                                    numinamath_stats.update(num_correct_trajectories, total_trajectories)
-                                }
-                                _ => unreachable!(
-                                    "dataset name was validated before task spawn"
-                                ),
-                            }
-                        }
-                    }
-                    Err(join_err) => panic!("accuracy task panicked: {join_err}"),
-                }
-
-                let progress = if num_keys == 0 {
-                    1.0
-                } else {
-                    finished as f32 / num_keys as f32
-                };
-                log_master_progress(progress, format!("{}: Calculating", progress_bar_label));
-            }
-        }
-    }
-
-    log_master_progress(1.0, format!("{}: Done", progress_bar_label));
-
-    AccuracyStats {
-        weighted_num_wins,
-        weighted_total_plays,
-        num_trees_with_judgments,
-        num_trajectories_judged,
-        deepmath_weighted_num_wins: deepmath_stats.weighted_num_wins,
-        deepmath_weighted_total_plays: deepmath_stats.weighted_total_plays,
-        math_weighted_num_wins: math_stats.weighted_num_wins,
-        math_weighted_total_plays: math_stats.weighted_total_plays,
-        numinamath_weighted_num_wins: numinamath_stats.weighted_num_wins,
-        numinamath_weighted_total_plays: numinamath_stats.weighted_total_plays,
-    }
+    compute_accuracy_stats(
+        keys,
+        &question_map,
+        &action_store,
+        rollout_config,
+        posterior_calculation_config,
+        progress_bar_label,
+        use_tool,
+    )
+    .await
 }

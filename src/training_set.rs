@@ -15,8 +15,8 @@ use tokio::task::JoinSet;
 use crate::hybrid_dataset::{QuestionFlatId, Training, open_hybrid_dataset};
 
 use crate::{
+    constants,
     directories::{training_trajectories_path, training_trajectories_stats_path},
-    fixed_temperatures,
     hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
     json_toml_utils::write_json,
     llm_model::LlmModelMarker,
@@ -551,7 +551,7 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
                     use_tool,
-                    fixed_temperature: fixed_temperatures::temperature_by_split::<S>(),
+                    fixed_temperature: constants::temperature_by_split::<S>(),
                     actions,
                 };
                 let training_advantage_policy = training_advantage_policy.clone();
@@ -662,7 +662,7 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
                     use_tool,
-                    fixed_temperature: NotNan::new(fixed_temperatures::TRAINING_TEMPERATURE).unwrap(),
+                    fixed_temperature: NotNan::new(constants::TRAINING_TEMPERATURE).unwrap(),
                     actions,
                 };
                 let training_advantage_policy = training_advantage_policy.clone();
@@ -1242,7 +1242,7 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
             rollout_config: rollout_config.clone(),
             posterior_calculation_config: posterior_calculation_config.clone(),
             use_tool,
-            fixed_temperature: NotNan::new(fixed_temperatures::TRAINING_TEMPERATURE).unwrap(),
+            fixed_temperature: NotNan::new(constants::TRAINING_TEMPERATURE).unwrap(),
         })
         .unwrap();
     rollout_logs_to_training_trajectories::<M>(
@@ -1305,7 +1305,7 @@ pub async fn generate_training_trajectories_with_path<M: LlmModelMarker>(
             rollout_config: rollout_config.clone(),
             posterior_calculation_config: posterior_calculation_config.clone(),
             use_tool,
-            fixed_temperature: NotNan::new(fixed_temperatures::TRAINING_TEMPERATURE).unwrap(),
+            fixed_temperature: NotNan::new(constants::TRAINING_TEMPERATURE).unwrap(),
         })
         .unwrap();
     rollout_logs_to_training_trajectories::<M>(

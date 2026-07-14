@@ -3,7 +3,7 @@ use std::backtrace::Backtrace;
 use clap::{Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
-    fixed_temperatures,
+    constants,
     hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
     json_toml_utils::read_json,
     llm_model::{
@@ -70,7 +70,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         total_epochs: args.total_epochs,
         action_log_store_override_path: None,
         use_tool: args.use_tool,
-        fixed_temperature: fixed_temperatures::temperature_by_split::<S>(),
+        fixed_temperature: constants::temperature_by_split::<S>(),
         max_concurrent_rollout: 300,
     };
     let _ = rollout_all::<M, S>("results", program_config).await;

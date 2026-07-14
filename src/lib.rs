@@ -4,7 +4,6 @@ pub mod check_python_env;
 pub mod config_paths;
 pub mod constants;
 pub mod directories;
-pub mod fixed_temperatures;
 pub mod get_accuracy;
 pub mod hybrid_dataset;
 pub mod judge_correctness;

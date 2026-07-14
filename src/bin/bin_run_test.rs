@@ -3,11 +3,11 @@ use std::{backtrace::Backtrace, path::Path};
 use clap::{Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
+    constants,
     directories::{
         base_model_dir, inference_wrapper_log_path, model_parent_dir, test_accuracy_path,
         tui_log_path,
     },
-    fixed_temperatures,
     get_accuracy::{TestAccuracyResult, get_test_accuracies},
     hybrid_dataset::Testing,
     json_toml_utils::{read_json, write_json},
@@ -106,7 +106,7 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
         total_epochs: testing_config.total_epochs,
         action_log_store_override_path: None,
         use_tool: testing_config.use_tool,
-        fixed_temperature: NotNan::new(fixed_temperatures::VALIDATION_TEMPERATURE).unwrap(),
+        fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
         max_concurrent_rollout: 300,
     };
     let _ = rollout_all::<M, Testing>(&testing_config.mount_dir, program_config).await;

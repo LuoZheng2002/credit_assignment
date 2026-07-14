@@ -6,12 +6,12 @@ use ordered_float::NotNan;
 
 use crate::{
     config_paths::{ConfigPaths, config_paths_file_path, derive_testing_rollout_config_path},
+    constants,
     constants::get_max_concurrent_rollout,
     directories::{
         base_model_dir, model_metrics_path, model_parent_dir, progress_save_path,
         training_summary_parent_dir,
     },
-    fixed_temperatures,
     get_accuracy::get_accuracy,
     hybrid_dataset::{Training, Validation},
     json_toml_utils::write_json,
@@ -571,7 +571,7 @@ impl Orchestrator {
             total_epochs: self.num_total_epochs,
             action_log_store_override_path: None,
             use_tool: self.use_tool,
-            fixed_temperature: NotNan::new(fixed_temperatures::VALIDATION_TEMPERATURE).unwrap(),
+            fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
             max_concurrent_rollout: get_max_concurrent_rollout(self.num_gpus),
         };
         let rollout_summary =
@@ -619,7 +619,7 @@ impl Orchestrator {
             total_epochs: self.num_total_epochs,
             action_log_store_override_path: None,
             use_tool: self.use_tool,
-            fixed_temperature: NotNan::new(fixed_temperatures::TRAINING_TEMPERATURE).unwrap(),
+            fixed_temperature: NotNan::new(constants::TRAINING_TEMPERATURE).unwrap(),
             max_concurrent_rollout: get_max_concurrent_rollout(self.num_gpus),
         };
         let rollout_summary =
