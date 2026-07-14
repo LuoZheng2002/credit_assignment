@@ -33,8 +33,9 @@ export PATH="$REPO_ROOT/pyprojects/sglang/.venv/bin:$PATH"
 
 # Add all nvidia CUDA-compat shared libraries from the sglang venv so that
 # torch / torchrun can find cuDNN, cuSPARSE, cuSPARSELt, etc.
+# NCCL is explicitly excluded to avoid version conflicts with torch's bundled NCCL.
 _NVIDIA_LIBS=$(find "$REPO_ROOT/pyprojects/sglang/.venv/lib/python3.12/site-packages/nvidia" \
-    -name "lib" -type d 2>/dev/null | tr '\n' ':')
+    -path "*/nccl/lib" -prune -o -name "lib" -type d -print 2>/dev/null | tr '\n' ':')
 if [ -n "$_NVIDIA_LIBS" ]; then
     export LD_LIBRARY_PATH="${_NVIDIA_LIBS}${LD_LIBRARY_PATH}"
 fi
