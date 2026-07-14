@@ -366,6 +366,25 @@ but upstream only ships `0.4.1+cu130`. A locally patched wheel (0.4.2+cu129
 re-versioned to 0.4.1) lives at `pyprojects/sglang/wheels/`. If `uv sync` is
 re-run without this wheel, it will break.
 
+### 8. Monitoring via `send_command` — avoid `sleep` in remote commands
+
+**Symptom:** `sleep 90 && sacct ...` inside `send_command` hangs, times out, or produces
+terminal escape sequences instead of clean output.
+
+**Cause:** The tmux session used by `ssh-tmux` cannot reliably handle long-running commands
+that block the PTY. Even `sleep N` may be interpreted as interactive input.
+
+**Fix:** Keep remote commands atomic (no sleeps). Wait locally between polls:
+```sh
+# Fast poll command (no sleep):
+sacct -j <jobid> -n -o State,Elapsed --noheader | head -1 && tail -5 slurm/logs/rollout_<jobid>.out
+
+# Then sleep locally (e.g., with the `terminal` tool or a separate `sleep`):
+sleep 180
+
+# Then poll again with a fresh send_command.
+```
+
 ### Quick Pre-flight Checklist
 
 Before submitting any job, verify:

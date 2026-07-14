@@ -28,3 +28,22 @@ Notes:
 - Use `tmux attach -t mcp-ssh` when the user wants to type secrets without sending them in chat.
 - Tell the user to detach with `Ctrl+B`, then `D` after finishing interactive input.
 - Never store passwords or MFA codes in repo files.
+
+## Delta job monitoring
+When monitoring long-running SLURM jobs on Delta via `ssh-tmux`:
+
+- **Do NOT use `sleep` inside `send_command`.** The tmux session handles long-running commands poorly — `sleep` commands hang, time out, or produce garbled output with escape sequences.
+- **Instead, wait locally between polls.** Use the local `terminal` tool with `sleep` to pause between checks, then send a fresh `send_command` to query state:
+
+```sh
+# Poll job state (fast command — no remote sleep)
+sacct -j <jobid> -n -o State,Elapsed --noheader | head -1 && tail -5 slurm/logs/rollout_<jobid>.out
+
+# Then wait locally (in terminal tool, not send_command):
+sleep 180  # 3 minutes
+
+# Then poll again:
+sacct -j <jobid> -n -o State,Elapsed --noheader | head -1 && tail -5 slurm/logs/rollout_<jobid>.out
+```
+
+- Keep polling commands short and atomic — separate `sacct` and `tail` calls are fine.
