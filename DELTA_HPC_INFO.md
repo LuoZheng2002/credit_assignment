@@ -26,15 +26,22 @@ The successful login sequence was:
 
 1. Open an SSH session to host alias `delta`.
 2. Wait for the password prompt from `login.delta.ncsa.illinois.edu`.
-3. Submit the account password interactively.
-4. When Duo asks for an option, enter `1` for `Duo Push`.
-5. Wait for the human user to approve the push on their device.
-6. After approval, confirm the shell prompt appears on `dt-login01`.
+3. Tell the user to attach locally with:
+   ```sh
+   tmux attach -t mcp-ssh
+   ```
+4. In the attached tmux session, the user types the password directly.
+5. When Duo asks for an option, the user or agent enters `1` for `Duo Push`.
+6. Wait for the human user to approve the push on their device.
+7. After approval, confirm the shell prompt appears on `dt-login01`.
+8. Tell the user to detach from the local tmux view with `Ctrl+B`, then `D`.
 
 Notes:
 
 - Keep the SSH session open while waiting for Duo approval.
 - If a command accidentally lands at the Duo prompt, Duo will reject it as an invalid passcode; simply retry from a fresh password prompt.
+- `tmux attach -t mcp-ssh` exposes the live MCP-managed terminal so the user can type secrets without putting them in chat.
+- After finishing interactive input, detach with `Ctrl+B`, then `D`.
 - Do **not** store passwords in the repo or docs.
 
 ## Repository

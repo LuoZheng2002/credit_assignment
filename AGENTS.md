@@ -15,12 +15,16 @@ When working with the `delta` host, prefer a persistent SSH session tool such as
 Working login sequence:
 1. Open an SSH session to host alias `delta`.
 2. Wait for the password prompt.
-3. Ask the user to provide or enter the password through the live SSH session.
-4. At the Duo menu, send `1` for `Duo Push`.
-5. Wait for the user to approve the push notification.
-6. Confirm the remote shell prompt appears before running commands.
+3. Tell the user to attach locally with `tmux attach -t mcp-ssh`.
+4. Let the user type the password directly in the attached tmux session.
+5. At the Duo menu, send `1` for `Duo Push` or let the user type it in the attached tmux session.
+6. Wait for the user to approve the push notification.
+7. Confirm the remote shell prompt appears before running commands.
+8. Tell the user to detach from tmux with `Ctrl+B`, then `D`.
 
 Notes:
 - Do not claim Delta access is unattended; a human must still complete MFA.
 - Keep the session open while waiting for Duo approval.
+- Use `tmux attach -t mcp-ssh` when the user wants to type secrets without sending them in chat.
+- Tell the user to detach with `Ctrl+B`, then `D` after finishing interactive input.
 - Never store passwords or MFA codes in repo files.
