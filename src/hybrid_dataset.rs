@@ -9,8 +9,6 @@ use std::{
 use parking_lot::Mutex;
 use research_utility::{
     asset_file::{Base64Hash, hash_file},
-    sqlite_store::SqliteStoreKey,
-    sqlite_table_array_store::SqliteTableArrayKey,
 };
 use serde::{Deserialize, Serialize};
 use serde_jsonlines::BufReadExt;
@@ -58,35 +56,6 @@ impl<'de, S: DatasetSplit> Deserialize<'de> for QuestionFlatId<S> {
     {
         let value = usize::deserialize(deserializer)?;
         Ok(Self(value, PhantomData))
-    }
-}
-
-impl<S: DatasetSplit> SqliteStoreKey for QuestionFlatId<S> {
-    fn from_key_text(key_text: &str) -> Result<Self, String>
-    where
-        Self: Sized,
-    {
-        Ok(QuestionFlatId(usize::from_key_text(key_text)?, PhantomData))
-    }
-
-    fn to_key_text(&self) -> String {
-        self.0.to_key_text()
-    }
-}
-
-impl<S: DatasetSplit> SqliteTableArrayKey for QuestionFlatId<S> {
-    fn to_table_key_text(&self) -> String {
-        self.0.to_table_key_text()
-    }
-
-    fn from_table_key_text(table_key_text: &str) -> Result<Self, String>
-    where
-        Self: Sized,
-    {
-        Ok(QuestionFlatId(
-            usize::from_table_key_text(table_key_text)?,
-            PhantomData,
-        ))
     }
 }
 

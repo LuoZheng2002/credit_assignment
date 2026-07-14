@@ -40,6 +40,7 @@ struct CliArgs {
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 struct Args {
     model_cli_name: String,
     config_nickname_rollout: String,
@@ -55,6 +56,8 @@ struct Args {
     rollout_secs: usize,
     mount_dir: String,
     num_gpus: usize,
+    #[serde(default)]
+    total_time_limit_hours: f32,
 }
 
 fn default_total_epochs() -> usize {

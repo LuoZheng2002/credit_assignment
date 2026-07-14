@@ -10,6 +10,7 @@ use tokio::time::Instant;
 
 use credit_assignment::{
     check_python_env::check_sympy_availability,
+    constants,
     constants::get_max_concurrent_rollout,
     directories::{
         action_logs_oneshot_path, base_model_dir, inference_wrapper_log_path,
@@ -17,7 +18,6 @@ use credit_assignment::{
         text_logger_verbose_path, training_summary_oneshot_parent_dir,
         training_trajectories_oneshot_path, training_wrapper_log_path,
     },
-    constants,
     get_accuracy::get_accuracy_at_path,
     hybrid_dataset::Validation,
     json_toml_utils::read_json,
@@ -51,6 +51,7 @@ struct CliArgs {
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 struct Args {
     model_cli_name: String,
     config_nickname_training: String,
@@ -62,6 +63,8 @@ struct Args {
     oneshot_per_epoch_training_time: f32,
     num_iterations_limit: usize,
     num_gpus: usize,
+    #[serde(default)]
+    total_time_limit_hours: f32,
     mount_dir: String,
     rollout_mount_dir: String,
 }
@@ -569,6 +572,7 @@ async fn main() {
         num_gpus,
         mount_dir,
         rollout_mount_dir,
+        ..
     } = toml::from_str(&config_contents)
         .unwrap_or_else(|err| panic!("failed to parse config file '{}': {}", config_path, err));
     let process_title = format!(
