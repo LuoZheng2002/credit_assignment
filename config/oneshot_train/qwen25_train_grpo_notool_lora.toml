@@ -1,6 +1,6 @@
 model_cli_name = "qwen25"
 config_nickname_training = "grpo_notool_lora_training"
-config_nickname_rollout = "grpo_notool_lora_rollout"
+config_nickname_rollout = "grpo_notool_rollout"
 use_tool = false
 num_oneshot_epochs = 3
 validation_rollout_secs = 300
