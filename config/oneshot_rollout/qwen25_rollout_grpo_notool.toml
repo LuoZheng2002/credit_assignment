@@ -1,0 +1,14 @@
+model_cli_name = "qwen25_7b"
+config_nickname_rollout = "grpo_notool_rollout"
+rollout_config_path = "config/rollout_config_training_grpo.json"
+use_tool = false
+dataset_split = "Training"
+epoch = 0
+total_epochs = 1
+training_advantage_policy = "TreeMappoPosterior"
+positive_advantage_only = false
+rollout_secs = 300
+mount_dir = "/work/nvme/bfsl/zluo8/credit_assignment/results"
+num_gpus = 4
+total_time_limit_hours = 1.0
+training_set_sort_mode = "ByLength"

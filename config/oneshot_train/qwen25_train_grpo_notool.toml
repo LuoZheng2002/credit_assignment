@@ -1,0 +1,25 @@
+model_cli_name = "qwen25_7b"
+config_nickname_training = "grpo_notool_training"
+config_nickname_rollout = "grpo_notool_rollout"
+use_tool = false
+num_oneshot_epochs = 3
+validation_rollout_secs = 300
+oneshot_per_epoch_training_time = 600.0
+num_iterations_limit = 3
+num_gpus = 4
+total_time_limit_hours = 1.0
+mount_dir = "/work/nvme/bfsl/zluo8/credit_assignment/results"
+rollout_mount_dir = "/work/nvme/bfsl/zluo8/credit_assignment/results"
+
+[training_hyperparameters]
+lora_or_full = "full"
+distributed_strategy = "fsdp"
+advantage_clip = 3.0
+learning_rate = 1e-06
+weight_decay = 0.01
+grad_accum_steps = 16
+log_time_interval = 30
+seed = 42
+adam_beta1 = 0.9
+adam_beta2 = 0.95
+lr_warmup_steps = 100
