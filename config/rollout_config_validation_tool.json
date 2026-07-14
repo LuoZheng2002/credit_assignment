@@ -1,9 +1,0 @@
-{
-    "split": "Validation",
-    "branching_policy": "TreeMappoGuided",
-    "num_trunks": 1,
-    "num_early_stopping_leaves": 6,
-    "num_leaves": 1,
-    "fixed_temperature": 0.0,
-    "use_tool": true
-}

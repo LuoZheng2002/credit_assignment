@@ -4,7 +4,7 @@ use crate::hybrid_dataset::DatasetSplit;
 pub const POSTERIOR_HYPERPARAMETERS_PATH: &str = "config/posterior_hyperparameters.json";
 
 /// Canonical path to the validation rollout config JSON file.
-pub const VALIDATION_ROLLOUT_CONFIG_PATH: &str = "config/rollout_config_validation_tool.json";
+pub const VALIDATION_ROLLOUT_CONFIG_PATH: &str = "config/rollout_config_validation.json";
 
 pub fn action_logs_path<S: DatasetSplit>(
     mount_dir: &str,
