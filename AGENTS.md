@@ -47,3 +47,28 @@ sacct -j <jobid> -n -o State,Elapsed --noheader | head -1 && tail -5 slurm/logs/
 ```
 
 - Keep polling commands short and atomic — separate `sacct` and `tail` calls are fine.
+
+## Training config models location
+
+Training configuration Pydantic models (`TrainingRequestArgs`, `TrainingModeOneShot`,
+`TrainProcessLaunchArgs`, etc.) live in **`src_py/training_config_models.py`** — a
+standalone module **outside the `src_py/train/` package**. This is intentional:
+importing from `src_py/train/*` triggers `src_py/train/__init__.py` which eagerly
+imports `collator` → `import torch` → requires CUDA shared libraries.
+
+The wrapper (`src_py/wrappers/training_wrapper.py`) imports directly from
+`src_py.training_config_models`. The training engine (`src_py/train/main.py`) can
+still import from `src_py.train.cli_args` (a re-export shim) since it already needs
+torch.
+
+When adding new training config models that the wrapper needs:
+- Add them to `src_py/training_config_models.py` (not under `src_py/train/`)
+- Re-export from `src_py/train/cli_args.py` if internal `train/` code uses them
+- Keep imports torch-free in `training_config_models.py`
+
+## Delta LD_LIBRARY_PATH
+
+The `.slurm` scripts set up `LD_LIBRARY_PATH` to include nvidia CUDA libraries from
+sglang's venv (excluding `nccl/lib`). When adding new `.slurm` scripts or modifying
+the launch environment, ensure this pattern is replicated so that torch can find
+`libcudnn.so.9`, `libcusparseLt.so.0`, etc. on compute nodes.

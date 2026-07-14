@@ -385,6 +385,56 @@ sleep 180
 # Then poll again with a fresh send_command.
 ```
 
+### 9. Training wrapper crashes with SIGABRT on Delta (ImportError: libcudnn.so.9)
+
+**Symptom:** Training jobs fail immediately with SIGABRT / exit 134. The Rust binary panics:
+```
+Oneshot training failed: training wrapper process exited with status exit status: 1
+```
+The file `training_wrapper.txt` is never created. `text_log_summary.txt` and
+`text_log_verbose.txt` are empty.
+
+**Root cause (two layers):**
+
+1. **Import chain triggering torch:** `training_wrapper.py` imported from
+   `src_py.train.cli_args`, which triggered `src_py/train/__init__.py` →
+   `collator` → `import torch`. The wrapper only needed Pydantic models, not
+   torch, but the package `__init__.py` pulled it in eagerly.
+
+2. **Missing CUDA shared libraries:** Even once torch is imported, `libcudnn.so.9`,
+   `libcusparseLt.so.0`, and other CUDA libs are not in the system path on Delta
+   compute nodes. The sglang venv bundles them under
+   `nvidia/{cudnn,cusparse,cusparselt,...}/lib/`.
+
+**Fixes applied:**
+
+1. **Extracted config models out of `src_py/train/`.** Created
+   `src_py/training_config_models.py` (outside the `train` package) containing
+   `TrainingRequestArgs`, `TrainingModeOneShot`, `TrainingModeOrchestration`,
+   `TrainingHyperparametersRequest`, `TrainProcessLaunchArgs`, and the CLI/serialization
+   utilities. `src_py/train/cli_args.py` is now a re-export shim. The wrapper imports
+   from `src_py.training_config_models` directly, avoiding the torch import chain.
+
+2. **Explicit `isinstance` resolution in the wrapper.** Instead of `@property`
+   accessors on `TrainingRequestArgs` with fallback semantics (`epoch=0` for oneshot),
+   the wrapper now uses explicit `isinstance(mode, TrainingModeOneShot)` checks
+   at the top of `_run_hpc_training`, matching the pattern in `train/main.py`'s
+   `_load_train_config()`.
+
+3. **LD_LIBRARY_PATH setup in SLURM scripts.** The training SLURM script adds all
+   `nvidia/*/lib` directories from the sglang venv to `LD_LIBRARY_PATH`, **excluding
+   `nccl/lib`** (which conflicts with torch's bundled NCCL and causes undefined
+   symbol errors like `ncclCommResume`).
+
+   The relevant snippet in `slurm/oneshot_training.slurm`:
+   ```sh
+   _NVIDIA_LIBS=$(find "$REPO_ROOT/pyprojects/sglang/.venv/lib/python3.12/site-packages/nvidia" \
+       -path "*/nccl/lib" -prune -o -name "lib" -type d -print 2>/dev/null | tr '\n' ':')
+   if [ -n "$_NVIDIA_LIBS" ]; then
+       export LD_LIBRARY_PATH="${_NVIDIA_LIBS}${LD_LIBRARY_PATH}"
+   fi
+   ```
+
 ### Quick Pre-flight Checklist
 
 Before submitting any job, verify:
