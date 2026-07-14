@@ -11,13 +11,31 @@ Host delta
 ```
 
 Delta requires **NCSA Kerberos + Duo MFA** — interactive authentication is mandatory.
-This means agents **cannot** SSH in unattended; you must use a real terminal.
+Agents cannot log in fully unattended, but they *can* connect through a persistent interactive SSH session when a human is available to complete MFA.
 
 Connect with:
 
 ```sh
 ssh delta
 ```
+
+### Login flow that worked for the Zed agent
+
+This repo is configured to use Zed's `ssh-tmux` MCP server for persistent SSH sessions.
+The successful login sequence was:
+
+1. Open an SSH session to host alias `delta`.
+2. Wait for the password prompt from `login.delta.ncsa.illinois.edu`.
+3. Submit the account password interactively.
+4. When Duo asks for an option, enter `1` for `Duo Push`.
+5. Wait for the human user to approve the push on their device.
+6. After approval, confirm the shell prompt appears on `dt-login01`.
+
+Notes:
+
+- Keep the SSH session open while waiting for Duo approval.
+- If a command accidentally lands at the Duo prompt, Duo will reject it as an invalid passcode; simply retry from a fresh password prompt.
+- Do **not** store passwords in the repo or docs.
 
 ## Repository
 
@@ -211,9 +229,11 @@ tmux attach -t work   # reattach later
 ## Constraints for Automated Agents
 
 - **No unattended SSH** — Delta requires interactive MFA (Kerberos + Duo)
+- **Human approval is still required** — agents can drive the SSH session, but a human must complete password/MFA steps when prompted
 - **`sbatch` only exists on Delta** — launch scripts must run on the cluster, not locally
-- **Agent `terminal` tool is stateless** — cannot maintain interactive SSH sessions
-- **Workaround:** prepare configs/code locally, `git push`, then SSH in manually to pull and submit
+- **Agent `terminal` tool is stateless** — cannot maintain interactive SSH sessions by itself
+- **Working approach:** use a persistent SSH session tool such as Zed `ssh-tmux`, then have the user approve Duo when prompted
+- **Fallback:** prepare configs/code locally, `git push`, then SSH in manually to pull and submit
 
 ## Troubleshooting & Common Pitfalls
 
