@@ -248,8 +248,6 @@ class TestTrainLoopNonfinite(unittest.TestCase):
                 base_learning_rate=1e-3,
                 lr_warmup_steps=0,
                 lr_min_scale=0.1,
-                lr_schedule="cosine",
-                lr_total_steps=100,
                 is_distributed=True,
             )
         )

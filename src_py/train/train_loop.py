@@ -536,45 +536,23 @@ def _maybe_emit_master_progress(
     clock.last_master_progress_time = now
 
 
-LR_SCHEDULE_SQRT = "sqrt"
-LR_SCHEDULE_COSINE = "cosine"
-
-
 def _compute_lr_multiplier(
     *,
     step_index: int,
     warmup_steps: int,
     min_lr_scale: float,
-    schedule: str,
-    total_steps: int,
 ) -> float:
     assert step_index >= 0, "step_index must be non-negative"
     assert warmup_steps >= 0, "warmup_steps must be non-negative"
     assert min_lr_scale > 0.0 and min_lr_scale <= 1.0, "min_lr_scale must be in (0, 1]"
-    assert schedule in {LR_SCHEDULE_SQRT, LR_SCHEDULE_COSINE}, (
-        f"lr_schedule must be one of: {LR_SCHEDULE_SQRT}, {LR_SCHEDULE_COSINE}"
-    )
-    assert total_steps >= 0, "total_steps must be non-negative"
 
     # --- warmup phase (linear ramp from min_lr_scale to 1.0) ---
     if warmup_steps > 0 and step_index < warmup_steps:
         warmup_scale = float(step_index + 1) / float(warmup_steps)
         return max(min_lr_scale, min(1.0, warmup_scale))
 
-    if warmup_steps <= 0:
-        return 1.0
+    return 1.0
 
-    # --- decay phase ---
-    if schedule == LR_SCHEDULE_COSINE and total_steps > warmup_steps:
-        decay_steps = total_steps - warmup_steps
-        progress = min(1.0, float(step_index - warmup_steps) / float(decay_steps))
-        cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
-        return min_lr_scale + (1.0 - min_lr_scale) * cosine_decay
-
-    # sqrt decay (original behaviour, also used as fallback when total_steps is
-    # not meaningfully larger than warmup_steps for cosine)
-    decay_scale = math.sqrt(float(warmup_steps) / float(max(step_index, warmup_steps)))
-    return max(min_lr_scale, min(1.0, decay_scale))
 
 
 def _set_optimizer_learning_rate(
@@ -584,15 +562,11 @@ def _set_optimizer_learning_rate(
     step_index: int,
     warmup_steps: int,
     min_lr_scale: float,
-    schedule: str,
-    total_steps: int,
 ) -> float:
     multiplier = _compute_lr_multiplier(
         step_index=step_index,
         warmup_steps=warmup_steps,
         min_lr_scale=min_lr_scale,
-        schedule=schedule,
-        total_steps=total_steps,
     )
     current_learning_rate = base_learning_rate * multiplier
     for param_group in optimizer.param_groups:
@@ -621,8 +595,6 @@ def _flush_partial_gradients(
     base_learning_rate: float,
     lr_warmup_steps: int,
     lr_min_scale: float,
-    lr_schedule: str,
-    lr_total_steps: int,
     is_distributed: bool,
 ) -> tuple[int, int, float | None, float]:
     current_lr = float(optimizer.param_groups[0]["lr"])
@@ -648,8 +620,6 @@ def _flush_partial_gradients(
         step_index=next_global_step,
         warmup_steps=lr_warmup_steps,
         min_lr_scale=lr_min_scale,
-        schedule=lr_schedule,
-        total_steps=lr_total_steps,
     )
     return 0, next_global_step, clipped_grad_norm, current_lr
 
@@ -658,6 +628,7 @@ def _finalize_training_run(
     *,
     rank: int,
     global_step: int,
+    samples_trained: int,
     training_time: float,
     final_model_output_parent_dir: Path,
     eng: Any,
@@ -667,6 +638,7 @@ def _finalize_training_run(
     if _is_primary_rank():
         _tui_info(
             f"finished_training=1 global_step={global_step} "
+            f"samples_trained={samples_trained} "
             f"training_time={training_time:.1f}s "
             f"final_model_output_parent_dir={final_model_output_parent_dir}"
         )
@@ -714,6 +686,8 @@ def _write_training_summary(
     training_summary_parent_dir: str,
     samples_available: int,
     samples_trained: int,
+    global_step: int,
+    grad_accum_steps: int,
     max_average_absolute_advantage: float,
     min_average_absolute_advantage: float,
     median_average_absolute_advantage: float,
@@ -728,10 +702,15 @@ def _write_training_summary(
         "total_training_time_sec must be non-negative"
     )
     iterations = float(samples_trained) / float(samples_available)
+    average_batch_size = 1.0
+    if global_step > 0 and grad_accum_steps > 0:
+        average_batch_size = float(samples_trained) / float(global_step * grad_accum_steps)
     payload = {
         "samples_available": int(samples_available),
         "samples_trained": int(samples_trained),
         "iterations": float(iterations),
+        "global_step": int(global_step),
+        "average_batch_size": float(average_batch_size),
         "max_average_absolute_advantage": float(max_average_absolute_advantage),
         "min_average_absolute_advantage": float(min_average_absolute_advantage),
         "median_average_absolute_advantage": float(median_average_absolute_advantage),
@@ -782,11 +761,6 @@ def _run_unified_loop(
 
     sample_count = lazy_loader.sample_count
 
-    lr_schedule = config.lr_schedule
-    assert lr_schedule in {LR_SCHEDULE_SQRT, LR_SCHEDULE_COSINE}, (
-        f"lr_schedule must be one of: {LR_SCHEDULE_SQRT}, {LR_SCHEDULE_COSINE}"
-    )
-
     # Cap warmup steps so the LR reaches its peak before the dataset is exhausted
     # in a single pass (critical for tiny datasets).
     if lr_warmup_steps > 0 and sample_count > 0:
@@ -802,23 +776,10 @@ def _run_unified_loop(
                 )
             lr_warmup_steps = max_warmup_steps
 
-    # Auto-compute total decay steps when not explicitly provided.
-    # Conservative estimate: assume batch_size=1 and each sample is visited
-    # num_iterations_limit times, then divide by grad_accum_steps.
-    if config.lr_total_steps > 0:
-        lr_total_steps = config.lr_total_steps
-    else:
-        lr_total_steps = max(
-            1,
-            (sample_count * config.num_iterations_limit) // config.grad_accum_steps,
-        )
-
     if _is_primary_rank():
         _tui_info(
-            "lr_schedule_config=1 "
-            f"lr_schedule={lr_schedule} "
+            "lr_warmup_config=1 "
             f"lr_warmup_steps={lr_warmup_steps} "
-            f"lr_total_steps={lr_total_steps} "
             f"lr_min_scale={lr_min_scale:.4f}"
         )
 
@@ -891,8 +852,6 @@ def _run_unified_loop(
         step_index=global_step,
         warmup_steps=lr_warmup_steps,
         min_lr_scale=lr_min_scale,
-        schedule=lr_schedule,
-        total_steps=lr_total_steps,
     )
     resumed_elapsed_training_time_sec = min(
         config.training_time, max(0.0, resume_state.elapsed_training_time_sec)
@@ -1427,8 +1386,6 @@ def _run_unified_loop(
                 step_index=global_step,
                 warmup_steps=lr_warmup_steps,
                 min_lr_scale=lr_min_scale,
-                schedule=lr_schedule,
-                total_steps=lr_total_steps,
             )
 
             now = time.monotonic()
@@ -1465,8 +1422,6 @@ def _run_unified_loop(
             base_learning_rate=config.learning_rate,
             lr_warmup_steps=lr_warmup_steps,
             lr_min_scale=lr_min_scale,
-            lr_schedule=lr_schedule,
-            lr_total_steps=lr_total_steps,
             is_distributed=is_distributed,
         )
     )
@@ -1493,6 +1448,8 @@ def _run_unified_loop(
             training_summary_parent_dir=training_summary_parent_dir,
             samples_available=samples_available,
             samples_trained=samples_trained,
+            global_step=global_step,
+            grad_accum_steps=config.grad_accum_steps,
             max_average_absolute_advantage=max_average_absolute_advantage,
             min_average_absolute_advantage=min_average_absolute_advantage,
             median_average_absolute_advantage=median_average_absolute_advantage,
@@ -1500,6 +1457,8 @@ def _run_unified_loop(
         )
         _tui_info(
             "training_summary_written=1 "
+            f"samples_trained={samples_trained} "
+            f"global_step={global_step} "
             f"training_summary_parent_dir={training_summary_parent_dir}"
         )
     final_resume_state = eng.ResumeState(
@@ -1519,6 +1478,7 @@ def _run_unified_loop(
         _finalize_training_run(
             rank=rank,
             global_step=global_step,
+            samples_trained=samples_trained,
             training_time=config.training_time,
             final_model_output_parent_dir=final_model_output_parent_dir,
             eng=eng,

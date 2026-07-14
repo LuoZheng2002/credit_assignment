@@ -48,7 +48,7 @@ pub struct TrainingHyperparameters {
     pub seed: u64,
     pub adam_beta1: f32,
     pub adam_beta2: f32,
-    pub lr_total_steps: usize,
+    pub lr_warmup_steps: usize,
     // lora specific
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lora_rank: Option<usize>,

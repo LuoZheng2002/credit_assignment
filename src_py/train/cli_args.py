@@ -21,7 +21,7 @@ class TrainingHyperparametersRequest(BaseModel):
     seed: int
     adam_beta1: float = 0.9
     adam_beta2: float = 0.95
-    lr_total_steps: int = 0
+    lr_warmup_steps: int
     lora_rank: int | None = None
     lora_alpha: int | None = None
     lora_dropout: float | None = None
@@ -61,7 +61,6 @@ class TrainingRequestArgs(BaseModel):
     model_cli_name: str
     config_nickname: str
     hpc_training_root_dir: str | None = None
-    lr_schedule: str = "cosine"
     training_mode: TrainingMode
 
 

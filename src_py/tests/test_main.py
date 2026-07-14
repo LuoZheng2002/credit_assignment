@@ -21,6 +21,7 @@ class TestMain(unittest.TestCase):
                 "weight_decay": 0.01,
                 "grad_accum_steps": 1,
                 "log_time_interval": 1,
+                "lr_warmup_steps": 100,
                 "seed": 42,
                 "lora_rank": 8,
                 "lora_alpha": 16,

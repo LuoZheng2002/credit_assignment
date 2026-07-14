@@ -74,8 +74,7 @@ class TrainConfig:
     seed: int
     adam_beta1: float
     adam_beta2: float
-    lr_schedule: str
-    lr_total_steps: int
+    lr_warmup_steps: int
     training_mode: str = "orchestration"
     oneshot_num_epochs: int = 0
     oneshot_model_output_root: str = ""
@@ -494,18 +493,6 @@ def _resolve_max_grad_norm_from_env() -> float:
         return 1.0
     parsed = float(normalized)
     assert parsed >= 0.0, "TRAIN_MAX_GRAD_NORM must be >= 0 when set"
-    return parsed
-
-
-def _resolve_lr_warmup_steps_from_env() -> int:
-    raw_value = os.environ.get("TRAIN_LR_WARMUP_STEPS")
-    if raw_value is None:
-        return 100
-    normalized = raw_value.strip()
-    if len(normalized) == 0:
-        return 100
-    parsed = int(normalized)
-    assert parsed >= 0, "TRAIN_LR_WARMUP_STEPS must be >= 0 when set"
     return parsed
 
 
@@ -1133,10 +1120,7 @@ def train(config: TrainConfig) -> None:
     device = _init_distributed_device()
     rank, world_size = _get_rank_world_size()
     max_grad_norm = _resolve_max_grad_norm_from_env()
-    lr_warmup_micro_batches = _resolve_lr_warmup_steps_from_env()
-    lr_warmup_steps = 0
-    if lr_warmup_micro_batches > 0:
-        lr_warmup_steps = max(1, lr_warmup_micro_batches // config.grad_accum_steps)
+    lr_warmup_steps = config.lr_warmup_steps
     lr_min_scale = _resolve_lr_min_scale_from_env()
 
     if _is_primary_rank():
@@ -1153,12 +1137,9 @@ def train(config: TrainConfig) -> None:
         _tui_info(
             "optimization_stability=1 "
             f"max_grad_norm={max_grad_norm:.4f} "
-            f"lr_warmup_micro_batches={lr_warmup_micro_batches} "
             f"lr_warmup_steps={lr_warmup_steps} "
             f"grad_accum_steps={config.grad_accum_steps} "
-            f"lr_min_scale={lr_min_scale:.4f} "
-            f"lr_schedule={config.lr_schedule} "
-            f"lr_total_steps={config.lr_total_steps}"
+            f"lr_min_scale={lr_min_scale:.4f}"
         )
         _tui_info(
             "optimizer_config=1 "

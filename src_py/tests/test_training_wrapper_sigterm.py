@@ -35,6 +35,7 @@ class TestTrainingWrapperSigterm(unittest.TestCase):
                 weight_decay=0.01,
                 grad_accum_steps=1,
                 log_time_interval=5.0,
+                lr_warmup_steps=100,
                 seed=7,
             ),
             training_mode=TrainingModeOneShot(
