@@ -63,6 +63,30 @@ class TrainingRequestArgs(BaseModel):
     hpc_training_root_dir: str | None = None
     training_mode: TrainingMode
 
+    @property
+    def epoch(self) -> int:
+        if isinstance(self.training_mode, TrainingModeOrchestration):
+            return self.training_mode.epoch
+        return 0
+
+    @property
+    def model_parent_dir(self) -> str:
+        if isinstance(self.training_mode, TrainingModeOrchestration):
+            return self.training_mode.input_model_parent_dir
+        return self.training_mode.base_model_parent_dir
+
+    @property
+    def checkpoints_parent_dir(self) -> str:
+        if isinstance(self.training_mode, TrainingModeOrchestration):
+            return self.training_mode.output_model_parent_dir
+        return self.training_mode.model_output_root
+
+    @property
+    def final_model_output_parent_dir(self) -> str:
+        if isinstance(self.training_mode, TrainingModeOrchestration):
+            return self.training_mode.output_model_parent_dir
+        return self.training_mode.model_output_root
+
 
 class TrainProcessLaunchArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
