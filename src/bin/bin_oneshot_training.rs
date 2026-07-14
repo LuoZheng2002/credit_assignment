@@ -12,10 +12,10 @@ use credit_assignment::{
     check_python_env::check_sympy_availability,
     constants::get_max_concurrent_rollout,
     directories::{
-        action_logs_oneshot_path, inference_wrapper_log_path, oneshot_model_checkpoint_dir,
-        oneshot_model_parent_dir, text_logger_summary_path, text_logger_verbose_path,
-        training_summary_oneshot_parent_dir, training_trajectories_oneshot_path,
-        training_wrapper_log_path,
+        action_logs_oneshot_path, base_model_dir, inference_wrapper_log_path,
+        oneshot_epochs_parent_dir, oneshot_model_parent_dir, text_logger_summary_path,
+        text_logger_verbose_path, training_summary_oneshot_parent_dir,
+        training_trajectories_oneshot_path, training_wrapper_log_path,
     },
     fixed_temperatures,
     get_accuracy::get_accuracy_at_path,
@@ -231,15 +231,10 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     //         no training-state checkpoint resume is supported)
     // ================================================================
 
-    let shared_checkpoints_parent_dir =
-        oneshot_model_checkpoint_dir(mount_dir, model_cli_name, config_nickname_training, 0);
-    let oneshot_model_output_root = shared_checkpoints_parent_dir
-        .rsplit_once('/')
-        .map(|(parent, _)| parent.to_string())
-        .unwrap_or_else(|| shared_checkpoints_parent_dir.clone());
+    let oneshot_model_output_root =
+        oneshot_epochs_parent_dir(mount_dir, model_cli_name, config_nickname_training);
 
-    let base_model_parent_dir =
-        oneshot_model_parent_dir(mount_dir, model_cli_name, config_nickname_training, 0);
+    let base_model_parent_dir = base_model_dir(mount_dir, model_cli_name);
 
     let mut training_throughputs: BTreeMap<usize, f32> = BTreeMap::new();
     for epoch in 0..num_oneshot_epochs {
@@ -303,7 +298,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
                 per_epoch_training_time: oneshot_per_epoch_training_time,
                 num_oneshot_epochs,
                 model_output_root: oneshot_model_output_root.clone(),
-                training_summary_dir: shared_checkpoints_parent_dir.clone(),
+                training_summary_dir: oneshot_model_output_root.clone(),
                 base_model_parent_dir,
             },
         };
@@ -394,13 +389,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
         log_info("All epochs already validated; skipping validation phase");
     } else {
         // Launch inference server ONCE with epoch 0 weights (base model)
-        let launch_epoch = 0usize;
-        let launch_model_parent_dir = oneshot_model_parent_dir(
-            mount_dir,
-            model_cli_name,
-            config_nickname_training,
-            launch_epoch,
-        );
+        let launch_model_parent_dir = base_model_dir(mount_dir, model_cli_name);
         let launch_model_path = format!("{}/model", launch_model_parent_dir);
 
         log_info(format!(
@@ -411,7 +400,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
             &launch_model_path,
             model_cli_name,
             config_nickname_training,
-            launch_epoch,
+            0,
             M::API_NAME,
             num_gpus,
             inference_wrapper_log_path,

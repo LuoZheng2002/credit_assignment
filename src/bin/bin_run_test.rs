@@ -3,7 +3,10 @@ use std::{backtrace::Backtrace, path::Path};
 use clap::{Parser, ValueEnum};
 use credit_assignment::{
     check_python_env::check_sympy_availability,
-    directories::{inference_wrapper_log_path, model_parent_dir, test_accuracy_path, tui_log_path},
+    directories::{
+        base_model_dir, inference_wrapper_log_path, model_parent_dir, test_accuracy_path,
+        tui_log_path,
+    },
     fixed_temperatures,
     get_accuracy::{TestAccuracyResult, get_test_accuracies},
     hybrid_dataset::Testing,
@@ -135,12 +138,16 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
     inference_wrapper_log_path: &str,
 ) -> Result<TestAccuracyResult, String> {
     best_effort_shutdown_stale_inference_wrapper().await;
-    let model_parent_dir = model_parent_dir(
-        &testing_config.mount_dir,
-        M::CLI_NAME,
-        &testing_config.config_nickname,
-        testing_config.epoch,
-    );
+    let model_parent_dir = if testing_config.epoch == 0 {
+        base_model_dir(&testing_config.mount_dir, M::CLI_NAME)
+    } else {
+        model_parent_dir(
+            &testing_config.mount_dir,
+            M::CLI_NAME,
+            &testing_config.config_nickname,
+            testing_config.epoch,
+        )
+    };
     let model_path = format!("{}/model", model_parent_dir);
     let (sglang_port, mut handle) = launch_inference_wrapper_process(
         &model_path,

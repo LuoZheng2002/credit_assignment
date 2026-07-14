@@ -14,7 +14,6 @@ use credit_assignment::{
     rollout::{RolloutProgramConfig, rollout_all},
     rollout_config::RolloutConfig,
 };
-use ordered_float::NotNan;
 use reqwest::Client;
 use research_utility::progress_tui_logger::ProgressTuiLogger;
 
@@ -71,12 +70,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         total_epochs: args.total_epochs,
         action_log_store_override_path: None,
         use_tool: args.use_tool,
-        fixed_temperature: NotNan::new(if S::IS_TRAINING {
-            fixed_temperatures::TRAINING_TEMPERATURE
-        } else {
-            fixed_temperatures::VALIDATION_TEMPERATURE
-        })
-        .unwrap(),
+        fixed_temperature: fixed_temperatures::temperature_by_split::<S>(),
         max_concurrent_rollout: 300,
     };
     let _ = rollout_all::<M, S>("results", program_config).await;

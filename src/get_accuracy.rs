@@ -2,16 +2,14 @@ use research_utility::progress_tui_logger::{log_info, log_master_progress};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::{sync::Semaphore, task::JoinSet};
 
-use ordered_float::NotNan;
-
 use crate::{
+    fixed_temperatures::temperature_by_split,
     hybrid_dataset::{DatasetSplit, HybridDatasetQuestion, open_hybrid_dataset},
+    llm_model::LlmModelMarker,
     posterior_calculation_config::PosteriorCalculationConfig,
     rollout_config::RolloutConfig,
     tree::DirectTree,
     tree_action_log::{ActionLogStore, DirectTreeActionLog, open_action_logs},
-    fixed_temperatures,
-    llm_model::LlmModelMarker,
 };
 
 use serde::{Deserialize, Serialize};
@@ -166,11 +164,7 @@ pub async fn get_accuracy<M: LlmModelMarker, S: DatasetSplit>(
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
                     use_tool,
-                    fixed_temperature: NotNan::new(if S::IS_TRAINING {
-                        fixed_temperatures::TRAINING_TEMPERATURE
-                    } else {
-                        fixed_temperatures::VALIDATION_TEMPERATURE
-                    }).unwrap(),
+                    fixed_temperature: temperature_by_split::<S>(),
                     actions,
                 };
 
@@ -285,11 +279,7 @@ pub async fn get_per_question_accuracies<M: LlmModelMarker, S: DatasetSplit>(
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
                     use_tool,
-                    fixed_temperature: NotNan::new(if S::IS_TRAINING {
-                        fixed_temperatures::TRAINING_TEMPERATURE
-                    } else {
-                        fixed_temperatures::VALIDATION_TEMPERATURE
-                    }).unwrap(),
+                    fixed_temperature: temperature_by_split::<S>(),
                     actions,
                 };
 
@@ -403,11 +393,7 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
                     use_tool,
-                    fixed_temperature: NotNan::new(if S::IS_TRAINING {
-                        fixed_temperatures::TRAINING_TEMPERATURE
-                    } else {
-                        fixed_temperatures::VALIDATION_TEMPERATURE
-                    }).unwrap(),
+                    fixed_temperature: temperature_by_split::<S>(),
                     actions,
                 };
 
@@ -546,11 +532,7 @@ pub async fn get_accuracy_at_path<M: LlmModelMarker, S: DatasetSplit>(
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
                     use_tool,
-                    fixed_temperature: NotNan::new(if S::IS_TRAINING {
-                        fixed_temperatures::TRAINING_TEMPERATURE
-                    } else {
-                        fixed_temperatures::VALIDATION_TEMPERATURE
-                    }).unwrap(),
+                    fixed_temperature: temperature_by_split::<S>(),
                     actions,
                 };
 

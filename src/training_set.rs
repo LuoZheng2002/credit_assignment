@@ -15,17 +15,17 @@ use tokio::task::JoinSet;
 use crate::hybrid_dataset::{QuestionFlatId, Training, open_hybrid_dataset};
 
 use crate::{
+    directories::{training_trajectories_path, training_trajectories_stats_path},
+    fixed_temperatures,
     hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
+    json_toml_utils::write_json,
+    llm_model::LlmModelMarker,
     posterior_calculation_config::PosteriorCalculationConfig,
-    rollout_config::{TrainingAdvantagePolicy, RolloutConfig},
+    rollout_config::{RolloutConfig, TrainingAdvantagePolicy},
     tree::{DirectTree, SegmentContent, SegmentId, TreeCorrectness},
     tree_action_log::{
         ActionLogConfigBundle, ActionLogStore, DirectTreeActionLog, open_action_logs,
     },
-    directories::{training_trajectories_path, training_trajectories_stats_path},
-    fixed_temperatures,
-    json_toml_utils::write_json,
-    llm_model::LlmModelMarker,
 };
 
 const MAX_TRAINING_TRAJECTORY_TOKEN_LENGTH: usize = 8192;
@@ -551,11 +551,7 @@ async fn select_training_trajectories_from_rollout_logs<M: LlmModelMarker, S: Da
                     rollout_config: rollout_config.clone(),
                     posterior_calculation_config: posterior_calculation_config.clone(),
                     use_tool,
-                    fixed_temperature: NotNan::new(if S::IS_TRAINING {
-                        fixed_temperatures::TRAINING_TEMPERATURE
-                    } else {
-                        fixed_temperatures::VALIDATION_TEMPERATURE
-                    }).unwrap(),
+                    fixed_temperature: fixed_temperatures::temperature_by_split::<S>(),
                     actions,
                 };
                 let training_advantage_policy = training_advantage_policy.clone();

@@ -12,3 +12,9 @@ pub fn sglang_context_length(use_tool: bool) -> usize {
 pub fn get_max_concurrent_rollout(num_gpus: usize) -> usize {
     200 * num_gpus
 }
+
+/// Temperature used for training rollouts (0.7).
+pub use crate::fixed_temperatures::TRAINING_TEMPERATURE;
+
+/// Temperature used for validation and testing rollouts (0.0).
+pub use crate::fixed_temperatures::VALIDATION_TEMPERATURE;

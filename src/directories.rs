@@ -31,25 +31,21 @@ pub fn inference_wrapper_log_path(
     format!("{mount_dir}/small_files/{model_cli_name}/{config_nickname}/inference_wrapper.txt")
 }
 
+/// Path to the base (pre-trained) model directory, before any fine-tuning epochs.
+pub fn base_model_dir(mount_dir: &str, model_cli_name: &str) -> String {
+    format!("{mount_dir}/large_files/{model_cli_name}")
+}
+
 pub fn model_parent_dir(
     mount_dir: &str,
     model_cli_name: &str,
     config_nickname: &str,
     epoch: usize,
 ) -> String {
-    if epoch == 0 {
-        format!("{mount_dir}/large_files/{model_cli_name}")
-    } else {
-        format!("{mount_dir}/large_files/{model_cli_name}/{config_nickname}/epoch_{epoch}")
-    }
-}
-
-pub fn model_checkpoint_dir(
-    mount_dir: &str,
-    model_cli_name: &str,
-    config_nickname: &str,
-    epoch: usize,
-) -> String {
+    assert!(
+        epoch != 0,
+        "model_parent_dir does not support epoch 0; use base_model_dir for the base (pre-trained) model path"
+    );
     format!("{mount_dir}/large_files/{model_cli_name}/{config_nickname}/epoch_{epoch}")
 }
 
@@ -194,27 +190,26 @@ pub fn rollout_summary_oneshot_path(
     format!("{mount_dir}/small_files/{model_cli_name}/{config_nickname}/rollout_summary.json")
 }
 
+/// Parent directory that contains all oneshot epoch subdirectories
+/// (oneshot_epoch_1, oneshot_epoch_2, ...).
+pub fn oneshot_epochs_parent_dir(
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
+) -> String {
+    format!("{mount_dir}/large_files/{model_cli_name}/{config_nickname}")
+}
+
 pub fn oneshot_model_parent_dir(
     mount_dir: &str,
     model_cli_name: &str,
     config_nickname: &str,
     oneshot_epoch: usize,
 ) -> String {
-    if oneshot_epoch == 0 {
-        format!("{mount_dir}/large_files/{model_cli_name}")
-    } else {
-        format!(
-            "{mount_dir}/large_files/{model_cli_name}/{config_nickname}/oneshot_epoch_{oneshot_epoch}"
-        )
-    }
-}
-
-pub fn oneshot_model_checkpoint_dir(
-    mount_dir: &str,
-    model_cli_name: &str,
-    config_nickname: &str,
-    oneshot_epoch: usize,
-) -> String {
+    assert!(
+        oneshot_epoch != 0,
+        "oneshot_model_parent_dir does not support epoch 0; use base_model_dir for the base (pre-trained) model path"
+    );
     format!(
         "{mount_dir}/large_files/{model_cli_name}/{config_nickname}/oneshot_epoch_{oneshot_epoch}"
     )

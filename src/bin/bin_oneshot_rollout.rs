@@ -6,7 +6,7 @@ use credit_assignment::{
     check_python_env::check_sympy_availability,
     constants::get_max_concurrent_rollout,
     directories::{
-        action_logs_oneshot_path, inference_wrapper_log_path, model_parent_dir,
+        action_logs_oneshot_path, base_model_dir, inference_wrapper_log_path, model_parent_dir,
         rollout_summary_oneshot_path, text_logger_summary_path, text_logger_verbose_path,
         training_trajectories_oneshot_path, training_trajectories_stats_oneshot_path,
     },
@@ -28,7 +28,6 @@ use credit_assignment::{
     tree_action_log::ActionLogStore,
     utils::configure_mount_dir,
 };
-use ordered_float::NotNan;
 use reqwest::Client;
 use research_utility::progress_text_logger::{ProgressTextLogger, log_info};
 use serde::Deserialize;
@@ -110,12 +109,16 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     }
 
     best_effort_shutdown_stale_inference_wrapper().await;
-    let model_parent_dir = model_parent_dir(
-        &args.mount_dir,
-        M::CLI_NAME,
-        &args.config_nickname_rollout,
-        args.epoch,
-    );
+    let model_parent_dir = if args.epoch == 0 {
+        base_model_dir(&args.mount_dir, M::CLI_NAME)
+    } else {
+        model_parent_dir(
+            &args.mount_dir,
+            M::CLI_NAME,
+            &args.config_nickname_rollout,
+            args.epoch,
+        )
+    };
     let model_path = format!("{}/model", model_parent_dir);
 
     let (sglang_port, mut handle) = launch_inference_wrapper_process(
@@ -143,12 +146,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         total_epochs: args.total_epochs,
         action_log_store_override_path: Some(action_log_store_override_path),
         use_tool: args.use_tool,
-        fixed_temperature: NotNan::new(if S::IS_TRAINING {
-            fixed_temperatures::TRAINING_TEMPERATURE
-        } else {
-            fixed_temperatures::VALIDATION_TEMPERATURE
-        })
-        .unwrap(),
+        fixed_temperature: fixed_temperatures::temperature_by_split::<S>(),
         max_concurrent_rollout: get_max_concurrent_rollout(num_gpus),
     };
     let summary = rollout_all::<M, S>(&args.mount_dir, program_config).await;

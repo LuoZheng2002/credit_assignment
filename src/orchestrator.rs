@@ -8,7 +8,7 @@ use crate::{
     config_paths::{ConfigPaths, config_paths_file_path, derive_testing_rollout_config_path},
     constants::get_max_concurrent_rollout,
     directories::{
-        model_checkpoint_dir, model_metrics_path, model_parent_dir, progress_save_path,
+        base_model_dir, model_metrics_path, model_parent_dir, progress_save_path,
         training_summary_parent_dir,
     },
     fixed_temperatures,
@@ -652,7 +652,7 @@ impl Orchestrator {
         epoch: usize,
     ) -> Result<(), String> {
         let checkpoint_parent_dir =
-            model_checkpoint_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
+            model_parent_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
         let metrics_path =
             model_metrics_path(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
         let checkpoints_dir = format!("{}/checkpoints", checkpoint_parent_dir);
@@ -716,7 +716,7 @@ impl Orchestrator {
         epoch: usize,
     ) -> Result<(), String> {
         let checkpoint_parent_dir =
-            model_checkpoint_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
+            model_parent_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
         let checkpoints_dir = format!("{}/checkpoints", checkpoint_parent_dir);
         let latest_checkpoint_path = format!("{}/latest_checkpoint.txt", checkpoint_parent_dir);
 
@@ -951,9 +951,12 @@ impl Orchestrator {
             &self.config_nickname,
             epoch,
         );
-        let model_parent_dir =
-            model_parent_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
-        let final_model_output_parent_dir = model_checkpoint_dir(
+        let input_model_dir = if epoch == 0 {
+            base_model_dir(&self.mount_dir, M::CLI_NAME)
+        } else {
+            model_parent_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch)
+        };
+        let final_model_output_parent_dir = model_parent_dir(
             &self.mount_dir,
             M::CLI_NAME,
             &self.config_nickname,
@@ -969,7 +972,7 @@ impl Orchestrator {
             training_mode: TrainingMode::Orchestration {
                 epoch,
                 training_time: self.training_time,
-                input_model_parent_dir: model_parent_dir.clone(),
+                input_model_parent_dir: input_model_dir.clone(),
                 output_model_parent_dir: final_model_output_parent_dir,
                 training_summary_dir,
             },
