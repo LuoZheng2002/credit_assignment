@@ -30,10 +30,13 @@ cd "$REPO_ROOT"
 
 # Ensure venv bin dirs are on PATH (needed for ninja, etc.)
 export PATH="$REPO_ROOT/pyprojects/sglang/.venv/bin:$PATH"
-# cuDNN 9 shared library from sglang's venv (needed for torch training)
-_CUDNN_LIB="$REPO_ROOT/pyprojects/sglang/.venv/lib/python3.12/site-packages/nvidia/cudnn/lib"
-if [ -d "$_CUDNN_LIB" ]; then
-    export LD_LIBRARY_PATH="$_CUDNN_LIB:$LD_LIBRARY_PATH"
+
+# Add all nvidia CUDA-compat shared libraries from the sglang venv so that
+# torch / torchrun can find cuDNN, cuSPARSE, cuSPARSELt, etc.
+_NVIDIA_LIBS=$(find "$REPO_ROOT/pyprojects/sglang/.venv/lib/python3.12/site-packages/nvidia" \
+    -name "lib" -type d 2>/dev/null | tr '\n' ':')
+if [ -n "$_NVIDIA_LIBS" ]; then
+    export LD_LIBRARY_PATH="${_NVIDIA_LIBS}${LD_LIBRARY_PATH}"
 fi
 
 echo "Running oneshot training with config: $CONFIG_PATH"
