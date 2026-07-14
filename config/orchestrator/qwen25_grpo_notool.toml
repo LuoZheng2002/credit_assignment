@@ -1,0 +1,27 @@
+model_cli_name = "qwen25_7b"
+config_nickname = "qwen25_grpo_notool"
+use_tool = false
+training_rollout_config_path = "config/rollout_config_training_grpo_notool.json"
+num_total_epochs = 10
+num_iterations_limit = 200
+training_rollout_secs = 3600
+validation_rollout_secs = 1800
+training_time = 600.0
+num_gpus = 8
+total_time_limit_hours = 72.0
+mount_dir = "/mnt/ssd_large_files"
+keep_action_logs = true
+positive_advantage_only = true
+
+[training_hyperparameters]
+lora_or_full = "full"
+distributed_strategy = "ddp"
+advantage_clip = 3.0
+learning_rate = 1e-06
+weight_decay = 0.01
+grad_accum_steps = 32
+log_time_interval = 30
+seed = 42
+adam_beta1 = 0.9
+adam_beta2 = 0.95
+lr_total_steps = 1000

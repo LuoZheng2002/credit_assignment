@@ -53,7 +53,6 @@ struct OrchestratorConfig {
     validation_rollout_secs: usize,
     training_time: f32,
     num_gpus: usize,
-    #[serde(default)]
     total_time_limit_hours: f32,
     mount_dir: String,
     keep_action_logs: bool,
@@ -106,7 +105,7 @@ async fn main() {
         mount_dir,
         keep_action_logs,
         positive_advantage_only,
-        ..
+        total_time_limit_hours: _, // mandatory in config, not yet wired into Orchestrator
     } = toml::from_str(&config_contents)
         .unwrap_or_else(|err| panic!("failed to parse config file '{}': {}", config_path, err));
     let process_title = format!("orchestrator_{}_{}", model_cli_name, config_nickname);
