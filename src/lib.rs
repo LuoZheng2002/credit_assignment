@@ -35,6 +35,4 @@ pub mod utils;
 pub use utils as json_toml_utils;
 pub use utils as util;
 
-pub use research_utility::{
-    asset_file, message, progress_tui_logger, progress_tui_reader, sqlite_store,
-};
+pub use research_utility::{asset_file, message, progress_text_logger, sqlite_store};

@@ -135,7 +135,7 @@ def _configure_wrapper_log_path(raw_path: str) -> None:
     sys.stderr = os.fdopen(2, "w", buffering=1, encoding="utf-8", closefd=False)
 
 
-def _emit_training_tui_identity(
+def _emit_training_identity(
     training_config: TrainingRequestArgs, hf_model_name: str, trajectory_path: Path
 ) -> None:
     if _CONN is not None:
@@ -248,11 +248,11 @@ def _training_request_json_path(training_config: TrainingRequestArgs) -> Path:
     return checkpoints_root / "training_request.json"
 
 
-_TUI_MESSAGE_KEYS = {"Line", "State", "WindowName", "KeyValuePair", "WorkerProgress",
+_TEXT_MESSAGE_KEYS = {"Line", "State", "WindowName", "KeyValuePair", "WorkerProgress",
                      "MasterProgress", "DeleteWorkerBar", "ExitHint"}
 
 
-def _try_forward_tui_line(line: str) -> None:
+def _try_forward_text_line(line: str) -> None:
     """Parse a line as a JSON TUI message and forward it through the wrapper's socket."""
     stripped = line.strip()
     if not stripped:
@@ -264,7 +264,7 @@ def _try_forward_tui_line(line: str) -> None:
     if not isinstance(payload, dict) or len(payload) != 1:
         return
     [(key, _value)] = payload.items()
-    if key in _TUI_MESSAGE_KEYS and _CONN is not None:
+    if key in _TEXT_MESSAGE_KEYS and _CONN is not None:
         _CONN.send_raw_message(payload)
 
 
@@ -282,7 +282,7 @@ def _read_and_relay_subprocess_output(
             line = raw_line.decode("utf-8", errors="replace") if isinstance(raw_line, bytes) else raw_line
             log_handle.write(line)
             log_handle.flush()
-            _try_forward_tui_line(line)
+            _try_forward_text_line(line)
     return process.wait()
 
 
@@ -297,7 +297,7 @@ def _run_hpc_training(
     _emit_status(backend, "starting", "preparing HPC training job")
     if _CONN is not None:
         _CONN.send_info("Training wrapper started")
-    _emit_training_tui_identity(training_config, hf_model_name, trajectory_path)
+    _emit_training_identity(training_config, hf_model_name, trajectory_path)
     checkpoints_root = Path(training_config.checkpoints_parent_dir)
     next_model_root = Path(training_config.final_model_output_parent_dir)
     if _CONN is not None:

@@ -15,9 +15,9 @@ use credit_assignment::{
     rollout_config::RolloutConfig,
 };
 use reqwest::Client;
-use research_utility::progress_tui_logger::ProgressTuiLogger;
+use research_utility::progress_text_logger::ProgressTextLogger;
 
-const DEFAULT_PROGRESS_TUI_LOG_PATH: &str = "progress_tui_log.bin";
+const DEFAULT_PROGRESS_TEXT_LOG_PATH: &str = "progress_log";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -48,8 +48,8 @@ struct Args {
     rollout_secs: usize,
     #[arg(long)]
     inference_wrapper_log_path: String,
-    #[arg(long, default_value = DEFAULT_PROGRESS_TUI_LOG_PATH)]
-    progress_tui_log_path: String,
+    #[arg(long, default_value = DEFAULT_PROGRESS_TEXT_LOG_PATH)]
+    progress_text_log_path: String,
 }
 
 async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
@@ -155,9 +155,12 @@ async fn main() {
     let inference_endpoint =
         InferenceEndpoint::from_cli_options(args.sglang_port, args.sglang_base_url.clone())
             .unwrap();
-    ProgressTuiLogger::initialize(args.progress_tui_log_path.clone())
-        .await
-        .unwrap();
+    ProgressTextLogger::initialize(
+        format!("{}_summary.txt", args.progress_text_log_path),
+        format!("{}_verbose.txt", args.progress_text_log_path),
+    )
+    .await
+    .unwrap();
     run_rollout!(
         model_name,
         args.dataset_split,
@@ -177,5 +180,5 @@ async fn main() {
         DatasetSplitEnum::Validation, Validation,
         DatasetSplitEnum::Testing, Testing
     );
-    ProgressTuiLogger::shutdown().await.unwrap();
+    ProgressTextLogger::shutdown().await.unwrap();
 }

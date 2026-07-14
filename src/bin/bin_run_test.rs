@@ -6,7 +6,7 @@ use credit_assignment::{
     constants,
     directories::{
         base_model_dir, inference_wrapper_log_path, model_parent_dir, test_accuracy_path,
-        tui_log_path,
+        text_logger_summary_path, text_logger_verbose_path,
     },
     get_accuracy::{TestAccuracyResult, get_test_accuracies},
     hybrid_dataset::Testing,
@@ -27,7 +27,7 @@ use credit_assignment::{
 };
 use ordered_float::NotNan;
 use reqwest::Client;
-use research_utility::progress_tui_logger::ProgressTuiLogger;
+use research_utility::progress_text_logger::ProgressTextLogger;
 use serde::{Deserialize, Serialize};
 
 #[derive(Parser, Debug)]
@@ -226,15 +226,20 @@ async fn run_testing_config(
         &model_cli_name,
         &testing_config.config_nickname,
     );
-    let progress_tui_log_path = tui_log_path(
+    let progress_text_summary_path = text_logger_summary_path(
+        &testing_config.mount_dir,
+        &model_cli_name,
+        &testing_config.config_nickname,
+    );
+    let progress_text_verbose_path = text_logger_verbose_path(
         &testing_config.mount_dir,
         &model_cli_name,
         &testing_config.config_nickname,
     );
     ensure_parent_dir_exists(&inference_wrapper_log_path)
         .map_err(|err| format!("failed to prepare inference wrapper log directory: {}", err))?;
-    ensure_parent_dir_exists(&progress_tui_log_path)
-        .map_err(|err| format!("failed to prepare tui log directory: {}", err))?;
+    ensure_parent_dir_exists(&progress_text_summary_path)
+        .map_err(|err| format!("failed to prepare text log directory: {}", err))?;
 
     let rollout_config: RolloutConfig<Testing> =
         read_json::<RolloutConfig<Testing>>(&testing_config.testing_rollout_config_path)?;
@@ -244,7 +249,7 @@ async fn run_testing_config(
         rollout_config.num_trunks, rollout_config.num_leaves,
     );
 
-    ProgressTuiLogger::initialize(progress_tui_log_path.clone())
+    ProgressTextLogger::initialize(progress_text_summary_path, progress_text_verbose_path)
         .await
         .map_err(|err| err.to_string())?;
 
@@ -279,7 +284,7 @@ async fn run_testing_config(
     }
     .await;
 
-    if let Err(err) = ProgressTuiLogger::shutdown()
+    if let Err(err) = ProgressTextLogger::shutdown()
         .await
         .map_err(|err| err.to_string())
     {

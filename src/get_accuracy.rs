@@ -1,4 +1,4 @@
-use research_utility::progress_tui_logger::{log_info, log_master_progress};
+use research_utility::progress_text_logger::{log_info, log_master_progress};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::{sync::Semaphore, task::JoinSet};
 

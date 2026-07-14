@@ -3,14 +3,14 @@ use std::backtrace::Backtrace;
 use clap::Parser;
 use credit_assignment::{
     hybrid_dataset::Training,
-    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-    rollout_config::{TrainingAdvantagePolicy, RolloutConfig},
-    training_set::generate_training_trajectories,
     json_toml_utils::read_json,
     llm_model::{
         Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
         Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
+    posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
+    rollout_config::{RolloutConfig, TrainingAdvantagePolicy},
+    training_set::{TrainingSetSortMode, generate_training_trajectories},
     utils::configure_mount_dir,
 };
 
@@ -31,6 +31,8 @@ struct Args {
     training_advantage_policy: TrainingAdvantagePolicy,
     #[arg(long)]
     positive_advantage_only: bool,
+    #[arg(long, value_enum)]
+    training_set_sort_mode: TrainingSetSortMode,
 }
 
 #[tokio::main]
@@ -53,6 +55,7 @@ async fn main() {
         epoch,
         training_advantage_policy,
         positive_advantage_only,
+        training_set_sort_mode,
     } = Args::parse();
     configure_mount_dir("results").unwrap_or_else(|err| {
         panic!(
@@ -76,6 +79,7 @@ async fn main() {
         training_advantage_policy,
         positive_advantage_only,
         use_tool,
+        training_set_sort_mode,
     };
     match model {
         LlmModelName::Gemma3_4b => run_program::<Gemma3_4BIt>(run_program_args).await,
@@ -99,6 +103,7 @@ struct RunProgramArgs {
     training_advantage_policy: TrainingAdvantagePolicy,
     positive_advantage_only: bool,
     use_tool: bool,
+    training_set_sort_mode: TrainingSetSortMode,
 }
 
 async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
@@ -110,6 +115,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         training_advantage_policy,
         positive_advantage_only,
         use_tool,
+        training_set_sort_mode,
     } = run_program_args;
     generate_training_trajectories::<M>(
         "results",
@@ -120,6 +126,7 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
         training_advantage_policy,
         positive_advantage_only,
         use_tool,
+        training_set_sort_mode,
     )
     .await;
 }

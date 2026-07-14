@@ -122,10 +122,6 @@ pub fn training_wrapper_log_path(
     format!("{mount_dir}/small_files/{model_cli_name}/{config_nickname}/training_wrapper.txt")
 }
 
-pub fn tui_log_path(mount_dir: &str, model_cli_name: &str, config_nickname: &str) -> String {
-    format!("{mount_dir}/small_files/{model_cli_name}/{config_nickname}/tui_log.bin")
-}
-
 pub fn text_logger_summary_path(
     mount_dir: &str,
     model_cli_name: &str,

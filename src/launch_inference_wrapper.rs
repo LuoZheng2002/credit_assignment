@@ -1,6 +1,6 @@
 use std::{fs, net::SocketAddr, path::Path, time::Duration};
 
-use research_utility::progress_tui_logger::{log_info, log_warning};
+use research_utility::progress_text_logger::{log_info, log_warning};
 use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep, timeout};
 

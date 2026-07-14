@@ -5,7 +5,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use ordered_float::NotNan;
-use research_utility::progress_tui_logger::{
+use rand::seq::SliceRandom;
+use research_utility::progress_text_logger::{
     log_info, log_key_value_pair, log_master_progress, log_warning,
 };
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,19 @@ const ADVANTAGE_BALANCE_EPSILON: f32 = 1.0e-12;
 const INV_CDF_ADVANTAGE_THRESHOLD: f32 = 0.05;
 const CUTOFF_FRACTION: f32 = 0.1;
 const MIN_ADOPTED_TRAJECTORY_FRACTION: f32 = 0.25;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize)]
+pub enum TrainingSetSortMode {
+    /// Sort by trajectory token length descending (longest first), then by
+    /// average absolute advantage descending. This is the original/default behavior.
+    ByLength,
+    /// Follow the order in the action log: grouped by question (ascending
+    /// question flat id), then by trajectory index (descending average
+    /// absolute advantage within each question).
+    ByQuestion,
+    /// Shuffle the entire training set using a random number generator.
+    RandomShuffle,
+}
 
 #[derive(Debug, Clone)]
 struct TrajectoryMetadata<S: DatasetSplit> {
@@ -364,6 +378,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
     training_advantage_policy: TrainingAdvantagePolicy,
     positive_advantage_only: bool,
     use_tool: bool,
+    training_set_sort_mode: TrainingSetSortMode,
 ) {
     action_store.sort().unwrap();
     let (selection_output, question_map, action_store) =
@@ -392,6 +407,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         training_advantage_policy,
         positive_advantage_only,
         use_tool,
+        training_set_sort_mode,
     )
     .await;
     let adopted_trajectories = training_trajectories.len();
@@ -614,17 +630,33 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
     training_advantage_policy: TrainingAdvantagePolicy,
     positive_advantage_only: bool,
     use_tool: bool,
+    training_set_sort_mode: TrainingSetSortMode,
 ) -> Vec<DirectTrainingTrajectory<M>> {
-    selected_metadata.sort_by(|a, b| {
-        b.trajectory_token_length
-            .cmp(&a.trajectory_token_length)
-            .then_with(|| {
-                b.average_absolute_advantage
-                    .cmp(&a.average_absolute_advantage)
-            })
-            .then_with(|| a.question_flat_id.cmp(&b.question_flat_id))
-            .then_with(|| a.trajectory_index.cmp(&b.trajectory_index))
-    });
+    match training_set_sort_mode {
+        TrainingSetSortMode::ByLength => {
+            selected_metadata.sort_by(|a, b| {
+                b.trajectory_token_length
+                    .cmp(&a.trajectory_token_length)
+                    .then_with(|| {
+                        b.average_absolute_advantage
+                            .cmp(&a.average_absolute_advantage)
+                    })
+                    .then_with(|| a.question_flat_id.cmp(&b.question_flat_id))
+                    .then_with(|| a.trajectory_index.cmp(&b.trajectory_index))
+            });
+        }
+        TrainingSetSortMode::ByQuestion => {
+            selected_metadata.sort_by(|a, b| {
+                a.question_flat_id
+                    .cmp(&b.question_flat_id)
+                    .then_with(|| a.trajectory_index.cmp(&b.trajectory_index))
+            });
+        }
+        TrainingSetSortMode::RandomShuffle => {
+            let mut rng = rand::rng();
+            selected_metadata.shuffle(&mut rng);
+        }
+    }
 
     let adopted_trajectories = selected_metadata.len();
     assert!(
@@ -1213,6 +1245,7 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
     training_advantage_policy: TrainingAdvantagePolicy,
     positive_advantage_only: bool,
     use_tool: bool,
+    training_set_sort_mode: TrainingSetSortMode,
 ) {
     let training_trajectories_path =
         training_trajectories_file_path::<M>(mount_dir, config_nickname, epoch);
@@ -1259,6 +1292,7 @@ pub async fn generate_training_trajectories<M: LlmModelMarker>(
         training_advantage_policy,
         positive_advantage_only,
         use_tool,
+        training_set_sort_mode,
     )
     .await;
     log_info("Finished generating training trajectories file.");
@@ -1277,6 +1311,7 @@ pub async fn generate_training_trajectories_with_path<M: LlmModelMarker>(
     training_advantage_policy: TrainingAdvantagePolicy,
     positive_advantage_only: bool,
     use_tool: bool,
+    training_set_sort_mode: TrainingSetSortMode,
 ) {
     std::fs::create_dir_all(training_trajectories_dir).unwrap();
     if Path::new(training_trajectories_msgpack_path).exists() {
@@ -1322,6 +1357,7 @@ pub async fn generate_training_trajectories_with_path<M: LlmModelMarker>(
         training_advantage_policy,
         positive_advantage_only,
         use_tool,
+        training_set_sort_mode,
     )
     .await;
     log_info("Finished generating one-shot training trajectories.");

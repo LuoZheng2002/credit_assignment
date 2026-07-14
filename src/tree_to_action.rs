@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 
 use reqwest::Client;
-use research_utility::progress_tui_logger::log_warning;
+use research_utility::progress_text_logger::log_warning;
 
 use crate::atomic_count_guard::AtomicCountGuardRef;
 use crate::hybrid_dataset::{DatasetSplit, QuestionFlatId};

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use research_utility::progress_tui_logger::log_info;
+use research_utility::progress_text_logger::log_info;
 
 use serde::Serialize;
 

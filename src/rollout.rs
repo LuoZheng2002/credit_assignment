@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use kll_rs::KllFloatSketch;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use reqwest::Client;
-use research_utility::progress_tui_logger::{
+use research_utility::progress_text_logger::{
     delete_worker_progress_bar, log_info, log_key_value_pair, log_master_progress, log_warning,
     log_worker_progress,
 };

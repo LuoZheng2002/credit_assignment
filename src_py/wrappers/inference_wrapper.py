@@ -72,7 +72,7 @@ def _configure_wrapper_log_file(log_path: str) -> None:
     sys.stderr = os.fdopen(2, "w", buffering=1, encoding="utf-8", closefd=False)
 
 
-def _emit_inference_tui_identity(
+def _emit_inference_text_identity(
     model_cli_name: str,
     config_nickname: str,
     epoch: int,
@@ -490,7 +490,7 @@ def main() -> int:
         stdin_data = conn.stdin_data
         _configure_wrapper_log_file(stdin_data.wrapper_log_path)
         conn.send_info("Inference wrapper started")
-        _emit_inference_tui_identity(
+        _emit_inference_text_identity(
             stdin_data.model_cli_name,
             stdin_data.config_nickname,
             stdin_data.epoch,

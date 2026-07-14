@@ -7,15 +7,16 @@ import sys
 import threading
 from typing import Any
 
-from ..tui_logging import (
-    _emit_tui_message,
-    configure_tui_forwarder,
-    shutdown_tui_forwarder,
+from ..text_logging import (
+    _emit_text_message,
+    configure_text_forwarder,
+    shutdown_text_forwarder,
 )
-from research_utility.tui_message import (
+from research_utility.text_message import (
     error_line_message,
     info_line_message,
-    serialize_tui_message,
+    serialize_text_message,
+    verbose_line_message,
     warning_line_message,
 )
 
@@ -23,7 +24,7 @@ _ORIGINAL_PRINT = builtins.print
 _BUFFER_LOCK = threading.Lock()
 _BUFFERED_LINES: list[str] = []
 
-_TUI_MESSAGE_VARIANTS = {
+_TEXT_MESSAGE_VARIANTS = {
     "Line",
     "State",
     "WindowName",
@@ -39,29 +40,29 @@ def _format_line(*args: object, sep: str, end: str) -> str:
     return sep.join(str(arg) for arg in args) + end
 
 
-def _looks_like_tui_message_payload(payload: Any) -> bool:
+def _looks_like_text_message_payload(payload: Any) -> bool:
     if not isinstance(payload, dict) or len(payload) != 1:
         return False
     [(key, _value)] = payload.items()
-    return key in _TUI_MESSAGE_VARIANTS
+    return key in _TEXT_MESSAGE_VARIANTS
 
 
 def _relay_or_emit(payload: dict[str, Any]) -> None:
-    """Send a TUI message via the forwarder, or relay as JSON to stdout."""
-    if _emit_tui_message(payload):
+    """Send a text message via the forwarder, or relay as JSON to stdout."""
+    if _emit_text_message(payload):
         return
     # No forwarder configured; relay via stdout so the parent wrapper can pick it up.
-    _ORIGINAL_PRINT(serialize_tui_message(payload), flush=True)
+    _ORIGINAL_PRINT(serialize_text_message(payload), flush=True)
 
 
-def _forward_line_to_tui(line: str, *, file: Any) -> None:
+def _forward_line_to_text(line: str, *, file: Any) -> None:
     stripped = line.strip()
     if not stripped:
         return
 
     try:
         payload = json.loads(stripped)
-        if _looks_like_tui_message_payload(payload):
+        if _looks_like_text_message_payload(payload):
             _relay_or_emit(payload)
             return
     except json.JSONDecodeError:
@@ -81,7 +82,7 @@ def _forward_line_to_tui(line: str, *, file: Any) -> None:
         return
 
     if file is sys.stderr:
-        _relay_or_emit(warning_line_message(stripped))
+        _relay_or_emit(verbose_line_message(stripped))
     else:
         _relay_or_emit(info_line_message(stripped))
 
@@ -96,7 +97,7 @@ def buffered_print(
     line = _format_line(*args, sep=sep, end=end)
     with _BUFFER_LOCK:
         _BUFFERED_LINES.append(line)
-    _forward_line_to_tui(line, file=file)
+    _forward_line_to_text(line, file=file)
 
 
 def flush_buffered_lines() -> int:
@@ -113,13 +114,13 @@ def flush_buffered_lines() -> int:
 
 def install_status_log_buffer(orchestrator_socket_path: str = "") -> None:
     builtins.print = buffered_print
-    configure_tui_forwarder(orchestrator_socket_path)
+    configure_text_forwarder(orchestrator_socket_path)
 
 
 def shutdown_status_log_buffer() -> None:
     flush_buffered_lines()
     builtins.print = _ORIGINAL_PRINT
-    shutdown_tui_forwarder()
+    shutdown_text_forwarder()
 
 
 atexit.register(shutdown_status_log_buffer)

@@ -22,6 +22,7 @@ use credit_assignment::{
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     python_training_config::TrainingHyperparameters,
     rollout_config::{RolloutConfig, TrainingRolloutConfig},
+    training_set::TrainingSetSortMode,
     utils::configure_mount_dir,
 };
 use research_utility::progress_text_logger::{
@@ -57,6 +58,8 @@ struct OrchestratorConfig {
     mount_dir: String,
     keep_action_logs: bool,
     positive_advantage_only: bool,
+    #[serde(default)]
+    training_set_sort_mode: TrainingSetSortMode,
 }
 
 fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
@@ -105,6 +108,7 @@ async fn main() {
         mount_dir,
         keep_action_logs,
         positive_advantage_only,
+        training_set_sort_mode,
         total_time_limit_hours: _, // mandatory in config, not yet wired into Orchestrator
     } = toml::from_str(&config_contents)
         .unwrap_or_else(|err| panic!("failed to parse config file '{}': {}", config_path, err));
@@ -212,6 +216,7 @@ async fn main() {
         num_gpus,
         use_tool,
         mount_dir,
+        training_set_sort_mode,
     };
 
     let result = match model_name {

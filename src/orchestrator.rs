@@ -1,4 +1,6 @@
-use research_utility::progress_tui_logger::{log_info, log_key_value_pair, log_state, log_warning};
+use research_utility::progress_text_logger::{
+    log_info, log_key_value_pair, log_state, log_warning,
+};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path, time::Instant};
 
@@ -26,7 +28,7 @@ use crate::{
     rollout::{RolloutProgramConfig, rollout_all},
     rollout_config::{RolloutConfig, TrainingRolloutConfig},
     training_set::{
-        generate_training_trajectories, open_training_trajectories,
+        TrainingSetSortMode, generate_training_trajectories, open_training_trajectories,
         training_trajectories_file_path, training_trajectories_msgpack_file_path,
         training_trajectories_stats_file_path,
     },
@@ -61,6 +63,7 @@ pub struct Orchestrator {
     pub num_gpus: usize,
     pub use_tool: bool,
     pub mount_dir: String,
+    pub training_set_sort_mode: TrainingSetSortMode,
 }
 
 pub struct InferenceServerHandle {
@@ -932,6 +935,7 @@ impl Orchestrator {
             self.training_set_rollout_config.training_advantage_policy,
             self.positive_advantage_only,
             self.use_tool,
+            self.training_set_sort_mode,
         )
         .await;
         log_info("Finished generating training set");

@@ -11,14 +11,14 @@ from typing import Any, cast
 
 import torch
 
-from ..tui_logging import (
-    _tui_delete_worker_bar,
-    _tui_error,
-    _tui_info,
-    _tui_key_value,
-    _tui_master_progress,
-    _tui_warning,
-    _tui_worker_progress,
+from ..text_logging import (
+    _text_delete_worker_bar,
+    _text_error,
+    _text_info,
+    _text_key_value,
+    _text_master_progress,
+    _text_warning,
+    _text_worker_progress,
 )
 from .batch_dataset import LazyResolvedBatchLoader, ResolvedTrainingBatch
 from .collator import IGNORE_LABEL, collate_training_samples
@@ -99,7 +99,7 @@ def _truncate_samples_to_cap(
 
 
 def _emit_trajectory_length_cap(*, cap: int) -> None:
-    _tui_key_value("trajectory_length_cap", str(cap))
+    _text_key_value("trajectory_length_cap", str(cap))
 
 
 def _tensor_diagnostic_fragment(name: str, tensor: torch.Tensor | None) -> str:
@@ -532,7 +532,7 @@ def _maybe_emit_master_progress(
     elapsed = _elapsed_training_time_sec(clock=clock, now=now)
     progress = min(1.0, elapsed / clock.training_time)
     label = f"Training: {samples_trained} samples trained ({elapsed:.1f}s/{clock.training_time:.1f}s)"
-    _tui_master_progress(progress, label)
+    _text_master_progress(progress, label)
     clock.last_master_progress_time = now
 
 
@@ -603,7 +603,7 @@ def _flush_partial_gradients(
     if is_distributed:
         optimizer.zero_grad(set_to_none=True)
         if _is_primary_rank():
-            _tui_warning(
+            _text_warning(
                 "discarding_partial_gradients=1 "
                 "reason=distributed_unsynced_final_microbatch "
                 f"accumulation_step={accumulation_step} global_step={global_step}"
@@ -634,9 +634,9 @@ def _finalize_training_run(
     eng: Any,
 ) -> None:
     eng._distributed_barrier()
-    _tui_delete_worker_bar(f"rank{rank}")
+    _text_delete_worker_bar(f"rank{rank}")
     if _is_primary_rank():
-        _tui_info(
+        _text_info(
             f"finished_training=1 global_step={global_step} "
             f"samples_trained={samples_trained} "
             f"training_time={training_time:.1f}s "
@@ -767,7 +767,7 @@ def _run_unified_loop(
         max_warmup_steps = max(1, sample_count // (2 * config.grad_accum_steps))
         if lr_warmup_steps > max_warmup_steps:
             if _is_primary_rank():
-                _tui_info(
+                _text_info(
                     "lr_warmup_capped_for_dataset_size=1 "
                     f"original_warmup_steps={lr_warmup_steps} "
                     f"capped_warmup_steps={max_warmup_steps} "
@@ -777,7 +777,7 @@ def _run_unified_loop(
             lr_warmup_steps = max_warmup_steps
 
     if _is_primary_rank():
-        _tui_info(
+        _text_info(
             "lr_warmup_config=1 "
             f"lr_warmup_steps={lr_warmup_steps} "
             f"lr_min_scale={lr_min_scale:.4f}"
@@ -816,14 +816,14 @@ def _run_unified_loop(
 
     _emit_trajectory_length_cap(cap=trajectory_length_cap)
     if _is_primary_rank():
-        _tui_info(
+        _text_info(
             "training_set_advantage_stats=1 "
             f"samples_available={samples_available} "
             f"max_average_absolute_advantage={max_average_absolute_advantage:.6f} "
             f"min_average_absolute_advantage={min_average_absolute_advantage:.6f} "
             f"median_average_absolute_advantage={median_average_absolute_advantage:.6f}"
         )
-        _tui_info(
+        _text_info(
             "tokenizer special tokens "
             f"pad_token_id={pad_token_id} eos_token_id={eos_token_id} bos_token_id={bos_token_id}"
         )
@@ -902,7 +902,7 @@ def _run_unified_loop(
                 "rank interval must be within sample range"
             )
             worker_progress = float(rank_sample_start) / sample_count
-            _tui_worker_progress(
+            _text_worker_progress(
                 f"rank{rank}",
                 worker_progress,
                 f"Sample {rank_sample_start}/{sample_count}",
@@ -927,7 +927,7 @@ def _run_unified_loop(
                 continue
 
             worker_progress = float(global_sample_cursor) / sample_count
-            _tui_worker_progress(
+            _text_worker_progress(
                 f"rank{rank}",
                 worker_progress,
                 f"Sample {global_sample_cursor}/{sample_count}",
@@ -1062,45 +1062,10 @@ def _run_unified_loop(
                     device=device,
                 )
                 eng._release_step_memory(device)
-                if is_distributed:
-                    raise RuntimeError(
-                        "distributed CUDA OOM recovery is unsupported under FSDP/DDP because "
-                        "ranks can diverge into mismatched collectives; rerun with a smaller fixed "
-                        "batch size or shorter trajectory length"
-                    ) from exc
-                batch_token_length = max(
-                    sample.input_length for sample in step_batch.samples
-                )
-                eng._print_cuda_oom_stderr(
-                    rank=rank,
-                    iteration_index=iteration_index,
-                    batch_index=step_batch.batch_index,
-                    batch_token_length=batch_token_length,
-                    next_batch_size=1,
-                    will_retry=False,
-                )
-                skipped_samples = requested_batch_size
-                if _is_primary_rank():
-                    _tui_warning(
-                        "oom_at_batch_size_1=1 "
-                        f"skipped_samples={skipped_samples} "
-                        f"sample_index={global_sample_cursor}"
-                    )
-                    eng._log_json_line(
-                        logs_path,
-                        {
-                            "step": global_step,
-                            "iteration": iteration_index,
-                            "batch_index": step_batch.batch_index,
-                            "oom": 1,
-                            "oom_skipped_sample": 1,
-                            "skipped_samples": skipped_samples,
-                        },
-                    )
-                global_sample_cursor += skipped_samples
-                if torch.cuda.is_available() and device.type == "cuda":
-                    torch.cuda.synchronize(device=device)
-                continue
+                raise RuntimeError(
+                    "CUDA OOM encountered during training; rerun with a smaller "
+                    "batch size or shorter trajectory length"
+                ) from exc
             if not eng._is_nonfinite_logits_exception(exc):
                 if _is_primary_rank():
                     backward_diagnostics = " ".join(
@@ -1114,7 +1079,7 @@ def _run_unified_loop(
                             _tensor_diagnostic_fragment("logits", logits),
                         ]
                     )
-                    _tui_warning(
+                    _text_warning(
                         "unexpected_backward_failure=1 "
                         f"error_type={type(exc).__name__} "
                         f"error_message={exc} "
@@ -1167,7 +1132,7 @@ def _run_unified_loop(
             nonfinite_trace_extra = _extract_nonfinite_trace_suffix(str(exc))
             if nonfinite_forward_trace is not None:
                 nonfinite_trace_extra = f" {nonfinite_forward_trace}"
-            _tui_error(
+            _text_error(
                 f"rank={rank} "
                 "nonfinite=1 "
                 f"nonfinite_tensor={nonfinite_tensor_name} "
@@ -1210,23 +1175,23 @@ def _run_unified_loop(
             torch.cuda.synchronize(device=device)
         gpu_memory_allocated_pct = 100.0 * eng._gpu_memory_peak_allocated_ratio(device)
         gpu_memory_reserved_pct = 100.0 * eng._gpu_memory_reserved_ratio(device)
-        _tui_key_value(
+        _text_key_value(
             "throughput_samples_per_sec", f"{throughput_samples_per_sec:.2f}"
         )
-        _tui_key_value("batch_size", str(len(step_batch.samples)))
-        _tui_key_value("batch_token_length", str(int(input_ids.shape[1])))
-        _tui_key_value("requested_batch_size", str(requested_batch_size))
-        _tui_key_value("trajectory_length_cap", str(trajectory_length_cap))
-        _tui_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}")
-        _tui_key_value("gpu_memory_allocated_pct", f"{gpu_memory_allocated_pct:.2f}")
-        _tui_key_value("gpu_memory_reserved_pct", f"{gpu_memory_reserved_pct:.2f}")
+        _text_key_value("batch_size", str(len(step_batch.samples)))
+        _text_key_value("batch_token_length", str(int(input_ids.shape[1])))
+        _text_key_value("requested_batch_size", str(requested_batch_size))
+        _text_key_value("trajectory_length_cap", str(trajectory_length_cap))
+        _text_key_value("gpu_memory_usage_pct", f"{gpu_memory_usage_pct:.2f}")
+        _text_key_value("gpu_memory_allocated_pct", f"{gpu_memory_allocated_pct:.2f}")
+        _text_key_value("gpu_memory_reserved_pct", f"{gpu_memory_reserved_pct:.2f}")
         if _is_primary_rank():
-            _tui_key_value("global_step", str(global_step))
-            _tui_key_value("iteration", str(iteration_index))
-            _tui_key_value("batch_index", str(step_batch.batch_index))
-            _tui_key_value("learning_rate", f"{current_learning_rate:.10f}")
+            _text_key_value("global_step", str(global_step))
+            _text_key_value("iteration", str(iteration_index))
+            _text_key_value("batch_index", str(step_batch.batch_index))
+            _text_key_value("learning_rate", f"{current_learning_rate:.10f}")
             for stat_key, stat_value in loss_output.stats.items():
-                _tui_key_value(stat_key, f"{stat_value:.6f}")
+                _text_key_value(stat_key, f"{stat_value:.6f}")
 
         accumulation_step += 1
         if is_distributed:
@@ -1295,7 +1260,7 @@ def _run_unified_loop(
                     nonfinite_trace_extra = _extract_nonfinite_trace_suffix(str(exc))
                     if nonfinite_backward_trace is not None:
                         nonfinite_trace_extra = f" {nonfinite_backward_trace}"
-                    _tui_error(
+                    _text_error(
                         f"rank={rank} nonfinite=1 "
                         f"nonfinite_tensor={nonfinite_tensor_name} "
                         f"nonfinite_nan_count={nonfinite_nan_count} "
@@ -1336,47 +1301,10 @@ def _run_unified_loop(
                 )
                 optimizer.zero_grad(set_to_none=True)
                 eng._release_step_memory(device)
-                if is_distributed:
-                    raise RuntimeError(
-                        "distributed CUDA OOM recovery is unsupported under FSDP/DDP because "
-                        "ranks can diverge into mismatched collectives; rerun with a smaller fixed "
-                        "batch size or shorter trajectory length"
-                    ) from exc
-                batch_token_length = max(
-                    sample.input_length for sample in step_batch.samples
-                )
-                eng._print_cuda_oom_stderr(
-                    rank=rank,
-                    iteration_index=iteration_index,
-                    batch_index=step_batch.batch_index,
-                    batch_token_length=batch_token_length,
-                    next_batch_size=1,
-                    will_retry=False,
-                )
-                skipped_samples = requested_batch_size
-                if _is_primary_rank():
-                    _tui_warning(
-                        "oom_at_batch_size_1=1 "
-                        f"skipped_samples={skipped_samples} "
-                        f"sample_index={global_sample_cursor}"
-                    )
-                    eng._log_json_line(
-                        logs_path,
-                        {
-                            "step": global_step,
-                            "iteration": iteration_index,
-                            "batch_index": step_batch.batch_index,
-                            "oom": 1,
-                            "oom_skipped_sample": 1,
-                            "skipped_samples": skipped_samples,
-                        },
-                    )
-                global_sample_cursor += skipped_samples
-                eng._release_step_memory(device)
-                accumulation_step = 0
-                if torch.cuda.is_available() and device.type == "cuda":
-                    torch.cuda.synchronize(device=device)
-                continue
+                raise RuntimeError(
+                    "CUDA OOM encountered during training; rerun with a smaller "
+                    "batch size or shorter trajectory length"
+                ) from exc
             optimizer.zero_grad(set_to_none=True)
             accumulation_step = 0
             global_step += 1
@@ -1426,9 +1354,9 @@ def _run_unified_loop(
         )
     )
     if _is_primary_rank() and clipped_grad_norm is not None:
-        _tui_key_value("flush_grad_norm", f"{clipped_grad_norm:.6f}")
+        _text_key_value("flush_grad_norm", f"{clipped_grad_norm:.6f}")
     if _is_primary_rank():
-        _tui_key_value("learning_rate", f"{current_learning_rate:.10f}")
+        _text_key_value("learning_rate", f"{current_learning_rate:.10f}")
 
     total_training_time_sec = _elapsed_training_time_sec(clock=clock)
     eng._save_final_model_folder(
@@ -1440,7 +1368,7 @@ def _run_unified_loop(
         tokenizer=tokenizer,
     )
     if _is_primary_rank():
-        _tui_info(
+        _text_info(
             f"final_model_saved=1 final_model_output_parent_dir={final_model_output_parent_dir}"
         )
     if _is_primary_rank():
@@ -1455,7 +1383,7 @@ def _run_unified_loop(
             median_average_absolute_advantage=median_average_absolute_advantage,
             total_training_time_sec=total_training_time_sec,
         )
-        _tui_info(
+        _text_info(
             "training_summary_written=1 "
             f"samples_trained={samples_trained} "
             f"global_step={global_step} "

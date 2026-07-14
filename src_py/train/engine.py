@@ -17,7 +17,7 @@ from typing import Any, cast
 import numpy as np
 import torch
 
-from ..tui_logging import _tui_error, _tui_info, _tui_warning
+from ..text_logging import _text_error, _text_info, _text_warning
 from .batch_dataset import LazyResolvedBatchLoader, ResolvedTrainingBatch
 from .train_loop import run_training_loop
 from .training_plan import (
@@ -360,7 +360,7 @@ def _load_causal_lm_with_attention(
     except Exception as exc:
         _release_step_memory(device)
         if _is_primary_rank():
-            _tui_warning(
+            _text_warning(
                 "attention_backend_request_failed=1 "
                 f"requested_backend={requested_backend} "
                 f"error_type={type(exc).__name__}"
@@ -444,7 +444,7 @@ def _print_cuda_oom_stderr(
             "next_trajectory_length_cap must be positive"
         )
         extra = f" next_trajectory_length_cap={next_trajectory_length_cap}"
-    _tui_error(
+    _text_error(
         f"cuda_oom=1 rank={rank} iteration={iteration_index} "
         f"batch_index={batch_index} batch_token_length={batch_token_length} "
         f"next_batch_size={next_batch_size} "
@@ -460,7 +460,7 @@ def _print_cuda_oom_diagnostics_stderr(
     device: torch.device,
 ) -> None:
     if not torch.cuda.is_available() or device.type != "cuda":
-        _tui_error(
+        _text_error(
             f"cuda_oom_diagnostics=1 rank={rank} iteration={iteration_index} "
             f"batch_index={batch_index} cuda_available=0"
         )
@@ -473,7 +473,7 @@ def _print_cuda_oom_diagnostics_stderr(
     max_reserved_bytes = torch.cuda.max_memory_reserved(device=device)
 
     mib = float(1024 * 1024)
-    _tui_error(
+    _text_error(
         f"cuda_oom_diagnostics=1 rank={rank} iteration={iteration_index} "
         f"batch_index={batch_index} "
         f"free_mib={free_bytes / mib:.1f} total_mib={total_bytes / mib:.1f} "
@@ -621,7 +621,7 @@ def _save_final_model_folder(
                     shard_path.unlink()
 
     if rank == 0:
-        _tui_info(
+        _text_info(
             f"preparing_final_output_model=1 output_parent_dir={final_model_output_parent_dir}"
         )
         assert source_model_folder.exists(), (
@@ -641,7 +641,7 @@ def _save_final_model_folder(
                 f"final_model_output_path must be a directory when it exists: {final_model_output_path}"
             )
             shutil.rmtree(final_model_output_path)
-        _tui_info(f"writing_final_output_model=1 output_dir={final_model_output_path}")
+        _text_info(f"writing_final_output_model=1 output_dir={final_model_output_path}")
         shutil.copytree(source_model_folder, final_model_output_path)
         _remove_existing_weight_files(final_model_output_path)
 
@@ -659,7 +659,7 @@ def _save_final_model_folder(
                 safe_serialization=True,
                 save_config=False,
             )
-            _tui_info(
+            _text_info(
                 f"written_final_output_model=1 output_dir={final_model_output_path}"
             )
         _distributed_barrier()
@@ -698,7 +698,7 @@ def _save_final_model_folder(
             safe_serialization=True,
             save_config=False,
         )
-        _tui_info(f"written_final_output_model=1 output_dir={final_model_output_path}")
+        _text_info(f"written_final_output_model=1 output_dir={final_model_output_path}")
     _distributed_barrier()
 
 
@@ -927,13 +927,13 @@ def _wrap_as_fsdp(module: torch.nn.Module, device: torch.device) -> torch.nn.Mod
             transformer_layer_cls=set(transformer_layer_classes),
         )
         if _is_primary_rank():
-            _tui_info(
+            _text_info(
                 "fsdp_auto_wrap=1 "
                 "policy=transformer_auto_wrap_policy "
                 f"layer_classes={','.join(cls.__name__ for cls in transformer_layer_classes)}"
             )
     elif _is_primary_rank():
-        _tui_warning(
+        _text_warning(
             "fsdp_auto_wrap=0 policy=root_only reason=no_transformer_block_detected"
         )
 
@@ -1024,7 +1024,7 @@ def _train_oneshot_multiepoch(
         epoch_start_next_sample_index = resume_state.next_sample_index
 
         if _is_primary_rank():
-            _tui_info(
+            _text_info(
                 f"oneshot_epoch={oneshot_epoch}/{config.oneshot_num_epochs} "
                 f"oneshot_epoch_number={epoch_number} "
                 f"output_dir={output_dir} is_final={is_final} "
@@ -1069,7 +1069,7 @@ def _train_oneshot_multiepoch(
                 100.0 * float(epoch_samples_trained) / float(epoch_samples_available)
             )
         if _is_primary_rank():
-            _tui_info(
+            _text_info(
                 f"oneshot_epoch_complete=1 oneshot_epoch_number={epoch_number} "
                 f"epoch_global_step_start={epoch_start_global_step} "
                 f"epoch_global_step_end={resume_state.global_step} "
@@ -1083,7 +1083,7 @@ def _train_oneshot_multiepoch(
                 f"epoch_accumulation_step_end={resume_state.accumulation_step}"
             )
             if epoch_steps_trained <= 0 or epoch_samples_trained <= 0:
-                _tui_warning(
+                _text_warning(
                     f"oneshot_epoch_low_progress=1 oneshot_epoch_number={epoch_number} "
                     f"epoch_steps_trained={epoch_steps_trained} "
                     f"epoch_samples_trained={epoch_samples_trained}"
@@ -1114,7 +1114,7 @@ def train(config: TrainConfig) -> None:
 
     loaded_env_count = _load_dotenv_if_present()
     if loaded_env_count > 0 and _is_primary_rank():
-        _tui_info(f"dotenv_loaded=1 dotenv_path=.env keys_loaded={loaded_env_count}")
+        _text_info(f"dotenv_loaded=1 dotenv_path=.env keys_loaded={loaded_env_count}")
 
     _set_seed(config.seed)
     device = _init_distributed_device()
@@ -1124,24 +1124,24 @@ def train(config: TrainConfig) -> None:
     lr_min_scale = _resolve_lr_min_scale_from_env()
 
     if _is_primary_rank():
-        _tui_info(f"loading_model=1 model_parent_dir={config.model_parent_dir}")
+        _text_info(f"loading_model=1 model_parent_dir={config.model_parent_dir}")
     resolved_model_path = _resolve_local_model_path(config.model_parent_dir)
 
     if _is_primary_rank():
-        _tui_info(
+        _text_info(
             f"start_training=1 lora_or_full={lora_or_full} "
             f"distributed_strategy={distributed_strategy} "
             f"world_size={world_size} training_time={config.training_time:.1f}s "
             f"model_path={resolved_model_path}"
         )
-        _tui_info(
+        _text_info(
             "optimization_stability=1 "
             f"max_grad_norm={max_grad_norm:.4f} "
             f"lr_warmup_steps={lr_warmup_steps} "
             f"grad_accum_steps={config.grad_accum_steps} "
             f"lr_min_scale={lr_min_scale:.4f}"
         )
-        _tui_info(
+        _text_info(
             "optimizer_config=1 "
             f"adam_beta1={config.adam_beta1:.4f} "
             f"adam_beta2={config.adam_beta2:.4f} "
@@ -1153,7 +1153,7 @@ def train(config: TrainConfig) -> None:
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         tokenizer.pad_token_id = int(tokenizer.eos_token_id)
         if _is_primary_rank():
-            _tui_info(
+            _text_info(
                 "tokenizer_pad_token_fallback=1 "
                 f"fallback_source=eos_token_id pad_token_id={tokenizer.pad_token_id}"
             )
@@ -1180,7 +1180,7 @@ def train(config: TrainConfig) -> None:
             )
             raw_model = model
 
-    _tui_info(f"rank={rank} attention_backend={attention_backend}")
+    _text_info(f"rank={rank} attention_backend={attention_backend}")
 
     input_embeddings = cast(Any, model).get_input_embeddings()
     assert input_embeddings is not None, "model must expose input embeddings"

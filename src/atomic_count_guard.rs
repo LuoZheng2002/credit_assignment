@@ -1,6 +1,6 @@
 use std::sync::atomic::AtomicUsize;
 
-use research_utility::progress_tui_logger::log_key_value_pair;
+use research_utility::progress_text_logger::log_key_value_pair;
 
 pub struct AtomicCountGuardRef<'a> {
     count: &'a AtomicUsize,

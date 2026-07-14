@@ -1,5 +1,5 @@
 use reqwest::Client;
-use research_utility::progress_tui_logger::log_warning;
+use research_utility::progress_text_logger::log_warning;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::{Duration, sleep};

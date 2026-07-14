@@ -8,7 +8,7 @@ use redb::{
     Database, Key as RedbKey, ReadableTable, TableDefinition, TableError as RedbTableError,
     TypeName, Value as RedbValue, WriteTransaction,
 };
-use research_utility::progress_tui_logger::log_info;
+use research_utility::progress_text_logger::log_info;
 
 use crate::directories::judgment_cache_path;
 

@@ -24,7 +24,7 @@ use credit_assignment::{
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     rollout::{RolloutProgramConfig, rollout_all},
     rollout_config::{RolloutConfig, TrainingAdvantagePolicy},
-    training_set::generate_training_trajectories_with_path,
+    training_set::{TrainingSetSortMode, generate_training_trajectories_with_path},
     tree_action_log::ActionLogStore,
     utils::configure_mount_dir,
 };
@@ -58,6 +58,8 @@ struct Args {
     num_gpus: usize,
     #[serde(default)]
     total_time_limit_hours: f32,
+    #[serde(default)]
+    training_set_sort_mode: TrainingSetSortMode,
 }
 
 fn default_total_epochs() -> usize {
@@ -242,7 +244,8 @@ macro_rules! generate_trajectories {
         $posterior_calculation_config:expr,
         $training_advantage_policy:expr,
         $positive_advantage_only:expr,
-        $use_tool:expr;
+        $use_tool:expr,
+        $training_set_sort_mode:expr;
         $( $model_enum:path, $model_ty:ty ),+ $(,)?
     ) => {
         match $model_name {
@@ -259,6 +262,7 @@ macro_rules! generate_trajectories {
                         $training_advantage_policy,
                         $positive_advantage_only,
                         $use_tool,
+                        $training_set_sort_mode,
                     )
                     .await
                 }
@@ -382,7 +386,8 @@ async fn main() {
             posterior_calculation_config_clone,
             args.training_advantage_policy,
             args.positive_advantage_only,
-            args.use_tool;
+            args.use_tool,
+            args.training_set_sort_mode;
             LlmModelName::Qwen25_7b, Qwen25_7B,
             LlmModelName::Qwen3_06b, Qwen3_06B,
             LlmModelName::Qwen3_4b, Qwen3_4B,

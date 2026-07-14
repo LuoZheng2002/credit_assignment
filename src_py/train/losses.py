@@ -19,9 +19,8 @@ def _local_mean_std(values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     assert values.ndim == 1, "values must be rank-1"
     assert values.numel() > 0, "values cannot be empty"
 
-    values_fp32 = values.to(torch.float32)
-    mean = values_fp32.mean()
-    var = torch.clamp(values_fp32.var(unbiased=False), min=0.0)
+    mean = values.mean()
+    var = torch.clamp(values.var(unbiased=False), min=0.0)
     std = torch.sqrt(var + STD_EPS)
     return mean, std
 
@@ -96,12 +95,12 @@ def compute_advantage_weighted_causal_lm_loss(
     raw_supervised_advantages = shifted_advantages.masked_select(supervised_mask)
     advantage_mean, advantage_std = _local_mean_std(raw_supervised_advantages)
     per_token_advantages = torch.clamp(
-        raw_supervised_advantages.to(torch.float32),
+        raw_supervised_advantages,
         min=-advantage_clip,
         max=advantage_clip,
     )
     weighted_loss = (
-        token_losses.masked_select(supervised_mask).to(torch.float32)
+        token_losses.masked_select(supervised_mask)
         * per_token_advantages
     ).sum() / supervised_count_fp
     _assert_tensor_finite(weighted_loss, "weighted_loss")
@@ -111,17 +110,17 @@ def compute_advantage_weighted_causal_lm_loss(
     _assert_tensor_finite(total_loss, "total_loss")
 
     local_batch_count = torch.tensor(
-        float(batch_size), device=logits.device, dtype=torch.float32
+        float(batch_size), device=logits.device, dtype=torch.bfloat16
     )
-    local_supervised_tokens = supervised_mask.to(torch.float32).sum()
+    local_supervised_tokens = supervised_mask.to(torch.bfloat16).sum()
 
     local_unweighted_ce = _local_weighted_mean(
-        token_losses.masked_select(supervised_mask).to(torch.float32).sum(),
+        token_losses.masked_select(supervised_mask).sum(),
         local_supervised_tokens,
     )
     local_weighted_loss = _local_weighted_mean(
         (
-            token_losses.masked_select(supervised_mask).to(torch.float32)
+            token_losses.masked_select(supervised_mask)
             * per_token_advantages
         ).sum(),
         local_supervised_tokens,
@@ -131,7 +130,7 @@ def compute_advantage_weighted_causal_lm_loss(
         local_supervised_tokens,
     )
     local_adv_norm_mean = _local_weighted_mean(
-        per_token_advantages.detach().to(torch.float32).sum(),
+        per_token_advantages.detach().sum(),
         local_supervised_tokens,
     )
     local_tokens_per_sample = _local_weighted_mean(

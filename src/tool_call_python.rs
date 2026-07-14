@@ -1,6 +1,6 @@
 use std::{collections::VecDeque, process::Stdio, sync::Arc, time::Duration};
 
-use research_utility::progress_tui_logger::log_warning;
+use research_utility::progress_text_logger::log_warning;
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
