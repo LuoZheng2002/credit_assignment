@@ -53,6 +53,10 @@ _FSDP_TRANSFORMER_BLOCK_CLASS_NAMES = {
 }
 
 
+def _memtrace(message: str) -> None:
+    print(f"[memtrace] {message}", flush=True)
+
+
 @dataclass(frozen=True)
 class TrainConfig:
     lora_or_full: str
@@ -94,6 +98,9 @@ class ResumeState:
     max_average_absolute_advantage: float = -1.0
     min_average_absolute_advantage: float = -1.0
     median_average_absolute_advantage: float = -1.0
+    samples_trained_this_run: int = 0
+    longest_non_oom_trajectory_length: int = 0
+    stopped_due_to_oom: bool = False
 
 
 
@@ -117,6 +124,9 @@ def _reset_oneshot_epoch_resume_state(resume_state: ResumeState) -> ResumeState:
         max_average_absolute_advantage=resume_state.max_average_absolute_advantage,
         min_average_absolute_advantage=resume_state.min_average_absolute_advantage,
         median_average_absolute_advantage=resume_state.median_average_absolute_advantage,
+        samples_trained_this_run=0,
+        longest_non_oom_trajectory_length=0,
+        stopped_due_to_oom=False,
     )
 
 
@@ -903,6 +913,23 @@ def _resolve_fsdp_transformer_layer_classes(
     return tuple(discovered[class_name] for class_name in sorted(discovered.keys()))
 
 
+def _count_modules_by_exact_type(
+    module: torch.nn.Module,
+    target_classes: tuple[type[torch.nn.Module], ...],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    if len(target_classes) == 0:
+        return counts
+    for child in module.modules():
+        child_type = type(child)
+        for target_class in target_classes:
+            if child_type is target_class:
+                class_name = target_class.__name__
+                counts[class_name] = counts.get(class_name, 0) + 1
+                break
+    return counts
+
+
 def _wrap_as_fsdp(module: torch.nn.Module, device: torch.device) -> torch.nn.Module:
     """Wrap a module with FSDP using the project's standard mixed-precision config.
 
@@ -923,6 +950,9 @@ def _wrap_as_fsdp(module: torch.nn.Module, device: torch.device) -> torch.nn.Mod
     transformer_layer_classes = _resolve_fsdp_transformer_layer_classes(module)
     auto_wrap_policy = None
     if len(transformer_layer_classes) > 0:
+        per_class_counts = _count_modules_by_exact_type(
+            module, transformer_layer_classes
+        )
         auto_wrap_policy = partial(
             transformer_auto_wrap_policy,
             transformer_layer_cls=set(transformer_layer_classes),
@@ -931,14 +961,15 @@ def _wrap_as_fsdp(module: torch.nn.Module, device: torch.device) -> torch.nn.Mod
             _text_info(
                 "fsdp_auto_wrap=1 "
                 "policy=transformer_auto_wrap_policy "
-                f"layer_classes={','.join(cls.__name__ for cls in transformer_layer_classes)}"
+                f"layer_classes={','.join(cls.__name__ for cls in transformer_layer_classes)} "
+                f"layer_class_counts={','.join(f'{name}:{count}' for name, count in sorted(per_class_counts.items()))}"
             )
     elif _is_primary_rank():
         _text_warning(
             "fsdp_auto_wrap=0 policy=root_only reason=no_transformer_block_detected"
         )
 
-    return FSDP(
+    wrapped = FSDP(
         module,
         device_id=device,
         mixed_precision=mixed_precision,
@@ -947,6 +978,18 @@ def _wrap_as_fsdp(module: torch.nn.Module, device: torch.device) -> torch.nn.Mod
         forward_prefetch=False,
         backward_prefetch=BackwardPrefetch.BACKWARD_POST,
     )
+    if _is_primary_rank():
+        wrapped_submodule_count = sum(
+            1
+            for child in wrapped.modules()
+            if type(child).__name__ == "FullyShardedDataParallel"
+        )
+        _text_info(
+            "fsdp_wrap_summary=1 "
+            f"wrapped_submodule_count={wrapped_submodule_count} "
+            f"root_only={int(auto_wrap_policy is None)}"
+        )
+    return wrapped
 
 
 def _build_fsdp_model(
@@ -1089,6 +1132,14 @@ def _train_oneshot_multiepoch(
                     f"epoch_steps_trained={epoch_steps_trained} "
                     f"epoch_samples_trained={epoch_samples_trained}"
                 )
+        if resume_state.stopped_due_to_oom:
+            if _is_primary_rank():
+                _text_warning(
+                    f"oneshot_epoch_stopped_due_to_oom=1 oneshot_epoch_number={epoch_number} "
+                    f"epoch_samples_trained={resume_state.samples_trained_this_run} "
+                    f"longest_non_oom_trajectory_length={resume_state.longest_non_oom_trajectory_length}"
+                )
+            break
         resume_state = _reset_oneshot_epoch_resume_state(resume_state)
 
 
@@ -1127,6 +1178,8 @@ def train(config: TrainConfig) -> None:
     if _is_primary_rank():
         _text_info(f"loading_model=1 model_parent_dir={config.model_parent_dir}")
     resolved_model_path = _resolve_local_model_path(config.model_parent_dir)
+    if _is_primary_rank():
+        _memtrace(f"pre_tokenizer_load model_path={resolved_model_path}")
 
     if _is_primary_rank():
         _text_info(
@@ -1148,6 +1201,8 @@ def train(config: TrainConfig) -> None:
             f"adam_beta2={config.adam_beta2:.4f} "
         )
     tokenizer = AutoTokenizer.from_pretrained(resolved_model_path)
+    if _is_primary_rank():
+        _memtrace(f"post_tokenizer_load model_path={resolved_model_path}")
     eos_token_id = _normalize_optional_token_id(tokenizer.eos_token_id)
     pad_token_id = _resolve_pad_token_id(tokenizer.pad_token_id, tokenizer.eos_token_id)
     bos_token_id = _normalize_optional_token_id(tokenizer.bos_token_id)
@@ -1160,6 +1215,8 @@ def train(config: TrainConfig) -> None:
             )
 
     if lora_or_full == USE_LORA:
+        if _is_primary_rank():
+            _memtrace(f"pre_model_build_lora model_path={resolved_model_path}")
         model, attention_backend = _build_lora_model(
             model_path=resolved_model_path,
             lora_rank=config.lora_rank,
@@ -1171,15 +1228,23 @@ def train(config: TrainConfig) -> None:
     else:
         assert lora_or_full == USE_FULL, f"unexpected lora_or_full value: {lora_or_full}"
         if distributed_strategy == DIST_STRATEGY_FSDP:
+            if _is_primary_rank():
+                _memtrace(f"pre_model_build_fsdp model_path={resolved_model_path}")
             model, raw_model, attention_backend = _build_fsdp_model(
                 model_path=resolved_model_path,
                 device=device,
             )
         else:
+            if _is_primary_rank():
+                _memtrace(f"pre_model_build_full model_path={resolved_model_path}")
             model, attention_backend = _build_full_model(
                 model_path=resolved_model_path, device=device
             )
             raw_model = model
+    if _is_primary_rank():
+        _memtrace(
+            f"post_model_build model_path={resolved_model_path} attention_backend={attention_backend}"
+        )
 
     _text_info(f"rank={rank} attention_backend={attention_backend}")
 
@@ -1196,6 +1261,8 @@ def train(config: TrainConfig) -> None:
         weight_decay=config.weight_decay,
         betas=(config.adam_beta1, config.adam_beta2),
     )
+    if _is_primary_rank():
+        _memtrace("post_optimizer_init optimizer=AdamW")
 
     if distributed_strategy == DIST_STRATEGY_DDP and world_size > 1:
         model = torch.nn.parallel.DistributedDataParallel(
@@ -1233,6 +1300,12 @@ def train(config: TrainConfig) -> None:
         model_official_name=expected_model_name,
         first_n_training_samples=0,
     )
+    if _is_primary_rank():
+        _memtrace(
+            "post_lazy_loader_init "
+            f"sample_count={lazy_loader.sample_count} "
+            f"training_trajectory_path={config.training_trajectory_path}"
+        )
     try:
         if config.training_mode == "oneshot" and config.oneshot_num_epochs > 0:
             _train_oneshot_multiepoch(
