@@ -64,6 +64,7 @@ pub struct Orchestrator {
     pub use_tool: bool,
     pub mount_dir: String,
     pub training_set_sort_mode: TrainingSetSortMode,
+    pub training_trajectory_len_cutoff: usize,
 }
 
 pub struct InferenceServerHandle {
@@ -971,6 +972,7 @@ impl Orchestrator {
         let training_config = PythonTrainingConfig {
             hyperparameters: self.training_hyperparameters.clone(),
             num_iterations_limit: self.num_iterations_limit,
+            training_trajectory_len_cutoff: self.training_trajectory_len_cutoff,
             model_cli_name: M::CLI_NAME.to_string(),
             config_nickname: self.config_nickname.clone(),
             training_mode: TrainingMode::Orchestration {

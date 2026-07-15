@@ -68,7 +68,12 @@ When adding new training config models that the wrapper needs:
 
 ## Delta LD_LIBRARY_PATH
 
-The `.slurm` scripts set up `LD_LIBRARY_PATH` to include nvidia CUDA libraries from
-sglang's venv (excluding `nccl/lib`). When adding new `.slurm` scripts or modifying
-the launch environment, ensure this pattern is replicated so that torch can find
-`libcudnn.so.9`, `libcusparseLt.so.0`, etc. on compute nodes.
+Do not mix PyTorch/CUDA shared libraries across virtual environments on Delta.
+If a job runs `torch` or `torchrun` from the root project `.venv`, any
+`LD_LIBRARY_PATH` additions must come from that same `.venv`'s bundled
+`site-packages/nvidia/*/lib` directories.
+
+In particular, do not borrow cuDNN / cuSPARSELt / NCCL libraries from
+`pyprojects/sglang/.venv` for root training jobs. That kind of cross-env mixing
+causes brittle import failures and symbol mismatches such as
+`undefined symbol: ncclCommResume`.

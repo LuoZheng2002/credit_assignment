@@ -33,11 +33,15 @@ def load_resolved_training_batches(
     batch_size: int,
     model_official_name: str,
     first_n_training_samples: int,
+    training_trajectory_len_cutoff: int,
 ) -> list[ResolvedTrainingBatch]:
     assert batch_size > 0, "batch_size must be positive"
     assert len(model_official_name.strip()) > 0, "model_official_name cannot be empty"
     assert first_n_training_samples >= 0, (
         "first_n_training_samples must be non-negative"
+    )
+    assert training_trajectory_len_cutoff >= 2, (
+        "training_trajectory_len_cutoff must be at least 2"
     )
 
     trajectories: list[TrainingSampleTokenized] = []
@@ -52,6 +56,8 @@ def load_resolved_training_batches(
             "training trajectories must be sorted by input_ids length in descending order"
         )
         previous_input_length = sample.input_length
+        if sample.input_length > training_trajectory_len_cutoff:
+            continue
         tokenized_by_id[key] = sample
         trajectories.append(sample)
 
@@ -98,15 +104,20 @@ class LazyResolvedBatchLoader:
     def __init__(
         self,
         training_trajectory_path: str,
+        training_trajectory_len_cutoff: int,
         model_official_name: str,
         first_n_training_samples: int,
     ):
         assert len(model_official_name.strip()) > 0, (
             "model_official_name cannot be empty"
         )
+        assert training_trajectory_len_cutoff >= 2, (
+            "training_trajectory_len_cutoff must be at least 2"
+        )
         self._store = LazyTrainingTrajectoryStore(
             msgpack_path=training_trajectory_path,
             first_n_training_samples=first_n_training_samples,
+            training_trajectory_len_cutoff=training_trajectory_len_cutoff,
         )
         self.sample_count = self._store.sample_count
         self._model_official_name = model_official_name

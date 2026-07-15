@@ -757,7 +757,9 @@ def _run_unified_loop(
             "sample_count must be >= world_size for distributed training"
         )
 
-    trajectory_length_cap = DEFAULT_TRAJECTORY_LENGTH_CAP
+    trajectory_length_cap = min(
+        DEFAULT_TRAJECTORY_LENGTH_CAP, config.training_trajectory_len_cutoff
+    )
 
     sample_count = lazy_loader.sample_count
 

@@ -61,6 +61,7 @@ def _load_train_config(
         distributed_strategy=hp.distributed_strategy,
         model_parent_dir=str(model_parent_dir_path),
         training_trajectory_path=str(training_trajectory_path),
+        training_trajectory_len_cutoff=request.training_trajectory_len_cutoff,
         training_summary_parent_dir=str(training_summary_parent_dir_path),
         final_model_output_parent_dir=str(final_model_output_parent_dir_path),
         advantage_clip=hp.advantage_clip,

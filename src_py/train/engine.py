@@ -59,6 +59,7 @@ class TrainConfig:
     distributed_strategy: str
     model_parent_dir: str
     training_trajectory_path: str
+    training_trajectory_len_cutoff: int
     training_summary_parent_dir: str
     final_model_output_parent_dir: str
     advantage_clip: float
@@ -1228,6 +1229,7 @@ def train(config: TrainConfig) -> None:
 
     lazy_loader = LazyResolvedBatchLoader(
         training_trajectory_path=config.training_trajectory_path,
+        training_trajectory_len_cutoff=config.training_trajectory_len_cutoff,
         model_official_name=expected_model_name,
         first_n_training_samples=0,
     )

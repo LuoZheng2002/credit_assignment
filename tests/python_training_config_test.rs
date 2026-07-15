@@ -23,6 +23,7 @@ fn training_config_orchestration_serializes_to_json_stdin_payload() {
             lora_dropout: Some(0.05),
         },
         num_iterations_limit: 200,
+        training_trajectory_len_cutoff: 4096,
         model_cli_name: "qwen35_4b".to_string(),
         config_nickname: "demo".to_string(),
         training_mode: TrainingMode::Orchestration {
@@ -57,6 +58,7 @@ fn training_config_orchestration_serializes_to_json_stdin_payload() {
 
     // training_summary_parent_dir no longer exists at top level
     assert!(parsed.get("training_summary_parent_dir").is_none());
+    assert_eq!(parsed["training_trajectory_len_cutoff"], 4096);
     let mode = &parsed["training_mode"];
     assert_eq!(mode["type"], "orchestration");
     assert_eq!(mode["epoch"], 3);
@@ -95,6 +97,7 @@ fn training_config_oneshot_serializes_to_json_stdin_payload() {
             lora_dropout: None,
         },
         num_iterations_limit: 50,
+        training_trajectory_len_cutoff: 1024,
         model_cli_name: "qwen35_4b".to_string(),
         config_nickname: "oneshot_demo".to_string(),
         training_mode: TrainingMode::OneShot {
@@ -112,6 +115,7 @@ fn training_config_oneshot_serializes_to_json_stdin_payload() {
     let parsed: Value =
         serde_json::from_slice(&payload).expect("stdin payload should parse as JSON object");
 
+    assert_eq!(parsed["training_trajectory_len_cutoff"], 1024);
     let mode = &parsed["training_mode"];
     assert_eq!(mode["type"], "oneshot");
     assert_eq!(mode["per_epoch_training_time"], 30.0);

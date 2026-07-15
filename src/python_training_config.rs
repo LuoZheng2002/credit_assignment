@@ -6,6 +6,7 @@ pub struct PythonTrainingConfig {
     pub config_nickname: String,
     pub hyperparameters: TrainingHyperparameters,
     pub num_iterations_limit: usize,
+    pub training_trajectory_len_cutoff: usize,
     pub training_mode: TrainingMode,
 }
 

@@ -8,7 +8,7 @@ dependencies = [
     "datasets>=4.8.5",
     "python-dotenv>=1.0.0",
     "research-utility",
-    "torch",
+    "torch==2.9.1+cu128",
     "transformers",
     "accelerate",
     "socksio>=1.0.0",
@@ -28,13 +28,13 @@ dependencies = [
     "httpx",
 ]
 
-# [[tool.uv.index]]
-# name = "pytorch-cu126"
-# url = "https://download.pytorch.org/whl/cu126"
-# explicit = true
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [tool.uv.sources]
-# torch = { index = "pytorch-cu126" }
+torch = { index = "pytorch-cu128" }
 research-utility = { path = "research-utility", editable = true }
 
 [tool.uv]

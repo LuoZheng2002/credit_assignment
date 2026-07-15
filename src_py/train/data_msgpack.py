@@ -190,26 +190,45 @@ def _iter_msgpack_payloads(msgpack_path: str) -> Iterator[object]:
 
 
 class LazyTrainingTrajectoryStore:
-    def __init__(self, msgpack_path: str, first_n_training_samples: int = 0):
+    def __init__(
+        self,
+        msgpack_path: str,
+        first_n_training_samples: int = 0,
+        training_trajectory_len_cutoff: int = 4096,
+    ):
         _assert_msgpack_path_exists(msgpack_path)
         assert first_n_training_samples >= 0, (
             "first_n_training_samples must be non-negative"
         )
+        assert training_trajectory_len_cutoff >= 2, (
+            "training_trajectory_len_cutoff must be at least 2"
+        )
 
         self._msgpack_path = msgpack_path
         self._offsets: list[int] = []
+        previous_input_length = -1
         with open(msgpack_path, "rb") as file:
             unpacker = msgpack.Unpacker(file, raw=False)
             start_offset = 0
-            for _payload in unpacker:
-                self._offsets.append(start_offset)
+            for trajectory_id, payload in enumerate(unpacker):
+                sample = _parse_direct_training_trajectory_payload(trajectory_id, payload)
+                assert (
+                    sample.input_length <= previous_input_length or previous_input_length == -1
+                ), (
+                    "training trajectories must be sorted by input_ids length in descending order"
+                )
+                previous_input_length = sample.input_length
+                if sample.input_length <= training_trajectory_len_cutoff:
+                    self._offsets.append(start_offset)
+                    if (
+                        first_n_training_samples > 0
+                        and len(self._offsets) == first_n_training_samples
+                    ):
+                        break
                 start_offset = unpacker.tell()
         self._sample_count = len(self._offsets)
         assert self._sample_count > 0, "training trajectory data must be non-empty"
-        if first_n_training_samples > 0:
-            self.sample_count = min(self._sample_count, first_n_training_samples)
-        else:
-            self.sample_count = self._sample_count
+        self.sample_count = self._sample_count
 
     def close(self) -> None:
         return None

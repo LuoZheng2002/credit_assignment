@@ -54,6 +54,7 @@ struct OrchestratorConfig {
     validation_rollout_secs: usize,
     training_time: f32,
     num_gpus: usize,
+    training_trajectory_len_cutoff: usize,
     total_time_limit_hours: f32,
     mount_dir: String,
     keep_action_logs: bool,
@@ -104,6 +105,7 @@ async fn main() {
         training_time,
         num_iterations_limit,
         num_gpus,
+        training_trajectory_len_cutoff,
         mount_dir,
         keep_action_logs,
         positive_advantage_only,
@@ -216,6 +218,7 @@ async fn main() {
         use_tool,
         mount_dir,
         training_set_sort_mode,
+        training_trajectory_len_cutoff,
     };
 
     let result = match model_name {

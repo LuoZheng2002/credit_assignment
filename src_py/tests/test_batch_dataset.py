@@ -4,7 +4,10 @@ from typing import cast
 
 import msgpack
 
-from src_py.train.batch_dataset import load_resolved_training_batches
+from src_py.train.batch_dataset import (
+    LazyResolvedBatchLoader,
+    load_resolved_training_batches,
+)
 
 
 def _write_entries(msgpack_path: str, entries: list[object]) -> None:
@@ -70,6 +73,7 @@ class TestBatchDataset(unittest.TestCase):
                 batch_size=2,
                 model_official_name="Qwen/Qwen2.5-7B-Instruct",
                 first_n_training_samples=0,
+                training_trajectory_len_cutoff=4096,
             )
 
             self.assertEqual(2, len(batches))
@@ -118,6 +122,7 @@ class TestBatchDataset(unittest.TestCase):
                     batch_size=2,
                     model_official_name="Qwen/Qwen2.5-7B-Instruct",
                     first_n_training_samples=0,
+                    training_trajectory_len_cutoff=4096,
                 )
 
     def test_load_resolved_training_batches_honors_first_n_training_samples(
@@ -148,11 +153,79 @@ class TestBatchDataset(unittest.TestCase):
                 batch_size=2,
                 model_official_name="Qwen/Qwen2.5-7B-Instruct",
                 first_n_training_samples=3,
+                training_trajectory_len_cutoff=4096,
             )
 
             self.assertEqual(2, len(batches))
             self.assertEqual(2, len(batches[0].samples))
             self.assertEqual(1, len(batches[1].samples))
+
+    def test_load_resolved_training_batches_skips_samples_above_cutoff(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".msgpack") as trajectory_db:
+            trajectory_entries: list[object] = [
+                {
+                    "question": {
+                        "flat_id": 100,
+                        "dataset_name": "deepmath",
+                        "question_id": 1,
+                        "question": "q1",
+                        "correct_answer": "a1",
+                    },
+                    "input_ids": [11, 12, 13, 14, 15],
+                    "labels": [-100, 12, 13, 14, 15],
+                    "advantages": [0.1, 0.1, 0.1, 0.1, 0.1],
+                    "average_absolute_segment_advantage": 0.1,
+                },
+                {
+                    "question": {
+                        "flat_id": 101,
+                        "dataset_name": "deepmath",
+                        "question_id": 2,
+                        "question": "q2",
+                        "correct_answer": "a2",
+                    },
+                    "input_ids": [21, 22, 23, 24],
+                    "labels": [-100, 22, 23, 24],
+                    "advantages": [0.2, 0.2, 0.2, 0.2],
+                    "average_absolute_segment_advantage": 0.2,
+                },
+                {
+                    "question": {
+                        "flat_id": 102,
+                        "dataset_name": "deepmath",
+                        "question_id": 3,
+                        "question": "q3",
+                        "correct_answer": "a3",
+                    },
+                    "input_ids": [31, 32, 33],
+                    "labels": [-100, 32, 33],
+                    "advantages": [0.3, 0.3, 0.3],
+                    "average_absolute_segment_advantage": 0.3,
+                },
+            ]
+            _write_entries(trajectory_db.name, trajectory_entries)
+
+            batches = load_resolved_training_batches(
+                training_trajectory_path=trajectory_db.name,
+                batch_size=2,
+                model_official_name="Qwen/Qwen2.5-7B-Instruct",
+                first_n_training_samples=0,
+                training_trajectory_len_cutoff=4,
+            )
+
+            self.assertEqual(1, len(batches))
+            self.assertEqual([4, 3], [sample.input_length for sample in batches[0].samples])
+
+            lazy_loader = LazyResolvedBatchLoader(
+                training_trajectory_path=trajectory_db.name,
+                training_trajectory_len_cutoff=4,
+                model_official_name="Qwen/Qwen2.5-7B-Instruct",
+                first_n_training_samples=0,
+            )
+            self.assertEqual(2, lazy_loader.sample_count)
+            self.assertEqual(4, lazy_loader.get_sample(0).input_length)
+            self.assertEqual(3, lazy_loader.get_sample(1).input_length)
+            lazy_loader.close()
 
 
 if __name__ == "__main__":

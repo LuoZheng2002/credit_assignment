@@ -7,6 +7,7 @@ validation_rollout_secs = 300
 oneshot_per_epoch_training_time = 480.0
 num_iterations_limit = 3
 num_gpus = 4
+training_trajectory_len_cutoff = 4096
 total_time_limit_hours = 0.75
 mount_dir = "/work/nvme/bhph/zluo8/credit_assignment/results"
 rollout_mount_dir = "/work/nvme/bhph/zluo8/credit_assignment/results"

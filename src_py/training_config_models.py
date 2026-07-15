@@ -70,6 +70,7 @@ class TrainingRequestArgs(BaseModel):
 
     hyperparameters: TrainingHyperparametersRequest
     num_iterations_limit: int
+    training_trajectory_len_cutoff: int
     model_cli_name: str
     config_nickname: str
     hpc_training_root_dir: str | None = None
