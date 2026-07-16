@@ -1128,39 +1128,6 @@ def _run_unified_loop(
                 loss.backward()
                 if emit_step_memtrace:
                     _memtrace(f"step_post_backward batch_index={step_batch.batch_index}")
-                try:
-                    _assert_gradient_tensors_finite(model)
-                except AssertionError as grad_exc:
-                    nonfinite_details = eng._parse_nonfinite_tensor_exception(grad_exc)
-                    if nonfinite_details is None:
-                        raise
-                    optimizer.zero_grad(set_to_none=True)
-                    eng._release_step_memory(device)
-                    nonfinite_backward_trace = None
-                    try:
-                        nonfinite_backward_trace = (
-                            trace_first_nonfinite_backward_signal(
-                                model=model,
-                                input_ids=input_ids,
-                                attention_mask=attention_mask,
-                                labels=labels,
-                                advantages=advantages,
-                                advantage_clip=config.advantage_clip,
-                                grad_accum_steps=config.grad_accum_steps,
-                            )
-                        )
-                    except Exception as trace_exc:
-                        nonfinite_backward_trace = (
-                            "nonfinite_backward_trace=1 status=diagnostic_failed "
-                            f"error_type={type(trace_exc).__name__}"
-                        )
-                    finally:
-                        optimizer.zero_grad(set_to_none=True)
-                    raise AssertionError(
-                        f"{grad_exc} accumulation_micro_step={accumulation_step + 1} "
-                        f"batch_index={step_batch.batch_index} sample_index={global_sample_cursor}"
-                        f" {nonfinite_backward_trace}"
-                    ) from grad_exc
         except (RuntimeError, AssertionError) as exc:
             if eng._is_cuda_oom_exception(exc):
                 if is_distributed:
