@@ -1,7 +1,5 @@
 #!/bin/bash
 
-set -euo pipefail
-
 #SBATCH --job-name=rollout
 #SBATCH --output=slurm/logs/rollout_%j.out
 #SBATCH --error=slurm/logs/rollout_%j.err
@@ -9,19 +7,21 @@ set -euo pipefail
 #SBATCH --cpus-per-task=32
 #SBATCH --ntasks=1
 #SBATCH --mem=32G
-#SBATCH --account=bfdz-delta-gpu
-#SBATCH --time=48:00:00
+#SBATCH --account=bfsl-delta-gpu
+
+set -euo pipefail
 
 if [ $# -lt 1 ]; then
-    echo "Usage: sbatch slurm/oneshot_rollout.slurm <config-path> [notify-message]" >&2
+    echo "Usage: sbatch slurm/oneshot_rollout.slurm <config-path> [notify-start-message] [notify-end-message]" >&2
     exit 1
 fi
 
 CONFIG_PATH="$1"
-NOTIFY_MSG="${2:-}"
+NOTIFY_START_MSG="${2:-}"
+NOTIFY_END_MSG="${3:-}"
 
-if [[ -n "$NOTIFY_MSG" ]]; then
-    trap 'python research-utility/scripts/pushover_notify.py "$NOTIFY_MSG"' EXIT
+if [[ -n "$NOTIFY_END_MSG" ]]; then
+    trap 'python research-utility/scripts/pushover_notify.py "$NOTIFY_END_MSG"' EXIT
 fi
 
 # Resolve to the repository root (sbatch copies script, so use SLURM_SUBMIT_DIR)
@@ -33,5 +33,9 @@ export PATH="$REPO_ROOT/pyprojects/sglang/.venv/bin:$PATH"
 
 echo "Running oneshot rollout with config: $CONFIG_PATH"
 echo "Repo root: $REPO_ROOT"
+
+if [[ -n "$NOTIFY_START_MSG" ]]; then
+    python research-utility/scripts/pushover_notify.py "$NOTIFY_START_MSG"
+fi
 
 cargo run --release --bin bin_oneshot_rollout -- --config-path "$CONFIG_PATH"

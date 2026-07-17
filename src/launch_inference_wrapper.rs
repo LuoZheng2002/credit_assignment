@@ -1,6 +1,7 @@
 use std::{fs, net::SocketAddr, path::Path, time::Duration};
 
 use research_utility::progress_text_logger::{log_info, log_warning};
+use clap::ValueEnum;
 use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep, timeout};
 
@@ -8,9 +9,26 @@ use serde::Serialize;
 
 use research_utility::launch_python_process::{PythonProcessHandle, PythonProcessLauncher};
 
+#[derive(Clone, Copy, Debug, Serialize, serde::Deserialize, PartialEq, Eq, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum InferenceBackend {
+    Sglang,
+    Vllm,
+}
+
+impl std::fmt::Display for InferenceBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sglang => write!(f, "sglang"),
+            Self::Vllm => write!(f, "vllm"),
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct InferenceWrapperArgs {
     listen_port: u16,
+    inference_backend: InferenceBackend,
     num_gpus: usize,
     epoch: usize,
     model_cli_name: String,
@@ -21,6 +39,7 @@ struct InferenceWrapperArgs {
 }
 
 pub async fn launch_inference_wrapper_process(
+    inference_backend: InferenceBackend,
     model_path: &str,
     model_cli_name: &str,
     config_nickname: &str,
@@ -43,6 +62,7 @@ pub async fn launch_inference_wrapper_process(
 
     let args = InferenceWrapperArgs {
         listen_port,
+        inference_backend,
         num_gpus,
         epoch,
         model_cli_name: model_cli_name.to_string(),

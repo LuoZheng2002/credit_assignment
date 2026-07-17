@@ -257,6 +257,9 @@ def main() -> int:
     config_nickname_training = _extract_required_cli_arg(
         cli_args, "--config-nickname-training"
     )
+    config_nickname_generation = _extract_required_cli_arg(
+        cli_args, "--config-nickname-generation"
+    )
     mount_dir = _extract_required_cli_arg(cli_args, "--mount-dir")
     service_state_volume_name = experiment_service_state_volume_name(
         model_cli_name, config_nickname_training, pipeline="training"

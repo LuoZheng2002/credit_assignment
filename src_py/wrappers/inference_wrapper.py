@@ -199,6 +199,29 @@ def _resolve_sglang_python_executable() -> str:
     )
 
 
+def _resolve_vllm_python_executable() -> str:
+    override = os.environ.get("VLLM_PYTHON_BIN", "").strip()
+    if override:
+        override_path = Path(override)
+        if override_path.is_file():
+            return str(override_path)
+        raise FileNotFoundError(f"VLLM_PYTHON_BIN does not exist: {override}")
+
+    default = Path(
+        os.environ.get(
+            "VLLM_VENV",
+            "/work/nvme/bhph/zluo8/credit_assignment/venvs/vllm-0.25.1-cu129",
+        )
+    )
+    python_bin = default / "bin" / "python"
+    if python_bin.is_file():
+        return str(python_bin)
+    raise FileNotFoundError(
+        "expected vLLM python executable at "
+        f"{python_bin}; set VLLM_PYTHON_BIN or create the vLLM environment first"
+    )
+
+
 def _emit_sglang_kernels_version(sglang_python: str) -> None:
     probe_cmd = [
         sglang_python,
@@ -226,6 +249,146 @@ def _emit_sglang_kernels_version(sglang_python: str) -> None:
         "starting",
         f"sglang env kernels before launch: {details}",
     )
+
+
+def _optional_float_env(name: str) -> str | None:
+    raw_value = os.environ.get(name, "").strip()
+    if not raw_value:
+        return None
+    value = float(raw_value)
+    if not 0.0 < value < 1.0:
+        raise ValueError(f"{name} must be between 0 and 1, got {raw_value}")
+    return raw_value
+
+
+def _optional_positive_int_env(name: str) -> str | None:
+    raw_value = os.environ.get(name, "").strip()
+    if not raw_value:
+        return None
+    value = int(raw_value)
+    if value <= 0:
+        raise ValueError(f"{name} must be positive, got {raw_value}")
+    return raw_value
+
+
+def _int_list(value: Any, field_name: str) -> list[int]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list")
+    result: list[int] = []
+    for item in value:
+        if not isinstance(item, int):
+            raise ValueError(f"{field_name} entries must be integers, got {item!r}")
+        result.append(item)
+    return result
+
+
+def _parse_token_id_key(key: Any) -> int | None:
+    if isinstance(key, int):
+        return key
+    if not isinstance(key, str):
+        return None
+    stripped = key.strip()
+    if stripped.startswith("token_id:"):
+        stripped = stripped.removeprefix("token_id:")
+    try:
+        return int(stripped)
+    except ValueError:
+        return None
+
+
+def _translate_sglang_generate_to_vllm(
+    payload: dict[str, Any], served_model_name: str
+) -> dict[str, Any]:
+    sampling_params = payload.get("sampling_params")
+    if not isinstance(sampling_params, dict):
+        sampling_params = {}
+
+    request: dict[str, Any] = {
+        "model": served_model_name,
+        "prompt": _int_list(payload.get("input_ids"), "input_ids"),
+        "max_tokens": int(sampling_params.get("max_new_tokens", 16)),
+        "temperature": float(sampling_params.get("temperature", 0.0)),
+        "return_token_ids": True,
+        "return_tokens_as_token_ids": True,
+    }
+    if payload.get("return_logprob"):
+        request["logprobs"] = int(payload.get("top_logprobs_num", 8))
+    if "sampling_seed" in sampling_params:
+        request["seed"] = int(sampling_params["sampling_seed"])
+    if "stop" in sampling_params:
+        request["stop"] = sampling_params["stop"]
+        if sampling_params.get("no_stop_trim"):
+            request["include_stop_str_in_output"] = True
+    if "top_p" in sampling_params:
+        request["top_p"] = float(sampling_params["top_p"])
+    if "top_k" in sampling_params:
+        request["top_k"] = int(sampling_params["top_k"])
+    return request
+
+
+def _translate_vllm_completion_to_sglang(response: dict[str, Any]) -> dict[str, Any]:
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return {"error": {"message": f"vLLM response missing choices: {response}"}}
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return {"error": {"message": f"vLLM choice must be an object: {choice!r}"}}
+
+    token_ids = _int_list(choice.get("token_ids", []), "choices[0].token_ids")
+    result: dict[str, Any] = {
+        "text": choice.get("text", ""),
+        "output_ids": token_ids,
+    }
+
+    logprobs = choice.get("logprobs")
+    if isinstance(logprobs, dict):
+        token_logprobs_raw = logprobs.get("token_logprobs")
+        top_logprobs_raw = logprobs.get("top_logprobs")
+        if isinstance(token_logprobs_raw, list):
+            output_token_logprobs: list[list[Any]] = []
+            for idx, token_id in enumerate(token_ids):
+                raw_logprob = (
+                    token_logprobs_raw[idx]
+                    if idx < len(token_logprobs_raw)
+                    else None
+                )
+                logprob = (
+                    float(raw_logprob)
+                    if isinstance(raw_logprob, (int, float))
+                    else float("-inf")
+                )
+                output_token_logprobs.append([logprob, token_id, None])
+
+            output_top_logprobs: list[list[list[Any]]] = []
+            if isinstance(top_logprobs_raw, list):
+                for idx, token_id in enumerate(token_ids):
+                    candidates: list[list[Any]] = []
+                    raw_candidates = (
+                        top_logprobs_raw[idx]
+                        if idx < len(top_logprobs_raw)
+                        else None
+                    )
+                    if isinstance(raw_candidates, dict):
+                        for key, raw_logprob in raw_candidates.items():
+                            candidate_token_id = _parse_token_id_key(key)
+                            if candidate_token_id is None:
+                                continue
+                            logprob = (
+                                float(raw_logprob)
+                                if isinstance(raw_logprob, (int, float))
+                                else float("-inf")
+                            )
+                            candidates.append([logprob, candidate_token_id, None])
+                    if not any(candidate[1] == token_id for candidate in candidates):
+                        generated_logprob = output_token_logprobs[idx][0]
+                        candidates.append([generated_logprob, token_id, None])
+                    candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+                    output_top_logprobs.append(candidates[:8])
+            result["meta_info"] = {
+                "output_token_logprobs": output_token_logprobs,
+                "output_top_logprobs": output_top_logprobs,
+            }
+    return result
 
 
 def _start_parent_watchdog(
@@ -287,6 +450,7 @@ def _read_hpc_server_state(upstream_port: int) -> dict[str, Any] | None:
 
 def _write_hpc_server_state(
     upstream_port: int,
+    backend_name: str,
     model_cli_name: str,
     config_nickname: str,
     epoch: int,
@@ -294,6 +458,7 @@ def _write_hpc_server_state(
     pid: int,
 ) -> None:
     payload = {
+        "backend_name": backend_name,
         "model_cli_name": model_cli_name,
         "config_nickname": config_nickname,
         "epoch": epoch,
@@ -306,7 +471,9 @@ def _write_hpc_server_state(
     )
 
 
-class HpcBackend:
+class SglangBackend:
+    backend_name = "sglang"
+
     def __init__(
         self,
         model_path: str,
@@ -321,6 +488,7 @@ class HpcBackend:
         model_path_obj = Path(model_path)
         self._process: subprocess.Popen[bytes] | None = None
         self._upstream_url = f"http://127.0.0.1:{upstream_port}"
+        self._upstream_port = upstream_port
         self._wrapper_log_path = Path(wrapper_log_path).expanduser().resolve()
         self._wrapper_log_path.parent.mkdir(parents=True, exist_ok=True)
         if not model_path_obj.exists() and epoch == 0:
@@ -343,11 +511,13 @@ class HpcBackend:
                     "cannot validate config match"
                 )
             expected = {
+                "backend_name": self.backend_name,
                 "model_cli_name": model_cli_name,
                 "config_nickname": config_nickname,
                 "epoch": epoch,
             }
             observed = {
+                "backend_name": str(existing_state.get("backend_name", "sglang")),
                 "model_cli_name": str(existing_state.get("model_cli_name", "")),
                 "config_nickname": str(existing_state.get("config_nickname", "")),
                 "epoch": int(existing_state.get("epoch", -1)),
@@ -394,6 +564,15 @@ class HpcBackend:
                 "--dp",
                 str(num_gpus),
             ]
+            mem_fraction_static = _optional_float_env("SGLANG_MEM_FRACTION_STATIC")
+            if mem_fraction_static is not None:
+                launch_command.extend(["--mem-fraction-static", mem_fraction_static])
+            max_running_requests = _optional_positive_int_env("SGLANG_MAX_RUNNING_REQUESTS")
+            if max_running_requests is not None:
+                launch_command.extend(["--max-running-requests", max_running_requests])
+            max_total_tokens = _optional_positive_int_env("SGLANG_MAX_TOTAL_TOKENS")
+            if max_total_tokens is not None:
+                launch_command.extend(["--max-total-tokens", max_total_tokens])
             self._process = subprocess.Popen(
                 launch_command,
                 stdout=log_handle,
@@ -408,6 +587,7 @@ class HpcBackend:
             _CONN.send_info(f"SGLang server is up at {self._upstream_url}")
         _write_hpc_server_state(
             upstream_port=upstream_port,
+            backend_name=self.backend_name,
             model_cli_name=model_cli_name,
             config_nickname=config_nickname,
             epoch=epoch,
@@ -458,6 +638,184 @@ class HpcBackend:
                 self._process.kill()
 
 
+class VllmBackend:
+    backend_name = "vllm"
+
+    def __init__(
+        self,
+        model_path: str,
+        num_gpus: int,
+        upstream_port: int,
+        epoch: int,
+        hf_model_name: str,
+        model_cli_name: str,
+        config_nickname: str,
+        wrapper_log_path: str,
+    ) -> None:
+        model_path_obj = Path(model_path)
+        self._process: subprocess.Popen[bytes] | None = None
+        self._upstream_url = f"http://127.0.0.1:{upstream_port}"
+        self._upstream_port = upstream_port
+        self._served_model_name = os.environ.get(
+            "VLLM_SERVED_MODEL_NAME", "credit-assignment"
+        )
+        self._wrapper_log_path = Path(wrapper_log_path).expanduser().resolve()
+        self._wrapper_log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._num_gpus = num_gpus
+        self._model_cli_name = model_cli_name
+        self._config_nickname = config_nickname
+        self._epoch = epoch
+
+        if not model_path_obj.exists() and epoch == 0:
+            _emit_status(
+                "hpc",
+                "starting",
+                f"initial model missing at {model_path_obj}; downloading {hf_model_name}",
+            )
+            if _CONN is not None:
+                _CONN.send_info(f"Downloading initial model for inference: {hf_model_name}")
+            ensure_model_snapshot(model_path_obj.parent, hf_model_name)
+        if not model_path_obj.exists():
+            raise FileNotFoundError(f"model path does not exist: {model_path}")
+
+        self._launch_model(model_path)
+
+    def _launch_model(self, model_path: str) -> None:
+        vllm_python = _resolve_vllm_python_executable()
+        child_env = os.environ.copy()
+        child_env.setdefault("PYTHONUNBUFFERED", "1")
+        child_env.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+        if os.environ.get("VLLM_INHERIT_LD_LIBRARY_PATH", "").strip() not in (
+            "1",
+            "true",
+            "True",
+        ):
+            child_env.pop("LD_LIBRARY_PATH", None)
+
+        if _CONN is not None:
+            _CONN.send_info(
+                f"Launching local vLLM on port {self._upstream_port} ({self._upstream_url})"
+            )
+        with open(
+            self._wrapper_log_path, "a", buffering=1, encoding="utf-8"
+        ) as log_handle:
+            launch_command = [
+                vllm_python,
+                "-m",
+                "vllm.entrypoints.openai.api_server",
+                "--model",
+                model_path,
+                "--served-model-name",
+                self._served_model_name,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(self._upstream_port),
+                "--skip-tokenizer-init",
+                "--dtype",
+                os.environ.get("VLLM_DTYPE", "auto"),
+            ]
+            if self._num_gpus > 1:
+                launch_command.extend(["--tensor-parallel-size", str(self._num_gpus)])
+            gpu_memory_utilization = _optional_float_env("VLLM_GPU_MEMORY_UTILIZATION")
+            if gpu_memory_utilization is not None:
+                launch_command.extend(["--gpu-memory-utilization", gpu_memory_utilization])
+            max_model_len = _optional_positive_int_env("VLLM_MAX_MODEL_LEN")
+            if max_model_len is not None:
+                launch_command.extend(["--max-model-len", max_model_len])
+            max_num_seqs = _optional_positive_int_env("VLLM_MAX_NUM_SEQS")
+            if max_num_seqs is not None:
+                launch_command.extend(["--max-num-seqs", max_num_seqs])
+            max_num_batched_tokens = _optional_positive_int_env(
+                "VLLM_MAX_NUM_BATCHED_TOKENS"
+            )
+            if max_num_batched_tokens is not None:
+                launch_command.extend(["--max-num-batched-tokens", max_num_batched_tokens])
+            if os.environ.get("VLLM_ENFORCE_EAGER", "").strip() in ("1", "true", "True"):
+                launch_command.append("--enforce-eager")
+
+            self._process = subprocess.Popen(
+                launch_command,
+                stdout=log_handle,
+                stderr=log_handle,
+                env=child_env,
+            )
+        _emit_status(
+            "hpc", "starting", f"launching local vLLM on port {self._upstream_port}"
+        )
+        _wait_health(f"{self._upstream_url}/health", timeout_secs=900)
+        if _CONN is not None:
+            _CONN.send_info(f"vLLM server is up at {self._upstream_url}")
+        _write_hpc_server_state(
+            upstream_port=self._upstream_port,
+            backend_name=self.backend_name,
+            model_cli_name=self._model_cli_name,
+            config_nickname=self._config_nickname,
+            epoch=self._epoch,
+            model_path=model_path,
+            pid=self._process.pid if self._process is not None else -1,
+        )
+        _emit_status("hpc", "ready", "local vLLM health check passed")
+
+    def health(self) -> dict[str, Any]:
+        exit_error = self.unexpected_exit_error()
+        if exit_error is not None:
+            raise RuntimeError(exit_error)
+        return _probe_health(f"{self._upstream_url}/health")
+
+    def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        exit_error = self.unexpected_exit_error()
+        if exit_error is not None:
+            raise RuntimeError(exit_error)
+        vllm_payload = _translate_sglang_generate_to_vllm(
+            payload, self._served_model_name
+        )
+        response = _post_json(f"{self._upstream_url}/v1/completions", vllm_payload)
+        return _translate_vllm_completion_to_sglang(response)
+
+    def update_model(self, new_model_path: str) -> dict[str, Any]:
+        exit_error = self.unexpected_exit_error()
+        if exit_error is not None:
+            raise RuntimeError(exit_error)
+        if self._process is not None and self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait(timeout=30)
+        self._epoch += 1
+        self._launch_model(new_model_path)
+        return {"status": "ok", "message": "vLLM model restarted"}
+
+    def unexpected_exit_error(self) -> str | None:
+        if self._process is None:
+            return None
+        return_code = self._process.poll()
+        if return_code is None:
+            return None
+        return f"local vLLM process exited unexpectedly with return code {return_code}"
+
+    def shutdown(self) -> None:
+        if self._process is None:
+            return
+        if self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+
+
+def _select_backend_class(backend: str) -> type[SglangBackend] | type[VllmBackend]:
+    backend = backend.strip().lower()
+    if backend in ("", "sglang"):
+        return SglangBackend
+    if backend == "vllm":
+        return VllmBackend
+    raise ValueError("INFERENCE_BACKEND must be one of: sglang, vllm")
+
+
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
 
@@ -466,6 +824,7 @@ class InferenceWrapperArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     listen_port: int
+    inference_backend: str
     num_gpus: int
     epoch: int
     model_cli_name: str
@@ -479,7 +838,7 @@ def main() -> int:
     global _CONN
 
     _set_process_name("inference_wrapper")
-    backend_name = "hpc"
+    backend_name = "unknown"
     conn: RustParentConnection[Any] | None = None
     try:
         conn = RustParentConnection(
@@ -500,7 +859,9 @@ def main() -> int:
         if stdin_data.listen_port <= 0:
             raise ValueError("--listen-port must be positive")
 
-        backend = HpcBackend(
+        backend_class = _select_backend_class(stdin_data.inference_backend)
+        backend_name = backend_class.backend_name
+        backend = backend_class(
             stdin_data.model_path,
             stdin_data.num_gpus,
             stdin_data.listen_port + 1,
@@ -620,7 +981,7 @@ def main() -> int:
                         {
                             "type": "error",
                             "backend": backend_name,
-                            "error_code": "SGLANG_PROCESS_EXITED",
+                            "error_code": "INFERENCE_BACKEND_PROCESS_EXITED",
                             "error_message": exit_error,
                             "timestamp": time.time(),
                         }
@@ -659,7 +1020,7 @@ def main() -> int:
                         "type": "result",
                         "backend": backend_name,
                         "ok": False,
-                        "error_code": "SGLANG_PROCESS_EXITED",
+                        "error_code": "INFERENCE_BACKEND_PROCESS_EXITED",
                         "error_message": error_message,
                         "message": error_message,
                         "timestamp": time.time(),

@@ -12,8 +12,8 @@ use credit_assignment::{
     hybrid_dataset::Testing,
     json_toml_utils::{read_json, write_json},
     launch_inference_wrapper::{
-        best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
-        shut_down_inference_wrapper_process,
+        InferenceBackend, best_effort_shutdown_stale_inference_wrapper,
+        launch_inference_wrapper_process, shut_down_inference_wrapper_process,
     },
     llm_model::{
         Gemma3_4BIt, InferenceEndpoint, Llama31_8BInstruct, LlmModelMarker, LlmModelName,
@@ -44,6 +44,8 @@ struct Args {
     rollout_secs: usize,
     #[arg(long, default_value_t = 1)]
     num_gpus: usize,
+    #[arg(long, default_value_t = InferenceBackend::Sglang)]
+    inference_backend: InferenceBackend,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +152,7 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
     };
     let model_path = format!("{}/model", model_parent_dir);
     let (sglang_port, mut handle) = launch_inference_wrapper_process(
+        args.inference_backend,
         &model_path,
         M::CLI_NAME,
         &testing_config.config_nickname,

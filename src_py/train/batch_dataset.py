@@ -10,6 +10,10 @@ from .data_msgpack import (
 )
 
 
+def _memtrace(message: str) -> None:
+    print(f"[memtrace] {message}", flush=True)
+
+
 @dataclass(frozen=True)
 class ResolvedTrainingBatch:
     batch_index: int
@@ -46,16 +50,9 @@ def load_resolved_training_batches(
 
     trajectories: list[TrainingSampleTokenized] = []
     tokenized_by_id: dict[tuple[int, int], TrainingSampleTokenized] = {}
-    previous_input_length = -1
     for sample in iter_training_trajectories(training_trajectory_path):
         key = _question_node_key(sample.id)
         assert key not in tokenized_by_id, f"duplicate sample id detected: {sample.id}"
-        assert (
-            sample.input_length <= previous_input_length or previous_input_length == -1
-        ), (
-            "training trajectories must be sorted by input_ids length in descending order"
-        )
-        previous_input_length = sample.input_length
         if sample.input_length > training_trajectory_len_cutoff:
             continue
         tokenized_by_id[key] = sample
@@ -114,6 +111,10 @@ class LazyResolvedBatchLoader:
         assert training_trajectory_len_cutoff >= 2, (
             "training_trajectory_len_cutoff must be at least 2"
         )
+        _memtrace(
+            "lazy_batch_loader_init_begin "
+            f"path={training_trajectory_path} training_trajectory_len_cutoff={training_trajectory_len_cutoff}"
+        )
         self._store = LazyTrainingTrajectoryStore(
             msgpack_path=training_trajectory_path,
             first_n_training_samples=first_n_training_samples,
@@ -121,6 +122,10 @@ class LazyResolvedBatchLoader:
         )
         self.sample_count = self._store.sample_count
         self._model_official_name = model_official_name
+        _memtrace(
+            "lazy_batch_loader_init_end "
+            f"sample_count={self.sample_count} model_official_name={model_official_name}"
+        )
 
     def close(self) -> None:
         self._store.close()
@@ -137,21 +142,30 @@ class LazyResolvedBatchLoader:
         assert sample_index < self.sample_count, "sample_index out of range"
         assert batch_size > 0, "batch_size must be positive"
         assert batch_index >= 0, "batch_index must be non-negative"
+        emit_debug = sample_index == 0 or batch_index < 3
+        if emit_debug:
+            _memtrace(
+                "resolve_batch_begin "
+                f"sample_index={sample_index} batch_size={batch_size} batch_index={batch_index}"
+            )
 
         end_sample_index = min(self.sample_count, sample_index + batch_size)
         samples: list[TrainingSampleTokenized] = []
         ids: list[QuestionNodeId] = []
-        previous_length = -1
         for trajectory_id in range(sample_index, end_sample_index):
             sample = self._store.get_sample(trajectory_id)
-            assert sample.input_length <= previous_length or previous_length == -1, (
-                "training trajectories must be sorted by input_ids length in descending order"
-            )
-            previous_length = sample.input_length
             samples.append(sample)
             ids.append(sample.id)
 
         assert len(samples) > 0, "resolved batch cannot be empty"
+        if emit_debug:
+            lengths = [sample.input_length for sample in samples]
+            _memtrace(
+                "resolve_batch_end "
+                f"batch_index={batch_index} resolved_samples={len(samples)} "
+                f"min_input_length={min(lengths)} max_input_length={max(lengths)} "
+                f"next_sample_index={end_sample_index}"
+            )
 
         return LazyBatchWindow(
             resolved_batch=ResolvedTrainingBatch(

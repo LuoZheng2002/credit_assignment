@@ -1,0 +1,27 @@
+model_cli_name = "qwen25"
+config_nickname_training = "grpo_notool_training_smoke"
+config_nickname_generation = "grpo_notool_generation"
+use_tool = false
+num_oneshot_epochs = 1
+validation_rollout_secs = 60
+oneshot_per_epoch_training_time = 60.0
+num_iterations_limit = 1
+num_gpus = 4
+inference_backend = "sglang"
+training_trajectory_len_cutoff = 4096
+total_time_limit_hours = 0.2
+mount_dir = "/work/nvme/bhph/zluo8/credit_assignment/results"
+generation_mount_dir = "/work/nvme/bhph/zluo8/credit_assignment/results"
+
+[training_hyperparameters]
+lora_or_full = "full"
+distributed_strategy = "fsdp"
+advantage_clip = 3.0
+learning_rate = 1e-06
+weight_decay = 0.01
+grad_accum_steps = 16
+log_time_interval = 30
+seed = 42
+adam_beta1 = 0.9
+adam_beta2 = 0.95
+lr_warmup_steps = 100

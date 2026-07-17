@@ -8,6 +8,10 @@ from typing import Iterator
 import msgpack
 
 
+def _memtrace(message: str) -> None:
+    print(f"[memtrace] {message}", flush=True)
+
+
 @dataclass(frozen=True)
 class QuestionNodeId:
     question_id: int
@@ -206,20 +210,30 @@ class LazyTrainingTrajectoryStore:
 
         self._msgpack_path = msgpack_path
         self._offsets: list[int] = []
-        previous_input_length = -1
+        self._debug_get_sample_calls = 0
+        _memtrace(
+            "lazy_trajectory_store_scan_begin "
+            f"path={msgpack_path} first_n_training_samples={first_n_training_samples} "
+            f"training_trajectory_len_cutoff={training_trajectory_len_cutoff}"
+        )
         with open(msgpack_path, "rb") as file:
             unpacker = msgpack.Unpacker(file, raw=False)
             start_offset = 0
             for trajectory_id, payload in enumerate(unpacker):
                 sample = _parse_direct_training_trajectory_payload(trajectory_id, payload)
-                assert (
-                    sample.input_length <= previous_input_length or previous_input_length == -1
-                ), (
-                    "training trajectories must be sorted by input_ids length in descending order"
-                )
-                previous_input_length = sample.input_length
                 if sample.input_length <= training_trajectory_len_cutoff:
                     self._offsets.append(start_offset)
+                    if len(self._offsets) == 1:
+                        _memtrace(
+                            "lazy_trajectory_store_first_kept_sample "
+                            f"trajectory_id={trajectory_id} input_length={sample.input_length} "
+                            f"offset={start_offset}"
+                        )
+                    elif len(self._offsets) % 5000 == 0:
+                        _memtrace(
+                            "lazy_trajectory_store_scan_progress "
+                            f"kept_samples={len(self._offsets)} trajectory_id={trajectory_id}"
+                        )
                     if (
                         first_n_training_samples > 0
                         and len(self._offsets) == first_n_training_samples
@@ -229,6 +243,10 @@ class LazyTrainingTrajectoryStore:
         self._sample_count = len(self._offsets)
         assert self._sample_count > 0, "training trajectory data must be non-empty"
         self.sample_count = self._sample_count
+        _memtrace(
+            "lazy_trajectory_store_scan_end "
+            f"sample_count={self.sample_count} path={msgpack_path}"
+        )
 
     def close(self) -> None:
         return None
@@ -249,10 +267,23 @@ class LazyTrainingTrajectoryStore:
         assert trajectory_id < self.sample_count, "trajectory_id out of bounds"
         assert trajectory_id < len(self._offsets), "trajectory_id out of bounds"
 
+        self._debug_get_sample_calls += 1
+        emit_debug = self._debug_get_sample_calls <= 3
+        if emit_debug:
+            _memtrace(
+                "lazy_trajectory_store_get_sample_begin "
+                f"trajectory_id={trajectory_id} offset={self._offsets[trajectory_id]}"
+            )
         payload = self._load_payload_at_offset(self._offsets[trajectory_id])
-        return _parse_direct_training_trajectory_payload(
+        sample = _parse_direct_training_trajectory_payload(
             trajectory_id=trajectory_id, payload=payload
         )
+        if emit_debug:
+            _memtrace(
+                "lazy_trajectory_store_get_sample_end "
+                f"trajectory_id={trajectory_id} input_length={sample.input_length}"
+            )
+        return sample
 
 
 def iter_tokenized_samples(msgpack_path: str) -> Iterator[TrainingSampleTokenized]:

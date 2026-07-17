@@ -98,6 +98,8 @@ def buffered_print(
     with _BUFFER_LOCK:
         _BUFFERED_LINES.append(line)
     _forward_line_to_text(line, file=file)
+    if flush:
+        flush_buffered_lines()
 
 
 def flush_buffered_lines() -> int:

@@ -18,8 +18,8 @@ use crate::{
     hybrid_dataset::{Training, Validation},
     json_toml_utils::write_json,
     launch_inference_wrapper::{
-        best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
-        shut_down_inference_wrapper_process,
+        InferenceBackend, best_effort_shutdown_stale_inference_wrapper,
+        launch_inference_wrapper_process, shut_down_inference_wrapper_process,
     },
     launch_training_wrapper::run_training_wrapper_and_wait,
     llm_model::{InferenceEndpoint, LlmModelMarker},
@@ -45,6 +45,7 @@ pub struct Orchestrator {
     pub training_rollout_secs: usize,
     pub validation_rollout_secs: usize,
     pub inference_server_handle: Option<InferenceServerHandle>,
+    pub inference_backend: InferenceBackend,
     pub inference_wrapper_log_path: String,
     pub training_wrapper_log_path: String,
     pub keep_action_logs: bool,
@@ -469,6 +470,7 @@ impl Orchestrator {
             M::CLI_NAME,
         ));
         let (sglang_port, handle) = launch_inference_wrapper_process(
+            self.inference_backend,
             model_path.as_ref(),
             M::CLI_NAME,
             &self.config_nickname,

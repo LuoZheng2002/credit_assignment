@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --ntasks=1
 #SBATCH --mem=32G
-#SBATCH --account=bfdz-delta-gpu
+#SBATCH --account=bfsl-delta-gpu
 #SBATCH --time=02:00:00
 
 sleep infinity

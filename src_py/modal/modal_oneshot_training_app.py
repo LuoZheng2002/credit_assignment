@@ -158,8 +158,8 @@ DEPLOY_ONESHOT_TRAINING_CLI_ARGS = list(DEPLOY_ONESHOT_TRAINING_CONFIG["args"])
 DEPLOY_MODEL_CLI_NAME = _extract_required_cli_arg(
     DEPLOY_ONESHOT_TRAINING_CLI_ARGS, "--model-cli-name"
 )
-DEPLOY_CONFIG_NICKNAME_ROLLOUT = _extract_required_cli_arg(
-    DEPLOY_ONESHOT_TRAINING_CLI_ARGS, "--config-nickname-rollout"
+DEPLOY_CONFIG_NICKNAME_GENERATION = _extract_required_cli_arg(
+    DEPLOY_ONESHOT_TRAINING_CLI_ARGS, "--config-nickname-generation"
 )
 DEPLOY_CONFIG_NICKNAME_TRAINING = _extract_required_cli_arg(
     DEPLOY_ONESHOT_TRAINING_CLI_ARGS, "--config-nickname-training"
@@ -184,11 +184,11 @@ service_state_volume = modal.Volume.from_name(
     SERVICE_STATE_VOLUME_NAME,
     create_if_missing=True,
 )
-rollout_volume_name = experiment_service_state_volume_name(
-    DEPLOY_MODEL_CLI_NAME, DEPLOY_CONFIG_NICKNAME_ROLLOUT, pipeline="rollout"
+generation_volume_name = experiment_service_state_volume_name(
+    DEPLOY_MODEL_CLI_NAME, DEPLOY_CONFIG_NICKNAME_GENERATION, pipeline="generation"
 )
-rollout_volume = modal.Volume.from_name(
-    rollout_volume_name,
+generation_volume = modal.Volume.from_name(
+    generation_volume_name,
     create_if_missing=True,
 )
 
@@ -197,7 +197,7 @@ def _print_service_state_volume_status() -> None:
     print(
         "[oneshot_training] service state volume "
         f"model_cli_name={DEPLOY_MODEL_CLI_NAME} "
-        f"config_nickname_rollout={DEPLOY_CONFIG_NICKNAME_ROLLOUT} "
+        f"config_nickname_generation={DEPLOY_CONFIG_NICKNAME_GENERATION} "
         f"config_nickname_training={DEPLOY_CONFIG_NICKNAME_TRAINING} "
         f"mount_dir={DEPLOY_MOUNT_DIR} "
         f"gpu={GPU} "
@@ -217,14 +217,14 @@ def _commit_service_state_volume() -> None:
     )
 
 
-def _commit_rollout_volume() -> None:
+def _commit_generation_volume() -> None:
     print(
-        "[oneshot_training] committing rollout volume "
-        f"volume_name={rollout_volume_name}"
+        "[oneshot_training] committing generation volume "
+        f"volume_name={generation_volume_name}"
     )
-    rollout_volume.commit()
+    generation_volume.commit()
     print(
-        f"[oneshot_training] committed rollout volume volume_name={rollout_volume_name}"
+        f"[oneshot_training] committed generation volume volume_name={generation_volume_name}"
     )
 
 
@@ -371,7 +371,7 @@ app = modal.App(name=APP_NAME)
     timeout=MODAL_TIMEOUT_SECS,
     volumes={
         "/volume": service_state_volume,
-        "/rollout_volume": rollout_volume,
+        "/generation_volume": generation_volume,
     },
 )
 class OneshotTrainingService:
@@ -393,7 +393,7 @@ class OneshotTrainingService:
             return _run_oneshot_training_subprocess(cli_args)
         finally:
             _commit_service_state_volume()
-            _commit_rollout_volume()
+            _commit_generation_volume()
 
 
 @app.local_entrypoint()

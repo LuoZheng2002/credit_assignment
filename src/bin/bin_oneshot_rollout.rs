@@ -9,12 +9,12 @@ use credit_assignment::{
     directories::{
         action_logs_oneshot_path, base_model_dir, inference_wrapper_log_path, model_parent_dir,
         rollout_summary_oneshot_path, text_logger_summary_path, text_logger_verbose_path,
-        training_trajectories_oneshot_path, training_trajectories_stats_oneshot_path,
     },
     hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
     json_toml_utils::read_json,
     launch_inference_wrapper::{
-        best_effort_shutdown_stale_inference_wrapper, launch_inference_wrapper_process,
+        InferenceBackend, best_effort_shutdown_stale_inference_wrapper,
+        launch_inference_wrapper_process,
         shut_down_inference_wrapper_process,
     },
     llm_model::{
@@ -23,8 +23,7 @@ use credit_assignment::{
     },
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     rollout::{RolloutProgramConfig, rollout_all},
-    rollout_config::{RolloutConfig, TrainingAdvantagePolicy},
-    training_set::{TrainingSetSortMode, generate_training_trajectories_with_path},
+    rollout_config::RolloutConfig,
     tree_action_log::ActionLogStore,
     utils::configure_mount_dir,
 };
@@ -51,14 +50,12 @@ struct Args {
     epoch: usize,
     #[serde(default = "default_total_epochs")]
     total_epochs: usize,
-    training_advantage_policy: TrainingAdvantagePolicy,
-    positive_advantage_only: bool,
     rollout_secs: usize,
     mount_dir: String,
     num_gpus: usize,
+    inference_backend: InferenceBackend,
     #[serde(default)]
     total_time_limit_hours: f32,
-    training_set_sort_mode: TrainingSetSortMode,
 }
 
 fn default_total_epochs() -> usize {
@@ -87,6 +84,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     client: Client,
     posterior_calculation_config: PosteriorCalculationConfig,
     num_gpus: usize,
+    inference_backend: InferenceBackend,
     inference_wrapper_log_path: &str,
 ) {
     let action_log_store_override_path = action_logs_oneshot_path::<S>(
@@ -126,6 +124,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     let model_path = format!("{}/model", model_parent_dir);
 
     let (sglang_port, mut handle) = launch_inference_wrapper_process(
+        inference_backend,
         &model_path,
         M::CLI_NAME,
         &args.config_nickname_rollout,
@@ -187,6 +186,7 @@ macro_rules! run_rollout {
         $client:expr,
         $posterior:expr,
         $num_gpus:expr,
+        $inference_backend:expr,
         $log_path:expr;
         $( $model_enum:path, $model_ty:ty ),+ $(,)?;
         $( $split_enum:path, $split_ty:ty ),+ $(,)?
@@ -197,6 +197,7 @@ macro_rules! run_rollout {
         let client = $client;
         let posterior = $posterior;
         let num_gpus = $num_gpus;
+        let inference_backend = $inference_backend;
         let log_path = $log_path;
 
         macro_rules! run_model_for_split {
@@ -210,6 +211,7 @@ macro_rules! run_rollout {
                                 client,
                                 posterior,
                                 num_gpus,
+                                inference_backend,
                                 log_path,
                             )
                             .await
@@ -229,45 +231,6 @@ macro_rules! run_rollout {
             ),+
         }
     }};
-}
-
-macro_rules! generate_trajectories {
-    (
-        $model_name:expr,
-        $action_log_store_path:expr,
-        $trajectories_dir:expr,
-        $trajectories_msgpack_path:expr,
-        $stats_path:expr,
-        $config_bundle_path:expr,
-        $rollout_config:expr,
-        $posterior_calculation_config:expr,
-        $training_advantage_policy:expr,
-        $positive_advantage_only:expr,
-        $use_tool:expr,
-        $training_set_sort_mode:expr;
-        $( $model_enum:path, $model_ty:ty ),+ $(,)?
-    ) => {
-        match $model_name {
-            $(
-                $model_enum => {
-                    generate_training_trajectories_with_path::<$model_ty>(
-                        $action_log_store_path,
-                        $trajectories_dir,
-                        $trajectories_msgpack_path,
-                        $stats_path,
-                        $config_bundle_path,
-                        $rollout_config,
-                        $posterior_calculation_config,
-                        $training_advantage_policy,
-                        $positive_advantage_only,
-                        $use_tool,
-                        $training_set_sort_mode,
-                    )
-                    .await
-                }
-            ),+
-        }
-    };
 }
 
 #[tokio::main]
@@ -327,8 +290,6 @@ async fn main() {
         .await
         .unwrap();
 
-    let posterior_calculation_config_clone = posterior_calculation_config.clone();
-
     run_rollout!(
         model_name,
         args.dataset_split,
@@ -336,6 +297,7 @@ async fn main() {
         client,
         posterior_calculation_config,
         args.num_gpus,
+        args.inference_backend,
         &inference_wrapper_log_path;
         LlmModelName::Qwen25_7b, Qwen25_7B,
         LlmModelName::Qwen3_06b, Qwen3_06B,
@@ -349,58 +311,6 @@ async fn main() {
         DatasetSplitEnum::Validation, Validation,
         DatasetSplitEnum::Testing, Testing
     );
-
-    // Generate training trajectories from one-shot action logs (only for Training split)
-    if matches!(args.dataset_split, DatasetSplitEnum::Training) {
-        println!("Generating training trajectories from one-shot action logs...");
-        let trajectories_dir = training_trajectories_oneshot_path(
-            &args.mount_dir,
-            &args.model_cli_name,
-            &args.config_nickname_rollout,
-        );
-        let trajectories_msgpack_path = format!("{}/trajectories.msgpack", trajectories_dir);
-        let stats_path = training_trajectories_stats_oneshot_path(
-            &args.mount_dir,
-            &args.model_cli_name,
-            &args.config_nickname_rollout,
-        );
-        let config_bundle_path = format!("{}/config_bundle.json", trajectories_dir);
-        let action_log_store_path = action_logs_oneshot_path::<Training>(
-            &args.mount_dir,
-            &args.model_cli_name,
-            &args.config_nickname_rollout,
-            args.epoch,
-        )
-        .unwrap_or_else(|err| panic!("failed to resolve action logs path: {}", err));
-        let rollout_config: RolloutConfig<Training> = read_json(&args.rollout_config_path).unwrap();
-
-        generate_trajectories!(
-            model_name,
-            &action_log_store_path,
-            &trajectories_dir,
-            &trajectories_msgpack_path,
-            &stats_path,
-            &config_bundle_path,
-            rollout_config,
-            posterior_calculation_config_clone,
-            args.training_advantage_policy,
-            args.positive_advantage_only,
-            args.use_tool,
-            args.training_set_sort_mode;
-            LlmModelName::Qwen25_7b, Qwen25_7B,
-            LlmModelName::Qwen3_06b, Qwen3_06B,
-            LlmModelName::Qwen3_4b, Qwen3_4B,
-            LlmModelName::Qwen35_4b, Qwen35_4B,
-            LlmModelName::Qwen35_08b, Qwen35_08B,
-            LlmModelName::Gemma3_4b, Gemma3_4BIt,
-            LlmModelName::Llama31_8b, Llama31_8BInstruct,
-            LlmModelName::Mistral7bInstructV03, Mistral7BInstructV03
-        );
-        println!(
-            "Training trajectories generated at {}",
-            trajectories_msgpack_path
-        );
-    }
 
     ProgressTextLogger::shutdown().await.unwrap();
 }

@@ -1,16 +1,17 @@
 model_cli_name = "qwen25"
 config_nickname_training = "tree_notool_training"
-config_nickname_rollout = "tree_notool_rollout"
+config_nickname_generation = "tree_notool_generation"
 use_tool = false
 num_oneshot_epochs = 2
 validation_rollout_secs = 300
-oneshot_per_epoch_training_time = 480.0
+oneshot_per_epoch_training_time = 1800.0
 num_iterations_limit = 3
 num_gpus = 4
+inference_backend = "sglang"
 training_trajectory_len_cutoff = 4096
-total_time_limit_hours = 0.75
+total_time_limit_hours = 4.0
 mount_dir = "/work/nvme/bhph/zluo8/credit_assignment/results"
-rollout_mount_dir = "/work/nvme/bhph/zluo8/credit_assignment/results"
+generation_mount_dir = "/work/nvme/bhph/zluo8/credit_assignment/results"
 
 [training_hyperparameters]
 lora_or_full = "full"

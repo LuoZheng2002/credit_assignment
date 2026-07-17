@@ -86,7 +86,7 @@ class TestBatchDataset(unittest.TestCase):
             self.assertEqual(1, len(batches[1].samples))
             self.assertEqual(2, batches[1].samples[0].input_length)
 
-    def test_load_resolved_training_batches_requires_descending_lengths(self) -> None:
+    def test_load_resolved_training_batches_accepts_ascending_lengths(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".msgpack") as trajectory_db:
             trajectory_0 = {
                 "question": {
@@ -116,14 +116,15 @@ class TestBatchDataset(unittest.TestCase):
             }
             _write_entries(trajectory_db.name, [trajectory_0, trajectory_1])
 
-            with self.assertRaises(AssertionError):
-                load_resolved_training_batches(
-                    training_trajectory_path=trajectory_db.name,
-                    batch_size=2,
-                    model_official_name="Qwen/Qwen2.5-7B-Instruct",
-                    first_n_training_samples=0,
-                    training_trajectory_len_cutoff=4096,
-                )
+            batches = load_resolved_training_batches(
+                training_trajectory_path=trajectory_db.name,
+                batch_size=2,
+                model_official_name="Qwen/Qwen2.5-7B-Instruct",
+                first_n_training_samples=0,
+                training_trajectory_len_cutoff=4096,
+            )
+            self.assertEqual(1, len(batches))
+            self.assertEqual([2, 3], [sample.input_length for sample in batches[0].samples])
 
     def test_load_resolved_training_batches_honors_first_n_training_samples(
         self,

@@ -1,27 +1,27 @@
 #!/bin/bash
 
-set -euo pipefail
-
 #SBATCH --job-name=training
 #SBATCH --output=slurm/logs/training_%j.out
 #SBATCH --error=slurm/logs/training_%j.err
-#SBATCH --gres=gpu:nvidia_a100:1
 #SBATCH --cpus-per-task=32
 #SBATCH --ntasks=1
 #SBATCH --mem=32G
-#SBATCH --account=bfdz-delta-gpu
-#SBATCH --time=48:00:00
+#SBATCH --account=bfsl-delta-gpu
+
+set -euo pipefail
 
 if [ $# -lt 1 ]; then
-    echo "Usage: sbatch slurm/oneshot_training.slurm <config-path> [notify-message]" >&2
+    echo "Usage: scripts/hpc/bin_oneshot_training.py --config-path <config-path>" >&2
+    echo "   or: sbatch --gres=gpu:nvidia_a100:<num-gpus> slurm/oneshot_training.slurm <config-path> [notify-start-message] [notify-end-message]" >&2
     exit 1
 fi
 
 CONFIG_PATH="$1"
-NOTIFY_MSG="${2:-}"
+NOTIFY_START_MSG="${2:-}"
+NOTIFY_END_MSG="${3:-}"
 
-if [[ -n "$NOTIFY_MSG" ]]; then
-    trap 'python research-utility/scripts/pushover_notify.py "$NOTIFY_MSG"' EXIT
+if [[ -n "$NOTIFY_END_MSG" ]]; then
+    trap 'python research-utility/scripts/pushover_notify.py "$NOTIFY_END_MSG"' EXIT
 fi
 
 # Resolve to the repository root (sbatch copies script, so use SLURM_SUBMIT_DIR)
@@ -42,5 +42,9 @@ fi
 
 echo "Running oneshot training with config: $CONFIG_PATH"
 echo "Repo root: $REPO_ROOT"
+
+if [[ -n "$NOTIFY_START_MSG" ]]; then
+    python research-utility/scripts/pushover_notify.py "$NOTIFY_START_MSG"
+fi
 
 cargo run --release --bin bin_oneshot_training -- --config-path "$CONFIG_PATH"

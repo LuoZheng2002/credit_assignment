@@ -40,9 +40,18 @@ const MIN_ADOPTED_TRAJECTORY_FRACTION: f32 = 0.25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize)]
 pub enum TrainingSetSortMode {
+    /// Sort by trajectory token length ascending (shortest first), then by
+    /// average absolute advantage descending.
+    #[serde(alias = "by_length_ascending")]
+    ByLengthAscending,
     /// Sort by trajectory token length descending (longest first), then by
     /// average absolute advantage descending. This is the original/default behavior.
-    ByLength,
+    #[serde(
+        alias = "ByLength",
+        alias = "by_length",
+        alias = "by_length_descending"
+    )]
+    ByLengthDescending,
     /// Follow the order in the action log: grouped by question (ascending
     /// question flat id), then by trajectory index (descending average
     /// absolute advantage within each question).
@@ -633,7 +642,19 @@ async fn materialize_selected_training_trajectories<M: LlmModelMarker>(
     training_set_sort_mode: TrainingSetSortMode,
 ) -> Vec<DirectTrainingTrajectory<M>> {
     match training_set_sort_mode {
-        TrainingSetSortMode::ByLength => {
+        TrainingSetSortMode::ByLengthAscending => {
+            selected_metadata.sort_by(|a, b| {
+                a.trajectory_token_length
+                    .cmp(&b.trajectory_token_length)
+                    .then_with(|| {
+                        b.average_absolute_advantage
+                            .cmp(&a.average_absolute_advantage)
+                    })
+                    .then_with(|| a.question_flat_id.cmp(&b.question_flat_id))
+                    .then_with(|| a.trajectory_index.cmp(&b.trajectory_index))
+            });
+        }
+        TrainingSetSortMode::ByLengthDescending => {
             selected_metadata.sort_by(|a, b| {
                 b.trajectory_token_length
                     .cmp(&a.trajectory_token_length)

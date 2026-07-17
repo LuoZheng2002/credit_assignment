@@ -12,6 +12,7 @@ pub mod launch_training_wrapper;
 pub mod llm_model;
 pub mod model_answer_judgment_cache;
 pub mod oneshot_utils;
+pub mod oneshot_training_summary;
 pub mod orchestrator;
 pub mod posterior_calculation_config;
 pub mod prompt;

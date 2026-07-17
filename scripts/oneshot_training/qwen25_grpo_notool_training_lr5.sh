@@ -5,15 +5,15 @@ set -euo pipefail
 # Modal volume, then loops through epochs (validate → train → write summary).
 #
 # Prerequisites:
-#   1. Run scripts/oneshot_rollout/qwen25_grpo_notool.sh first to populate the
-#      training action logs on the shared volume.
+#   1. Run the oneshot rollout step, then the oneshot generation step, to
+#      populate the shared generation volume.
 #   2. This script launches its own SGLang server internally — no external
 #      SGLang endpoint is needed.
 
 uv run -m src_py.modal.launch_modal_oneshot_training \
     --model-cli-name qwen25 \
     --config-nickname-training grpo_notool_training_lr5 \
-    --config-nickname-rollout grpo_notool_rollout \
+    --config-nickname-generation grpo_notool_generation \
     --num-oneshot-epochs 20 \
     --num-iterations-limit 3 \
     --training-config-common-path config/training/common_ddp_lr5.toml \
@@ -22,5 +22,5 @@ uv run -m src_py.modal.launch_modal_oneshot_training \
     --num-gpus 1 \
     --gpu-name H200 \
     --mount-dir "/volume" \
-    --rollout-mount-dir "/rollout_volume" \
+    --generation-mount-dir "/generation_volume" \
     --modal-time-limit-hrs 4 \
