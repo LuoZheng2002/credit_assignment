@@ -625,15 +625,27 @@ def _maybe_apply_single_gpu_lora_synthetic_oom_preflight(
     )
     lora_or_full = assert_supported_lora_or_full(config.lora_or_full)
     distributed_strategy = assert_supported_distributed_strategy(config.distributed_strategy)
-    if not (
+    global_step = int(getattr(resume_state, "global_step", 0))
+    samples_trained = int(getattr(resume_state, "samples_trained", 0))
+    should_run_preflight = (
         rank == 0
         and world_size == 1
         and distributed_strategy == DIST_STRATEGY_SINGLE_GPU
         and lora_or_full == "lora"
         and trajectory_length_cap > MIN_TRAJECTORY_LENGTH_CAP
-        and int(getattr(resume_state, "global_step", 0)) == 0
-        and int(getattr(resume_state, "samples_trained", 0)) == 0
-    ):
+        and global_step == 0
+        and samples_trained == 0
+    )
+    if not should_run_preflight:
+        if rank == 0:
+            _memtrace(
+                "synthetic_oom_preflight_skipped "
+                f"rank={rank} world_size={world_size} "
+                f"distributed_strategy={distributed_strategy} "
+                f"lora_or_full={lora_or_full} "
+                f"trajectory_length_cap={trajectory_length_cap} "
+                f"global_step={global_step} samples_trained={samples_trained}"
+            )
         return trajectory_length_cap
 
     token_id = _synthetic_probe_token_id(
@@ -645,6 +657,11 @@ def _maybe_apply_single_gpu_lora_synthetic_oom_preflight(
     low = MIN_TRAJECTORY_LENGTH_CAP
     high = trajectory_length_cap
     precision = 16
+    _memtrace(
+        "synthetic_oom_preflight_start "
+        f"high={high} low={low} precision={precision} "
+        "enabled_for=single_gpu_lora"
+    )
     _text_info(
         "synthetic_oom_preflight_start=1 "
         f"high={high} low={low} precision={precision} "
@@ -683,6 +700,10 @@ def _maybe_apply_single_gpu_lora_synthetic_oom_preflight(
                 "synthetic_oom_preflight_probe=1 "
                 f"sequence_length={mid} ok={int(ok)} low={low} high={high}"
             )
+            _memtrace(
+                "synthetic_oom_preflight_probe "
+                f"sequence_length={mid} ok={int(ok)} low={low} high={high}"
+            )
             if ok:
                 low = mid
                 longest_valid = mid
@@ -693,6 +714,11 @@ def _maybe_apply_single_gpu_lora_synthetic_oom_preflight(
     )
     _text_info(
         "synthetic_oom_preflight_result=1 "
+        f"longest_valid={longest_valid} precision={precision} "
+        f"selected_training_trajectory_len_cutoff={selected_cap}"
+    )
+    _memtrace(
+        "synthetic_oom_preflight_result "
         f"longest_valid={longest_valid} precision={precision} "
         f"selected_training_trajectory_len_cutoff={selected_cap}"
     )

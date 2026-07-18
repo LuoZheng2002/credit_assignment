@@ -1,5 +1,5 @@
 model_cli_name = "mistral"
-config_nickname_training = "grpo_notool_lora_r16_training_5m"
+config_nickname_training = "grpo_notool_lora_r16_training_5m_safe"
 config_nickname_generation = "grpo_notool_generation_1h"
 use_tool = false
 num_oneshot_epochs = 10

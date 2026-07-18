@@ -77,6 +77,8 @@ struct Args {
     inference_backend: InferenceBackend,
     training_trajectory_len_cutoff: usize,
     #[serde(default)]
+    training_set_sort_mode: String,
+    #[serde(default)]
     total_time_limit_hours: f32,
     mount_dir: String,
     generation_mount_dir: String,
