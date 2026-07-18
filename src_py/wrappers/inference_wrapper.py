@@ -271,6 +271,41 @@ def _optional_positive_int_env(name: str) -> str | None:
     return raw_value
 
 
+def _resolve_peft_adapter_base_model_path(model_path: str) -> str | None:
+    model_dir = Path(model_path).expanduser().resolve()
+    adapter_config_path = model_dir / "adapter_config.json"
+    if not adapter_config_path.exists():
+        return None
+
+    base_model_path_file = model_dir / "base_model_path.txt"
+    if base_model_path_file.exists():
+        base_model_path = base_model_path_file.read_text().strip()
+        if base_model_path:
+            return base_model_path
+
+    adapter_config = json.loads(adapter_config_path.read_text())
+    base_model_path = str(adapter_config.get("base_model_name_or_path", "")).strip()
+    if not base_model_path:
+        raise ValueError(
+            f"PEFT adapter at {model_dir} is missing base_model_name_or_path"
+        )
+    return base_model_path
+
+
+def _resolve_peft_adapter_rank(model_path: str) -> int | None:
+    adapter_config_path = Path(model_path).expanduser().resolve() / "adapter_config.json"
+    if not adapter_config_path.exists():
+        return None
+    adapter_config = json.loads(adapter_config_path.read_text())
+    rank = adapter_config.get("r")
+    if rank is None:
+        return None
+    rank_int = int(rank)
+    if rank_int <= 0:
+        raise ValueError(f"PEFT adapter rank must be positive, got {rank!r}")
+    return rank_int
+
+
 def _int_list(value: Any, field_name: str) -> list[int]:
     if not isinstance(value, list):
         raise ValueError(f"{field_name} must be a list")
@@ -682,6 +717,13 @@ class VllmBackend:
 
     def _launch_model(self, model_path: str) -> None:
         vllm_python = _resolve_vllm_python_executable()
+        adapter_base_model_path = _resolve_peft_adapter_base_model_path(model_path)
+        vllm_model_path = adapter_base_model_path or model_path
+        is_peft_adapter = adapter_base_model_path is not None
+        adapter_rank = _resolve_peft_adapter_rank(model_path) if is_peft_adapter else None
+        base_served_model_name = (
+            f"{self._served_model_name}-base" if is_peft_adapter else self._served_model_name
+        )
         child_env = os.environ.copy()
         child_env.setdefault("PYTHONUNBUFFERED", "1")
         child_env.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
@@ -704,9 +746,9 @@ class VllmBackend:
                 "-m",
                 "vllm.entrypoints.openai.api_server",
                 "--model",
-                model_path,
+                vllm_model_path,
                 "--served-model-name",
-                self._served_model_name,
+                base_served_model_name,
                 "--host",
                 "127.0.0.1",
                 "--port",
@@ -715,6 +757,18 @@ class VllmBackend:
                 "--dtype",
                 os.environ.get("VLLM_DTYPE", "auto"),
             ]
+            if is_peft_adapter:
+                launch_command.extend(
+                    [
+                        "--enable-lora",
+                        "--max-loras",
+                        "1",
+                        "--lora-modules",
+                        f"{self._served_model_name}={model_path}",
+                    ]
+                )
+                if adapter_rank is not None:
+                    launch_command.extend(["--max-lora-rank", str(adapter_rank)])
             if self._num_gpus > 1:
                 launch_command.extend(["--tensor-parallel-size", str(self._num_gpus)])
             gpu_memory_utilization = _optional_float_env("VLLM_GPU_MEMORY_UTILIZATION")

@@ -801,6 +801,7 @@ def _run_unified_loop(
     final_model_output_parent_dir: Path,
     training_summary_parent_dir: str,
     resolved_model_path: str,
+    source_model_path_for_save: str | None,
     tokenizer: Any,
     max_grad_norm: float,
     lr_warmup_steps: int,
@@ -1601,7 +1602,7 @@ def _run_unified_loop(
         lora_or_full=lora_or_full,
         distributed_strategy=distributed_strategy,
         final_model_output_parent_dir=final_model_output_parent_dir,
-        source_model_path=resolved_model_path,
+        source_model_path=source_model_path_for_save or resolved_model_path,
         tokenizer=tokenizer,
     )
     if _is_primary_rank():
@@ -1682,6 +1683,7 @@ def run_training_loop(
     final_model_output_parent_dir: Path,
     training_summary_parent_dir: str,
     resolved_model_path: str,
+    source_model_path_for_save: str | None,
     tokenizer: Any,
     max_grad_norm: float,
     lr_warmup_steps: int,
@@ -1709,6 +1711,7 @@ def run_training_loop(
         final_model_output_parent_dir=final_model_output_parent_dir,
         training_summary_parent_dir=training_summary_parent_dir,
         resolved_model_path=resolved_model_path,
+        source_model_path_for_save=source_model_path_for_save,
         tokenizer=tokenizer,
         max_grad_norm=max_grad_norm,
         lr_warmup_steps=lr_warmup_steps,

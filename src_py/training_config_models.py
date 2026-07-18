@@ -54,6 +54,7 @@ class TrainingModeOneShot(BaseModel):
     type: Literal["oneshot"]
     per_epoch_training_time: float
     num_oneshot_epochs: int
+    start_epoch: int = 1
     model_output_root: str
     training_summary_dir: str
     base_model_parent_dir: str

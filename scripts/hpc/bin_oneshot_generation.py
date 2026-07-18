@@ -16,9 +16,12 @@ from research_utility.slurm_submit import SlurmJobSpec, submit  # noqa: E402
 SPEC = SlurmJobSpec(
     nickname_key="config_nickname_generation",
     job_prefix="generation_",
-    slurm_script_name="oneshot_generation.slurm",
+    slurm_script_name="oneshot_generation_cpu.slurm",
     description="Submit a SLURM job that runs bin_oneshot_generation with the given config.",
     repo_root=_REPO_ROOT,
+    request_gpu=False,
+    partition="cpu",
+    account="bfsl-delta-cpu",
 )
 
 if __name__ == "__main__":

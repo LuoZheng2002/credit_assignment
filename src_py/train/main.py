@@ -42,6 +42,7 @@ def _load_train_config(
         training_summary_parent_dir = request.training_mode.training_summary_dir
         final_model_output_parent_dir = request.training_mode.training_summary_dir
         oneshot_num_epochs = request.training_mode.num_oneshot_epochs
+        oneshot_start_epoch = request.training_mode.start_epoch
         oneshot_model_output_root = request.training_mode.model_output_root
     else:
         training_mode = "orchestration"
@@ -50,6 +51,7 @@ def _load_train_config(
         training_summary_parent_dir = request.training_mode.training_summary_dir
         final_model_output_parent_dir = request.training_mode.output_model_parent_dir
         oneshot_num_epochs = 0
+        oneshot_start_epoch = 1
         oneshot_model_output_root = ""
 
     model_parent_dir_path = Path(model_parent_dir)
@@ -80,6 +82,7 @@ def _load_train_config(
         lr_warmup_steps=hp.lr_warmup_steps,
         training_mode=training_mode,
         oneshot_num_epochs=oneshot_num_epochs,
+        oneshot_start_epoch=oneshot_start_epoch,
         oneshot_model_output_root=oneshot_model_output_root,
     )
 

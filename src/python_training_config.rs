@@ -24,6 +24,7 @@ pub enum TrainingMode {
     OneShot {
         per_epoch_training_time: f32,
         num_oneshot_epochs: usize,
+        start_epoch: usize,
         model_output_root: String,
         training_summary_dir: String,
         base_model_parent_dir: String,

@@ -29,8 +29,10 @@ fi
 REPO_ROOT="$SLURM_SUBMIT_DIR"
 cd "$REPO_ROOT"
 
-# Ensure venv bin dirs are on PATH (needed for ninja, etc.)
-export PATH="$REPO_ROOT/pyprojects/sglang/.venv/bin:$PATH"
+# Prefer the main project venv for experiment executables. The inference wrapper
+# resolves the vLLM runtime from VLLM_VENV when a config uses vLLM.
+export PATH="$REPO_ROOT/.venv/bin:$PATH"
+export VLLM_VENV="${VLLM_VENV:-/work/nvme/bhph/zluo8/credit_assignment/venvs/vllm-0.25.1-cu129}"
 
 echo "Running orchestrator with config: $CONFIG_PATH"
 echo "Repo root: $REPO_ROOT"

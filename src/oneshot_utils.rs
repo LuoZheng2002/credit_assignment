@@ -108,3 +108,23 @@ pub fn all_expected_oneshot_model_outputs_exist(
             .exists()
     })
 }
+
+pub fn oneshot_epoch_model_ready(model_output_root: &str, epoch: usize) -> bool {
+    let epoch_dir = Path::new(model_output_root).join(format!("oneshot_epoch_{epoch}"));
+    epoch_dir.join("model").exists() && epoch_dir.join("training_summary.json").exists()
+}
+
+pub fn count_contiguous_ready_oneshot_epochs(
+    model_output_root: &str,
+    num_oneshot_epochs: usize,
+) -> usize {
+    let mut ready_count = 0usize;
+    for epoch in 1..=num_oneshot_epochs {
+        if oneshot_epoch_model_ready(model_output_root, epoch) {
+            ready_count = epoch;
+        } else {
+            break;
+        }
+    }
+    ready_count
+}

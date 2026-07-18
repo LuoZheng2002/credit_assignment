@@ -223,10 +223,7 @@ pub fn read_oneshot_training_epoch_stats(
 
 pub fn read_existing_validation_summary(
     summary_parent_dir: &str,
-) -> (
-    HashSet<usize>,
-    BTreeMap<usize, (f32, f32, f32, f32)>,
-) {
+) -> (HashSet<usize>, BTreeMap<usize, (f32, f32, f32, f32)>) {
     let aggregated_path = oneshot_aggregated_summary_path(summary_parent_dir);
     if !aggregated_path.exists() {
         return (HashSet::new(), BTreeMap::new());
@@ -249,7 +246,10 @@ pub fn read_existing_validation_summary(
         return (already_validated_epochs, validation_accuracies);
     };
 
-    if let Some(acc_map) = parsed.get("validation_accuracies").and_then(|v| v.as_object()) {
+    if let Some(acc_map) = parsed
+        .get("validation_accuracies")
+        .and_then(|v| v.as_object())
+    {
         for (key, value) in acc_map {
             let Some(epoch_str) = key.strip_prefix("epoch_") else {
                 continue;
@@ -259,7 +259,10 @@ pub fn read_existing_validation_summary(
             };
             already_validated_epochs.insert(epoch);
             let avg = value.get("avg").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-            let deepmath = value.get("deepmath").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            let deepmath = value
+                .get("deepmath")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32;
             let math = value.get("math").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
             validation_accuracies.insert(epoch, (avg, deepmath, math, 0.0));
         }
@@ -274,8 +277,7 @@ pub fn detect_trained_oneshot_epochs(
 ) -> Vec<usize> {
     let mut trained_epochs = Vec::new();
     for epoch in 1..=num_oneshot_epochs {
-        let model_dir = Path::new(oneshot_model_output_root).join(format!("oneshot_epoch_{epoch}/model"));
-        if model_dir.exists() {
+        if crate::oneshot_utils::oneshot_epoch_model_ready(oneshot_model_output_root, epoch) {
             trained_epochs.push(epoch);
         }
     }
@@ -290,12 +292,10 @@ pub fn prune_non_best_oneshot_models(
     let Some((best_epoch, best_accuracy)) = validation_accuracies
         .iter()
         .filter(|(epoch, _)| **epoch > 0)
-        .max_by(|left, right| left.1 .0.total_cmp(&right.1 .0))
+        .max_by(|left, right| left.1.0.total_cmp(&right.1.0))
         .map(|(epoch, accuracies)| (*epoch, accuracies.0))
     else {
-        log_info(
-            "No validated trained epoch is available; skipping post-validation model pruning",
-        );
+        log_info("No validated trained epoch is available; skipping post-validation model pruning");
         return;
     };
 

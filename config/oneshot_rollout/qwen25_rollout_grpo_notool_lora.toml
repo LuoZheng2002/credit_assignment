@@ -8,5 +8,5 @@ total_epochs = 1
 rollout_secs = 300
 mount_dir = "/work/nvme/bhph/zluo8/credit_assignment/results"
 num_gpus = 1
-inference_backend = "sglang"
+inference_backend = "vllm"
 total_time_limit_hours = 1.0

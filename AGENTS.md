@@ -129,3 +129,18 @@ In practice:
 - LoRA and non-LoRA training jobs should both consume the non-LoRA generation artifacts.
 - Do not launch or depend on a separate LoRA-specific rollout or generation config unless there is a new explicit reason in code or config semantics.
 - If a LoRA training config points at a LoRA rollout or generation nickname, treat that as suspicious and verify whether it should instead reference the non-LoRA nickname.
+
+## Inference backend naming
+
+Future Delta experiment configs should use `inference_backend = "vllm"` unless
+there is a specific compatibility/debugging reason to use `sglang`.
+
+Do not encode the inference backend in experiment config filenames or
+`config_nickname_*` values. Treat backend choice as an implementation detail of
+the config, not as part of the scientific experiment identity. If an old
+`*_vllm*` config is otherwise identical to a non-`vllm` config, merge them by
+keeping the backend-agnostic config name and setting `inference_backend = "vllm"`.
+
+Do not set a default `VLLM_GPU_MEMORY_UTILIZATION` for ordinary experiment
+SLURM jobs. Only pass a vLLM GPU memory utilization limit when a run explicitly
+needs one for debugging or stability.

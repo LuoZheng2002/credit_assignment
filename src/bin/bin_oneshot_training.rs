@@ -10,24 +10,27 @@ use credit_assignment::{
     check_python_env::check_sympy_availability,
     directories::{
         base_model_dir, oneshot_epochs_parent_dir, text_logger_summary_path,
-        text_logger_verbose_path, training_summary_oneshot_parent_dir, training_trajectories_oneshot_path,
-        training_wrapper_log_path,
+        text_logger_verbose_path, training_summary_oneshot_parent_dir,
+        training_trajectories_oneshot_path, training_wrapper_log_path,
     },
     launch_inference_wrapper::InferenceBackend,
+    launch_training_wrapper::run_training_wrapper_and_wait,
     llm_model::{
         Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
-        Qwen25_7B, Qwen3_06B, Qwen3_4B, Qwen35_08B, Qwen35_4B,
-    },
-    launch_training_wrapper::run_training_wrapper_and_wait,
-    oneshot_utils::{
-        all_expected_oneshot_model_outputs_exist, detect_oneshot_artifacts,
-        read_oneshot_epoch_count_from_summary, read_oneshot_run_manifest, write_oneshot_run_manifest,
+        Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
     oneshot_training_summary::{ensure_parent_dir_exists, read_oneshot_training_epoch_stats},
+    oneshot_utils::{
+        all_expected_oneshot_model_outputs_exist, count_contiguous_ready_oneshot_epochs,
+        detect_oneshot_artifacts, read_oneshot_epoch_count_from_summary, read_oneshot_run_manifest,
+        write_oneshot_run_manifest,
+    },
     python_training_config::{PythonTrainingConfig, TrainingHyperparameters, TrainingMode},
     utils::configure_mount_dir,
 };
-use research_utility::progress_text_logger::{ProgressTextLogger, log_info, log_state, log_warning};
+use research_utility::progress_text_logger::{
+    ProgressTextLogger, log_info, log_state, log_warning,
+};
 
 #[derive(Parser, Debug)]
 struct CliArgs {
@@ -44,6 +47,8 @@ struct Args {
     config_nickname_generation: String,
     use_tool: bool,
     num_oneshot_epochs: usize,
+    #[serde(default)]
+    validation_total_epochs: Option<usize>,
     validation_rollout_secs: usize,
     training_hyperparameters: TrainingHyperparameters,
     oneshot_per_epoch_training_time: f32,
@@ -107,6 +112,8 @@ async fn run_oneshot_training<M: LlmModelMarker>(
         oneshot_epochs_parent_dir(mount_dir, model_cli_name, config_nickname_training);
 
     let base_model_parent_dir = base_model_dir(mount_dir, model_cli_name);
+    let mut training_base_model_parent_dir = base_model_parent_dir.clone();
+    let mut start_epoch = 1usize;
 
     let previous_artifacts_detected = detect_oneshot_artifacts(
         &oneshot_training_summary_parent_dir,
@@ -136,24 +143,46 @@ async fn run_oneshot_training<M: LlmModelMarker>(
             return;
         }
 
-        if !all_expected_oneshot_model_outputs_exist(&oneshot_model_output_root, num_oneshot_epochs)
+        let completed_epochs =
+            count_contiguous_ready_oneshot_epochs(&oneshot_model_output_root, num_oneshot_epochs);
+        if completed_epochs >= num_oneshot_epochs
+            && all_expected_oneshot_model_outputs_exist(
+                &oneshot_model_output_root,
+                num_oneshot_epochs,
+            )
         {
-            log_warning(format!(
-                "Detected prior oneshot artifacts for num_oneshot_epochs={} but not all expected model outputs are present under {}; exiting early because oneshot training resume is disabled.",
-                num_oneshot_epochs, oneshot_model_output_root
+            log_info(format!(
+                "Detected matching prior oneshot artifacts for num_oneshot_epochs={}; skipping training",
+                num_oneshot_epochs
             ));
+            let training_epoch_stats =
+                read_oneshot_training_epoch_stats(&oneshot_model_output_root, num_oneshot_epochs);
+            log_info(format!(
+                "Recorded per-epoch training stats for {} oneshot epoch(s)",
+                training_epoch_stats.throughputs.len()
+            ));
+            log_state("One-shot training completed");
             return;
         }
-
-        log_info(format!(
-            "Detected matching prior oneshot artifacts for num_oneshot_epochs={}; skipping training and continuing with remaining validation epochs",
-            num_oneshot_epochs
+        start_epoch = completed_epochs + 1;
+        if completed_epochs > 0 {
+            training_base_model_parent_dir = format!(
+                "{}/oneshot_epoch_{}",
+                oneshot_model_output_root, completed_epochs
+            );
+        }
+        log_warning(format!(
+            "Detected partial oneshot artifacts; resuming training from epoch {} of {} using base model parent {}",
+            start_epoch, num_oneshot_epochs, training_base_model_parent_dir
         ));
     } else {
         write_oneshot_run_manifest(&oneshot_training_summary_parent_dir, num_oneshot_epochs);
+    }
+
+    if start_epoch <= num_oneshot_epochs {
         log_state(format!(
-            "Starting oneshot training for {} epoch(s) in a single process",
-            num_oneshot_epochs
+            "Starting oneshot training from epoch {} through {}",
+            start_epoch, num_oneshot_epochs
         ));
 
         let training_config = PythonTrainingConfig {
@@ -165,9 +194,10 @@ async fn run_oneshot_training<M: LlmModelMarker>(
             training_mode: TrainingMode::OneShot {
                 per_epoch_training_time: oneshot_per_epoch_training_time,
                 num_oneshot_epochs,
+                start_epoch,
                 model_output_root: oneshot_model_output_root.clone(),
                 training_summary_dir: oneshot_model_output_root.clone(),
-                base_model_parent_dir,
+                base_model_parent_dir: training_base_model_parent_dir,
             },
         };
 

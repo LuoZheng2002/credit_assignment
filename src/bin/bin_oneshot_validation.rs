@@ -1,5 +1,6 @@
 use std::backtrace::Backtrace;
 use std::path::Path;
+use std::time::Duration;
 
 use clap::{Parser, ValueEnum};
 use ordered_float::NotNan;
@@ -24,13 +25,14 @@ use credit_assignment::{
     },
     llm_model::{
         Gemma3_4BIt, InferenceEndpoint, Llama31_8BInstruct, LlmModelMarker, LlmModelName,
-        Mistral7BInstructV03, Qwen25_7B, Qwen3_06B, Qwen3_4B, Qwen35_08B, Qwen35_4B,
+        Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
     oneshot_training_summary::{
-        derive_phase_log_path, detect_trained_oneshot_epochs, ensure_parent_dir_exists,
-        prune_non_best_oneshot_models, read_existing_validation_summary,
-        read_oneshot_training_epoch_stats, write_training_summary,
+        derive_phase_log_path, ensure_parent_dir_exists, prune_non_best_oneshot_models,
+        read_existing_validation_summary, read_oneshot_training_epoch_stats,
+        write_training_summary,
     },
+    oneshot_utils::oneshot_epoch_model_ready,
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     python_training_config::TrainingHyperparameters,
     rollout::{RolloutProgramConfig, rollout_all},
@@ -65,6 +67,8 @@ struct Args {
     config_nickname_generation: String,
     use_tool: bool,
     num_oneshot_epochs: usize,
+    #[serde(default)]
+    validation_total_epochs: Option<usize>,
     validation_rollout_secs: usize,
     training_hyperparameters: TrainingHyperparameters,
     oneshot_per_epoch_training_time: f32,
@@ -97,32 +101,19 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
         training_summary_oneshot_parent_dir(mount_dir, model_cli_name, config_nickname_training);
     let oneshot_model_output_root =
         oneshot_epochs_parent_dir(mount_dir, model_cli_name, config_nickname_training);
-    let training_epoch_stats =
-        read_oneshot_training_epoch_stats(&oneshot_model_output_root, num_oneshot_epochs);
-    let trained_epochs = detect_trained_oneshot_epochs(&oneshot_model_output_root, num_oneshot_epochs);
-
     let (already_validated_epochs, mut validation_accuracies) =
         read_existing_validation_summary(&oneshot_training_summary_parent_dir);
 
-    let mut epochs_to_validate = Vec::new();
-    if !already_validated_epochs.contains(&0) {
-        epochs_to_validate.push(0);
-    }
-    epochs_to_validate.extend(
-        trained_epochs
-            .iter()
-            .copied()
-            .filter(|epoch| !already_validated_epochs.contains(epoch)),
-    );
-
-    if epochs_to_validate.is_empty() {
-        log_info("No new oneshot epochs require validation; skipping validation phase");
+    if already_validated_epochs.contains(&0)
+        && (1..=num_oneshot_epochs).all(|epoch| already_validated_epochs.contains(&epoch))
+    {
+        log_info("All requested oneshot epochs are already validated; skipping validation phase");
         return;
     }
 
     log_info(format!(
-        "Will validate epochs {:?} (trained epochs detected: {:?})",
-        epochs_to_validate, trained_epochs
+        "Will validate base epoch plus trained epochs 1..={} (already validated: {:?})",
+        num_oneshot_epochs, already_validated_epochs
     ));
     best_effort_shutdown_stale_inference_wrapper().await;
 
@@ -145,13 +136,35 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
         sglang_port
     ));
 
-    for &epoch in &epochs_to_validate {
+    for epoch in 0..=num_oneshot_epochs {
+        if already_validated_epochs.contains(&epoch) {
+            log_info(format!("Epoch {}: already validated; skipping", epoch));
+            continue;
+        }
         log_state(format!(
             "One-shot validation for epoch {}/{}",
             epoch, num_oneshot_epochs
         ));
 
         if epoch > 0 {
+            let wait_deadline = std::time::Instant::now() + Duration::from_secs(600);
+            while !oneshot_epoch_model_ready(&oneshot_model_output_root, epoch) {
+                if std::time::Instant::now() >= wait_deadline {
+                    log_warning(format!(
+                        "Epoch {} model was not ready after 600s; exiting validation early so a later run can resume",
+                        epoch
+                    ));
+                    break;
+                }
+                log_info(format!(
+                    "Epoch {} model is not ready yet; polling again in 30s",
+                    epoch
+                ));
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            }
+            if !oneshot_epoch_model_ready(&oneshot_model_output_root, epoch) {
+                break;
+            }
             let model_path = format!(
                 "{}/model",
                 oneshot_model_parent_dir(
@@ -257,6 +270,8 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
             }
         }
 
+        let training_epoch_stats =
+            read_oneshot_training_epoch_stats(&oneshot_model_output_root, num_oneshot_epochs);
         write_training_summary(
             &oneshot_training_summary_parent_dir,
             epoch,
@@ -267,10 +282,10 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
             &training_epoch_stats.longest_non_oom_trajectory_lengths,
         );
 
-        let validated_trained_epochs: Vec<usize> = trained_epochs
-            .iter()
+        let validated_trained_epochs: Vec<usize> = validation_accuracies
+            .keys()
             .copied()
-            .filter(|trained_epoch| validation_accuracies.contains_key(trained_epoch))
+            .filter(|validated_epoch| *validated_epoch > 0)
             .collect();
         prune_non_best_oneshot_models(
             &oneshot_model_output_root,
@@ -306,6 +321,7 @@ async fn main() {
         config_nickname_training,
         use_tool,
         num_oneshot_epochs,
+        validation_total_epochs,
         validation_rollout_secs,
         num_gpus,
         inference_backend,
@@ -314,6 +330,7 @@ async fn main() {
         ..
     } = toml::from_str(&config_contents)
         .unwrap_or_else(|err| panic!("failed to parse config file '{}': {}", config_path, err));
+    let validation_total_epochs = validation_total_epochs.unwrap_or(num_oneshot_epochs);
 
     let process_title = format!(
         "oneshot_validation_{}_{}",
@@ -325,8 +342,8 @@ async fn main() {
         .unwrap_or_else(|err| panic!("failed to configure mount dir: {}", err));
     assert!(num_gpus > 0, "--num-gpus must be positive");
     assert!(
-        num_oneshot_epochs > 0,
-        "--num-oneshot-epochs must be positive"
+        validation_total_epochs > 0,
+        "validation_total_epochs/num_oneshot_epochs must be positive"
     );
 
     let inference_wrapper_log_path = derive_phase_log_path(
@@ -344,10 +361,18 @@ async fn main() {
 
     ensure_parent_dir_exists(&inference_wrapper_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare inference wrapper log directory: {}", err));
-    ensure_parent_dir_exists(&text_log_summary_path)
-        .unwrap_or_else(|err| panic!("failed to prepare validation summary log directory: {}", err));
-    ensure_parent_dir_exists(&text_log_verbose_path)
-        .unwrap_or_else(|err| panic!("failed to prepare validation verbose log directory: {}", err));
+    ensure_parent_dir_exists(&text_log_summary_path).unwrap_or_else(|err| {
+        panic!(
+            "failed to prepare validation summary log directory: {}",
+            err
+        )
+    });
+    ensure_parent_dir_exists(&text_log_verbose_path).unwrap_or_else(|err| {
+        panic!(
+            "failed to prepare validation verbose log directory: {}",
+            err
+        )
+    });
     ProgressTextLogger::initialize(text_log_summary_path, text_log_verbose_path)
         .await
         .unwrap();
@@ -372,7 +397,7 @@ async fn main() {
                 &mount_dir,
                 validation_rollout_config,
                 posterior_calculation_config,
-                num_oneshot_epochs,
+                validation_total_epochs,
                 validation_rollout_secs,
                 num_gpus,
                 inference_backend,
@@ -389,7 +414,7 @@ async fn main() {
                 &mount_dir,
                 validation_rollout_config,
                 posterior_calculation_config,
-                num_oneshot_epochs,
+                validation_total_epochs,
                 validation_rollout_secs,
                 num_gpus,
                 inference_backend,
@@ -406,7 +431,7 @@ async fn main() {
                 &mount_dir,
                 validation_rollout_config,
                 posterior_calculation_config,
-                num_oneshot_epochs,
+                validation_total_epochs,
                 validation_rollout_secs,
                 num_gpus,
                 inference_backend,
@@ -423,7 +448,7 @@ async fn main() {
                 &mount_dir,
                 validation_rollout_config,
                 posterior_calculation_config,
-                num_oneshot_epochs,
+                validation_total_epochs,
                 validation_rollout_secs,
                 num_gpus,
                 inference_backend,
@@ -440,7 +465,7 @@ async fn main() {
                 &mount_dir,
                 validation_rollout_config,
                 posterior_calculation_config,
-                num_oneshot_epochs,
+                validation_total_epochs,
                 validation_rollout_secs,
                 num_gpus,
                 inference_backend,
@@ -457,7 +482,7 @@ async fn main() {
                 &mount_dir,
                 validation_rollout_config,
                 posterior_calculation_config,
-                num_oneshot_epochs,
+                validation_total_epochs,
                 validation_rollout_secs,
                 num_gpus,
                 inference_backend,
@@ -474,7 +499,7 @@ async fn main() {
                 &mount_dir,
                 validation_rollout_config,
                 posterior_calculation_config,
-                num_oneshot_epochs,
+                validation_total_epochs,
                 validation_rollout_secs,
                 num_gpus,
                 inference_backend,
@@ -491,7 +516,7 @@ async fn main() {
                 &mount_dir,
                 validation_rollout_config,
                 posterior_calculation_config,
-                num_oneshot_epochs,
+                validation_total_epochs,
                 validation_rollout_secs,
                 num_gpus,
                 inference_backend,

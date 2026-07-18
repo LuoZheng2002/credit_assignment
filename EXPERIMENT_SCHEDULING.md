@@ -12,6 +12,7 @@ This document defines the near-term experimental plan for the TreeMAPPO paper un
   1. `oneshot_rollout`
   2. `oneshot_generation`
   3. `oneshot_training`
+  4. `oneshot_validation`
 
 This is cheaper, easier to debug, and sufficient for identifying stable training settings before launching multi-epoch orchestrated experiments.
 
@@ -47,6 +48,8 @@ The intended final paper tables are already clear:
 - Single-GPU jobs are materially easier to queue than 4-GPU jobs on Delta.
 - CPU-only generation is affordable and should be used aggressively.
 - During hyperparameter search, prioritize LoRA single-GPU training over full-parameter FSDP training unless a specific full-model question is being answered.
+- Future split-pipeline experiments should use `inference_backend = "vllm"` by default; do not include backend names such as `vllm` in experiment nicknames unless backend behavior itself is the experimental variable.
+- Ordinary vLLM experiment jobs should not set a default `VLLM_GPU_MEMORY_UTILIZATION`; let vLLM use its default memory policy unless a specific run explicitly needs a cap.
 - Full orchestrator runs are deferred until:
   - training no longer fails due to infrastructure or OOM instability,
   - generation policy is settled,

@@ -82,6 +82,7 @@ class TrainConfig:
     lr_warmup_steps: int
     training_mode: str = "orchestration"
     oneshot_num_epochs: int = 0
+    oneshot_start_epoch: int = 1
     oneshot_model_output_root: str = ""
 
 
@@ -608,6 +609,16 @@ def _save_final_model_folder(
     source_model_folder = Path(source_model_path).expanduser().resolve()
     rank, _ = _get_rank_world_size()
 
+    def _write_lora_base_model_metadata(model_dir: Path) -> None:
+        adapter_config_path = model_dir / "adapter_config.json"
+        if adapter_config_path.exists():
+            adapter_config = json.loads(adapter_config_path.read_text())
+            adapter_config["base_model_name_or_path"] = source_model_path
+            adapter_config_path.write_text(
+                json.dumps(adapter_config, indent=2, sort_keys=True) + "\n"
+            )
+        (model_dir / "base_model_path.txt").write_text(f"{source_model_path}\n")
+
     def _remove_existing_weight_files(model_dir: Path) -> None:
         weight_paths = [
             model_dir / "model.safetensors",
@@ -653,8 +664,11 @@ def _save_final_model_folder(
             )
             shutil.rmtree(final_model_output_path)
         _text_info(f"writing_final_output_model=1 output_dir={final_model_output_path}")
-        shutil.copytree(source_model_folder, final_model_output_path)
-        _remove_existing_weight_files(final_model_output_path)
+        if lora_or_full == USE_LORA:
+            final_model_output_path.mkdir(parents=True, exist_ok=True)
+        else:
+            shutil.copytree(source_model_folder, final_model_output_path)
+            _remove_existing_weight_files(final_model_output_path)
 
     _distributed_barrier()
 
@@ -662,20 +676,29 @@ def _save_final_model_folder(
         if rank == 0:
             unwrapped = _unwrap_model(model)
             export_model: Any = unwrapped
-            merge_and_unload = getattr(unwrapped, "merge_and_unload", None)
-            if lora_or_full == USE_LORA and callable(merge_and_unload):
-                export_model = merge_and_unload()
-            export_model.save_pretrained(
-                final_model_output_path,
-                safe_serialization=True,
-                save_config=False,
-            )
+            if lora_or_full == USE_LORA:
+                export_model.save_pretrained(
+                    final_model_output_path,
+                    safe_serialization=True,
+                    save_config=True,
+                )
+                tokenizer_save_pretrained = getattr(tokenizer, "save_pretrained", None)
+                if callable(tokenizer_save_pretrained):
+                    tokenizer_save_pretrained(final_model_output_path)
+                _write_lora_base_model_metadata(final_model_output_path)
+            else:
+                export_model.save_pretrained(
+                    final_model_output_path,
+                    safe_serialization=True,
+                    save_config=False,
+                )
             _text_info(
                 f"written_final_output_model=1 output_dir={final_model_output_path}"
             )
         _distributed_barrier()
         return
 
+    assert lora_or_full == USE_FULL, "FSDP final export currently supports full-model training only"
     assert distributed_strategy == DIST_STRATEGY_FSDP, (
         "unknown distributed strategy for final model export"
     )
@@ -851,6 +874,27 @@ def _resolve_local_model_path(model_parent_dir: str) -> str:
     return str(normalized)
 
 
+def _resolve_peft_adapter_base_model_path(model_path: str) -> str | None:
+    model_dir = Path(model_path).expanduser().resolve()
+    adapter_config_path = model_dir / "adapter_config.json"
+    if not adapter_config_path.exists():
+        return None
+
+    base_model_path_file = model_dir / "base_model_path.txt"
+    if base_model_path_file.exists():
+        base_model_path = base_model_path_file.read_text().strip()
+        if base_model_path:
+            return base_model_path
+
+    adapter_config = json.loads(adapter_config_path.read_text())
+    base_model_path = str(adapter_config.get("base_model_name_or_path", "")).strip()
+    if not base_model_path:
+        raise ValueError(
+            f"PEFT adapter at {model_dir} is missing base_model_name_or_path"
+        )
+    return base_model_path
+
+
 LORA_TARGET_MODULES: list[str] = ["q_proj", "k_proj", "v_proj", "o_proj"]
 
 
@@ -865,13 +909,32 @@ def _build_lora_model(
     assert lora_alpha > 0, "lora_alpha must be positive"
     assert lora_dropout >= 0.0 and lora_dropout < 1.0, "lora_dropout must be in [0, 1)"
 
-    from peft import LoraConfig, get_peft_model
+    from peft import LoraConfig, PeftModel, get_peft_model
 
+    adapter_base_model_path = _resolve_peft_adapter_base_model_path(model_path)
+    base_model_path = adapter_base_model_path or model_path
     base_model, attention_backend = _load_causal_lm_with_attention(
-        model_path=model_path, device=device
+        model_path=base_model_path, device=device
     )
     base_model_any: Any = base_model
     base_model_any.gradient_checkpointing_enable()
+
+    if adapter_base_model_path is not None:
+        model = cast(
+            torch.nn.Module,
+            PeftModel.from_pretrained(
+                base_model_any,
+                model_path,
+                is_trainable=True,
+            ),
+        )
+        trainable_count = sum(
+            parameter.numel()
+            for parameter in model.parameters()
+            if parameter.requires_grad
+        )
+        assert trainable_count > 0, "LoRA adapter model must expose trainable parameters"
+        return model, attention_backend
 
     lora_config = LoraConfig(
         r=lora_rank,
@@ -1029,6 +1092,7 @@ def _train_oneshot_multiepoch(
     logs_path: Path,
     training_summary_parent_dir: str,
     resolved_model_path: str,
+    source_model_path_for_save: str | None,
     tokenizer: Any,
     max_grad_norm: float,
     lr_warmup_steps: int,
@@ -1047,6 +1111,10 @@ def _train_oneshot_multiepoch(
     from .train_loop import _run_unified_loop
 
     assert config.oneshot_num_epochs > 0, "oneshot_num_epochs must be positive"
+    assert config.oneshot_start_epoch > 0, "oneshot_start_epoch must be positive"
+    assert config.oneshot_start_epoch <= config.oneshot_num_epochs + 1, (
+        "oneshot_start_epoch cannot exceed oneshot_num_epochs + 1"
+    )
 
     resume_state = ResumeState(
         global_step=0,
@@ -1057,7 +1125,7 @@ def _train_oneshot_multiepoch(
         samples_trained=0,
     )
 
-    for oneshot_epoch in range(config.oneshot_num_epochs):
+    for oneshot_epoch in range(config.oneshot_start_epoch - 1, config.oneshot_num_epochs):
         is_final = oneshot_epoch == config.oneshot_num_epochs - 1
         epoch_number = oneshot_epoch + 1
         output_dir = (
@@ -1095,6 +1163,8 @@ def _train_oneshot_multiepoch(
             final_model_output_parent_dir=output_dir,
             training_summary_parent_dir=str(output_dir),
             resolved_model_path=resolved_model_path,
+            source_model_path_for_save=source_model_path_for_save
+            or _resolve_peft_adapter_base_model_path(resolved_model_path),
             tokenizer=tokenizer,
             max_grad_norm=max_grad_norm,
             lr_warmup_steps=lr_warmup_steps,
@@ -1323,6 +1393,7 @@ def train(config: TrainConfig) -> None:
                 logs_path=logs_path,
                 training_summary_parent_dir=config.training_summary_parent_dir,
                 resolved_model_path=resolved_model_path,
+                source_model_path_for_save=_resolve_peft_adapter_base_model_path(resolved_model_path),
                 tokenizer=tokenizer,
                 max_grad_norm=max_grad_norm,
                 lr_warmup_steps=lr_warmup_steps,
@@ -1347,6 +1418,7 @@ def train(config: TrainConfig) -> None:
                 final_model_output_parent_dir=final_model_output_parent_dir,
                 training_summary_parent_dir=config.training_summary_parent_dir,
                 resolved_model_path=resolved_model_path,
+                source_model_path_for_save=_resolve_peft_adapter_base_model_path(resolved_model_path),
                 tokenizer=tokenizer,
                 max_grad_norm=max_grad_norm,
                 lr_warmup_steps=lr_warmup_steps,
