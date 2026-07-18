@@ -26,6 +26,7 @@ use credit_assignment::{
         write_oneshot_run_manifest,
     },
     python_training_config::{PythonTrainingConfig, TrainingHyperparameters, TrainingMode},
+    training_set::TrainingSetSortMode,
     utils::configure_mount_dir,
 };
 use research_utility::progress_text_logger::{
@@ -56,10 +57,16 @@ struct Args {
     num_gpus: usize,
     inference_backend: InferenceBackend,
     training_trajectory_len_cutoff: usize,
+    #[serde(default = "default_training_set_sort_mode")]
+    training_set_sort_mode: TrainingSetSortMode,
     #[serde(default)]
     total_time_limit_hours: f32,
     mount_dir: String,
     generation_mount_dir: String,
+}
+
+fn default_training_set_sort_mode() -> TrainingSetSortMode {
+    TrainingSetSortMode::ByQuestion
 }
 
 async fn run_oneshot_training<M: LlmModelMarker>(
@@ -74,6 +81,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
     num_iterations_limit: usize,
     num_gpus: usize,
     training_trajectory_len_cutoff: usize,
+    training_set_sort_mode: TrainingSetSortMode,
     training_wrapper_log_path: &str,
 ) {
     // Resolve one-shot paths (use rollout mount dir to find trajectories on the rollout volume)
@@ -189,6 +197,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
             hyperparameters: training_hyperparameters.clone(),
             num_iterations_limit,
             training_trajectory_len_cutoff,
+            training_set_sort_mode: format!("{:?}", training_set_sort_mode),
             model_cli_name: model_cli_name.to_string(),
             config_nickname: config_nickname_training.to_string(),
             training_mode: TrainingMode::OneShot {
@@ -252,6 +261,7 @@ async fn main() {
         num_iterations_limit,
         num_gpus,
         training_trajectory_len_cutoff,
+        training_set_sort_mode,
         mount_dir,
         generation_mount_dir,
         ..
@@ -299,6 +309,7 @@ async fn main() {
                 num_iterations_limit,
                 num_gpus,
                 training_trajectory_len_cutoff,
+                training_set_sort_mode,
                 &training_wrapper_log_path,
             )
             .await
@@ -316,6 +327,7 @@ async fn main() {
                 num_iterations_limit,
                 num_gpus,
                 training_trajectory_len_cutoff,
+                training_set_sort_mode,
                 &training_wrapper_log_path,
             )
             .await
@@ -333,6 +345,7 @@ async fn main() {
                 num_iterations_limit,
                 num_gpus,
                 training_trajectory_len_cutoff,
+                training_set_sort_mode,
                 &training_wrapper_log_path,
             )
             .await
@@ -350,6 +363,7 @@ async fn main() {
                 num_iterations_limit,
                 num_gpus,
                 training_trajectory_len_cutoff,
+                training_set_sort_mode,
                 &training_wrapper_log_path,
             )
             .await
@@ -367,6 +381,7 @@ async fn main() {
                 num_iterations_limit,
                 num_gpus,
                 training_trajectory_len_cutoff,
+                training_set_sort_mode,
                 &training_wrapper_log_path,
             )
             .await
@@ -384,6 +399,7 @@ async fn main() {
                 num_iterations_limit,
                 num_gpus,
                 training_trajectory_len_cutoff,
+                training_set_sort_mode,
                 &training_wrapper_log_path,
             )
             .await
@@ -401,6 +417,7 @@ async fn main() {
                 num_iterations_limit,
                 num_gpus,
                 training_trajectory_len_cutoff,
+                training_set_sort_mode,
                 &training_wrapper_log_path,
             )
             .await
@@ -418,6 +435,7 @@ async fn main() {
                 num_iterations_limit,
                 num_gpus,
                 training_trajectory_len_cutoff,
+                training_set_sort_mode,
                 &training_wrapper_log_path,
             )
             .await

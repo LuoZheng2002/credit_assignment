@@ -1,7 +1,9 @@
 use std::{
     backtrace::Backtrace,
+    collections::BTreeMap,
     error::Error,
-    io::{self, Stdout},
+    fs::File,
+    io::{self, Cursor, Read, Stdout},
     path::{Path, PathBuf},
     process::Stdio,
     time::{Duration, Instant},
@@ -10,16 +12,19 @@ use std::{
 use clap::Parser;
 
 use credit_assignment::{
-    hybrid_dataset::Training,
-    training_set::{
-        DirectTrainingSetStatistics, DirectTrainingTrajectory, TrainingTrajectoryConfigBundle,
-        open_training_trajectories,
+    directories::{
+        training_trajectories_oneshot_path, training_trajectories_path,
+        training_trajectories_stats_oneshot_path, training_trajectories_stats_path,
     },
-    directories::{training_trajectories_path, training_trajectories_stats_path},
+    hybrid_dataset::Training,
     json_toml_utils::read_json,
     llm_model::{
         Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
         MyTokenizer, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
+    },
+    training_set::{
+        DirectTrainingSetStatistics, DirectTrainingTrajectory, TrainingTrajectoryConfigBundle,
+        open_training_trajectories,
     },
     utils::configure_mount_dir,
 };
@@ -40,6 +45,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui_core::buffer::Buffer;
+use serde::Deserialize;
 use tokio::process::Command;
 
 #[derive(Parser, Debug)]
@@ -51,19 +57,39 @@ struct Args {
     config_nickname: String,
     #[arg(long)]
     epoch: usize, // the epoch index
+    #[arg(long, default_value = "results")]
+    mount_dir: String,
+    #[arg(long)]
+    summary_only: bool,
+    #[arg(long, default_value_t = 8)]
+    sample_count: usize,
+    #[arg(long)]
+    oneshot: bool,
+    #[arg(long)]
+    dump_decoded_samples: bool,
+    #[arg(long, value_delimiter = ',')]
+    sample_indices: Vec<usize>,
+    #[arg(long, default_value_t = 6000)]
+    decoded_char_limit: usize,
 }
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn training_set_file_path(model_cli_name: &str, config_nickname: &str, epoch: usize) -> PathBuf {
-    repo_root().join(training_trajectories_path(
-        "results",
-        model_cli_name,
-        config_nickname,
-        epoch,
-    ))
+fn training_set_file_path(
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+    oneshot: bool,
+) -> PathBuf {
+    let path = if oneshot {
+        training_trajectories_oneshot_path(mount_dir, model_cli_name, config_nickname)
+    } else {
+        training_trajectories_path(mount_dir, model_cli_name, config_nickname, epoch)
+    };
+    repo_root().join(path)
 }
 
 fn training_set_config_bundle_file_path(training_set_path: &Path) -> Result<PathBuf, String> {
@@ -742,6 +768,13 @@ fn run_app<M: LlmModelMarker>(
 struct RunProgramArgs {
     config_nickname: String,
     epoch: usize, // the epoch index
+    mount_dir: String,
+    summary_only: bool,
+    sample_count: usize,
+    oneshot: bool,
+    dump_decoded_samples: bool,
+    sample_indices: Vec<usize>,
+    decoded_char_limit: usize,
 }
 
 fn restore_terminal_after_panic() {
@@ -767,25 +800,41 @@ async fn main() {
         model_cli_name: model,
         config_nickname,
         epoch,
+        mount_dir,
+        summary_only,
+        sample_count,
+        oneshot,
+        dump_decoded_samples,
+        sample_indices,
+        decoded_char_limit,
     } = Args::parse();
-    configure_mount_dir("results")
-        .unwrap_or_else(|err| panic!("failed to configure mount dir for local browsing: {}", err));
+    configure_mount_dir(&mount_dir)
+        .unwrap_or_else(|err| panic!("failed to configure mount dir for browsing: {}", err));
 
     let model_cli_name = model.cli_name();
-    let training_set_path = training_set_file_path(&model_cli_name, &config_nickname, epoch);
-    let training_set_msgpack_path = training_set_path.join("trajectories.msgpack");
-    let training_set_stats_path = repo_root().join(training_trajectories_stats_path(
-        "results",
+    let training_set_path = training_set_file_path(
+        &mount_dir,
         &model_cli_name,
         &config_nickname,
         epoch,
-    ));
+        oneshot,
+    );
+    let training_set_msgpack_path = training_set_path.join("trajectories.msgpack");
+    let training_set_stats_path = repo_root().join(if oneshot {
+        training_trajectories_stats_oneshot_path(&mount_dir, &model_cli_name, &config_nickname)
+    } else {
+        training_trajectories_stats_path(&mount_dir, &model_cli_name, &config_nickname, epoch)
+    });
     let training_set_config_bundle_path =
         training_set_config_bundle_file_path(&training_set_path).unwrap();
-    if !training_set_msgpack_path.exists()
-        || !training_set_stats_path.exists()
-        || !training_set_config_bundle_path.exists()
-    {
+    let missing_required_artifacts = if summary_only {
+        !training_set_msgpack_path.exists()
+    } else {
+        !training_set_msgpack_path.exists()
+            || !training_set_stats_path.exists()
+            || !training_set_config_bundle_path.exists()
+    };
+    if missing_required_artifacts {
         eprintln!(
             "Missing training set artifacts for {}/{}/epoch_{}; downloading...",
             model_cli_name, config_nickname, epoch
@@ -795,12 +844,21 @@ async fn main() {
             .unwrap();
     }
 
-    let _training_trajectory_config_bundle =
-        read_json::<TrainingTrajectoryConfigBundle<Training>>(&training_set_config_bundle_path)
-            .unwrap();
+    if !summary_only {
+        let _training_trajectory_config_bundle =
+            read_json::<TrainingTrajectoryConfigBundle<Training>>(&training_set_config_bundle_path)
+                .unwrap();
+    }
     let run_program_args = RunProgramArgs {
         config_nickname,
         epoch,
+        mount_dir,
+        summary_only,
+        sample_count,
+        oneshot,
+        dump_decoded_samples,
+        sample_indices,
+        decoded_char_limit,
     };
     match model {
         LlmModelName::Gemma3_4b => run_program::<Gemma3_4BIt>(run_program_args).await,
@@ -820,13 +878,42 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
     let RunProgramArgs {
         config_nickname,
         epoch,
+        mount_dir,
+        summary_only,
+        sample_count,
+        oneshot,
+        dump_decoded_samples,
+        sample_indices,
+        decoded_char_limit,
     } = run_program_args;
-    let training_set_store = open_training_trajectories::<M>("results", &config_nickname, epoch);
+    let training_set_store = if oneshot {
+        let training_set_path =
+            training_trajectories_oneshot_path(&mount_dir, M::CLI_NAME, &config_nickname);
+        open_training_trajectories_file::<M>(&format!("{training_set_path}/trajectories.msgpack"))
+    } else {
+        open_training_trajectories::<M>(&mount_dir, &config_nickname, epoch)
+    };
     let keys = (0..training_set_store.len()).collect::<Vec<usize>>();
-    let statistics = read_json::<DirectTrainingSetStatistics>(repo_root().join(
-        training_trajectories_stats_path("results", M::CLI_NAME, &config_nickname, epoch),
-    ))
+    let statistics = read_json::<DirectTrainingSetStatistics>(repo_root().join(if oneshot {
+        training_trajectories_stats_oneshot_path(&mount_dir, M::CLI_NAME, &config_nickname)
+    } else {
+        training_trajectories_stats_path(&mount_dir, M::CLI_NAME, &config_nickname, epoch)
+    }))
     .ok();
+
+    if summary_only {
+        print_summary::<M>(
+            &config_nickname,
+            epoch,
+            &training_set_store,
+            statistics.as_ref(),
+            sample_count,
+            dump_decoded_samples,
+            &sample_indices,
+            decoded_char_limit,
+        );
+        return;
+    }
 
     enable_raw_mode().unwrap();
     let mut stdout = io::stdout();
@@ -844,4 +931,318 @@ async fn run_program<M: LlmModelMarker>(run_program_args: RunProgramArgs) {
     .unwrap();
     terminal.show_cursor().unwrap();
     result.unwrap();
+}
+
+fn open_training_trajectories_file<M: LlmModelMarker>(
+    file_path: &str,
+) -> Vec<DirectTrainingTrajectory<M>> {
+    let mut bytes = Vec::new();
+    File::open(file_path)
+        .unwrap_or_else(|err| panic!("Failed to open training trajectories at {file_path}: {err}"))
+        .read_to_end(&mut bytes)
+        .unwrap_or_else(|err| panic!("Failed to read training trajectories at {file_path}: {err}"));
+    let mut cursor = Cursor::new(bytes.as_slice());
+    let total_len = bytes.len() as u64;
+    let mut trajectories = Vec::new();
+    while cursor.position() < total_len {
+        let mut deserializer = rmp_serde::Deserializer::new(&mut cursor);
+        let trajectory = DirectTrainingTrajectory::<M>::deserialize(&mut deserializer)
+            .unwrap_or_else(|err| {
+                panic!("Failed to deserialize training trajectory at {file_path}: {err}")
+            });
+        trajectories.push(trajectory);
+    }
+    trajectories
+}
+
+fn percentile(sorted_values: &[usize], numerator: usize, denominator: usize) -> usize {
+    if sorted_values.is_empty() {
+        return 0;
+    }
+    let last = sorted_values.len() - 1;
+    let index = (last * numerator + denominator / 2) / denominator;
+    sorted_values[index.min(last)]
+}
+
+fn summarize_advantages(advantages: &[f32]) -> (usize, usize, usize, f32, f32) {
+    let mut positive = 0usize;
+    let mut negative = 0usize;
+    let mut zero = 0usize;
+    let mut min_value = f32::INFINITY;
+    let mut max_value = f32::NEG_INFINITY;
+    for &advantage in advantages {
+        if advantage > 0.0 {
+            positive += 1;
+        } else if advantage < 0.0 {
+            negative += 1;
+        } else {
+            zero += 1;
+        }
+        min_value = min_value.min(advantage);
+        max_value = max_value.max(advantage);
+    }
+    if advantages.is_empty() {
+        min_value = 0.0;
+        max_value = 0.0;
+    }
+    (positive, negative, zero, min_value, max_value)
+}
+
+fn print_sample<M: LlmModelMarker>(
+    label: &str,
+    index: usize,
+    trajectory: &DirectTrainingTrajectory<M>,
+) {
+    let trainable_tokens = trajectory
+        .labels
+        .iter()
+        .filter(|&&item| item != -100)
+        .count();
+    let (positive, negative, zero, min_advantage, max_advantage) =
+        summarize_advantages(&trajectory.advantages);
+    println!(
+        "{} index={} question={} dataset={} question_id={} len={} trainable={} avg_abs_adv={:.6} adv_pos={} adv_neg={} adv_zero={} adv_min={:.6} adv_max={:.6}",
+        label,
+        index,
+        trajectory.question.flat_id.0,
+        trajectory.question.dataset_name,
+        trajectory.question.question_id,
+        trajectory.input_ids.len(),
+        trainable_tokens,
+        trajectory.average_absolute_segment_advantage,
+        positive,
+        negative,
+        zero,
+        min_advantage,
+        max_advantage,
+    );
+}
+
+fn print_summary<M: LlmModelMarker>(
+    config_nickname: &str,
+    epoch: usize,
+    trajectories: &[DirectTrainingTrajectory<M>],
+    statistics: Option<&DirectTrainingSetStatistics>,
+    sample_count: usize,
+    dump_decoded_samples: bool,
+    sample_indices: &[usize],
+    decoded_char_limit: usize,
+) {
+    println!(
+        "training_set model={} config={} epoch={} trajectories={}",
+        M::CLI_NAME,
+        config_nickname,
+        epoch,
+        trajectories.len()
+    );
+    if trajectories.is_empty() {
+        return;
+    }
+
+    let mut lengths: Vec<usize> = trajectories
+        .iter()
+        .map(|trajectory| trajectory.input_ids.len())
+        .collect();
+    lengths.sort_unstable();
+    let total_tokens: usize = lengths.iter().sum();
+    println!(
+        "lengths min={} p10={} p25={} p50={} p75={} p90={} p95={} p99={} max={} avg={:.2}",
+        lengths[0],
+        percentile(&lengths, 10, 100),
+        percentile(&lengths, 25, 100),
+        percentile(&lengths, 50, 100),
+        percentile(&lengths, 75, 100),
+        percentile(&lengths, 90, 100),
+        percentile(&lengths, 95, 100),
+        percentile(&lengths, 99, 100),
+        lengths[lengths.len() - 1],
+        total_tokens as f64 / lengths.len() as f64,
+    );
+
+    let mut question_counts: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut trainable_total = 0usize;
+    let mut invalid_shape_count = 0usize;
+    let mut no_trainable_count = 0usize;
+    let mut total_positive_advantages = 0usize;
+    let mut total_negative_advantages = 0usize;
+    let mut total_zero_advantages = 0usize;
+    let mut max_abs_advantage = 0.0_f32;
+    for trajectory in trajectories {
+        *question_counts
+            .entry(trajectory.question.flat_id.0)
+            .or_default() += 1;
+        if trajectory.input_ids.len() != trajectory.labels.len()
+            || trajectory.input_ids.len() != trajectory.advantages.len()
+        {
+            invalid_shape_count += 1;
+        }
+        let trainable_tokens = trajectory
+            .labels
+            .iter()
+            .filter(|&&item| item != -100)
+            .count();
+        if trainable_tokens == 0 {
+            no_trainable_count += 1;
+        }
+        trainable_total += trainable_tokens;
+        let (positive, negative, zero, min_advantage, max_advantage) =
+            summarize_advantages(&trajectory.advantages);
+        total_positive_advantages += positive;
+        total_negative_advantages += negative;
+        total_zero_advantages += zero;
+        max_abs_advantage = max_abs_advantage
+            .max(min_advantage.abs())
+            .max(max_advantage.abs());
+    }
+    let mut per_question_counts = question_counts.values().copied().collect::<Vec<_>>();
+    per_question_counts.sort_unstable();
+    println!(
+        "questions count={} per_question_min={} per_question_p50={} per_question_p90={} per_question_max={}",
+        question_counts.len(),
+        per_question_counts.first().copied().unwrap_or(0),
+        percentile(&per_question_counts, 50, 100),
+        percentile(&per_question_counts, 90, 100),
+        per_question_counts.last().copied().unwrap_or(0),
+    );
+    println!(
+        "validity invalid_shape={} no_trainable={} trainable_tokens={} adv_pos={} adv_neg={} adv_zero={} max_abs_adv={:.6}",
+        invalid_shape_count,
+        no_trainable_count,
+        trainable_total,
+        total_positive_advantages,
+        total_negative_advantages,
+        total_zero_advantages,
+        max_abs_advantage,
+    );
+    if let Some(statistics) = statistics {
+        println!(
+            "stats total={} adopted={} cutoff={:.6} avg_abs_min={:.6} avg_abs_max={:.6} balance_pre_pos={:.6} balance_pre_neg={:.6} mult_pos={:.6} mult_neg={:.6} balance_post_pos={:.6} balance_post_neg={:.6}",
+            statistics.total_trajectories,
+            statistics.adopted_trajectories,
+            statistics.average_absolute_advantage_cutoff,
+            statistics.min_average_absolute_advantage,
+            statistics.max_average_absolute_advantage,
+            statistics.pre_balance_total_positive_advantage,
+            statistics.pre_balance_total_negative_advantage_magnitude,
+            statistics.positive_advantage_multiplier,
+            statistics.negative_advantage_multiplier,
+            statistics.post_balance_total_positive_advantage,
+            statistics.post_balance_total_negative_advantage_magnitude,
+        );
+    }
+
+    for prefix_len in [100usize, 1000, 3000, 6000, trajectories.len()] {
+        if prefix_len > trajectories.len() {
+            continue;
+        }
+        print_prefix_summary(prefix_len, &trajectories[..prefix_len]);
+    }
+
+    for index in 0..sample_count.min(trajectories.len()) {
+        print_sample("first", index, &trajectories[index]);
+    }
+    let tail_start = trajectories.len().saturating_sub(sample_count);
+    for index in tail_start..trajectories.len() {
+        if index >= sample_count {
+            print_sample("last", index, &trajectories[index]);
+        }
+    }
+
+    if dump_decoded_samples {
+        print_decoded_samples(
+            trajectories,
+            sample_count,
+            sample_indices,
+            decoded_char_limit,
+        );
+    }
+}
+
+fn print_decoded_samples<M: LlmModelMarker>(
+    trajectories: &[DirectTrainingTrajectory<M>],
+    sample_count: usize,
+    sample_indices: &[usize],
+    decoded_char_limit: usize,
+) {
+    let indices = if sample_indices.is_empty() {
+        let mut indices = Vec::new();
+        indices.extend(0..sample_count.min(trajectories.len()));
+        let middle = trajectories.len() / 2;
+        for offset in 0..sample_count.min(trajectories.len().saturating_sub(middle)) {
+            indices.push(middle + offset);
+        }
+        let tail_start = trajectories.len().saturating_sub(sample_count);
+        indices.extend(tail_start..trajectories.len());
+        indices.sort_unstable();
+        indices.dedup();
+        indices
+    } else {
+        sample_indices
+            .iter()
+            .copied()
+            .filter(|&index| index < trajectories.len())
+            .collect::<Vec<_>>()
+    };
+
+    for index in indices {
+        let trajectory = &trajectories[index];
+        print_sample("decoded", index, trajectory);
+        let decoded = <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(&trajectory.input_ids);
+        let decoded_chars = decoded.chars().count();
+        let truncated = if decoded_chars > decoded_char_limit {
+            format!(
+                "{}\n[truncated: {} chars total, showing first {}]",
+                decoded.chars().take(decoded_char_limit).collect::<String>(),
+                decoded_chars,
+                decoded_char_limit,
+            )
+        } else {
+            decoded
+        };
+        println!("decoded_begin index={}", index);
+        println!("{}", truncated);
+        println!("decoded_end index={}", index);
+    }
+}
+
+fn print_prefix_summary<M: LlmModelMarker>(
+    prefix_len: usize,
+    trajectories: &[DirectTrainingTrajectory<M>],
+) {
+    let mut trainable_total = 0usize;
+    let mut positive = 0usize;
+    let mut negative = 0usize;
+    let mut zero = 0usize;
+    let mut lengths = trajectories
+        .iter()
+        .map(|trajectory| trajectory.input_ids.len())
+        .collect::<Vec<_>>();
+    lengths.sort_unstable();
+    for trajectory in trajectories {
+        trainable_total += trajectory
+            .labels
+            .iter()
+            .filter(|&&item| item != -100)
+            .count();
+        let (pos, neg, zer, _, _) = summarize_advantages(&trajectory.advantages);
+        positive += pos;
+        negative += neg;
+        zero += zer;
+    }
+    println!(
+        "prefix count={} len_min={} len_p50={} len_max={} trainable_tokens={} adv_pos={} adv_neg={} adv_zero={} pos_neg_ratio={:.4}",
+        prefix_len,
+        lengths.first().copied().unwrap_or(0),
+        percentile(&lengths, 50, 100),
+        lengths.last().copied().unwrap_or(0),
+        trainable_total,
+        positive,
+        negative,
+        zero,
+        if negative == 0 {
+            f64::INFINITY
+        } else {
+            positive as f64 / negative as f64
+        },
+    );
 }

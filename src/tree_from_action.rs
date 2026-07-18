@@ -1,14 +1,13 @@
 use crate::{
     hybrid_dataset::DatasetSplit,
+    llm_model::{LlmModelMarker, TokenArrayWithLogprob},
     rollout_config::BranchingPolicy,
     tree::{DirectTree, Segment, SegmentContent, SegmentId, TreeCorrectness},
     tree_action::{DirectTreeAction, TokenPositionInTree},
     tree_spontaneous_branching::TokenPositionInSegment,
     tree_status::{
-        DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus,
-        TrunkSubStatus,
+        DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus, TrunkSubStatus,
     },
-    llm_model::{LlmModelMarker, TokenArrayWithLogprob},
 };
 
 impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {

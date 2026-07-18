@@ -1,16 +1,17 @@
-model_cli_name = "qwen25"
-config_nickname_training = "grpo_notool_lora_training"
-config_nickname_generation = "grpo_notool_generation"
+model_cli_name = "mistral"
+config_nickname_training = "grpo_notool_lora_r16_training_5m"
+config_nickname_generation = "grpo_notool_generation_1h"
 use_tool = false
 num_oneshot_epochs = 10
 validation_total_epochs = 10
 validation_rollout_secs = 600
-oneshot_per_epoch_training_time = 900.0
+oneshot_per_epoch_training_time = 300.0
 num_iterations_limit = 3
 num_gpus = 1
 inference_backend = "vllm"
 training_trajectory_len_cutoff = 4096
-total_time_limit_hours = 4.0
+training_set_sort_mode = "ByQuestion"
+total_time_limit_hours = 1.5
 mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
 generation_mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
 

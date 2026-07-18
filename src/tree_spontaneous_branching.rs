@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     hybrid_dataset::DatasetSplit,
+    llm_model::LlmModelMarker,
     tree::{ContentIndex, DirectTree, SegmentContent, SegmentId},
     tree_action::TokenPositionInTree,
-    llm_model::LlmModelMarker,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

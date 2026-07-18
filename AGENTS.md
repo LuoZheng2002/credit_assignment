@@ -144,3 +144,15 @@ keeping the backend-agnostic config name and setting `inference_backend = "vllm"
 Do not set a default `VLLM_GPU_MEMORY_UTILIZATION` for ordinary experiment
 SLURM jobs. Only pass a vLLM GPU memory utilization limit when a run explicitly
 needs one for debugging or stability.
+
+## Delta experiment storage
+
+Prefer `/work/hdd/bhph/zluo8/credit_assignment/results` for new and unfinished
+Delta experiment outputs while `/work/nvme/bhph` is near its allocation quota.
+For generation jobs that reuse existing rollout artifacts, it is acceptable for
+`rollout_mount_dir` to point at the old NVMe results root while
+`generation_mount_dir` points at the HDD results root.
+
+Do not assume a base model already exists after cleanup. The training and
+inference wrappers can re-download epoch-0 model snapshots into the configured
+`mount_dir` when needed.

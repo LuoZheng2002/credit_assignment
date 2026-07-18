@@ -1,6 +1,6 @@
 use credit_assignment::judge_correctness::{
-    extract_boxed_verdict, fetch_judge_evaluation_with_url, judge_answer_task_with_url,
     DEEPSEEK_CHAT_COMPLETIONS_URL, OPENROUTER_CHAT_COMPLETIONS_URL, USE_OPENROUTER_API,
+    extract_boxed_verdict, fetch_judge_evaluation_with_url, judge_answer_task_with_url,
 };
 use reqwest::Client;
 
@@ -20,9 +20,15 @@ async fn call_api(
     temperature: f64,
     thinking_enabled: bool,
 ) -> (String, Option<String>) {
-    fetch_judge_evaluation_with_url(client, prompt, judge_api_url(), temperature, thinking_enabled)
-        .await
-        .expect("API call should succeed")
+    fetch_judge_evaluation_with_url(
+        client,
+        prompt,
+        judge_api_url(),
+        temperature,
+        thinking_enabled,
+    )
+    .await
+    .expect("API call should succeed")
 }
 
 /// Helper: run `judge_answer_task_with_url` against the real API.

@@ -1,6 +1,6 @@
 use credit_assignment::tool_call_python::{
-    PythonToolResponse, PythonToolServerPool, PYTHON_TOOL_REQUEST_TIMEOUT_MS,
-    PYTHON_TOOL_SERVER_RESPONSE_TIMEOUT_MS,
+    PYTHON_TOOL_REQUEST_TIMEOUT_MS, PYTHON_TOOL_SERVER_RESPONSE_TIMEOUT_MS, PythonToolResponse,
+    PythonToolServerPool,
 };
 use tokio::time::{Duration, Instant, timeout};
 
@@ -42,9 +42,7 @@ async fn python_tool_state_does_not_persist_across_requests() {
 async fn python_tool_blocks_writing_files_to_disk() {
     let pool = PythonToolServerPool::new(1).await.unwrap();
     let response = pool
-        .execute_code(
-            "with open('blocked.txt', 'w') as handle:\n    handle.write('x')".to_string(),
-        )
+        .execute_code("with open('blocked.txt', 'w') as handle:\n    handle.write('x')".to_string())
         .await;
     match response {
         PythonToolResponse::PythonError(message) => {

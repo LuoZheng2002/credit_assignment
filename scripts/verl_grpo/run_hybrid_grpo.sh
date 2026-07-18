@@ -137,6 +137,11 @@ case "${VERL_ONE_STEP_OFF,,}" in
             trainer.n_gpus_per_node="$TRAINING_GPUS"
             rollout.nnodes=1
             rollout.n_gpus_per_node="$ROLLOUT_GPUS"
+            +rollout.free_cache_engine=False
+            +rollout.calculate_log_probs=True
+            +rollout.checkpoint_engine.backend=nccl
+            +rollout.layered_summon=True
+            +rollout.load_format=safetensors
         )
         VERL_MAIN_MODULE="${VERL_MAIN_MODULE:-verl.experimental.one_step_off_policy.main_ppo}"
         ;;

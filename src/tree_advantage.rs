@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     hybrid_dataset::DatasetSplit,
+    llm_model::LlmModelMarker,
     posterior_calculation_config::PosteriorHyperparameters,
     tree::{DirectTree, SegmentId},
     tree_posterior::Posterior,
-    llm_model::LlmModelMarker,
 };
 
 #[derive(Debug, Clone)]

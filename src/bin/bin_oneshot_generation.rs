@@ -13,8 +13,8 @@ use credit_assignment::{
     hybrid_dataset::Training,
     json_toml_utils::read_json,
     llm_model::{
-        Gemma3_4BIt, Llama31_8BInstruct, LlmModelName, Mistral7BInstructV03, Qwen3_4B,
-        Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
+        Gemma3_4BIt, Llama31_8BInstruct, LlmModelName, Mistral7BInstructV03, Qwen3_4B, Qwen3_06B,
+        Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     rollout_config::{RolloutConfig, TrainingAdvantagePolicy},

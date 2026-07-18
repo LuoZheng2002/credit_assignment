@@ -19,7 +19,12 @@ static LLAMA31_8B_INSTRUCT_TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(|| {
 
 static LLAMA31_8B_INSTRUCT_TEMPLATE_ENVIRONMENT: LazyLock<minijinja::Environment<'static>> =
     LazyLock::new(|| {
-        load_jinja_template_environment("tokenizers/llama31/chat_template.jinja", "chat", Llama31_8BInstruct::API_NAME).unwrap()
+        load_jinja_template_environment(
+            "tokenizers/llama31/chat_template.jinja",
+            "chat",
+            Llama31_8BInstruct::API_NAME,
+        )
+        .unwrap()
     });
 
 #[derive(Serialize)]

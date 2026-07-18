@@ -975,6 +975,7 @@ impl Orchestrator {
             hyperparameters: self.training_hyperparameters.clone(),
             num_iterations_limit: self.num_iterations_limit,
             training_trajectory_len_cutoff: self.training_trajectory_len_cutoff,
+            training_set_sort_mode: format!("{:?}", self.training_set_sort_mode),
             model_cli_name: M::CLI_NAME.to_string(),
             config_nickname: self.config_nickname.clone(),
             training_mode: TrainingMode::Orchestration {

@@ -7,6 +7,7 @@ pub struct PythonTrainingConfig {
     pub hyperparameters: TrainingHyperparameters,
     pub num_iterations_limit: usize,
     pub training_trajectory_len_cutoff: usize,
+    pub training_set_sort_mode: String,
     pub training_mode: TrainingMode,
 }
 
@@ -58,4 +59,6 @@ pub struct TrainingHyperparameters {
     pub lora_alpha: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lora_dropout: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lora_save_mode: Option<String>,
 }

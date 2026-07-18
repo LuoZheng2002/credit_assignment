@@ -23,7 +23,7 @@ from ..text_logging import (
 )
 from .batch_dataset import LazyResolvedBatchLoader, ResolvedTrainingBatch
 from .collator import IGNORE_LABEL, collate_training_samples
-from .data_msgpack import TrainingSampleTokenized
+from .data_msgpack import QuestionNodeId, TrainingSampleTokenized
 from .losses import compute_advantage_weighted_causal_lm_loss
 from .training_plan import (
     DIST_STRATEGY_DDP,
@@ -510,12 +510,193 @@ def _plan_cuda_oom(
 
 
 def _should_fail_fast_on_cuda_oom(
-    *, distributed_strategy: str, world_size: int
+    *, distributed_strategy: str, world_size: int, training_set_sort_mode: str
 ) -> bool:
+    if training_set_sort_mode == "ByQuestion":
+        return True
     normalized_strategy = assert_supported_distributed_strategy(distributed_strategy)
     if world_size <= 1:
         return False
     return normalized_strategy in {DIST_STRATEGY_DDP, DIST_STRATEGY_FSDP}
+
+
+def _synthetic_probe_token_id(
+    *, bos_token_id: int, eos_token_id: int, pad_token_id: int, model_vocab_size: int
+) -> int:
+    for token_id in (bos_token_id, eos_token_id, pad_token_id, 0):
+        if 0 <= token_id < model_vocab_size:
+            return token_id
+    raise AssertionError("no valid synthetic token id available for OOM preflight")
+
+
+def _make_synthetic_zero_advantage_sample(
+    *,
+    sequence_length: int,
+    token_id: int,
+    model_official_name: str,
+) -> TrainingSampleTokenized:
+    assert sequence_length >= MIN_TRAJECTORY_LENGTH_CAP, "sequence_length too small"
+    input_ids = [token_id] * sequence_length
+    labels = input_ids.copy()
+    labels[0] = IGNORE_LABEL
+    return TrainingSampleTokenized(
+        id=QuestionNodeId(question_id=-1, node_id=-1),
+        input_ids=input_ids,
+        labels=labels,
+        input_length=sequence_length,
+        token_advantages=[0.0] * sequence_length,
+        model_official_name=model_official_name,
+    )
+
+
+def _probe_synthetic_sequence_length(
+    *,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    sequence_length: int,
+    token_id: int,
+    device: torch.device,
+    pad_token_id: int,
+    expected_model_name: str,
+    advantage_clip: float,
+    grad_accum_steps: int,
+    eng: Any,
+) -> bool:
+    sample = _make_synthetic_zero_advantage_sample(
+        sequence_length=sequence_length,
+        token_id=token_id,
+        model_official_name=expected_model_name,
+    )
+    collated = input_ids = labels = attention_mask = advantages = logits = loss_output = loss = None
+    try:
+        collated = collate_training_samples(samples=[sample], pad_token_id=pad_token_id)
+        input_ids = collated.input_ids.to(device=device, non_blocking=True)
+        labels = collated.labels.to(device=device, non_blocking=True)
+        attention_mask = collated.attention_mask.to(device=device, non_blocking=True)
+        advantages = collated.advantages.to(device=device, non_blocking=True)
+        logits = eng._forward_logits(
+            model, input_ids=input_ids, attention_mask=attention_mask
+        )
+        loss_output = compute_advantage_weighted_causal_lm_loss(
+            logits=logits,
+            labels=labels,
+            advantages=advantages,
+            advantage_clip=advantage_clip,
+        )
+        loss = loss_output.loss / grad_accum_steps
+        loss.backward()
+        optimizer.zero_grad(set_to_none=True)
+        return True
+    except (RuntimeError, AssertionError) as exc:
+        if eng._is_cuda_oom_exception(exc):
+            optimizer.zero_grad(set_to_none=True)
+            return False
+        raise
+    finally:
+        collated = None
+        input_ids = None
+        labels = None
+        attention_mask = None
+        advantages = None
+        logits = None
+        loss_output = None
+        loss = None
+        eng._release_step_memory(device)
+
+
+def _maybe_apply_single_gpu_lora_synthetic_oom_preflight(
+    *,
+    config: Any,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    rank: int,
+    world_size: int,
+    device: torch.device,
+    pad_token_id: int,
+    eos_token_id: int,
+    bos_token_id: int,
+    model_vocab_size: int,
+    expected_model_name: str,
+    resume_state: Any,
+    eng: Any,
+) -> int:
+    trajectory_length_cap = min(
+        DEFAULT_TRAJECTORY_LENGTH_CAP, config.training_trajectory_len_cutoff
+    )
+    lora_or_full = assert_supported_lora_or_full(config.lora_or_full)
+    distributed_strategy = assert_supported_distributed_strategy(config.distributed_strategy)
+    if not (
+        rank == 0
+        and world_size == 1
+        and distributed_strategy == DIST_STRATEGY_SINGLE_GPU
+        and lora_or_full == "lora"
+        and trajectory_length_cap > MIN_TRAJECTORY_LENGTH_CAP
+        and int(getattr(resume_state, "global_step", 0)) == 0
+        and int(getattr(resume_state, "samples_trained", 0)) == 0
+    ):
+        return trajectory_length_cap
+
+    token_id = _synthetic_probe_token_id(
+        bos_token_id=bos_token_id,
+        eos_token_id=eos_token_id,
+        pad_token_id=pad_token_id,
+        model_vocab_size=model_vocab_size,
+    )
+    low = MIN_TRAJECTORY_LENGTH_CAP
+    high = trajectory_length_cap
+    precision = 16
+    _text_info(
+        "synthetic_oom_preflight_start=1 "
+        f"high={high} low={low} precision={precision} "
+        "enabled_for=single_gpu_lora"
+    )
+    if _probe_synthetic_sequence_length(
+        model=model,
+        optimizer=optimizer,
+        sequence_length=high,
+        token_id=token_id,
+        device=device,
+        pad_token_id=pad_token_id,
+        expected_model_name=expected_model_name,
+        advantage_clip=config.advantage_clip,
+        grad_accum_steps=config.grad_accum_steps,
+        eng=eng,
+    ):
+        longest_valid = high
+    else:
+        longest_valid = low
+        while high - low > precision:
+            mid = (low + high) // 2
+            ok = _probe_synthetic_sequence_length(
+                model=model,
+                optimizer=optimizer,
+                sequence_length=mid,
+                token_id=token_id,
+                device=device,
+                pad_token_id=pad_token_id,
+                expected_model_name=expected_model_name,
+                advantage_clip=config.advantage_clip,
+                grad_accum_steps=config.grad_accum_steps,
+                eng=eng,
+            )
+            _text_info(
+                "synthetic_oom_preflight_probe=1 "
+                f"sequence_length={mid} ok={int(ok)} low={low} high={high}"
+            )
+            if ok:
+                low = mid
+                longest_valid = mid
+            else:
+                high = mid
+    selected_cap = max(
+        MIN_TRAJECTORY_LENGTH_CAP, min(trajectory_length_cap, int(longest_valid * 0.95))
+    )
+    _text_info(
+        "synthetic_oom_preflight_result=1 "
+        f"longest_valid={longest_valid} precision={precision} "
+        f"selected_training_trajectory_len_cutoff={selected_cap}"
+    )
+    return selected_cap
 
 
 def _plan_distributed_step_control(
@@ -816,14 +997,27 @@ def _run_unified_loop(
     fail_fast_on_cuda_oom = _should_fail_fast_on_cuda_oom(
         distributed_strategy=distributed_strategy,
         world_size=world_size,
+        training_set_sort_mode=str(getattr(config, "training_set_sort_mode", "")),
     )
     if is_distributed:
         assert lazy_loader.sample_count >= world_size, (
             "sample_count must be >= world_size for distributed training"
         )
 
-    trajectory_length_cap = min(
-        DEFAULT_TRAJECTORY_LENGTH_CAP, config.training_trajectory_len_cutoff
+    trajectory_length_cap = _maybe_apply_single_gpu_lora_synthetic_oom_preflight(
+        config=config,
+        model=model,
+        optimizer=optimizer,
+        rank=rank,
+        world_size=world_size,
+        device=device,
+        pad_token_id=pad_token_id,
+        eos_token_id=eos_token_id,
+        bos_token_id=bos_token_id,
+        model_vocab_size=model_vocab_size,
+        expected_model_name=expected_model_name,
+        resume_state=resume_state,
+        eng=eng,
     )
 
     sample_count = lazy_loader.sample_count
@@ -1173,7 +1367,7 @@ def _run_unified_loop(
                         will_retry=False,
                     )
                     _text_warning(
-                        "cuda_oom_fail_fast_distributed=1 "
+                        "cuda_oom_fail_fast=1 "
                         f"distributed_strategy={distributed_strategy} "
                         f"world_size={world_size} "
                         f"iteration={iteration_index} "
@@ -1488,7 +1682,7 @@ def _run_unified_loop(
                         will_retry=False,
                     )
                     _text_warning(
-                        "cuda_oom_fail_fast_distributed=1 "
+                        "cuda_oom_fail_fast=1 "
                         f"distributed_strategy={distributed_strategy} "
                         f"world_size={world_size} "
                         f"iteration={iteration_index} "
@@ -1604,6 +1798,7 @@ def _run_unified_loop(
         final_model_output_parent_dir=final_model_output_parent_dir,
         source_model_path=source_model_path_for_save or resolved_model_path,
         tokenizer=tokenizer,
+        lora_save_mode=getattr(config, "lora_save_mode", "adapter"),
     )
     if _is_primary_rank():
         _memtrace(

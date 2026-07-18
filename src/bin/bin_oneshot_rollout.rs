@@ -14,8 +14,7 @@ use credit_assignment::{
     json_toml_utils::read_json,
     launch_inference_wrapper::{
         InferenceBackend, best_effort_shutdown_stale_inference_wrapper,
-        launch_inference_wrapper_process,
-        shut_down_inference_wrapper_process,
+        launch_inference_wrapper_process, shut_down_inference_wrapper_process,
     },
     llm_model::{
         Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,

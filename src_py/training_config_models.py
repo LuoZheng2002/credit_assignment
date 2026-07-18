@@ -37,6 +37,7 @@ class TrainingHyperparametersRequest(BaseModel):
     lora_rank: int | None = None
     lora_alpha: int | None = None
     lora_dropout: float | None = None
+    lora_save_mode: str | None = None
 
 
 class TrainingModeOrchestration(BaseModel):
@@ -72,6 +73,7 @@ class TrainingRequestArgs(BaseModel):
     hyperparameters: TrainingHyperparametersRequest
     num_iterations_limit: int
     training_trajectory_len_cutoff: int
+    training_set_sort_mode: str = "ByQuestion"
     model_cli_name: str
     config_nickname: str
     hpc_training_root_dir: str | None = None

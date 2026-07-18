@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    judge_correctness::CorrectnessJudgment,
     trajectory::FinalAnswer,
     tree::{ContentIndex, SegmentContent, SegmentId},
     tree_spontaneous_branching::TokenPositionInSegment,
-    judge_correctness::CorrectnessJudgment,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

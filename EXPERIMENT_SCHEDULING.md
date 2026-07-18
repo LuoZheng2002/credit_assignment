@@ -1,6 +1,6 @@
 # Experiment and Scheduling Plan
 
-Last updated: 2026-07-15
+Last updated: 2026-07-18
 
 ## Purpose
 
@@ -47,7 +47,7 @@ The intended final paper tables are already clear:
 - Delta GPU training is expensive and queue-limited.
 - Single-GPU jobs are materially easier to queue than 4-GPU jobs on Delta.
 - CPU-only generation is affordable and should be used aggressively.
-- During hyperparameter search, prioritize LoRA single-GPU training over full-parameter FSDP training unless a specific full-model question is being answered.
+- During hyperparameter search, prioritize LoRA single-GPU training. Full-parameter FSDP training is stashed as a backup plan and should not occupy active queue slots unless LoRA results become scientifically unusable or a specific full-model question must be answered.
 - Future split-pipeline experiments should use `inference_backend = "vllm"` by default; do not include backend names such as `vllm` in experiment nicknames unless backend behavior itself is the experimental variable.
 - Ordinary vLLM experiment jobs should not set a default `VLLM_GPU_MEMORY_UTILIZATION`; let vLLM use its default memory policy unless a specific run explicitly needs a cap.
 - Full orchestrator runs are deferred until:
@@ -72,9 +72,9 @@ These are operational conclusions, not yet paper conclusions:
    - For `ddp` / `fsdp`, we should not wrap around the dataset after OOM because ranks may desynchronize.
    - The code now stops on first distributed OOM while still preserving the normal summary/model-save path when possible.
 
-4. **Generation should remain sorted by ascending length during hyperparameter search.**
-   - `training_set_sort_mode = "ByLengthAscending"` is already enabled in the no-tool GRPO generation config.
-   - This is the right default during stabilization because it exposes a usable non-OOM prefix early.
+4. **Generation should use by-question grouping for current LoRA experiments.**
+   - Current no-tool GRPO generation/training configs use `training_set_sort_mode = "ByQuestion"` so positive/negative samples from the same question are adjacent.
+   - Because by-question grouping no longer gives an ascending length prefix, single-GPU LoRA training now uses a synthetic OOM preflight to estimate a safe trajectory cutoff before real optimization.
 
 ## Finished Experiments
 
@@ -166,63 +166,96 @@ Conclusion:
 
 ## Running / Queued Experiments
 
-### 1. Full-parameter FSDP smoke test
+### 1. Mistral no-tool LoRA by-question training
 
-- Job: `20217704`
-- Status: `PENDING`
-- Pending reason: `Priority`
-- Config intent:
-  - `qwen25`
-  - no-tool
-  - GRPO-generated dataset
-  - full-parameter training
-  - `fsdp`
-  - `num_gpus = 4`
-  - smoke time budget
+- Job: `20280124`
+- Name: `training_mistral_by_question_r16_5m_hdd`
+- Status: `RUNNING` as of the latest check on July 18, 2026
+- Config: `config/oneshot_train/mistral_train_grpo_notool_lora_r16_5m.toml`
+- Training data: `/work/hdd/bhph/zluo8/credit_assignment/results/medium_files/mistral/grpo_notool_generation_1h/training_trajectories/trajectories.msgpack`
+- Resources: `gpuA100x4`, `bfsl-delta-gpu`, `1 x A100`, `32` CPUs, `32G` memory, walltime `01:39:00`
 
-What this run is for:
+Purpose:
 
-- Validate full-parameter 4-GPU training at the current memory footprint.
-- Determine whether the current `training_trajectory_len_cutoff = 4096` is too high in practice.
-- If it OOMs, extract `longest_non_oom_trajectory_length` and use that to set the next cutoff.
+- Test whether the Mistral collapse observed in the earlier rank-32 setting was rank-related, data-order-related, or due to the previous adapter save/load path.
+- Use by-question ordering and shorter per-epoch training to get a faster diagnostic signal.
 
-Interpretation rule:
+Decision rule:
 
-- If it succeeds: promote full FSDP no-tool GRPO to a real run.
-- If it OOMs after some progress: lower cutoff to the reported longest non-OOM length and rerun.
-- If it OOMs before any sample trains: treat the config as invalid and lower the cutoff more aggressively.
+- If validation accuracy collapses again, inspect LoRA adapter save/load and tokenizer-level trajectory content before launching more Mistral jobs.
+- If validation is stable or improves, promote Mistral rank 16 to a longer LoRA run.
 
-### 2. Background CPU job unrelated to the core paper schedule
+### 2. Qwen34 no-tool LoRA by-question pipeline
 
-- Job: `20219942`
-- Name: `company-psro-cpu`
-- Status: `RUNNING`
+- Rollout job: `20280026`, `rollout_qwen34_by_question_6h_hdd`, pending `Priority`
+- Generation job: `20280027`, `generation_qwen34_by_question_6h_hdd`, pending dependency on `20280026`
+- Training job: `20280028`, `training_qwen34_by_question_r32_6h_hdd`, pending dependency on `20280027`
+- Storage: `/work/hdd/bhph/zluo8/credit_assignment/results`
+- Sort policy: `ByQuestion`
 
-Implication:
+Purpose:
 
-- This is not part of the TreeMAPPO experiment matrix.
-- It may still consume queue attention or user time, so it should be treated as background contention when planning CPU jobs.
+- Test whether a larger model plus longer rollout/training budget produces a clearer LoRA improvement signal than Qwen2.5-7B and Mistral.
+- Reuse the split rollout -> generation -> training workflow without relying on the full orchestrator.
+
+Decision rule:
+
+- If rollout completes, verify action-log size/throughput before generation starts.
+- If generation completes, inspect training-set question grouping and length distribution before trusting the training result.
+- If training collapses similarly to Mistral, prioritize adapter save/load debugging over more model-family sweeps.
+
+### 3. VERL isolated GRPO check
+
+- Job: `20279914`
+- Name: `verl_one_step_off_4gpu_3train`
+- Status: `PENDING` due to `Priority`
+- Resources: `gpuA100x4`, `bfsl-delta-gpu`, `4 x A100`, `32` CPUs, `128G` memory, walltime `00:45:00`
+
+Purpose:
+
+- Provide an isolated GRPO implementation check that bypasses most current infrastructure.
+- Use one-step-off / separated training-rollout resources to test whether the basic GRPO method can improve under comparable time constraints.
+
+Decision rule:
+
+- If it fails with memory pressure again, inspect whether training and vLLM worker placement are actually separated before spending more GPU time.
+- If it runs, use periodic accuracy reports as an external sanity check against the in-house LoRA pipeline.
+
+## Stashed Full-Model Plan
+
+Full-parameter FSDP remains a backup path, not an active focus.
+
+Reactivate only if:
+
+- LoRA improvements remain indistinguishable from noise after the by-question and rank-sweep fixes.
+- Adapter save/load is proven correct but LoRA capacity appears insufficient.
+- A reviewer-facing comparison explicitly requires full-parameter tuning.
+
+When reactivated:
+
+- Reserve at most one full-model queue slot.
+- Use a smoke-sized 4-GPU FSDP job first.
+- Fail fast on OOM and use `longest_non_oom_trajectory_length` to set the cutoff.
+- Do not queue serious full-model runs until the smoke run has validated the cutoff and memory profile.
 
 ## Near-Term Experimental Strategy
 
 We should use a staged adaptive plan instead of launching the full paper sweep immediately.
 
-### Phase 0: Stabilize the training recipe
+### Phase 0: Stabilize the LoRA training recipe
 
 Goal:
 
-- Identify one robust no-tool GRPO training recipe for:
-  - LoRA single-GPU (primary path)
-  - full-parameter FSDP 4-GPU (secondary path)
+- Identify one robust no-tool GRPO training recipe for single-GPU LoRA.
 
 Promotion criteria:
 
-- At least one successful serious run for each training regime.
+- At least one successful serious LoRA run.
 - No resource-allocation bug.
-- No distributed OOM wraparound.
-- A known usable trajectory cutoff for each regime.
+- No OOM wraparound in active LoRA by-question runs.
+- A known usable synthetic-preflight trajectory cutoff for each model/config.
 
-This phase is the current priority. Within this phase, LoRA should be optimized first because it is faster to queue, cheaper to iterate, and already has one successful serious run.
+This phase is the current priority. Full-model FSDP is explicitly stashed while LoRA behavior, ranking, sorting, and adapter persistence are being debugged.
 
 Operational default for future serious runs:
 
@@ -275,53 +308,29 @@ This should happen only after the Qwen2.5 schedule produces a trustworthy main c
 
 The experiment queue should react to new results immediately.
 
-### If the full FSDP smoke run succeeds
+### If LoRA remains unstable or collapses
 
-Then queue, in order:
+Then prioritize debugging before broadening:
 
-1. **Serious full no-tool GRPO run**
-   - same config family as smoke
-   - normal time budget
-2. **No-tool TreeMAPPO generation prep**
-   - CPU-only
-3. **No-tool TreeMAPPO training**
-   - LoRA first if tree rollout/generation is already ready
-   - otherwise full only after generation completes
-
-Scientific effect:
-
-- This immediately gives a GRPO full-vs-LoRA comparison and starts the first TreeMAPPO no-tool main comparison.
-
-### If the full FSDP smoke run OOMs after partial progress
-
-Then:
-
-1. Read `training_summary.json`
-2. Set the next full-training cutoff to `longest_non_oom_trajectory_length`
-3. Rerun the smoke test once
-4. If the rerun succeeds, promote to serious full training
+1. Compare adapter-only vs merged-full save/load on identical one-epoch settings.
+2. Inspect tokenized training trajectories for repeated, malformed, or mislabeled samples.
+3. Verify validation loads the intended LoRA adapter and base model.
+4. Run a shorter rank/control sweep only after persistence is verified.
 
 Do not:
 
-- launch multiple full-FSDP serious jobs before the cutoff is validated.
+- Launch more model-family sweeps if multiple models collapse in the same way.
+- Reactivate full-model FSDP until the LoRA failure mode is understood.
 
-### If the full FSDP smoke run OOMs before any sample trains
-
-Then:
-
-1. Treat the current full-training cutoff as invalid.
-2. Lower the cutoff materially below the attempted region.
-3. Prefer a shorter smoke rerun before spending more queue time.
-
-### If LoRA and full both become stable
+### If LoRA becomes stable
 
 Then prioritize:
 
 1. GRPO no-tool LoRA
 2. TreeMAPPO no-tool LoRA
 3. LoRA rank sweep for the best no-tool condition
-4. GRPO no-tool full
-5. TreeMAPPO no-tool full
+4. Tool-enabled LoRA variants
+5. Full-parameter FSDP backup smoke only if needed
 
 Rationale:
 
@@ -387,22 +396,24 @@ The queue should mix cheap preparatory jobs with one or two expensive training j
 
 This is the recommended next queue after the current state.
 
-### Slot 1: Keep current pending full FSDP smoke as a secondary path
+### Slot 1: Active Mistral LoRA diagnostic
 
-- job `20217704`
+- job `20280124`
+- monitor training/validation for collapse, OOM preflight cutoff, adapter save/load behavior, and per-epoch accuracy trend.
 
-No action unless:
-
-- it OOMs,
-- it is blocked too long and we decide to replace it with a LoRA-priority job,
-- we need its result to answer a specific full-model question.
-
-### Slot 2: Prioritize LoRA no-tool follow-ups
+### Slot 2: Active Qwen34 LoRA pipeline
 
 Action:
 
-- queue additional single-GPU LoRA experiments before launching more 4-GPU full runs.
-- the first preferred branch is a LoRA rank sweep around the already-successful no-tool GRPO setup.
+- let rollout `20280026`, generation `20280027`, and training `20280028` proceed if queue allocation starts.
+- inspect each phase boundary before interpreting the final result.
+
+### Slot 3: Qwen2.5 LoRA rank/control follow-ups
+
+Action:
+
+- queue additional single-GPU LoRA experiments only after current Mistral/Qwen34 signals clarify whether adapter persistence is healthy.
+- the preferred branch remains a LoRA rank sweep around the already-successful no-tool GRPO setup.
 
 Suggested initial rank sweep:
 
@@ -420,7 +431,7 @@ Reason:
 
 - this is the fastest way to improve the training recipe while preserving queue throughput.
 
-### Slot 3: Prepare TreeMAPPO no-tool generation artifacts on CPU
+### Slot 4: Prepare TreeMAPPO no-tool generation artifacts on CPU
 
 Action:
 
@@ -430,7 +441,7 @@ Reason:
 
 - This keeps the next scientifically useful comparison ready while the FSDP smoke waits in queue.
 
-### Slot 4: Prepare evaluation / summary scripts for the first main table row
+### Slot 5: Prepare evaluation / summary scripts for the first main table row
 
 Action:
 
@@ -523,6 +534,6 @@ As of now, the most important scientific and scheduling conclusions are:
 1. **The no-tool GRPO split pipeline works.**
 2. **LoRA no-tool GRPO already gives a credible positive signal.**
 3. **The next highest-value uncertainty is the best single-GPU LoRA recipe, including LoRA rank.**
-4. **Full-parameter no-tool training stability is secondary to LoRA iteration speed.**
+4. **Full-parameter no-tool training is stashed as a backup path while LoRA is debugged and optimized.**
 5. **We should not run orchestrator-scale jobs until the LoRA recipe is stabilized.**
 6. **The next paper-central milestone is the first valid no-tool GRPO vs TreeMAPPO comparison on Qwen2.5-7B, preferably on LoRA first.**

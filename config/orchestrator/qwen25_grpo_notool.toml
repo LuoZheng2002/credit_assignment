@@ -27,4 +27,4 @@ seed = 42
 adam_beta1 = 0.9
 adam_beta2 = 0.95
 lr_warmup_steps = 100
-training_set_sort_mode = "ByLengthAscending"
+training_set_sort_mode = "ByQuestion"

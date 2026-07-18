@@ -64,6 +64,7 @@ class TrainConfig:
     model_parent_dir: str
     training_trajectory_path: str
     training_trajectory_len_cutoff: int
+    training_set_sort_mode: str
     training_summary_parent_dir: str
     final_model_output_parent_dir: str
     advantage_clip: float
@@ -76,6 +77,7 @@ class TrainConfig:
     lora_rank: int
     lora_alpha: int
     lora_dropout: float
+    lora_save_mode: str
     seed: int
     adam_beta1: float
     adam_beta2: float
@@ -602,9 +604,13 @@ def _save_final_model_folder(
     final_model_output_parent_dir: Path,
     source_model_path: str,
     tokenizer: object,
+    lora_save_mode: str = "adapter",
 ) -> None:
     lora_or_full = assert_supported_lora_or_full(lora_or_full)
     distributed_strategy = assert_supported_distributed_strategy(distributed_strategy)
+    assert lora_save_mode in {"adapter", "merged_full"}, (
+        f"unsupported lora_save_mode: {lora_save_mode}"
+    )
     final_model_output_path = final_model_output_parent_dir / "model"
     source_model_folder = Path(source_model_path).expanduser().resolve()
     rank, _ = _get_rank_world_size()
@@ -664,7 +670,7 @@ def _save_final_model_folder(
             )
             shutil.rmtree(final_model_output_path)
         _text_info(f"writing_final_output_model=1 output_dir={final_model_output_path}")
-        if lora_or_full == USE_LORA:
+        if lora_or_full == USE_LORA and lora_save_mode == "adapter":
             final_model_output_path.mkdir(parents=True, exist_ok=True)
         else:
             shutil.copytree(source_model_folder, final_model_output_path)
@@ -676,7 +682,18 @@ def _save_final_model_folder(
         if rank == 0:
             unwrapped = _unwrap_model(model)
             export_model: Any = unwrapped
-            if lora_or_full == USE_LORA:
+            merge_and_unload = getattr(unwrapped, "merge_and_unload", None)
+            if lora_or_full == USE_LORA and lora_save_mode == "merged_full":
+                assert callable(merge_and_unload), (
+                    "LoRA merged_full save requires merge_and_unload"
+                )
+                export_model = merge_and_unload()
+                export_model.save_pretrained(
+                    final_model_output_path,
+                    safe_serialization=True,
+                    save_config=False,
+                )
+            elif lora_or_full == USE_LORA:
                 export_model.save_pretrained(
                     final_model_output_path,
                     safe_serialization=True,
