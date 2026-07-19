@@ -1,6 +1,6 @@
 # Experiment and Scheduling Plan
 
-Last updated: 2026-07-18
+Last updated: 2026-07-19
 
 ## Purpose
 
@@ -164,16 +164,60 @@ Conclusion:
 - In `ddp` / `fsdp`, training now fails fast on OOM instead of wrapping around the dataset.
 - This gives us a trustworthy `longest_non_oom_trajectory_length` signal for setting the next trajectory cutoff.
 
+### F. Mistral rank-16 by-question partial diagnostic
+
+- Training job: `20280124`
+- Validation job: `20280440`
+- Config: `config/oneshot_train/mistral_train_grpo_notool_lora_r16_5m.toml`
+- Status:
+  - training completed normally but stopped after epoch 1 due to CUDA OOM,
+  - validation timed out after validating base epoch 0 and trained epoch 1.
+
+Observed outcome:
+
+- Training:
+  - samples available: `11238`
+  - samples trained in epoch 1: `907`
+  - longest non-OOM trajectory length: `2642`
+  - stopped due to OOM: `true`
+- Validation:
+  - epoch 0 base accuracy: avg `0.208535`, DeepMath `0.251208`, Math `0.181159`, NuminaMath `0.193237`
+  - epoch 1 partial-training accuracy: avg `0.217969`, DeepMath `0.299766`, Math `0.163934`, NuminaMath `0.190141`
+
+Conclusion:
+
+- The partial epoch-1 Mistral result is not a serious scientific result because only `907` samples trained and validation timed out.
+- It is still a useful diagnostic: rank 16 did not immediately show the catastrophic post-training collapse seen in earlier Mistral rank-32 runs.
+- The safe rerun should use a lower cutoff around the observed safe band instead of relying only on the original `4096` cap.
+- Validation needs more than `00:30:00` if it is expected to cover all epochs; the 30-minute partial validation budget is only sufficient for base plus approximately one trained epoch.
+
+### G. VERL one-step-off batch-size issue diagnosed
+
+- Failed job: `20279914`
+- Replacement job: `20285925`
+- Config: `config/verl_grpo/qwen25_hybrid_lora_r32_4gpu_3train_one_step_off_smoke.env`
+- Status:
+  - `20279914` failed before training due to a VERL configuration assertion,
+  - `20285925` is queued with the corrected batch settings.
+
+Conclusion:
+
+- The issue was not an OOM.
+- In one-step-off separate-async mode with `3` FSDP training GPUs and `1` rollout GPU, VERL validates the actor training world as `n_gpus=3`.
+- Therefore `TRAIN_BATCH_SIZE` must be divisible by `3`.
+- VERL separate-async also requires `TRAIN_BATCH_SIZE == parameter_sync_step * PPO_MINI_BATCH_SIZE`; with `parameter_sync_step=1`, both values are now set to `12`.
+
 ## Running / Queued Experiments
 
 ### 1. Mistral no-tool LoRA by-question training
 
-- Job: `20280124`
-- Name: `training_mistral_by_question_r16_5m_hdd`
-- Status: `RUNNING` as of the latest check on July 18, 2026
-- Config: `config/oneshot_train/mistral_train_grpo_notool_lora_r16_5m.toml`
+- Completed diagnostic job: `20280124`, `training_mistral_by_question_r16_5m_hdd`
+- Partial validation job: `20280440`, `validation_mistral_r16_partial2`, timed out after epoch 1 validation
+- Safe rerun job: `20280442`, `training_mistral_r16_safe`, pending `Priority`
+- Safe rerun config: `config/oneshot_train/mistral_train_grpo_notool_lora_r16_5m_safe.toml`
 - Training data: `/work/hdd/bhph/zluo8/credit_assignment/results/medium_files/mistral/grpo_notool_generation_1h/training_trajectories/trajectories.msgpack`
-- Resources: `gpuA100x4`, `bfsl-delta-gpu`, `1 x A100`, `32` CPUs, `32G` memory, walltime `01:39:00`
+- Safe rerun resources: `gpuA100x4`, `bfsl-delta-gpu`, `1 x A100`, `32` CPUs, `32G` memory, walltime `01:39:00`
+- Safe rerun cutoff: `training_trajectory_len_cutoff = 2500`
 
 Purpose:
 
@@ -182,16 +226,24 @@ Purpose:
 
 Decision rule:
 
-- If validation accuracy collapses again, inspect LoRA adapter save/load and tokenizer-level trajectory content before launching more Mistral jobs.
+- If the safe rerun still OOMs, reduce the cutoff below `2500` or make the synthetic preflight cap mandatory before real training.
+- If the safe rerun completes multiple epochs, validate with enough walltime and compare trend against the partial epoch-1 signal.
+- If validation collapses, inspect LoRA adapter save/load and tokenizer-level trajectory content before launching more Mistral jobs.
 - If validation is stable or improves, promote Mistral rank 16 to a longer LoRA run.
 
 ### 2. Qwen34 no-tool LoRA by-question pipeline
 
-- Rollout job: `20280026`, `rollout_qwen34_by_question_6h_hdd`, pending `Priority`
+- Rollout job: `20280026`, `rollout_qwen34_by_question_6h_hdd`, running on `gpua072`
 - Generation job: `20280027`, `generation_qwen34_by_question_6h_hdd`, pending dependency on `20280026`
 - Training job: `20280028`, `training_qwen34_by_question_r32_6h_hdd`, pending dependency on `20280027`
 - Storage: `/work/hdd/bhph/zluo8/credit_assignment/results`
 - Sort policy: `ByQuestion`
+
+Latest rollout progress:
+
+- At elapsed `03:50:23` of `07:09:00`, rollout had passed time segment `5/8`.
+- Most recent milestone: elapsed `13500s/21600s`, `9673` finished trees and `64500` finished branches.
+- No error has appeared in `.err`; the job is progressing normally.
 
 Purpose:
 
@@ -206,10 +258,11 @@ Decision rule:
 
 ### 3. VERL isolated GRPO check
 
-- Job: `20279914`
-- Name: `verl_one_step_off_4gpu_3train`
-- Status: `PENDING` due to `Priority`
+- Failed job: `20279914`, `verl_one_step_off_4gpu_3train`
+- Replacement job: `20285925`, `verl_one_step_off_4gpu_3train_b12`, pending `Priority`
+- Config: `config/verl_grpo/qwen25_hybrid_lora_r32_4gpu_3train_one_step_off_smoke.env`
 - Resources: `gpuA100x4`, `bfsl-delta-gpu`, `4 x A100`, `32` CPUs, `128G` memory, walltime `00:45:00`
+- Batch settings: `TRAIN_BATCH_SIZE=12`, `PPO_MINI_BATCH_SIZE=12`, `TRAINING_GPUS=3`, `ROLLOUT_GPUS=1`
 
 Purpose:
 
@@ -219,6 +272,7 @@ Purpose:
 Decision rule:
 
 - If it fails with memory pressure again, inspect whether training and vLLM worker placement are actually separated before spending more GPU time.
+- If it fails with another configuration assertion, treat VERL as still in integration/debug mode rather than a scientific result.
 - If it runs, use periodic accuracy reports as an external sanity check against the in-house LoRA pipeline.
 
 ## Stashed Full-Model Plan
@@ -396,10 +450,10 @@ The queue should mix cheap preparatory jobs with one or two expensive training j
 
 This is the recommended next queue after the current state.
 
-### Slot 1: Active Mistral LoRA diagnostic
+### Slot 1: Active Mistral LoRA safe rerun
 
-- job `20280124`
-- monitor training/validation for collapse, OOM preflight cutoff, adapter save/load behavior, and per-epoch accuracy trend.
+- job `20280442`
+- monitor for explicit `synthetic_oom_preflight_*` logs, whether cutoff `2500` avoids OOM, and how many epochs finish.
 
 ### Slot 2: Active Qwen34 LoRA pipeline
 
@@ -408,7 +462,14 @@ Action:
 - let rollout `20280026`, generation `20280027`, and training `20280028` proceed if queue allocation starts.
 - inspect each phase boundary before interpreting the final result.
 
-### Slot 3: Qwen2.5 LoRA rank/control follow-ups
+### Slot 3: VERL isolated smoke retry
+
+Action:
+
+- let job `20285925` run with `TRAIN_BATCH_SIZE=12` and `PPO_MINI_BATCH_SIZE=12`.
+- if it fails before training again, keep VERL as an integration task and do not let it block the in-house LoRA pipeline.
+
+### Slot 4: Qwen2.5 LoRA rank/control follow-ups
 
 Action:
 
@@ -431,7 +492,7 @@ Reason:
 
 - this is the fastest way to improve the training recipe while preserving queue throughput.
 
-### Slot 4: Prepare TreeMAPPO no-tool generation artifacts on CPU
+### Slot 5: Prepare TreeMAPPO no-tool generation artifacts on CPU
 
 Action:
 
@@ -441,7 +502,7 @@ Reason:
 
 - This keeps the next scientifically useful comparison ready while the FSDP smoke waits in queue.
 
-### Slot 5: Prepare evaluation / summary scripts for the first main table row
+### Slot 6: Prepare evaluation / summary scripts for the first main table row
 
 Action:
 
@@ -455,16 +516,12 @@ Reason:
 
 - Results without immediate aggregation slow down decision-making.
 
-### Slot 5: Queue one follow-up training job only when justified by Slot 1
+### Slot 7: Full-model path remains stashed
 
 Branch:
 
-- If `20217704` succeeds:
-  - queue serious full no-tool GRPO
-- If `20217704` OOMs with progress:
-  - queue reduced-cutoff rerun
-- If `20217704` OOMs immediately:
-  - queue a more conservative smoke rerun
+- Do not queue more full-model FSDP work while LoRA diagnostics are unresolved.
+- Reactivate only if LoRA remains indistinguishable from noise after safe cutoff, by-question grouping, and adapter persistence are validated.
 
 ### Recommended LoRA rank sweep submission order
 
@@ -535,5 +592,8 @@ As of now, the most important scientific and scheduling conclusions are:
 2. **LoRA no-tool GRPO already gives a credible positive signal.**
 3. **The next highest-value uncertainty is the best single-GPU LoRA recipe, including LoRA rank.**
 4. **Full-parameter no-tool training is stashed as a backup path while LoRA is debugged and optimized.**
-5. **We should not run orchestrator-scale jobs until the LoRA recipe is stabilized.**
-6. **The next paper-central milestone is the first valid no-tool GRPO vs TreeMAPPO comparison on Qwen2.5-7B, preferably on LoRA first.**
+5. **Mistral rank 16 has not produced a serious result yet, but the partial epoch-1 validation did not show immediate catastrophic collapse.**
+6. **Qwen34 rollout is the main active long-running pipeline and is progressing normally.**
+7. **VERL is currently an isolated integration smoke, not scientific evidence; its latest blocker was batch-size divisibility in the 3-training-GPU FSDP actor pool.**
+8. **We should not run orchestrator-scale jobs until the LoRA recipe is stabilized.**
+9. **The next paper-central milestone is the first valid no-tool GRPO vs TreeMAPPO comparison on Qwen2.5-7B, preferably on LoRA first.**
