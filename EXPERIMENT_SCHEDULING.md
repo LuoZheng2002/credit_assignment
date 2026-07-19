@@ -213,10 +213,12 @@ Conclusion:
 
 - Completed diagnostic job: `20280124`, `training_mistral_by_question_r16_5m_hdd`
 - Partial validation job: `20280440`, `validation_mistral_r16_partial2`, timed out after epoch 1 validation
-- Safe rerun job: `20280442`, `training_mistral_r16_safe`, pending `Priority`
+- Safe rerun job: `20280442`, `training_mistral_r16_safe`, completed successfully in `00:52:07`
+- Safe validation job: `20287205`, `validation_mistral_r16_safe`, pending `Priority`
 - Safe rerun config: `config/oneshot_train/mistral_train_grpo_notool_lora_r16_5m_safe.toml`
 - Training data: `/work/hdd/bhph/zluo8/credit_assignment/results/medium_files/mistral/grpo_notool_generation_1h/training_trajectories/trajectories.msgpack`
 - Safe rerun resources: `gpuA100x4`, `bfsl-delta-gpu`, `1 x A100`, `32` CPUs, `32G` memory, walltime `01:39:00`
+- Safe validation resources: `gpuA100x4`, `bfsl-delta-gpu`, `1 x A100`, `32` CPUs, `32G` memory, walltime `02:00:00`
 - Safe rerun cutoff: `training_trajectory_len_cutoff = 2500`
 
 Purpose:
@@ -274,6 +276,28 @@ Decision rule:
 - If it fails with memory pressure again, inspect whether training and vLLM worker placement are actually separated before spending more GPU time.
 - If it fails with another configuration assertion, treat VERL as still in integration/debug mode rather than a scientific result.
 - If it runs, use periodic accuracy reports as an external sanity check against the in-house LoRA pipeline.
+
+### 4. Qwen2.5 no-tool LoRA rank-48 low-learning-rate probe
+
+- Training job: `20287242`, `training_qwen25_r48_lr1e6`, pending `Priority`
+- Config: `config/oneshot_train/qwen25_train_grpo_notool_lora_r48_lr1e6_8ep.toml`
+- Resources: `gpuA100x4`, `bfsl-delta-gpu`, `1 x A100`, `32` CPUs, `32G` memory, walltime `03:00:00`
+- Generation prerequisite: `grpo_notool_generation_by_question` from `/work/nvme/bhph/zluo8/credit_assignment/results`
+- Output storage: `/work/hdd/bhph/zluo8/credit_assignment/results`
+- Training recipe: LoRA rank `48`, LoRA alpha `96`, learning rate `1e-6`, `8` epochs, `900s` per epoch, nominal cutoff `4096`
+- Sort policy: `ByQuestion`
+- Cutoff handling: single-GPU LoRA synthetic OOM preflight should run at the start of a fresh job and select `95%` of the longest valid synthetic trajectory length.
+
+Purpose:
+
+- Test whether the weak or noisy LoRA gains are partly due to an overly aggressive learning rate rather than adapter rank alone.
+- Keep rank above the earlier rank-32 setting while reducing the update magnitude by `50x`.
+
+Decision rule:
+
+- If validation is stable but flat, keep learning rate search active and compare against rank-16/rank-32 anchors.
+- If validation collapses despite `1e-6`, deprioritize larger ranks and inspect data/advantage distribution before adding more capacity.
+- If validation improves, use rank-48 low learning rate as the next GRPO no-tool anchor and then test the TreeMAPPO no-tool counterpart.
 
 ## Stashed Full-Model Plan
 
@@ -450,10 +474,10 @@ The queue should mix cheap preparatory jobs with one or two expensive training j
 
 This is the recommended next queue after the current state.
 
-### Slot 1: Active Mistral LoRA safe rerun
+### Slot 1: Active Mistral LoRA validation
 
-- job `20280442`
-- monitor for explicit `synthetic_oom_preflight_*` logs, whether cutoff `2500` avoids OOM, and how many epochs finish.
+- training job `20280442` completed through 10 epochs.
+- validation job `20287205` is pending; when it runs, compare epoch-wise accuracy against the partial epoch-1 result and watch for collapse.
 
 ### Slot 2: Active Qwen34 LoRA pipeline
 
@@ -473,14 +497,16 @@ Action:
 
 Action:
 
-- queue additional single-GPU LoRA experiments only after current Mistral/Qwen34 signals clarify whether adapter persistence is healthy.
-- the preferred branch remains a LoRA rank sweep around the already-successful no-tool GRPO setup.
+- run the submitted rank-48 low-learning-rate probe `20287242`.
+- keep additional single-GPU LoRA experiments contingent on Mistral validation and Qwen2.5 rank-48 trend.
+- the preferred branch remains a LoRA rank and learning-rate sweep around the no-tool GRPO setup.
 
 Suggested initial rank sweep:
 
 - rank 8
 - rank 16
 - rank 32
+- rank 48 with lower learning rate
 
 Concrete config files:
 
@@ -530,12 +556,14 @@ Run these in this order:
 1. `config/oneshot_train/qwen25_train_grpo_notool_lora_r8.toml`
 2. `config/oneshot_train/qwen25_train_grpo_notool_lora.toml`
 3. `config/oneshot_train/qwen25_train_grpo_notool_lora_r32.toml`
+4. `config/oneshot_train/qwen25_train_grpo_notool_lora_r48_lr1e6_8ep.toml`
 
 Rationale:
 
 - Rank 8 tests whether we can keep most of the gain with a smaller adapter and lower memory pressure.
 - Rank 16 is the known-good anchor and should remain in the sweep for direct comparison.
 - Rank 32 tests whether extra adapter capacity buys measurable validation gain.
+- Rank 48 with `1e-6` learning rate tests whether larger adapters need substantially smaller updates to avoid collapse or noise.
 
 Decision rule after the sweep:
 

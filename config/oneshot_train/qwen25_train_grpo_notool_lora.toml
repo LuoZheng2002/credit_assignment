@@ -10,6 +10,7 @@ num_iterations_limit = 3
 num_gpus = 1
 inference_backend = "vllm"
 training_trajectory_len_cutoff = 4096
+training_set_sort_mode = "ByQuestion"
 total_time_limit_hours = 4.0
 mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
 generation_mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
