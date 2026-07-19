@@ -625,3 +625,70 @@ As of now, the most important scientific and scheduling conclusions are:
 7. **VERL is currently an isolated integration smoke, not scientific evidence; its latest blocker was batch-size divisibility in the 3-training-GPU FSDP actor pool.**
 8. **We should not run orchestrator-scale jobs until the LoRA recipe is stabilized.**
 9. **The next paper-central milestone is the first valid no-tool GRPO vs TreeMAPPO comparison on Qwen2.5-7B, preferably on LoRA first.**
+
+## Current Blockers
+
+As of the latest Delta poll, the project is blocked on scheduler allocation and validation evidence rather than on a known local code error.
+
+1. **Mistral validation has not run yet.**
+   - Job `20287205`, `validation_mistral_r16_safe`, is pending for `Priority` with estimated start time `2026-07-20T01:47:13` Delta time.
+   - Until this finishes, we cannot tell whether the completed 10-epoch Mistral rank-16 safe training run is stable, improves, or collapses across epochs.
+
+2. **VERL remains an integration smoke, not scientific evidence.**
+   - Job `20285925`, `verl_one_step_off_4gpu_3train_b12`, is pending for `Priority` with estimated start time `2026-07-20T01:47:13` Delta time.
+   - The previous VERL blocker was a batch-size divisibility/configuration issue in the 3-training-GPU FSDP actor pool. The current job tests the corrected `TRAIN_BATCH_SIZE=12`, `PPO_MINI_BATCH_SIZE=12` setup.
+   - If it fails before meaningful training, VERL should remain isolated from the main TreeMAPPO/GRPO experiment path.
+
+3. **Qwen2.5 rank-48 low-learning-rate probe is queued but unobserved.**
+   - Job `20287242`, `training_qwen25_r48_lr1e6`, is pending for `Priority`.
+   - This run tests whether higher-rank LoRA needs a much smaller learning rate (`1e-6`) to avoid noisy or collapsed validation trends.
+   - No conclusion about rank 48 should be drawn until training and validation artifacts exist.
+
+4. **Qwen34 pipeline is still in phase transition.**
+   - Rollout job `20280026` was still running at the latest detailed poll; generation `20280027` and training `20280028` remain dependency-gated.
+   - The main decision point is after rollout finalization: verify the finalized action log before trusting generation/training.
+
+5. **The first paper-central GRPO vs TreeMAPPO comparison is not yet available.**
+   - The current queue mostly stabilizes the LoRA recipe and infrastructure.
+   - The next scientific milestone is a valid Qwen2.5 no-tool GRPO vs TreeMAPPO comparison using by-question generation, vLLM validation, and the best stable LoRA recipe.
+
+6. **Full-model FSDP is intentionally stashed.**
+   - It is not an immediate blocker; it is a backup path if LoRA remains unstable or indistinguishable from noise after validation of the safer recipe.
+   - Do not spend active queue slots on full-model FSDP until the current LoRA diagnostics resolve.
+
+## Macroscopic Setbacks
+
+These are project-level setbacks that explain why the schedule remains adaptive and why the current priority is LoRA stabilization rather than broad experiment scaling.
+
+1. **Accuracy gains are not yet clearly significant.**
+   - Existing LoRA runs have not produced a large, unambiguous accuracy boost beyond validation noise.
+   - This forces continued hyperparameter search over LoRA rank, learning rate, sorting policy, cutoff policy, and validation reliability before treating any recipe as paper-ready.
+
+2. **Some higher-rank LoRA runs showed collapse or unstable validation.**
+   - Earlier Mistral rank-32 mirror experiments produced epoch-1 validation accuracy of `0.0`, which made them scientifically invalid as positive evidence.
+   - The collapse may reflect adapter save/load issues, overly aggressive hyperparameters, model-family sensitivity, data ordering, or validation fragility; the current rank-16 safe rerun and rank-48 low-learning-rate Qwen2.5 probe are designed to separate these possibilities.
+
+3. **Full-model FSDP is too expensive for rapid iteration.**
+   - Four-GPU full-model jobs queue much more slowly than one-GPU LoRA jobs.
+   - Full-model training also has stricter OOM/fail-fast requirements because distributed ranks can desynchronize after OOM.
+   - As a result, full-model FSDP remains a backup path rather than the main tuning loop.
+
+4. **Validation has been operationally fragile.**
+   - Earlier sglang validation crashes and timeouts made it difficult to interpret trained checkpoints reliably.
+   - The migration to vLLM and split validation should improve recoverability, but current validation jobs still need to prove stable throughput and complete epoch coverage.
+
+5. **Storage pressure has repeatedly constrained experiment management.**
+   - NVMe quota pressure forced cleanup of validated model artifacts and migration of new/unfinished outputs toward HDD storage.
+   - This increases bookkeeping complexity because some runs now read rollout/generation prerequisites from NVMe while writing training/validation outputs to HDD.
+
+6. **Pipeline restructuring consumed time but was necessary.**
+   - The original oneshot pipeline had to be split into rollout, generation, training, and validation phases to avoid rerunning expensive work and to recover from failures.
+   - This improved operational control, but it delayed the first clean end-to-end scientific comparison.
+
+7. **The isolated VERL baseline remains blocked by integration risk.**
+   - VERL has not yet produced a usable comparison result under the separated training/rollout setup.
+   - Its failures so far are infrastructure/configuration signals rather than evidence about GRPO quality, so it should not block the in-house TreeMAPPO/GRPO path.
+
+8. **The main scientific comparison is still missing.**
+   - We do not yet have a clean Qwen2.5 no-tool GRPO vs TreeMAPPO result under the stabilized recipe.
+   - Until this comparison exists, claims about TreeMAPPO's advantage over trajectory-level GRPO must remain conditional.
