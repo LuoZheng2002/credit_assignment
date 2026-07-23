@@ -161,6 +161,44 @@ def _wait_health(
     raise TimeoutError(f"timed out waiting for health endpoint: {url}")
 
 
+def _tail_text(path: Path, max_lines: int = 120) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as error:
+        return f"<failed to read {path}: {error}>"
+    return "\n".join(lines[-max_lines:])
+
+
+def _wait_health_or_process_exit(
+    url: str,
+    process: subprocess.Popen[bytes],
+    timeout_secs: int,
+    log_path: Path,
+    headers: dict[str, str] | None = None,
+) -> None:
+    deadline = time.time() + timeout_secs
+    last_error = ""
+    while time.time() < deadline:
+        return_code = process.poll()
+        if return_code is not None:
+            raise RuntimeError(
+                "vLLM process exited before health check passed "
+                f"(pid={process.pid}, return_code={return_code}). "
+                f"Last log lines:\n{_tail_text(log_path)}"
+            )
+        try:
+            _get_json(url, timeout=2, headers=headers)
+            return
+        except (HTTPError, URLError) as error:
+            last_error = repr(error)
+            time.sleep(5)
+    raise TimeoutError(
+        f"timed out waiting {timeout_secs}s for health endpoint: {url}; "
+        f"pid={process.pid}; last_probe_error={last_error}; "
+        f"process_return_code={process.poll()}; last log lines:\n{_tail_text(log_path)}"
+    )
+
+
 def _probe_health(
     url: str,
     timeout_secs: float = 2.0,
@@ -259,6 +297,17 @@ def _optional_float_env(name: str) -> str | None:
     if not 0.0 < value < 1.0:
         raise ValueError(f"{name} must be between 0 and 1, got {raw_value}")
     return raw_value
+
+
+def _vllm_supported_max_lora_rank(adapter_rank: int) -> int:
+    supported_ranks = (1, 8, 16, 32, 64, 128, 256, 320, 512)
+    for supported_rank in supported_ranks:
+        if adapter_rank <= supported_rank:
+            return supported_rank
+    raise ValueError(
+        f"LoRA rank {adapter_rank} exceeds maximum vLLM supported rank "
+        f"{supported_ranks[-1]}"
+    )
 
 
 def _optional_positive_int_env(name: str) -> str | None:
@@ -700,6 +749,8 @@ class VllmBackend:
         self._model_cli_name = model_cli_name
         self._config_nickname = config_nickname
         self._epoch = epoch
+        self._restart_lock = threading.Lock()
+        self._restart_in_progress = False
 
         if not model_path_obj.exists() and epoch == 0:
             _emit_status(
@@ -713,9 +764,9 @@ class VllmBackend:
         if not model_path_obj.exists():
             raise FileNotFoundError(f"model path does not exist: {model_path}")
 
-        self._launch_model(model_path)
+        self._launch_model(model_path, health_timeout_secs=900)
 
-    def _launch_model(self, model_path: str) -> None:
+    def _launch_model(self, model_path: str, *, health_timeout_secs: int) -> None:
         vllm_python = _resolve_vllm_python_executable()
         adapter_base_model_path = _resolve_peft_adapter_base_model_path(model_path)
         vllm_model_path = adapter_base_model_path or model_path
@@ -768,7 +819,9 @@ class VllmBackend:
                     ]
                 )
                 if adapter_rank is not None:
-                    launch_command.extend(["--max-lora-rank", str(adapter_rank)])
+                    launch_command.extend(
+                        ["--max-lora-rank", str(_vllm_supported_max_lora_rank(adapter_rank))]
+                    )
             if self._num_gpus > 1:
                 launch_command.extend(["--tensor-parallel-size", str(self._num_gpus)])
             gpu_memory_utilization = _optional_float_env("VLLM_GPU_MEMORY_UTILIZATION")
@@ -788,6 +841,11 @@ class VllmBackend:
             if os.environ.get("VLLM_ENFORCE_EAGER", "").strip() in ("1", "true", "True"):
                 launch_command.append("--enforce-eager")
 
+            _emit_status(
+                "hpc",
+                "starting",
+                "vLLM launch command: " + " ".join(launch_command),
+            )
             self._process = subprocess.Popen(
                 launch_command,
                 stdout=log_handle,
@@ -797,7 +855,14 @@ class VllmBackend:
         _emit_status(
             "hpc", "starting", f"launching local vLLM on port {self._upstream_port}"
         )
-        _wait_health(f"{self._upstream_url}/health", timeout_secs=900)
+        if self._process is None:
+            raise RuntimeError("internal error: vLLM process was not created")
+        _wait_health_or_process_exit(
+            f"{self._upstream_url}/health",
+            self._process,
+            timeout_secs=health_timeout_secs,
+            log_path=self._wrapper_log_path,
+        )
         if _CONN is not None:
             _CONN.send_info(f"vLLM server is up at {self._upstream_url}")
         _write_hpc_server_state(
@@ -831,24 +896,66 @@ class VllmBackend:
         exit_error = self.unexpected_exit_error()
         if exit_error is not None:
             raise RuntimeError(exit_error)
-        if self._process is not None and self._process.poll() is None:
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=60)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait(timeout=30)
-        self._epoch += 1
-        self._launch_model(new_model_path)
+        with self._restart_lock:
+            self._restart_in_progress = True
+        try:
+            if self._process is not None and self._process.poll() is None:
+                _emit_status(
+                    "hpc",
+                    "starting",
+                    f"stopping vLLM pid={self._process.pid} before model update",
+                )
+                self._process.terminate()
+                try:
+                    self._process.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    _emit_status(
+                        "hpc",
+                        "starting",
+                        f"vLLM pid={self._process.pid} did not terminate; killing",
+                    )
+                    self._process.kill()
+                    self._process.wait(timeout=30)
+                _emit_status(
+                    "hpc",
+                    "starting",
+                    "old vLLM process stopped for planned model update "
+                    f"(return_code={self._process.returncode})",
+                )
+            self._epoch += 1
+            self._launch_model(new_model_path, health_timeout_secs=240)
+        except Exception as error:
+            message = (
+                f"failed to restart vLLM for model update to {new_model_path}: {error}"
+            )
+            _emit_event(
+                {
+                    "type": "error",
+                    "backend": self.backend_name,
+                    "error_code": "VLLM_MODEL_UPDATE_RELAUNCH_FAILED",
+                    "error_message": message,
+                    "timestamp": time.time(),
+                }
+            )
+            raise RuntimeError(message) from error
+        finally:
+            with self._restart_lock:
+                self._restart_in_progress = False
         return {"status": "ok", "message": "vLLM model restarted"}
 
     def unexpected_exit_error(self) -> str | None:
         if self._process is None:
             return None
+        with self._restart_lock:
+            if self._restart_in_progress:
+                return None
         return_code = self._process.poll()
         if return_code is None:
             return None
-        return f"local vLLM process exited unexpectedly with return code {return_code}"
+        return (
+            f"local vLLM process exited unexpectedly with return code {return_code}; "
+            f"last log lines:\n{_tail_text(self._wrapper_log_path)}"
+        )
 
     def shutdown(self) -> None:
         if self._process is None:

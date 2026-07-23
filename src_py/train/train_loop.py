@@ -62,6 +62,7 @@ class CudaOomPlan:
 
 DEFAULT_TRAJECTORY_LENGTH_CAP = 4096
 MIN_TRAJECTORY_LENGTH_CAP = 2
+SINGLE_GPU_LORA_SYNTHETIC_OOM_PRECHECK_SAFETY_MULTIPLIER = 0.75
 _DISTRIBUTED_CONTROL_STOP = -1
 _DISTRIBUTED_CONTROL_SKIP = 0
 _DISTRIBUTED_CONTROL_RUN = 1
@@ -627,14 +628,18 @@ def _maybe_apply_single_gpu_lora_synthetic_oom_preflight(
     distributed_strategy = assert_supported_distributed_strategy(config.distributed_strategy)
     global_step = int(getattr(resume_state, "global_step", 0))
     samples_trained = int(getattr(resume_state, "samples_trained", 0))
+    elapsed_training_time_sec = float(
+        getattr(resume_state, "elapsed_training_time_sec", 0.0)
+    )
+    samples_trained_this_run = int(getattr(resume_state, "samples_trained_this_run", 0))
     should_run_preflight = (
         rank == 0
         and world_size == 1
         and distributed_strategy == DIST_STRATEGY_SINGLE_GPU
         and lora_or_full == "lora"
         and trajectory_length_cap > MIN_TRAJECTORY_LENGTH_CAP
-        and global_step == 0
-        and samples_trained == 0
+        and elapsed_training_time_sec <= 0.0
+        and samples_trained_this_run == 0
     )
     if not should_run_preflight:
         if rank == 0:
@@ -644,7 +649,9 @@ def _maybe_apply_single_gpu_lora_synthetic_oom_preflight(
                 f"distributed_strategy={distributed_strategy} "
                 f"lora_or_full={lora_or_full} "
                 f"trajectory_length_cap={trajectory_length_cap} "
-                f"global_step={global_step} samples_trained={samples_trained}"
+                f"global_step={global_step} samples_trained={samples_trained} "
+                f"elapsed_training_time_sec={elapsed_training_time_sec} "
+                f"samples_trained_this_run={samples_trained_this_run}"
             )
         return trajectory_length_cap
 
@@ -709,17 +716,21 @@ def _maybe_apply_single_gpu_lora_synthetic_oom_preflight(
                 longest_valid = mid
             else:
                 high = mid
+    safety_multiplier = SINGLE_GPU_LORA_SYNTHETIC_OOM_PRECHECK_SAFETY_MULTIPLIER
     selected_cap = max(
-        MIN_TRAJECTORY_LENGTH_CAP, min(trajectory_length_cap, int(longest_valid * 0.95))
+        MIN_TRAJECTORY_LENGTH_CAP,
+        min(trajectory_length_cap, int(longest_valid * safety_multiplier)),
     )
     _text_info(
         "synthetic_oom_preflight_result=1 "
         f"longest_valid={longest_valid} precision={precision} "
+        f"safety_multiplier={safety_multiplier} "
         f"selected_training_trajectory_len_cutoff={selected_cap}"
     )
     _memtrace(
         "synthetic_oom_preflight_result "
         f"longest_valid={longest_valid} precision={precision} "
+        f"safety_multiplier={safety_multiplier} "
         f"selected_training_trajectory_len_cutoff={selected_cap}"
     )
     return selected_cap

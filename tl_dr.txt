@@ -1,0 +1,1 @@
+TreeMAPPO improves agentic LLM training by turning sparse final-answer rewards into uncertainty-aware token-level credit signals through guided rollout-tree branching and statistically grounded MAP advantage estimation.

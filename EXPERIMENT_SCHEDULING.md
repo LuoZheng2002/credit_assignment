@@ -614,81 +614,94 @@ This rule is important because several earlier jobs were operationally useful bu
 
 ## Immediate Conclusions
 
-As of now, the most important scientific and scheduling conclusions are:
+As of the latest Delta poll, the most important scientific and scheduling conclusions are:
 
-1. **The no-tool GRPO split pipeline works.**
-2. **LoRA no-tool GRPO already gives a credible positive signal.**
-3. **The next highest-value uncertainty is the best single-GPU LoRA recipe, including LoRA rank.**
-4. **Full-parameter no-tool training is stashed as a backup path while LoRA is debugged and optimized.**
-5. **Mistral rank 16 has not produced a serious result yet, but the partial epoch-1 validation did not show immediate catastrophic collapse.**
-6. **Qwen34 rollout is the main active long-running pipeline and is progressing normally.**
-7. **VERL is currently an isolated integration smoke, not scientific evidence; its latest blocker was batch-size divisibility in the 3-training-GPU FSDP actor pool.**
-8. **We should not run orchestrator-scale jobs until the LoRA recipe is stabilized.**
-9. **The next paper-central milestone is the first valid no-tool GRPO vs TreeMAPPO comparison on Qwen2.5-7B, preferably on LoRA first.**
+1. **Qwen2.5 no-tool GRPO LoRA remains the most stable positive baseline.**
+   - The matched GRPO r32 `lr=5e-5` run improved from roughly `0.6503` to `0.6703`.
+   - The GRPO r48 `lr=1e-6` probe has partial validation through epoch 2: base `0.6729`, epoch 1 `0.6717`, epoch 2 `0.6747`; this is stable but only a very small gain so far.
+
+2. **Qwen2.5 TreeMAPPO is rank- and learning-rate-sensitive.**
+   - Tree r16 `lr=5e-5` did not collapse in the earlier validated epochs: base `0.6631`, epoch 1 `0.6861`, epoch 2 `0.6802`.
+   - Tree r32 `lr=5e-5` collapsed badly: base `0.6580`, best trained epoch `0.2823`, final epoch `0.2122`.
+   - Tree r32 `lr=1e-6` has completed 10 epochs of training without OOM; validation is pending.
+   - Tree r16 5-epoch rerun has completed training, with validation pending.
+
+3. **The 75% synthetic OOM preflight fix is operationally effective.**
+   - Qwen2.5 tree r32 `lr=1e-6` completed 10 epochs without OOM using a cutoff around `2316`.
+   - Qwen2.5 tree r16 5-epoch completed all 5 requested epochs, although epoch 5 still OOM-stopped after `1873` samples.
+   - Qwen34 r32 completed 24 epochs without OOM under the fixed per-epoch preflight.
+
+4. **Validation is now the main operational bottleneck.**
+   - vLLM validation works for many epochs, but `/update_model` can still time out after backend restart.
+   - The r48 rank issue was fixed by rounding vLLM `--max-lora-rank` to supported values, but the retry still timed out when updating to epoch 3.
+
+5. **Mistral is not currently a productive paper path.**
+   - Mistral r16 validation showed epoch 1 slightly above base but then collapsed near zero by later epochs.
+   - It should be deprioritized unless needed for a negative/generalization appendix.
+
+6. **Full-model FSDP remains stashed.**
+   - One-GPU LoRA is still the faster route for actionable evidence.
+   - Full-model FSDP should remain a backup plan only if LoRA fails to produce a defensible comparison.
 
 ## Current Blockers
 
-As of the latest Delta poll, the project is blocked on scheduler allocation and validation evidence rather than on a known local code error.
+As of the latest Delta poll, the project is blocked primarily on pending validation jobs and one recurring validation reliability issue.
 
-1. **Mistral validation has not run yet.**
-   - Job `20287205`, `validation_mistral_r16_safe`, is pending for `Priority` with estimated start time `2026-07-20T01:47:13` Delta time.
-   - Until this finishes, we cannot tell whether the completed 10-epoch Mistral rank-16 safe training run is stable, improves, or collapses across epochs.
+1. **Qwen2.5 TreeMAPPO r32 low-learning-rate validation is pending.**
+   - Training job `20369711`, `training_qwen25_tree_r32_lr1e6_10ep`, completed in `02:32:53`.
+   - Validation job `20369712`, `validation_qwen25_tree_r32_lr1e6_10ep`, is pending with no dependency blocker.
+   - This is the key test of whether the r32 collapse was caused mainly by `lr=5e-5`.
 
-2. **VERL remains an integration smoke, not scientific evidence.**
-   - Job `20285925`, `verl_one_step_off_4gpu_3train_b12`, is pending for `Priority` with estimated start time `2026-07-20T01:47:13` Delta time.
-   - The previous VERL blocker was a batch-size divisibility/configuration issue in the 3-training-GPU FSDP actor pool. The current job tests the corrected `TRAIN_BATCH_SIZE=12`, `PPO_MINI_BATCH_SIZE=12` setup.
-   - If it fails before meaningful training, VERL should remain isolated from the main TreeMAPPO/GRPO experiment path.
+2. **Qwen2.5 TreeMAPPO r16 5-epoch validation is pending.**
+   - Training job `20370144`, `training_qwen25_tree_r16_5ep_cut075`, completed in `01:09:57`.
+   - Validation job `20370145`, `validation_qwen25_tree_r16_5ep_cut075`, is pending with dependency satisfied.
+   - This is the key test of whether the earlier r16 improvement persists beyond the first two validated epochs.
 
-3. **Qwen2.5 rank-48 low-learning-rate probe is queued but unobserved.**
-   - Job `20287242`, `training_qwen25_r48_lr1e6`, is pending for `Priority`.
-   - This run tests whether higher-rank LoRA needs a much smaller learning rate (`1e-6`) to avoid noisy or collapsed validation trends.
-   - No conclusion about rank 48 should be drawn until training and validation artifacts exist.
+3. **Qwen34 validation needs a retry to move past base epoch.**
+   - Training job `20358896`, `training_qwen34_r32_24ep_cut075_epochfix`, completed all 24 epochs.
+   - Initial validation job `20358897` validated only base epoch: avg `0.7055`, then failed on `/update_model` timeout for epoch 1.
+   - Retry job `20377846`, `validation_qwen34_r32_24ep_retry`, is pending.
 
-4. **Qwen34 pipeline is still in phase transition.**
-   - Rollout job `20280026` was still running at the latest detailed poll; generation `20280027` and training `20280028` remain dependency-gated.
-   - The main decision point is after rollout finalization: verify the finalized action log before trusting generation/training.
+4. **Qwen2.5 GRPO r48 validation is partial.**
+   - Training job `20362732`, `training_qwen25_r48_lr1e6_3ep_cut075`, completed all 3 epochs.
+   - Rank-fix validation job `20377845` validated epochs 1 and 2 after fixing vLLM max-rank handling, but failed updating to epoch 3.
+   - Current partial result: base `0.6729`, epoch 1 `0.6717`, epoch 2 `0.6747`; this is stable but not a meaningful gain yet.
 
-5. **The first paper-central GRPO vs TreeMAPPO comparison is not yet available.**
-   - The current queue mostly stabilizes the LoRA recipe and infrastructure.
-   - The next scientific milestone is a valid Qwen2.5 no-tool GRPO vs TreeMAPPO comparison using by-question generation, vLLM validation, and the best stable LoRA recipe.
-
-6. **Full-model FSDP is intentionally stashed.**
-   - It is not an immediate blocker; it is a backup path if LoRA remains unstable or indistinguishable from noise after validation of the safer recipe.
-   - Do not spend active queue slots on full-model FSDP until the current LoRA diagnostics resolve.
+5. **vLLM model-update timeout is recurring.**
+   - Failures appear when switching LoRA adapter epochs via `/update_model`; the backend exits and relaunch sometimes does not become healthy within 300 seconds.
+   - Obvious config bug for rank 48 was fixed by rounding `--max-lora-rank` up to the nearest supported value, but timeout remains possible.
+   - If this continues, the next infrastructure fix should be to validate each epoch in a fresh process/job or make validation restart the wrapper per epoch instead of relying on update-in-place.
 
 ## Macroscopic Setbacks
 
 These are project-level setbacks that explain why the schedule remains adaptive and why the current priority is LoRA stabilization rather than broad experiment scaling.
 
-1. **Accuracy gains are not yet clearly significant.**
-   - Existing LoRA runs have not produced a large, unambiguous accuracy boost beyond validation noise.
-   - This forces continued hyperparameter search over LoRA rank, learning rate, sorting policy, cutoff policy, and validation reliability before treating any recipe as paper-ready.
+1. **Accuracy gains remain modest and recipe-dependent.**
+   - GRPO r32 has a small positive signal around `+0.020` average accuracy.
+   - Tree r16 has a stronger early signal around `+0.023`, but needs the pending 5-epoch validation for confirmation.
+   - Tree r32 at `lr=5e-5` collapsed, so TreeMAPPO is not yet robust across LoRA rank.
 
-2. **Some higher-rank LoRA runs showed collapse or unstable validation.**
-   - Earlier Mistral rank-32 mirror experiments produced epoch-1 validation accuracy of `0.0`, which made them scientifically invalid as positive evidence.
-   - The collapse may reflect adapter save/load issues, overly aggressive hyperparameters, model-family sensitivity, data ordering, or validation fragility; the current rank-16 safe rerun and rank-48 low-learning-rate Qwen2.5 probe are designed to separate these possibilities.
+2. **Higher-rank LoRA requires lower learning rates and careful validation.**
+   - Tree r32 `lr=5e-5` collapsed despite successful training.
+   - GRPO r48 `lr=1e-6` appears stable through epoch 2 but does not yet show a meaningful gain.
+   - Tree r32 `lr=1e-6` is the active test of whether lower LR rescues higher-rank TreeMAPPO.
 
-3. **Full-model FSDP is too expensive for rapid iteration.**
-   - Four-GPU full-model jobs queue much more slowly than one-GPU LoRA jobs.
-   - Full-model training also has stricter OOM/fail-fast requirements because distributed ranks can desynchronize after OOM.
-   - As a result, full-model FSDP remains a backup path rather than the main tuning loop.
+3. **Validation remains operationally fragile.**
+   - vLLM is substantially better than the earlier sglang path, but adapter epoch switching can still fail.
+   - This directly affects qwen34 and r48 completion, and may require a fresh-process-per-epoch validation mode.
 
-4. **Validation has been operationally fragile.**
-   - Earlier sglang validation crashes and timeouts made it difficult to interpret trained checkpoints reliably.
-   - The migration to vLLM and split validation should improve recoverability, but current validation jobs still need to prove stable throughput and complete epoch coverage.
+4. **Mistral results are currently negative.**
+   - Mistral r16 safe validation showed base `0.2068`, epoch 1 `0.2224`, then near-zero accuracy by epochs 2--4.
+   - This suggests model-family sensitivity or overtraining/collapse; it is not a priority for the main paper evidence.
 
-5. **Storage pressure has repeatedly constrained experiment management.**
-   - NVMe quota pressure forced cleanup of validated model artifacts and migration of new/unfinished outputs toward HDD storage.
-   - This increases bookkeeping complexity because some runs now read rollout/generation prerequisites from NVMe while writing training/validation outputs to HDD.
+5. **Full-model FSDP remains too slow for rapid iteration.**
+   - Four-GPU full-model jobs queue more slowly and are harder to recover after OOM.
+   - They remain a backup route rather than an active blocker.
 
-6. **Pipeline restructuring consumed time but was necessary.**
-   - The original oneshot pipeline had to be split into rollout, generation, training, and validation phases to avoid rerunning expensive work and to recover from failures.
-   - This improved operational control, but it delayed the first clean end-to-end scientific comparison.
+6. **Storage and artifact pruning continue to affect bookkeeping.**
+   - Validation prunes non-best epoch snapshots, which saves quota but means result interpretation must rely on summary JSON and logs.
+   - Some prerequisites still live on NVMe while newer outputs are on HDD.
 
-7. **The isolated VERL baseline remains blocked by integration risk.**
-   - VERL has not yet produced a usable comparison result under the separated training/rollout setup.
-   - Its failures so far are infrastructure/configuration signals rather than evidence about GRPO quality, so it should not block the in-house TreeMAPPO/GRPO path.
-
-8. **The main scientific comparison is still missing.**
-   - We do not yet have a clean Qwen2.5 no-tool GRPO vs TreeMAPPO result under the stabilized recipe.
-   - Until this comparison exists, claims about TreeMAPPO's advantage over trajectory-level GRPO must remain conditional.
+7. **The main scientific comparison is close but not finalized.**
+   - We have GRPO r32 stable positive evidence and Tree r16 early positive evidence.
+   - The pending Tree r16 5-epoch validation and Tree r32 `lr=1e-6` validation should determine whether TreeMAPPO has a defensible no-tool improvement over GRPO or whether the claim must be narrowed.
