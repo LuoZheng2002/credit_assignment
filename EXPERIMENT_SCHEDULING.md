@@ -1,6 +1,6 @@
 # Experiment and Scheduling Plan
 
-Last updated: 2026-07-19
+Last updated: 2026-07-24
 
 ## Purpose
 
@@ -54,6 +54,12 @@ The intended final paper tables are already clear:
   - training no longer fails due to infrastructure or OOM instability,
   - generation policy is settled,
   - a credible training length cutoff is established for each training regime.
+- If time and queue availability permit, run a small number of `bin_orchestrator.rs`
+  checks on the basic Qwen2.5 no-tool cases (`grpo_notool` and `tree_notool`).
+  These runs are confirmatory checks for the standard online/interleaved setting,
+  not the primary paper path. The main experimental focus remains the split
+  one-shot workflow because it is cheaper, more debuggable, and better matched
+  to the current compute budget.
 
 ### Current engineering conclusions
 
@@ -360,6 +366,8 @@ Promotion criteria:
 - Stable GRPO no-tool training
 - Stable TreeMAPPO no-tool training
 - Base-model evaluation already available or easy to compute
+- Optional confirmatory orchestrator runs on `grpo_notool` and `tree_notool`
+  if time remains after the split one-shot comparison is stable.
 
 ### Phase 2: Expand to tool / ablations / branch-budget
 

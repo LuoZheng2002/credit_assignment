@@ -95,12 +95,22 @@ pub async fn update_inference_model(
     let payload = serde_json::json!({"model_path": model_path});
 
     let client = reqwest::Client::new();
+    let timeout_secs = std::env::var("INFERENCE_UPDATE_MODEL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(900);
     let response = timeout(
-        Duration::from_secs(300),
+        Duration::from_secs(timeout_secs),
         client.post(&url).json(&payload).send(),
     )
     .await
-    .map_err(|_| format!("update_model request to {} timed out after 300s", url))?
+    .map_err(|_| {
+        format!(
+            "update_model request to {} timed out after {}s",
+            url, timeout_secs
+        )
+    })?
     .map_err(|e| format!("update_model request to {} failed: {}", url, e))?;
 
     if !response.status().is_success() {

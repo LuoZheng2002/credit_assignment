@@ -22,6 +22,7 @@ struct ModelAnswerJudgmentCacheSlot {
 
 static MODEL_ANSWER_JUDGMENT_CACHE_SLOT: ArcSwapOption<ModelAnswerJudgmentCacheSlot> =
     ArcSwapOption::const_empty();
+static MODEL_ANSWER_JUDGMENT_CACHE_INIT_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ModelAnswerJudgmentCacheKey {
@@ -156,6 +157,29 @@ fn get_or_init_store(
     drop(guard);
 
     // Slow path: create the store and try to install it atomically.
+    let _init_guard = MODEL_ANSWER_JUDGMENT_CACHE_INIT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let guard = MODEL_ANSWER_JUDGMENT_CACHE_SLOT.load();
+    if let Some(slot) = guard.as_ref() {
+        assert_eq!(
+            slot.model_cli_name, model_cli_name,
+            "Model answer judgment cache was already initialized with model_cli_name={}, \
+             but a different model_cli_name={} was requested. \
+             Only one (model_cli_name, config_nickname) tuple is supported per program instance.",
+            slot.model_cli_name, model_cli_name,
+        );
+        assert_eq!(
+            slot.config_nickname, config_nickname,
+            "Model answer judgment cache was already initialized with config_nickname={}, \
+             but a different config_nickname={} was requested. \
+             Only one (model_cli_name, config_nickname) tuple is supported per program instance.",
+            slot.config_nickname, config_nickname,
+        );
+        return Arc::clone(&slot.store);
+    }
+    drop(guard);
+
     let db_path = std::path::PathBuf::from(judgment_cache_path(
         mount_dir,
         model_cli_name,

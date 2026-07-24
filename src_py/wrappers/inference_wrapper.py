@@ -126,6 +126,31 @@ def _post_json(
         return json.loads(response.read().decode("utf-8"))
 
 
+def _post_json_accept_any_response(
+    url: str,
+    payload: dict[str, Any],
+    timeout: float = 600.0,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+    req = Request(url=url, method="POST", data=body)
+    req.add_header("content-type", "application/json")
+    if headers:
+        for key, value in headers.items():
+            req.add_header(key, value)
+    with urlopen(req, timeout=timeout) as response:  # noqa: S310
+        raw = response.read().decode("utf-8").strip()
+        if raw == "":
+            return {"status": "ok"}
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+            return {"status": "ok", "value": parsed}
+        except json.JSONDecodeError:
+            return {"status": "ok", "message": raw}
+
+
 def _get_json(
     url: str,
     timeout: float = 10.0,
@@ -318,6 +343,34 @@ def _optional_positive_int_env(name: str) -> str | None:
     if value <= 0:
         raise ValueError(f"{name} must be positive, got {raw_value}")
     return raw_value
+
+
+def _positive_int_env_or_default(name: str, default: int) -> int:
+    raw_value = _optional_positive_int_env(name)
+    if raw_value is None:
+        return default
+    return int(raw_value)
+
+
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip() in ("1", "true", "True")
+
+
+def _config_expects_lora(config_nickname: str) -> bool:
+    return "lora" in config_nickname.strip().lower()
+
+
+def _vllm_should_skip_tokenizer_init(
+    model_cli_name: str, hf_model_name: str, model_path: str
+) -> bool:
+    model_cli_name_lower = model_cli_name.strip().lower()
+    hf_model_name_lower = hf_model_name.strip().lower()
+    model_path_lower = model_path.strip().lower()
+    if model_cli_name_lower == "gemma":
+        return False
+    if "gemma-3" in hf_model_name_lower or "gemma-3" in model_path_lower:
+        return False
+    return True
 
 
 def _resolve_peft_adapter_base_model_path(model_path: str) -> str | None:
@@ -743,14 +796,24 @@ class VllmBackend:
         self._served_model_name = os.environ.get(
             "VLLM_SERVED_MODEL_NAME", "credit-assignment"
         )
+        self._base_served_model_name = f"{self._served_model_name}-base"
+        self._active_served_model_name = self._served_model_name
+        self._runtime_lora_enabled = _config_expects_lora(config_nickname) or _truthy_env(
+            "VLLM_ALLOW_RUNTIME_LORA_UPDATING"
+        )
+        self._loaded_lora_name: str | None = None
         self._wrapper_log_path = Path(wrapper_log_path).expanduser().resolve()
         self._wrapper_log_path.parent.mkdir(parents=True, exist_ok=True)
         self._num_gpus = num_gpus
         self._model_cli_name = model_cli_name
         self._config_nickname = config_nickname
         self._epoch = epoch
+        self._hf_model_name = hf_model_name
         self._restart_lock = threading.Lock()
         self._restart_in_progress = False
+        self._model_update_health_timeout_secs = _positive_int_env_or_default(
+            "VLLM_MODEL_UPDATE_HEALTH_TIMEOUT_SECS", 600
+        )
 
         if not model_path_obj.exists() and epoch == 0:
             _emit_status(
@@ -772,12 +835,19 @@ class VllmBackend:
         vllm_model_path = adapter_base_model_path or model_path
         is_peft_adapter = adapter_base_model_path is not None
         adapter_rank = _resolve_peft_adapter_rank(model_path) if is_peft_adapter else None
+        self._current_base_model_path = str(Path(vllm_model_path).expanduser().resolve())
+        lora_enabled = self._runtime_lora_enabled or is_peft_adapter
         base_served_model_name = (
-            f"{self._served_model_name}-base" if is_peft_adapter else self._served_model_name
+            self._base_served_model_name if lora_enabled else self._served_model_name
+        )
+        self._active_served_model_name = (
+            self._served_model_name if is_peft_adapter else base_served_model_name
         )
         child_env = os.environ.copy()
         child_env.setdefault("PYTHONUNBUFFERED", "1")
         child_env.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+        if lora_enabled:
+            child_env["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
         if os.environ.get("VLLM_INHERIT_LD_LIBRARY_PATH", "").strip() not in (
             "1",
             "true",
@@ -804,10 +874,13 @@ class VllmBackend:
                 "127.0.0.1",
                 "--port",
                 str(self._upstream_port),
-                "--skip-tokenizer-init",
                 "--dtype",
                 os.environ.get("VLLM_DTYPE", "auto"),
             ]
+            if _vllm_should_skip_tokenizer_init(
+                self._model_cli_name, self._hf_model_name, vllm_model_path
+            ):
+                launch_command.append("--skip-tokenizer-init")
             if is_peft_adapter:
                 launch_command.extend(
                     [
@@ -822,6 +895,17 @@ class VllmBackend:
                     launch_command.extend(
                         ["--max-lora-rank", str(_vllm_supported_max_lora_rank(adapter_rank))]
                     )
+            elif lora_enabled:
+                max_lora_rank = _optional_positive_int_env("VLLM_MAX_LORA_RANK")
+                launch_command.extend(
+                    [
+                        "--enable-lora",
+                        "--max-loras",
+                        "1",
+                        "--max-lora-rank",
+                        max_lora_rank or "64",
+                    ]
+                )
             if self._num_gpus > 1:
                 launch_command.extend(["--tensor-parallel-size", str(self._num_gpus)])
             gpu_memory_utilization = _optional_float_env("VLLM_GPU_MEMORY_UTILIZATION")
@@ -887,10 +971,47 @@ class VllmBackend:
         if exit_error is not None:
             raise RuntimeError(exit_error)
         vllm_payload = _translate_sglang_generate_to_vllm(
-            payload, self._served_model_name
+            payload, self._active_served_model_name
         )
         response = _post_json(f"{self._upstream_url}/v1/completions", vllm_payload)
         return _translate_vllm_completion_to_sglang(response)
+
+    def _load_lora_adapter_runtime(self, new_model_path: str) -> dict[str, Any]:
+        adapter_base_model_path = _resolve_peft_adapter_base_model_path(new_model_path)
+        if adapter_base_model_path is None:
+            raise ValueError(f"model path is not a PEFT adapter: {new_model_path}")
+        if Path(adapter_base_model_path).expanduser().resolve() != Path(
+            self._current_base_model_path
+        ).expanduser().resolve():
+            raise ValueError(
+                "runtime LoRA update requires the adapter base model to match "
+                f"the running vLLM base model; running={self._current_base_model_path}, "
+                f"adapter_base={adapter_base_model_path}"
+            )
+        if self._loaded_lora_name is not None:
+            try:
+                _post_json_accept_any_response(
+                    f"{self._upstream_url}/v1/unload_lora_adapter",
+                    {"lora_name": self._loaded_lora_name},
+                    timeout=120.0,
+                )
+            except HTTPError as error:
+                if error.code != 404:
+                    raise
+        result = _post_json_accept_any_response(
+            f"{self._upstream_url}/v1/load_lora_adapter",
+            {"lora_name": self._served_model_name, "lora_path": new_model_path},
+            timeout=float(self._model_update_health_timeout_secs),
+        )
+        self._loaded_lora_name = self._served_model_name
+        self._active_served_model_name = self._served_model_name
+        self._epoch += 1
+        _emit_status(
+            "hpc",
+            "ready",
+            f"runtime-loaded vLLM LoRA adapter from {new_model_path}",
+        )
+        return result
 
     def update_model(self, new_model_path: str) -> dict[str, Any]:
         exit_error = self.unexpected_exit_error()
@@ -899,6 +1020,10 @@ class VllmBackend:
         with self._restart_lock:
             self._restart_in_progress = True
         try:
+            if self._runtime_lora_enabled and _resolve_peft_adapter_base_model_path(
+                new_model_path
+            ):
+                return self._load_lora_adapter_runtime(new_model_path)
             if self._process is not None and self._process.poll() is None:
                 _emit_status(
                     "hpc",
@@ -923,7 +1048,10 @@ class VllmBackend:
                     f"(return_code={self._process.returncode})",
                 )
             self._epoch += 1
-            self._launch_model(new_model_path, health_timeout_secs=240)
+            self._launch_model(
+                new_model_path,
+                health_timeout_secs=self._model_update_health_timeout_secs,
+            )
         except Exception as error:
             message = (
                 f"failed to restart vLLM for model update to {new_model_path}: {error}"
