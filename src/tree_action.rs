@@ -7,6 +7,10 @@ use crate::{
     tree_spontaneous_branching::TokenPositionInSegment,
 };
 
+fn default_branch_start_logprob() -> f32 {
+    0.0
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TokenPositionInTree {
     pub segment_id: SegmentId,       // refers to the end of the segment
@@ -22,6 +26,8 @@ pub enum DirectTreeAction<M> {
     BranchFromSegmentOrNodeGuided {
         position: TokenPositionInTree, // at least one of content_index and offset must be > 0, indicating the branching happens in the middle of a segment
         new_branch_start_token: i32,
+        #[serde(default = "default_branch_start_logprob")]
+        new_branch_start_logprob: f32,
         branch_from_node: bool,
     },
     BranchFromSegmentOrNodeSpontaneous {
@@ -57,10 +63,12 @@ impl<M> Clone for DirectTreeAction<M> {
             DirectTreeAction::BranchFromSegmentOrNodeGuided {
                 position,
                 new_branch_start_token,
+                new_branch_start_logprob,
                 branch_from_node,
             } => DirectTreeAction::BranchFromSegmentOrNodeGuided {
                 position: position.clone(),
                 new_branch_start_token: *new_branch_start_token,
+                new_branch_start_logprob: *new_branch_start_logprob,
                 branch_from_node: *branch_from_node,
             },
             DirectTreeAction::BranchFromSegmentOrNodeSpontaneous {

@@ -197,6 +197,7 @@ fn truncate_trajectory_tokens(
     input_ids: &mut Vec<i32>,
     labels: &mut Vec<i32>,
     advantages: &mut Vec<f32>,
+    old_logprobs: &mut Vec<f32>,
 ) {
     assert_eq!(
         input_ids.len(),
@@ -208,6 +209,11 @@ fn truncate_trajectory_tokens(
         advantages.len(),
         "input_ids and advantages must have the same length before truncation"
     );
+    assert_eq!(
+        input_ids.len(),
+        old_logprobs.len(),
+        "input_ids and old_logprobs must have the same length before truncation"
+    );
     if input_ids.len() <= MAX_TRAINING_TRAJECTORY_TOKEN_LENGTH {
         return;
     }
@@ -216,6 +222,7 @@ fn truncate_trajectory_tokens(
     input_ids.drain(0..start);
     labels.drain(0..start);
     advantages.drain(0..start);
+    old_logprobs.drain(0..start);
 
     assert_eq!(
         input_ids.len(),
@@ -227,6 +234,11 @@ fn truncate_trajectory_tokens(
         advantages.len(),
         "input_ids and advantages must have the same length after truncation"
     );
+    assert_eq!(
+        input_ids.len(),
+        old_logprobs.len(),
+        "input_ids and old_logprobs must have the same length after truncation"
+    );
     assert!(
         input_ids.len() <= MAX_TRAINING_TRAJECTORY_TOKEN_LENGTH,
         "trajectory length must be capped after truncation"
@@ -235,6 +247,22 @@ fn truncate_trajectory_tokens(
 
 fn clip_training_advantage(value: f32) -> f32 {
     value.clamp(-MAX_ABSOLUTE_TOKEN_ADVANTAGE, MAX_ABSOLUTE_TOKEN_ADVANTAGE)
+}
+
+fn generated_token_old_logprob(
+    token_id: i32,
+    token_logprobs: &crate::llm_model::Top8Candidates,
+) -> f32 {
+    token_logprobs
+        .iter()
+        .find(|candidate| candidate.token_id == token_id)
+        .unwrap_or_else(|| {
+            panic!(
+                "generated token id {} missing from stored rollout top-k logprobs",
+                token_id
+            )
+        })
+        .logprob
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -938,6 +966,9 @@ fn initialize_training_segment_advantages<M: LlmModelMarker, S: DatasetSplit>(
         TrainingAdvantagePolicy::TreeRpoWinRate => {
             tree.calculate_segment_advantages_from_win_rate()
         }
+        TrainingAdvantagePolicy::GrpoTerminalReward => {
+            tree.calculate_segment_advantages_from_grpo_terminal_reward()
+        }
     };
     for segment_id in tree.segments.keys().copied() {
         segment_advantages.entry(segment_id).or_insert(0.0);
@@ -1098,6 +1129,7 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
             let mut input_ids: Vec<i32> = Vec::new();
             let mut labels: Vec<i32> = Vec::new();
             let mut advantages: Vec<f32> = Vec::new();
+            let mut old_logprobs: Vec<f32> = Vec::new();
             for segment_id in segment_ids.iter() {
                 let segment = tree.segments.get(segment_id).unwrap();
                 let segment_advantage = *segment_advantages.get(segment_id).unwrap();
@@ -1108,6 +1140,7 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
                             input_ids.extend(token_array.tokens.iter());
                             labels.extend(vec![-100; token_array.tokens.len()]); // we set the labels for the prompt tokens to -100 so that they will be ignored in the loss calculation
                             advantages.extend(vec![0.0; token_array.tokens.len()]);
+                            old_logprobs.extend(vec![0.0; token_array.tokens.len()]);
                         }
                         SegmentContent::ReasoningOrToolCall {
                             tokens,
@@ -1121,11 +1154,23 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
                             input_ids.extend(tokens.tokens.iter());
                             labels.extend(tokens.tokens.iter());
                             advantages.extend(vec![clipped_advantage; tokens.tokens.len()]);
+                            old_logprobs.extend(
+                                tokens.tokens.iter().zip(tokens.logprobs.iter()).map(
+                                    |(token_id, token_logprobs)| {
+                                        generated_token_old_logprob(*token_id, token_logprobs)
+                                    },
+                                ),
+                            );
                         }
                     }
                 }
             }
-            truncate_trajectory_tokens(&mut input_ids, &mut labels, &mut advantages);
+            truncate_trajectory_tokens(
+                &mut input_ids,
+                &mut labels,
+                &mut advantages,
+                &mut old_logprobs,
+            );
             assert!(
                 input_ids.len() >= 2,
                 "trajectory must contain at least two tokens"
@@ -1142,6 +1187,7 @@ fn action_log_to_selected_trajectories<M: LlmModelMarker>(
                     input_ids,
                     labels,
                     advantages,
+                    old_logprobs,
                     average_absolute_segment_advantage: average_absolute_advantage,
                     _phantom: std::marker::PhantomData::<M>,
                 },
@@ -1162,6 +1208,7 @@ pub struct DirectTrainingTrajectory<M: LlmModelMarker> {
     pub input_ids: Vec<i32>,
     pub labels: Vec<i32>, // we may not need to let model learn to stop at tool-call boundaries or end since our framework already handled this
     pub advantages: Vec<f32>,
+    pub old_logprobs: Vec<f32>,
     pub average_absolute_segment_advantage: f32,
     #[serde(skip)]
     pub _phantom: std::marker::PhantomData<M>,

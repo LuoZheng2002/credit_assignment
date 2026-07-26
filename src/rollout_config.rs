@@ -12,6 +12,7 @@ pub enum BranchingPolicy {
 pub enum TrainingAdvantagePolicy {
     TreeMappoPosterior, // our method that make assumptions about the relationship between each segment's contribution and final outcome, and then use probabilistic model and maximum-a-posteriori update to get the contribution posteriors
     TreeRpoWinRate, // the advantage is linearly proportional to num_wins / total_plays of a segment or node's children outcomes
+    GrpoTerminalReward, // flat GRPO baseline: group-normalized terminal correctness assigned to each response's supervised tokens
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]

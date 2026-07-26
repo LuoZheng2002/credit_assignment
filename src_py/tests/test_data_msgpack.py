@@ -32,6 +32,7 @@ class TestDataMsgpack(unittest.TestCase):
                 "input_ids": [11, 12, 13],
                 "labels": [-100, 12, 13],
                 "advantages": [0.0, -0.25, -0.75],
+                "old_logprobs": [0.0, -0.1, -0.2],
                 "average_absolute_segment_advantage": 0.5,
             }
             payload_one = {
@@ -45,6 +46,7 @@ class TestDataMsgpack(unittest.TestCase):
                 "input_ids": [7, 8],
                 "labels": [-100, 8],
                 "advantages": [0.0, 1.5],
+                "old_logprobs": [0.0, -0.3],
                 "average_absolute_segment_advantage": 0.8,
             }
 
@@ -58,10 +60,12 @@ class TestDataMsgpack(unittest.TestCase):
             self.assertEqual([11, 12, 13], samples[0].input_ids)
             self.assertEqual([-100, 12, 13], samples[0].labels)
             self.assertEqual([0.0, -0.25, -0.75], samples[0].token_advantages)
+            self.assertEqual([0.0, -0.1, -0.2], samples[0].old_logprobs)
 
             self.assertEqual(1, samples[1].id.question_id)
             self.assertEqual(1, samples[1].id.node_id)
             self.assertEqual([0.0, 1.5], samples[1].token_advantages)
+            self.assertEqual([0.0, -0.3], samples[1].old_logprobs)
 
     def test_lazy_training_trajectory_store_reads_by_index(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".msgpack") as temp_file:
@@ -76,6 +80,7 @@ class TestDataMsgpack(unittest.TestCase):
                 "input_ids": [1, 2],
                 "labels": [-100, 2],
                 "advantages": [0.0, 0.5],
+                "old_logprobs": [0.0, -0.1],
                 "average_absolute_segment_advantage": 0.5,
             }
             payload_one = {
@@ -89,6 +94,7 @@ class TestDataMsgpack(unittest.TestCase):
                 "input_ids": [3, 4, 5],
                 "labels": [-100, 4, 5],
                 "advantages": [0.0, 0.25, 0.25],
+                "old_logprobs": [0.0, -0.2, -0.3],
                 "average_absolute_segment_advantage": 0.25,
             }
             _write_entries(temp_file.name, [payload_zero, payload_one])
@@ -115,6 +121,7 @@ class TestDataMsgpack(unittest.TestCase):
                 "input_ids": [1, 2],
                 "labels": [-100, -100],
                 "advantages": [0.0, 0.5],
+                "old_logprobs": [0.0, -0.1],
                 "average_absolute_segment_advantage": 0.5,
             }
             _write_entries(temp_file.name, [payload])

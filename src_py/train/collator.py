@@ -15,6 +15,7 @@ class CollatedTrainingBatch:
     labels: torch.Tensor
     attention_mask: torch.Tensor
     advantages: torch.Tensor
+    old_logprobs: torch.Tensor
 
 
 def collate_training_samples(
@@ -31,6 +32,7 @@ def collate_training_samples(
     label_rows: list[list[int]] = []
     attention_rows: list[list[int]] = []
     advantages: list[list[float]] = []
+    old_logprobs: list[list[float]] = []
 
     for sample in samples:
         assert len(sample.input_ids) == len(sample.labels), (
@@ -41,6 +43,9 @@ def collate_training_samples(
         assert len(sample.token_advantages) == sample.input_length, (
             "token_advantages and input_ids lengths must match"
         )
+        assert len(sample.old_logprobs) == sample.input_length, (
+            "old_logprobs and input_ids lengths must match"
+        )
 
         pad_count = max_length - sample.input_length
         assert pad_count >= 0, "pad_count cannot be negative"
@@ -49,11 +54,13 @@ def collate_training_samples(
         label_rows.append(sample.labels + [IGNORE_LABEL] * pad_count)
         attention_rows.append([1] * sample.input_length + [0] * pad_count)
         advantages.append(sample.token_advantages + [0.0] * pad_count)
+        old_logprobs.append(sample.old_logprobs + [0.0] * pad_count)
 
     input_ids_tensor = torch.tensor(input_id_rows, dtype=torch.long)
     labels_tensor = torch.tensor(label_rows, dtype=torch.long)
     attention_mask_tensor = torch.tensor(attention_rows, dtype=torch.long)
     advantages_tensor = torch.tensor(advantages, dtype=torch.float32)
+    old_logprobs_tensor = torch.tensor(old_logprobs, dtype=torch.float32)
 
     assert input_ids_tensor.ndim == 2, "input_ids tensor must be rank-2"
     assert labels_tensor.shape == input_ids_tensor.shape, (
@@ -65,10 +72,14 @@ def collate_training_samples(
     assert advantages_tensor.shape == input_ids_tensor.shape, (
         "advantages tensor shape must match input_ids"
     )
+    assert old_logprobs_tensor.shape == input_ids_tensor.shape, (
+        "old_logprobs tensor shape must match input_ids"
+    )
 
     return CollatedTrainingBatch(
         input_ids=input_ids_tensor,
         labels=labels_tensor,
         attention_mask=attention_mask_tensor,
         advantages=advantages_tensor,
+        old_logprobs=old_logprobs_tensor,
     )

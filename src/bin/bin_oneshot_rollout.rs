@@ -24,6 +24,7 @@ use credit_assignment::{
     rollout::{RolloutProgramConfig, rollout_all},
     rollout_config::RolloutConfig,
     tree_action_log::ActionLogStore,
+    tree_to_action::BranchingRuntimeOptions,
     utils::configure_mount_dir,
 };
 use reqwest::Client;
@@ -34,6 +35,10 @@ use serde::Deserialize;
 struct CliArgs {
     #[arg(short = 'c', long)]
     config_path: String,
+    #[arg(long, default_value_t = false)]
+    enable_uncertainty_aware_branching: bool,
+    #[arg(long, default_value_t = false)]
+    force_selected_branch_token: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -55,6 +60,10 @@ struct Args {
     inference_backend: InferenceBackend,
     #[serde(default)]
     total_time_limit_hours: f32,
+    #[serde(default)]
+    enable_uncertainty_aware_branching: bool,
+    #[serde(default)]
+    force_selected_branch_token: bool,
 }
 
 fn default_total_epochs() -> usize {
@@ -85,6 +94,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     num_gpus: usize,
     inference_backend: InferenceBackend,
     inference_wrapper_log_path: &str,
+    branching_options: BranchingRuntimeOptions,
 ) {
     let action_log_store_override_path = action_logs_oneshot_path::<S>(
         &args.mount_dir,
@@ -150,6 +160,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         use_tool: args.use_tool,
         fixed_temperature: constants::temperature_by_split::<S>(),
         max_concurrent_rollout: get_max_concurrent_rollout(num_gpus),
+        branching_options,
     };
     let summary = rollout_all::<M, S>(&args.mount_dir, program_config).await;
 
@@ -187,6 +198,7 @@ macro_rules! run_rollout {
         $num_gpus:expr,
         $inference_backend:expr,
         $log_path:expr;
+        $branching_options:expr;
         $( $model_enum:path, $model_ty:ty ),+ $(,)?;
         $( $split_enum:path, $split_ty:ty ),+ $(,)?
     ) => {{
@@ -198,6 +210,7 @@ macro_rules! run_rollout {
         let num_gpus = $num_gpus;
         let inference_backend = $inference_backend;
         let log_path = $log_path;
+        let branching_options = $branching_options;
 
         macro_rules! run_model_for_split {
             ($rollout_config:expr, $inner_split_ty:ty) => {
@@ -212,6 +225,7 @@ macro_rules! run_rollout {
                                 num_gpus,
                                 inference_backend,
                                 log_path,
+                                branching_options,
                             )
                             .await
                         }
@@ -244,7 +258,11 @@ async fn main() {
         std::process::abort();
     }));
     dotenvy::dotenv().ok();
-    let CliArgs { config_path } = CliArgs::parse();
+    let CliArgs {
+        config_path,
+        enable_uncertainty_aware_branching,
+        force_selected_branch_token,
+    } = CliArgs::parse();
     let config_contents = std::fs::read_to_string(&config_path)
         .unwrap_or_else(|err| panic!("failed to read config file '{}': {}", config_path, err));
     let args: Args = toml::from_str(&config_contents)
@@ -266,6 +284,17 @@ async fn main() {
     };
 
     let model_name = LlmModelName::from_str(&args.model_cli_name, true).unwrap();
+    let branching_options = BranchingRuntimeOptions {
+        uncertainty_aware_branching: args.enable_uncertainty_aware_branching
+            || enable_uncertainty_aware_branching,
+        force_selected_branch_token: args.force_selected_branch_token
+            || force_selected_branch_token,
+    };
+    log_info(format!(
+        "branching_options uncertainty_aware_branching={} force_selected_branch_token={}",
+        branching_options.uncertainty_aware_branching,
+        branching_options.force_selected_branch_token
+    ));
 
     let inference_wrapper_log_path = inference_wrapper_log_path(
         &args.mount_dir,
@@ -298,6 +327,7 @@ async fn main() {
         args.num_gpus,
         args.inference_backend,
         &inference_wrapper_log_path;
+        branching_options;
         LlmModelName::Qwen25_7b, Qwen25_7B,
         LlmModelName::Qwen3_06b, Qwen3_06B,
         LlmModelName::Qwen3_4b, Qwen3_4B,

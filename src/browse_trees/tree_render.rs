@@ -9,7 +9,7 @@ use crate::{
     posterior_calculation_config::PosteriorHyperparameters,
     tree::{ContentIndex, DirectTree, Segment, SegmentContent, SegmentId},
     tree_action_log::DirectTreeActionLog,
-    tree_to_action::TokenBranchingScore,
+    tree_to_action::{BranchingRuntimeOptions, TokenBranchingScore},
 };
 use ratatui::layout::{Position, Rect};
 use ratatui::prelude::Widget;
@@ -462,7 +462,10 @@ fn segment_branching_score_display<M: crate::llm_model::LlmModelMarker, S: Datas
     let per_token_branching_scores: BTreeMap<
         SegmentId,
         BTreeMap<ContentIndex, BTreeMap<usize, TokenBranchingScore>>,
-    > = tree.calculate_per_token_branching_scores(&segment_uncertainty_scores);
+    > = tree.calculate_per_token_branching_scores(
+        &segment_uncertainty_scores,
+        BranchingRuntimeOptions::default(),
+    );
     for (segment_id, segment) in &tree.segments {
         let mut token_level_scores: Vec<Option<f32>> = Vec::new();
         for (content_index, content) in segment.content.iter().enumerate() {

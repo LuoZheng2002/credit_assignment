@@ -34,6 +34,7 @@ class TestBatchDataset(unittest.TestCase):
                 "input_ids": [11, 12, 13, 14],
                 "labels": [-100, 12, 13, 14],
                 "advantages": [0.1, 0.3, 0.3, 0.3],
+                "old_logprobs": [0.0, -0.1, -0.2, -0.3],
                 "average_absolute_segment_advantage": 0.2,
             }
             trajectory_1 = {
@@ -47,6 +48,7 @@ class TestBatchDataset(unittest.TestCase):
                 "input_ids": [21, 22, 23],
                 "labels": [-100, 22, 23],
                 "advantages": [-0.7, -0.7, -0.7],
+                "old_logprobs": [0.0, -0.1, -0.2],
                 "average_absolute_segment_advantage": 0.7,
             }
             trajectory_2 = {
@@ -60,6 +62,7 @@ class TestBatchDataset(unittest.TestCase):
                 "input_ids": [31, 32],
                 "labels": [-100, 32],
                 "advantages": [0.2, 0.2],
+                "old_logprobs": [0.0, -0.1],
                 "average_absolute_segment_advantage": 0.2,
             }
 
@@ -99,6 +102,7 @@ class TestBatchDataset(unittest.TestCase):
                 "input_ids": [11, 12],
                 "labels": [-100, 12],
                 "advantages": [0.1, 0.1],
+                "old_logprobs": [0.0, -0.1],
                 "average_absolute_segment_advantage": 0.1,
             }
             trajectory_1 = {
@@ -112,6 +116,7 @@ class TestBatchDataset(unittest.TestCase):
                 "input_ids": [21, 22, 23],
                 "labels": [-100, 22, 23],
                 "advantages": [0.2, 0.2, 0.2],
+                "old_logprobs": [0.0, -0.1, -0.2],
                 "average_absolute_segment_advantage": 0.2,
             }
             _write_entries(trajectory_db.name, [trajectory_0, trajectory_1])
@@ -144,6 +149,7 @@ class TestBatchDataset(unittest.TestCase):
                         "input_ids": [40 - index, 30 - index],
                         "labels": [-100, 30 - index],
                         "advantages": [0.1, 0.2],
+                        "old_logprobs": [0.0, -0.1],
                         "average_absolute_segment_advantage": 0.15,
                     }
                 )
@@ -175,6 +181,7 @@ class TestBatchDataset(unittest.TestCase):
                     "input_ids": [11, 12, 13, 14, 15],
                     "labels": [-100, 12, 13, 14, 15],
                     "advantages": [0.1, 0.1, 0.1, 0.1, 0.1],
+                    "old_logprobs": [0.0, -0.1, -0.2, -0.3, -0.4],
                     "average_absolute_segment_advantage": 0.1,
                 },
                 {
@@ -188,6 +195,7 @@ class TestBatchDataset(unittest.TestCase):
                     "input_ids": [21, 22, 23, 24],
                     "labels": [-100, 22, 23, 24],
                     "advantages": [0.2, 0.2, 0.2, 0.2],
+                    "old_logprobs": [0.0, -0.1, -0.2, -0.3],
                     "average_absolute_segment_advantage": 0.2,
                 },
                 {
@@ -201,6 +209,7 @@ class TestBatchDataset(unittest.TestCase):
                     "input_ids": [31, 32, 33],
                     "labels": [-100, 32, 33],
                     "advantages": [0.3, 0.3, 0.3],
+                    "old_logprobs": [0.0, -0.1, -0.2],
                     "average_absolute_segment_advantage": 0.3,
                 },
             ]

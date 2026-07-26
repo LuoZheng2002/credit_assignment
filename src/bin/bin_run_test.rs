@@ -5,7 +5,7 @@ use credit_assignment::{
     check_python_env::check_sympy_availability,
     constants,
     directories::{
-        base_model_dir, inference_wrapper_log_path, model_parent_dir, test_accuracy_path,
+        base_model_dir, inference_wrapper_log_path, oneshot_model_parent_dir, test_accuracy_path,
         text_logger_summary_path, text_logger_verbose_path,
     },
     get_accuracy::{TestAccuracyResult, get_test_accuracies},
@@ -23,6 +23,7 @@ use credit_assignment::{
     rollout::{RolloutProgramConfig, rollout_all},
     rollout_config::RolloutConfig,
     tree_action_log::open_action_logs,
+    tree_to_action::BranchingRuntimeOptions,
     utils::configure_mount_dir,
 };
 use ordered_float::NotNan;
@@ -110,6 +111,7 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
         use_tool: testing_config.use_tool,
         fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
         max_concurrent_rollout: 300,
+        branching_options: BranchingRuntimeOptions::default(),
     };
     let _ = rollout_all::<M, Testing>(&testing_config.mount_dir, program_config).await;
 
@@ -143,7 +145,7 @@ async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(
     let model_parent_dir = if testing_config.epoch == 0 {
         base_model_dir(&testing_config.mount_dir, M::CLI_NAME)
     } else {
-        model_parent_dir(
+        oneshot_model_parent_dir(
             &testing_config.mount_dir,
             M::CLI_NAME,
             &testing_config.config_nickname,

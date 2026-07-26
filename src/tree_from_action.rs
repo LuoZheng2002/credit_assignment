@@ -48,6 +48,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                             cumulative_content_array,
                             parent_segment_id,
                             new_branch_start_token: _,
+                            new_branch_start_logprob: _,
                         },
                     ) => DirectTreeStatus::WorkingOnGuidedBranching(
                         GuidedBranchingSubStatus::JudgingSegment {
@@ -73,10 +74,12 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
             DirectTreeAction::BranchFromSegmentOrNodeGuided {
                 position,
                 new_branch_start_token,
+                new_branch_start_logprob,
                 branch_from_node,
             } => {
                 let position = position.clone();
                 let new_branch_start_token = *new_branch_start_token;
+                let new_branch_start_logprob = *new_branch_start_logprob;
                 let branch_from_node = *branch_from_node;
                 let new_status = match self.status.clone() {
                     DirectTreeStatus::WorkingOnGuidedBranching(
@@ -86,6 +89,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                             position,
                             branch_from_node,
                             new_branch_start_token,
+                            new_branch_start_logprob,
                         },
                     ),
                     _ => unreachable!(),
@@ -180,12 +184,14 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                             position: _,
                             branch_from_node: _,
                             new_branch_start_token,
+                            new_branch_start_logprob,
                         },
                     ) => DirectTreeStatus::WorkingOnGuidedBranching(
                         GuidedBranchingSubStatus::CollectingSegmentContents {
                             cumulative_content_array: Vec::new(),
                             parent_segment_id,
                             new_branch_start_token,
+                            new_branch_start_logprob,
                         },
                     ),
                     DirectTreeStatus::WorkingOnSpontaneousBranching(

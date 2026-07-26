@@ -1,10 +1,10 @@
-model_cli_name = "qwen34"
-config_nickname_rollout = "grpo_notool_rollout_6h"
-config_nickname_generation = "grpo_notool_generation_6h"
-rollout_config_path = "config/rollout_config_training_grpo.json"
+model_cli_name = "qwen25"
+config_nickname_rollout = "tree_notool_uncert_forced_rollout_4h"
+config_nickname_generation = "tree_notool_uncert_forced_generation_4h"
+rollout_config_path = "config/rollout_config_training_tree.json"
 use_tool = false
 epoch = 0
-training_advantage_policy = "GrpoTerminalReward"
+training_advantage_policy = "TreeMappoPosterior"
 positive_advantage_only = false
 rollout_mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
 generation_mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"

@@ -13,6 +13,7 @@ class TestCollator(unittest.TestCase):
                 labels=[-100, 102],
                 input_length=2,
                 token_advantages=[0.0, 1.2],
+                old_logprobs=[0.0, -0.1],
                 model_official_name="Qwen/Qwen2.5-7B-Instruct",
             ),
             TrainingSampleTokenized(
@@ -21,6 +22,7 @@ class TestCollator(unittest.TestCase):
                 labels=[-100, 202, 203, 204],
                 input_length=4,
                 token_advantages=[0.0, -0.5, -0.5, -0.5],
+                old_logprobs=[0.0, -0.2, -0.3, -0.4],
                 model_official_name="Qwen/Qwen2.5-7B-Instruct",
             ),
         ]
@@ -31,6 +33,7 @@ class TestCollator(unittest.TestCase):
         self.assertEqual((2, 4), tuple(collated.labels.shape))
         self.assertEqual((2, 4), tuple(collated.attention_mask.shape))
         self.assertEqual((2, 4), tuple(collated.advantages.shape))
+        self.assertEqual((2, 4), tuple(collated.old_logprobs.shape))
 
         self.assertEqual([101, 102, 0, 0], collated.input_ids[0].tolist())
         self.assertEqual(
@@ -41,11 +44,13 @@ class TestCollator(unittest.TestCase):
         self.assertAlmostEqual(1.2, collated.advantages[0][1].item(), places=5)
         self.assertAlmostEqual(0.0, collated.advantages[0][2].item(), places=6)
         self.assertAlmostEqual(0.0, collated.advantages[0][3].item(), places=6)
+        self.assertEqual([0.0, -0.1, 0.0, 0.0], collated.old_logprobs[0].tolist())
 
         self.assertEqual([201, 202, 203, 204], collated.input_ids[1].tolist())
         self.assertEqual([-100, 202, 203, 204], collated.labels[1].tolist())
         self.assertEqual([1, 1, 1, 1], collated.attention_mask[1].tolist())
         self.assertEqual([0.0, -0.5, -0.5, -0.5], collated.advantages[1].tolist())
+        self.assertEqual([0.0, -0.2, -0.3, -0.4], collated.old_logprobs[1].tolist())
 
     def test_collate_rejects_empty_samples(self) -> None:
         with self.assertRaises(AssertionError):

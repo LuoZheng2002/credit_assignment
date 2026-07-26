@@ -13,6 +13,7 @@ use credit_assignment::{
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     rollout::{RolloutProgramConfig, rollout_all},
     rollout_config::RolloutConfig,
+    tree_to_action::BranchingRuntimeOptions,
 };
 use reqwest::Client;
 use research_utility::progress_text_logger::ProgressTextLogger;
@@ -72,6 +73,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         use_tool: args.use_tool,
         fixed_temperature: constants::temperature_by_split::<S>(),
         max_concurrent_rollout: 300,
+        branching_options: BranchingRuntimeOptions::default(),
     };
     let _ = rollout_all::<M, S>("results", program_config).await;
 }

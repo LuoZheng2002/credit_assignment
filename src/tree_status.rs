@@ -80,6 +80,7 @@ pub enum GuidedBranchingSubStatus<M: LlmModelMarker> {
         branch_from_node: bool,
         // needed for future actions:
         new_branch_start_token: i32,
+        new_branch_start_logprob: f32,
     },
     // next action is AppendSegmentContent or SubmitAnswer
     CollectingSegmentContents {
@@ -88,6 +89,7 @@ pub enum GuidedBranchingSubStatus<M: LlmModelMarker> {
         // needed for future actions:
         parent_segment_id: SegmentId,
         new_branch_start_token: i32,
+        new_branch_start_logprob: f32,
     },
     // next action is JudgeAnswer
     JudgingSegment {
@@ -116,19 +118,23 @@ impl<M: LlmModelMarker> Clone for GuidedBranchingSubStatus<M> {
                 position,
                 branch_from_node,
                 new_branch_start_token,
+                new_branch_start_logprob,
             } => GuidedBranchingSubStatus::SplittingTargetSegment {
                 position: position.clone(),
                 branch_from_node: *branch_from_node,
                 new_branch_start_token: *new_branch_start_token,
+                new_branch_start_logprob: *new_branch_start_logprob,
             },
             GuidedBranchingSubStatus::CollectingSegmentContents {
                 cumulative_content_array,
                 parent_segment_id,
                 new_branch_start_token,
+                new_branch_start_logprob,
             } => GuidedBranchingSubStatus::CollectingSegmentContents {
                 cumulative_content_array: cumulative_content_array.clone(),
                 parent_segment_id: *parent_segment_id,
                 new_branch_start_token: *new_branch_start_token,
+                new_branch_start_logprob: *new_branch_start_logprob,
             },
             GuidedBranchingSubStatus::JudgingSegment {
                 final_answer,

@@ -37,6 +37,7 @@ use credit_assignment::{
     python_training_config::TrainingHyperparameters,
     rollout::{RolloutProgramConfig, rollout_all},
     rollout_config::RolloutConfig,
+    tree_to_action::BranchingRuntimeOptions,
     utils::configure_mount_dir,
 };
 use reqwest::Client;
@@ -222,6 +223,7 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
             use_tool,
             fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
             max_concurrent_rollout: validation_max_concurrent_rollout(num_gpus),
+            branching_options: BranchingRuntimeOptions::default(),
         };
         let validation_summary =
             rollout_all::<M, Validation>(mount_dir, validation_program_config).await;

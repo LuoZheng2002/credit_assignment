@@ -129,6 +129,75 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         advantage_normalized
     }
 
+    pub fn calculate_segment_advantages_from_grpo_terminal_reward(
+        &self,
+    ) -> BTreeMap<SegmentId, f32> {
+        let root_segment_id = self.root_segment_id.expect("The tree must have a root id");
+        assert_eq!(
+            self.action_log.rollout_config.num_trunks, self.action_log.rollout_config.num_leaves,
+            "GrpoTerminalReward requires a flat rollout with num_trunks == num_leaves"
+        );
+        assert_eq!(
+            self.trunk_leaf_segments.len(),
+            self.leaf_segment_judgments.len(),
+            "GrpoTerminalReward requires all judged leaves to be trunk leaves"
+        );
+
+        let reward_unnormalized = self
+            .trunk_leaf_segments
+            .iter()
+            .map(|leaf_segment_id| {
+                let judgment = self
+                    .leaf_segment_judgments
+                    .get(leaf_segment_id)
+                    .expect("Trunk leaf must have a correctness judgment");
+                (
+                    *leaf_segment_id,
+                    if judgment.is_correct { 1.0 } else { 0.0 },
+                )
+            })
+            .collect::<Vec<(SegmentId, f32)>>();
+        assert!(
+            !reward_unnormalized.is_empty(),
+            "GrpoTerminalReward requires at least one judged trunk trajectory"
+        );
+
+        let reward_mean = reward_unnormalized
+            .iter()
+            .map(|(_, reward)| *reward)
+            .sum::<f32>()
+            / reward_unnormalized.len() as f32;
+        let reward_std = (reward_unnormalized
+            .iter()
+            .map(|(_, reward)| {
+                let diff = *reward - reward_mean;
+                diff * diff
+            })
+            .sum::<f32>()
+            / reward_unnormalized.len() as f32)
+            .sqrt();
+
+        let mut segment_advantages = BTreeMap::new();
+        for (leaf_segment_id, reward) in reward_unnormalized {
+            let normalized_advantage = if reward_std > 0.0 {
+                (reward - reward_mean) / reward_std
+            } else {
+                0.0
+            };
+            for segment_id in self.get_trajectory_segments_till_id(leaf_segment_id) {
+                if segment_id == root_segment_id {
+                    continue;
+                }
+                let previous = segment_advantages.insert(segment_id, normalized_advantage);
+                assert!(
+                    previous.is_none() || previous == Some(normalized_advantage),
+                    "GrpoTerminalReward requires non-overlapping response trajectories"
+                );
+            }
+        }
+        segment_advantages
+    }
+
     fn find_segment_win_rate(
         &self,
         segment_id: SegmentId,

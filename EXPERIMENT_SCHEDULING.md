@@ -713,3 +713,23 @@ These are project-level setbacks that explain why the schedule remains adaptive 
 7. **The main scientific comparison is close but not finalized.**
    - We have GRPO r32 stable positive evidence and Tree r16 early positive evidence.
    - The pending Tree r16 5-epoch validation and Tree r32 `lr=1e-6` validation should determine whether TreeMAPPO has a defensible no-tool improvement over GRPO or whether the claim must be narrowed.
+
+## Implementation Audit Notes
+
+These notes record known implementation-paper mismatches that should not block the immediate abstract-oriented experiment schedule, but should be resolved or explicitly scoped before a final paper submission.
+
+1. **Guided branching features are now runtime-controlled but not yet rerun.**
+   - One-shot rollout supports `enable_uncertainty_aware_branching` and `force_selected_branch_token` via TOML fields or CLI flags.
+   - The forced-token path now preserves the selected token's old rollout log-probability instead of inserting it with synthetic logprob `0.0`, which is important under the clipped policy-ratio training objective.
+   - Deferred qwen25 no-tool TreeMAPPO configs are prepared for a serious uncertainty-aware + forced-token run: `config/oneshot_rollout/qwen25_rollout_tree_notool_uncert_forced_4h.toml`, `config/oneshot_generation/qwen25_generate_tree_notool_uncert_forced_4h.toml`, and `config/oneshot_train/qwen25_train_tree_notool_uncert_forced_lora_r32_lr1e6_10ep_15m.toml`.
+   - Do not submit this run while the queue is heavily contended; submit it later as the next strict test of the full guided-branching mechanism.
+
+3. **GRPO configs now use explicit group-normalized terminal reward credit.**
+   - `GrpoTerminalReward` was added as a separate advantage policy in parallel with `TreeRpoWinRate`.
+   - The policy asserts a flat rollout shape (`num_trunks == num_leaves`) and assigns group-normalized terminal correctness to each response trajectory's supervised tokens.
+   - Existing experiment results were not rerun after this bookkeeping fix; rerunning GRPO generation/training is deferred unless the final paper needs a strictly regenerated baseline.
+
+4. **Training now uses a clipped policy-ratio surrogate instead of direct advantage-weighted CE.**
+   - Token advantages are still clipped to `[-3, 3]` during training-set materialization and clamped again by `advantage_clip = 3.0` in Python training.
+   - Generated training trajectories now store old rollout token log-probabilities, and Python training uses a fixed PPO/GRPO-style clip ratio of `0.2`.
+   - Existing training sets without `old_logprobs` must be regenerated before future training, because the new standard objective intentionally has no old-objective fallback path.

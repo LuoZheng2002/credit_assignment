@@ -4,5 +4,5 @@
     "num_trunks": 8,
     "num_early_stopping_leaves": 6,
     "num_leaves": 8,
-    "training_advantage_policy": "TreeMappoPosterior"
+    "training_advantage_policy": "GrpoTerminalReward"
 }

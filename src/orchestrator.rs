@@ -33,6 +33,7 @@ use crate::{
         training_trajectories_stats_file_path,
     },
     tree_action_log::action_logs_file_path,
+    tree_to_action::BranchingRuntimeOptions,
 };
 use research_utility::launch_python_process::PythonProcessHandle;
 
@@ -579,6 +580,7 @@ impl Orchestrator {
             use_tool: self.use_tool,
             fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
             max_concurrent_rollout: get_max_concurrent_rollout(self.num_gpus),
+            branching_options: BranchingRuntimeOptions::default(),
         };
         let rollout_summary =
             rollout_all::<M, Validation>(&self.mount_dir, validation_rollout_program_config).await;
@@ -627,6 +629,7 @@ impl Orchestrator {
             use_tool: self.use_tool,
             fixed_temperature: NotNan::new(constants::TRAINING_TEMPERATURE).unwrap(),
             max_concurrent_rollout: get_max_concurrent_rollout(self.num_gpus),
+            branching_options: BranchingRuntimeOptions::default(),
         };
         let rollout_summary =
             rollout_all::<M, Training>(&self.mount_dir, training_set_rollout_program_config).await;

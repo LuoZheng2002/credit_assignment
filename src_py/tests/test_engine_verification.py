@@ -26,6 +26,7 @@ def _build_sample(
         labels=labels,
         input_length=len(input_ids),
         token_advantages=[0.0] + [0.1] * (len(input_ids) - 1),
+        old_logprobs=[0.0] * len(input_ids),
         model_official_name=model_official_name,
     )
 

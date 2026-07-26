@@ -25,6 +25,7 @@ class TrainingSampleTokenized:
     labels: list[int]
     input_length: int
     token_advantages: list[float]
+    old_logprobs: list[float]
     model_official_name: str
 
 
@@ -112,6 +113,7 @@ def _parse_tokenized_payload(payload: object) -> TrainingSampleTokenized:
     assert len(token_advantages) == input_length, (
         "token_advantages and input_ids lengths must match"
     )
+    old_logprobs = [0.0] * input_length
 
     return TrainingSampleTokenized(
         id=sample_id,
@@ -119,6 +121,7 @@ def _parse_tokenized_payload(payload: object) -> TrainingSampleTokenized:
         labels=labels,
         input_length=input_length,
         token_advantages=token_advantages,
+        old_logprobs=old_logprobs,
         model_official_name=model_official_name_obj,
     )
 
@@ -142,6 +145,9 @@ def _parse_direct_training_trajectory_payload(
     assert "input_ids" in payload_obj, "trajectory payload must contain input_ids"
     assert "labels" in payload_obj, "trajectory payload must contain labels"
     assert "advantages" in payload_obj, "trajectory payload must contain advantages"
+    assert "old_logprobs" in payload_obj, (
+        "trajectory payload must contain old_logprobs for clipped surrogate training"
+    )
 
     question_obj = payload_obj["question"]
     assert isinstance(question_obj, dict), "question must be an object"
@@ -157,10 +163,19 @@ def _parse_direct_training_trajectory_payload(
     for element in advantages_obj:
         token_advantages.append(_parse_finite_float(element, "advantages[]"))
 
+    old_logprobs_obj = payload_obj["old_logprobs"]
+    assert isinstance(old_logprobs_obj, list), "old_logprobs must be a list"
+    old_logprobs: list[float] = []
+    for element in old_logprobs_obj:
+        old_logprobs.append(_parse_finite_float(element, "old_logprobs[]"))
+
     assert len(input_ids) > 0, "input_ids cannot be empty"
     assert len(labels) == len(input_ids), "labels and input_ids lengths must match"
     assert len(token_advantages) == len(input_ids), (
         "advantages and input_ids lengths must match"
+    )
+    assert len(old_logprobs) == len(input_ids), (
+        "old_logprobs and input_ids lengths must match"
     )
 
     assert len(input_ids) >= 2, "trajectory must contain at least two tokens"
@@ -181,6 +196,7 @@ def _parse_direct_training_trajectory_payload(
         labels=labels,
         input_length=len(input_ids),
         token_advantages=token_advantages,
+        old_logprobs=old_logprobs,
         model_official_name="",
     )
 

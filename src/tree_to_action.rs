@@ -23,8 +23,17 @@ use crate::{
     tree_status::DirectTreeStatus,
 };
 
-const ENABLE_FORCED_NEW_BRANCH_START_TOKEN: bool = false;
-const UNCERTAINTY_CONSIDERED: bool = false;
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BranchingRuntimeOptions {
+    pub uncertainty_aware_branching: bool,
+    pub force_selected_branch_token: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ForcedBranchStartToken {
+    token_id: i32,
+    logprob: f32,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum BranchingType {
@@ -35,6 +44,7 @@ pub enum BranchingType {
 #[derive(Debug, Clone, Copy)]
 pub struct TokenBranchingScore {
     pub token_id: i32,
+    pub token_logprob: f32,
     pub branching_score: f32,
     pub branching_type: BranchingType,
 }
@@ -43,6 +53,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
     pub fn calculate_per_token_branching_scores(
         &self,
         segment_uncertainty_scores: &BTreeMap<SegmentId, f32>,
+        branching_options: BranchingRuntimeOptions,
     ) -> BTreeMap<SegmentId, BTreeMap<ContentIndex, BTreeMap<usize, TokenBranchingScore>>> {
         assert!(
             !self.trunk_leaf_segments.is_empty(),
@@ -105,9 +116,11 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     else {
                         continue;
                     };
+                    let token_logprob =
+                        Self::token_logprob_from_candidates(&token_view.logprobs, token_id);
                     let branching_factor_penalty_multiplier =
                         Self::branching_factor_penalty_multiplier(child_segments.len());
-                    let uncertainty_multiplier = if UNCERTAINTY_CONSIDERED {
+                    let uncertainty_multiplier = if branching_options.uncertainty_aware_branching {
                         node_uncertainty_score
                     } else {
                         1.0
@@ -117,6 +130,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                         * branching_factor_penalty_multiplier;
                     TokenBranchingScore {
                         token_id,
+                        token_logprob,
                         branching_score,
                         branching_type: BranchingType::Node,
                     }
@@ -137,12 +151,14 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     else {
                         continue;
                     };
+                    let token_logprob =
+                        Self::token_logprob_from_candidates(&token_view.logprobs, token_id);
                     let segment_length_penalty_multiplier = Self::segment_length_penalty_multiplier(
                         first_half_length_after_split,
                         second_half_length_after_split,
                         average_trunk_token_length,
                     );
-                    let uncertainty_multiplier = if UNCERTAINTY_CONSIDERED {
+                    let uncertainty_multiplier = if branching_options.uncertainty_aware_branching {
                         segment_uncertainty_score
                     } else {
                         1.0
@@ -152,6 +168,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                         * segment_length_penalty_multiplier;
                     TokenBranchingScore {
                         token_id,
+                        token_logprob,
                         branching_score,
                         branching_type: BranchingType::Segment,
                     }
@@ -172,6 +189,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         &self,
         llm_callable: &M::Callable,
         client: Client,
+        branching_options: BranchingRuntimeOptions,
     ) -> Result<DirectTreeAction<M>, StopRequestedError> {
         let result = match &self.status {
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::CollectingSegmentContents {
@@ -193,12 +211,20 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     cumulative_content_array,
                     parent_segment_id,
                     new_branch_start_token,
+                    new_branch_start_logprob,
                 },
             ) => {
                 // Inject the branch-start token only on the first generation step of the new branch.
-                let generation_start_token = cumulative_content_array
-                    .is_empty()
-                    .then_some(*new_branch_start_token);
+                let generation_start_token = if branching_options.force_selected_branch_token
+                    && cumulative_content_array.is_empty()
+                {
+                    Some(ForcedBranchStartToken {
+                        token_id: *new_branch_start_token,
+                        logprob: *new_branch_start_logprob,
+                    })
+                } else {
+                    None
+                };
                 self.produce_collecting_segment_action(
                     *parent_segment_id,
                     cumulative_content_array,
@@ -288,7 +314,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
             },
             DirectTreeStatus::WorkingOnGuidedBranching(
                 GuidedBranchingSubStatus::DeterminingBranchingPoint,
-            ) => self.determine_guided_branch_action(),
+            ) => self.determine_guided_branch_action(branching_options),
             DirectTreeStatus::WorkingOnSpontaneousBranching(
                 SpontaneousBranchingSubStatus::DeterminingBranchingPoint {
                     finalized_content_array,
@@ -318,7 +344,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         &self,
         target_segment_id: SegmentId,
         cumulative_content_array: &[SegmentContent<M>],
-        new_branch_start_token: Option<i32>,
+        new_branch_start_token: Option<ForcedBranchStartToken>,
         llm_callable: &M::Callable,
     ) -> Result<DirectTreeAction<M>, StopRequestedError> {
         let trajectory = self.get_trajectory(target_segment_id, cumulative_content_array);
@@ -408,6 +434,17 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         }
         Some((best_candidate.token_id, relative_probability))
     }
+
+    fn token_logprob_from_candidates(token_logprobs: &Top8Candidates, token_id: i32) -> f32 {
+        token_logprobs
+            .iter()
+            .find(|candidate| candidate.token_id == token_id)
+            .unwrap_or_else(|| {
+                panic!("selected branch token id {token_id} missing from top-k candidates")
+            })
+            .logprob
+    }
+
     pub fn branching_factor_penalty_multiplier(mut branching_factor: usize) -> f32 {
         branching_factor = branching_factor.max(1); // ensure branching factor is at least 1 to avoid zero or negative values
         // assert!(branching_factor >= 1);
@@ -546,7 +583,10 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
             .sum()
     }
 
-    fn determine_guided_branch_action(&self) -> DirectTreeAction<M> {
+    fn determine_guided_branch_action(
+        &self,
+        branching_options: BranchingRuntimeOptions,
+    ) -> DirectTreeAction<M> {
         assert!(!self.leaf_segment_judgments.is_empty());
 
         let posteriors = self.calculate_segment_posteriors(None);
@@ -559,8 +599,8 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         for segment_id in self.segments.keys().copied() {
             segment_uncertainty_scores.entry(segment_id).or_insert(0.0);
         }
-        let per_token_branching_scores =
-            self.calculate_per_token_branching_scores(&segment_uncertainty_scores);
+        let per_token_branching_scores = self
+            .calculate_per_token_branching_scores(&segment_uncertainty_scores, branching_options);
 
         let mut best_candidate: Option<(SegmentId, ContentIndex, usize, TokenBranchingScore)> =
             None;
@@ -610,6 +650,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         DirectTreeAction::BranchFromSegmentOrNodeGuided {
             position,
             new_branch_start_token: token_score.token_id,
+            new_branch_start_logprob: token_score.token_logprob,
             branch_from_node,
         }
     }
@@ -657,14 +698,19 @@ pub struct NodeCandidate {
 // 3. other scenarios that require termination
 
 fn fallback_top8_for_token(token_id: i32) -> Top8Candidates {
+    fallback_top8_for_token_with_logprob(token_id, 0.0)
+}
+
+fn fallback_top8_for_token_with_logprob(token_id: i32, logprob: f32) -> Top8Candidates {
+    assert!(
+        logprob.is_finite(),
+        "forced branch start token logprob must be finite"
+    );
     let mut top8 = [TokenLogprobCandidate {
         token_id,
         logprob: f32::NEG_INFINITY,
     }; 8];
-    top8[0] = TokenLogprobCandidate {
-        token_id,
-        logprob: 0.0,
-    };
+    top8[0] = TokenLogprobCandidate { token_id, logprob };
     top8
 }
 
@@ -713,7 +759,7 @@ fn concise_model_response(response: &str) -> String {
 async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSplit>(
     _question_flat_id: QuestionFlatId<S>,
     trajectory: &DirectTrajectory<M>,
-    new_branch_start_token: Option<i32>,
+    new_branch_start_token: Option<ForcedBranchStartToken>,
     use_tool: bool,
     temperature: f32,
     llm_callable: &M::Callable,
@@ -721,7 +767,7 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
     let rollout_stats = RolloutStats::global();
     let mut prompt_tokens = trajectory.to_prompt_tokens();
     if let Some(start_token) = new_branch_start_token {
-        prompt_tokens.push(start_token);
+        prompt_tokens.push(start_token.token_id);
     }
     let mut response = None;
     let mut last_error: Option<String> = None;
@@ -775,10 +821,11 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
         );
     }
     if let Some(start_token) = new_branch_start_token {
-        response.tokens.insert(0, start_token);
-        response
-            .logprobs
-            .insert(0, fallback_top8_for_token(start_token));
+        response.tokens.insert(0, start_token.token_id);
+        response.logprobs.insert(
+            0,
+            fallback_top8_for_token_with_logprob(start_token.token_id, start_token.logprob),
+        );
     }
     let result = SegmentContent::ReasoningOrToolCall {
         tokens: response,
@@ -790,7 +837,7 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
 async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
     question_flat_id: QuestionFlatId<S>,
     trajectory: &DirectTrajectory<M>,
-    new_branch_start_token: Option<i32>,
+    new_branch_start_token: Option<ForcedBranchStartToken>,
     use_tool: bool,
     temperature: f32,
     // current_content: &[SegmentContent<M>],
@@ -799,11 +846,6 @@ async fn generate_next_segment_content<M: LlmModelMarker, S: DatasetSplit>(
     // rng: &mut StdRng,
 ) -> Result<SegmentContent<M>, StopRequestedError> {
     let rollout_stats = RolloutStats::global();
-    let new_branch_start_token = if ENABLE_FORCED_NEW_BRANCH_START_TOKEN {
-        new_branch_start_token
-    } else {
-        None
-    };
     let last_trajectory_content = trajectory
         .trajectory_contents
         .last()

@@ -96,12 +96,17 @@ def _truncate_sample_to_cap(
     assert len(truncated_input_ids) == len(truncated_token_advantages), (
         "truncated token advantages must align"
     )
+    truncated_old_logprobs = sample.old_logprobs[start:]
+    assert len(truncated_input_ids) == len(truncated_old_logprobs), (
+        "truncated old logprobs must align"
+    )
     return TrainingSampleTokenized(
         id=sample.id,
         input_ids=truncated_input_ids,
         labels=truncated_labels,
         input_length=len(truncated_input_ids),
         token_advantages=truncated_token_advantages,
+        old_logprobs=truncated_old_logprobs,
         model_official_name=sample.model_official_name,
     )
 
@@ -226,6 +231,7 @@ def trace_first_nonfinite_backward_signal(
     attention_mask: torch.Tensor,
     labels: torch.Tensor,
     advantages: torch.Tensor,
+    old_logprobs: torch.Tensor,
     advantage_clip: float,
     grad_accum_steps: int,
 ) -> str:
@@ -296,6 +302,7 @@ def trace_first_nonfinite_backward_signal(
             logits=logits,
             labels=labels,
             advantages=advantages,
+            old_logprobs=old_logprobs,
             advantage_clip=advantage_clip,
         )
         replay_loss = loss_output.loss / grad_accum_steps
@@ -546,6 +553,7 @@ def _make_synthetic_zero_advantage_sample(
         labels=labels,
         input_length=sequence_length,
         token_advantages=[0.0] * sequence_length,
+        old_logprobs=[0.0] * sequence_length,
         model_official_name=model_official_name,
     )
 
@@ -568,13 +576,14 @@ def _probe_synthetic_sequence_length(
         token_id=token_id,
         model_official_name=expected_model_name,
     )
-    collated = input_ids = labels = attention_mask = advantages = logits = loss_output = loss = None
+    collated = input_ids = labels = attention_mask = advantages = old_logprobs = logits = loss_output = loss = None
     try:
         collated = collate_training_samples(samples=[sample], pad_token_id=pad_token_id)
         input_ids = collated.input_ids.to(device=device, non_blocking=True)
         labels = collated.labels.to(device=device, non_blocking=True)
         attention_mask = collated.attention_mask.to(device=device, non_blocking=True)
         advantages = collated.advantages.to(device=device, non_blocking=True)
+        old_logprobs = collated.old_logprobs.to(device=device, non_blocking=True)
         logits = eng._forward_logits(
             model, input_ids=input_ids, attention_mask=attention_mask
         )
@@ -582,6 +591,7 @@ def _probe_synthetic_sequence_length(
             logits=logits,
             labels=labels,
             advantages=advantages,
+            old_logprobs=old_logprobs,
             advantage_clip=advantage_clip,
         )
         loss = loss_output.loss / grad_accum_steps
@@ -599,6 +609,7 @@ def _probe_synthetic_sequence_length(
         labels = None
         attention_mask = None
         advantages = None
+        old_logprobs = None
         logits = None
         loss_output = None
         loss = None
@@ -1292,6 +1303,7 @@ def _run_unified_loop(
         labels = None
         attention_mask = None
         advantages = None
+        old_logprobs = None
         logits = None
         loss_output = None
         loss = None
@@ -1317,7 +1329,8 @@ def _run_unified_loop(
                     f"batch_index={step_batch.batch_index} "
                     f"input_ids_shape={tuple(collated.input_ids.shape)} "
                     f"labels_shape={tuple(collated.labels.shape)} "
-                    f"advantages_shape={tuple(collated.advantages.shape)}"
+                    f"advantages_shape={tuple(collated.advantages.shape)} "
+                    f"old_logprobs_shape={tuple(collated.old_logprobs.shape)}"
                 )
                 _memtrace(f"step_pre_device_copy batch_index={step_batch.batch_index}")
             input_ids = collated.input_ids.to(device=device, non_blocking=True)
@@ -1326,6 +1339,7 @@ def _run_unified_loop(
                 device=device, non_blocking=True
             )
             advantages = collated.advantages.to(device=device, non_blocking=True)
+            old_logprobs = collated.old_logprobs.to(device=device, non_blocking=True)
             if emit_step_memtrace:
                 _memtrace(
                     "step_post_device_copy "
@@ -1348,6 +1362,7 @@ def _run_unified_loop(
                     logits=logits,
                     labels=labels,
                     advantages=advantages,
+                    old_logprobs=old_logprobs,
                     advantage_clip=config.advantage_clip,
                 )
                 loss = loss_output.loss / config.grad_accum_steps
@@ -1372,6 +1387,7 @@ def _run_unified_loop(
                 labels = None
                 attention_mask = None
                 advantages = None
+                old_logprobs = None
                 logits = None
                 loss_output = None
                 loss = None
@@ -1493,6 +1509,7 @@ def _run_unified_loop(
                 collated = None
                 labels = None
                 advantages = None
+                old_logprobs = None
                 eng._release_step_memory(device)
                 try:
                     nonfinite_forward_trace = eng.trace_first_nonfinite_forward_module(
@@ -1510,6 +1527,7 @@ def _run_unified_loop(
             labels = None
             attention_mask = None
             advantages = None
+            old_logprobs = None
             logits = None
             loss_output = None
             loss = None
@@ -1625,9 +1643,10 @@ def _run_unified_loop(
                         nonfinite_tensor_name in {"gradients", "grad_norm"}
                         and input_ids is not None
                         and attention_mask is not None
-                        and labels is not None
-                        and advantages is not None
-                    ):
+                and labels is not None
+                and advantages is not None
+                and old_logprobs is not None
+            ):
                         optimizer.zero_grad(set_to_none=True)
                         eng._release_step_memory(device)
                         try:
@@ -1638,6 +1657,7 @@ def _run_unified_loop(
                                     attention_mask=attention_mask,
                                     labels=labels,
                                     advantages=advantages,
+                                    old_logprobs=old_logprobs,
                                     advantage_clip=config.advantage_clip,
                                     grad_accum_steps=config.grad_accum_steps,
                                 )

@@ -40,6 +40,7 @@ use crate::{
     tree_status::{
         DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus, TrunkSubStatus,
     },
+    tree_to_action::BranchingRuntimeOptions,
 };
 
 pub(crate) struct DistributionStats {
@@ -488,6 +489,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
     _permit: OwnedSemaphorePermit,
     start_time: Instant,
     elapsed_offset: f32,
+    branching_options: BranchingRuntimeOptions,
 ) -> Result<TreeCorrectness, StopRequestedError> {
     let rollout_stats = RolloutStats::global();
     let _active_rollouts_guard =
@@ -503,7 +505,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
             break;
         }
         let action = tree
-            .produce_action_from_direct_tree(&llm_callable, client.clone())
+            .produce_action_from_direct_tree(&llm_callable, client.clone(), branching_options)
             .await?;
 
         match &action {
@@ -637,6 +639,7 @@ pub struct RolloutProgramConfig<S: DatasetSplit> {
     pub use_tool: bool,
     pub fixed_temperature: NotNan<f32>,
     pub max_concurrent_rollout: usize,
+    pub branching_options: BranchingRuntimeOptions,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -668,6 +671,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         use_tool,
         fixed_temperature,
         max_concurrent_rollout,
+        branching_options,
     } = program_config;
     assert!(rollout_secs > 0, "rollout_secs must be positive");
     assert!(total_epochs > 0, "total_epochs must be positive");
@@ -816,6 +820,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
                     permit,
                     start_time,
                     previous_elapsed,
+                    branching_options,
                 ));
             }
             joined = join_set.join_next(), if !join_set.is_empty() => {

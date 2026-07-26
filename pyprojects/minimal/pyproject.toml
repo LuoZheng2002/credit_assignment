@@ -1,0 +1,11 @@
+[project]
+name = "credit-assignment-minimal"
+version = "0.1.0"
+description = "Lightweight local utilities for paper plots and document maintenance."
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.10",
+]
+
+[tool.uv]
+package = false
