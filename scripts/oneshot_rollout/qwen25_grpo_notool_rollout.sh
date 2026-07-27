@@ -9,7 +9,7 @@ set -euo pipefail
 #      shared volume (the binary launches its own local inference server).
 #   2. Ensure the model checkpoint directory exists before running this script.
 
-uv run -m src_py.modal.launch_modal_oneshot_rollout \
+uv run --project pyprojects/minimal -m src_py.modal.launch_modal_oneshot_rollout \
     --model-cli-name qwen25 \
     --config-nickname-rollout grpo_notool_rollout \
     --rollout-config-path config/rollout_config_training_grpo_notool.json \

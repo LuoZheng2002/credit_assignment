@@ -74,9 +74,9 @@ Each uses a TOML config file and calls `sbatch` under the hood:
 
 | Job Type         | Script                                          | Example Config                                                  |
 |------------------|-------------------------------------------------|-----------------------------------------------------------------|
-| Orchestrator     | `uv run python scripts/hpc/bin_orchestrator.py -c <config>`     | `config/orchestrator/qwen25_grpo_notool.toml`                   |
-| Rollout (oneshot)| `uv run python scripts/hpc/bin_oneshot_rollout.py -c <config>`   | `config/oneshot_rollout/qwen25_rollout_grpo_notool.toml`        |
-| Training (oneshot)| `uv run python scripts/hpc/bin_oneshot_training.py -c <config>`  | `config/oneshot_train/qwen25_train_grpo_notool.toml`            |
+| Orchestrator     | `uv run --project pyprojects/minimal python scripts/hpc/bin_orchestrator.py -c <config>`     | `config/orchestrator/qwen25_grpo_notool.toml`                   |
+| Rollout (oneshot)| `uv run --project pyprojects/minimal python scripts/hpc/bin_oneshot_rollout.py -c <config>`   | `config/oneshot_rollout/qwen25_rollout_grpo_notool.toml`        |
+| Training (oneshot)| `uv run --project pyprojects/minimal python scripts/hpc/bin_oneshot_training.py -c <config>`  | `config/oneshot_train/qwen25_train_grpo_notool.toml`            |
 
 Optional: override the auto-generated job name with `-j <name>`.
 
@@ -96,12 +96,12 @@ Logs land in `slurm/logs/`.
 
 ## Python Environment
 
-**Always use `uv run`** to launch any Python script on Delta. The system `python` is 3.9
-(lacks `tomllib`); `uv` provides Python 3.12 and manages dependencies via `pyproject.toml`.
+**Use `uv run --project pyprojects/minimal` for lightweight submission/download utilities on Delta. Reserve root-project `uv run` for commands that need CUDA, PyTorch, or LLM runtime dependencies. The system `python` is 3.9
+(lacks `tomllib`); `uv` provides Python 3.12 and manages dependencies via `pyproject.toml`.**
 
 ```sh
-uv run python scripts/hpc/bin_oneshot_rollout.py -c <config>
-uv run python scripts/hpc/bin_oneshot_training.py -c <config>
+uv run --project pyprojects/minimal python scripts/hpc/bin_oneshot_rollout.py -c <config>
+uv run --project pyprojects/minimal python scripts/hpc/bin_oneshot_training.py -c <config>
 ```
 
 ### Virtual Environments
@@ -174,10 +174,10 @@ complete first:
 
 ```sh
 # Step 1: Launch rollout
-uv run python scripts/hpc/bin_oneshot_rollout.py -c config/oneshot_rollout/qwen25_rollout_grpo_notool_lora.toml
+uv run --project pyprojects/minimal python scripts/hpc/bin_oneshot_rollout.py -c config/oneshot_rollout/qwen25_rollout_grpo_notool_lora.toml
 
 # Step 2: After rollout completes, launch training
-uv run python scripts/hpc/bin_oneshot_training.py -c config/oneshot_train/qwen25_train_grpo_notool_lora.toml
+uv run --project pyprojects/minimal python scripts/hpc/bin_oneshot_training.py -c config/oneshot_train/qwen25_train_grpo_notool_lora.toml
 ```
 
 ### Smoke Testing
@@ -188,11 +188,11 @@ multi-GPU:
 
 ```sh
 # Smoke test rollout (1 GPU, ~300s)
-uv run python scripts/hpc/bin_oneshot_rollout.py \
+uv run --project pyprojects/minimal python scripts/hpc/bin_oneshot_rollout.py \
   -c config/oneshot_rollout/qwen25_rollout_grpo_notool_lora.toml
 
 # Once rollout completes, smoke test training (1 GPU, ~10min/epoch)
-uv run python scripts/hpc/bin_oneshot_training.py \
+uv run --project pyprojects/minimal python scripts/hpc/bin_oneshot_training.py \
   -c config/oneshot_train/qwen25_train_grpo_notool_lora.toml
 ```
 
@@ -458,7 +458,7 @@ ls /work/nvme/bhph/zluo8/credit_assignment/results/
 which ninja
 
 # 3. Both venvs initialized
-uv run python -c "import tomllib; print('main ok')"
+uv run --project pyprojects/minimal python -c "import tomllib; print('minimal ok')"
 ls pyprojects/sglang/.venv/bin/python
 
 # 4. Config model_cli_name is a short CLI name (e.g., "qwen25" not "qwen25_7b")

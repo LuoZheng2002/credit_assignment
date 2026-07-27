@@ -22,6 +22,7 @@ use credit_assignment::{
         Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
         MyTokenizer, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
+    terminal_clipboard::copy_to_terminal_clipboard,
     training_set::{
         DirectTrainingSetStatistics, DirectTrainingTrajectory, TrainingTrajectoryConfigBundle,
         open_training_trajectories,
@@ -116,6 +117,8 @@ async fn download_training_set(
     let mut command = Command::new("uv");
     command
         .arg("run")
+        .arg("--project")
+        .arg("pyprojects/minimal")
         .arg("python")
         .arg("scripts/download_training_set.py")
         .arg("--model-cli-name")
@@ -183,6 +186,7 @@ struct App<M: LlmModelMarker> {
     summary_area: Option<Rect>,
     conversation_area: Option<Rect>,
     jump_input_area: Option<Rect>,
+    controls_area: Option<Rect>,
     loaded: Option<LoadedTrajectory<M>>,
     statistics: Option<DirectTrainingSetStatistics>,
     jump_input: String,
@@ -209,6 +213,7 @@ impl<M: LlmModelMarker> App<M> {
             summary_area: None,
             conversation_area: None,
             jump_input_area: None,
+            controls_area: None,
             loaded: None,
             statistics,
             jump_input: String::new(),
@@ -404,10 +409,11 @@ impl<M: LlmModelMarker> App<M> {
         self.jump_input_area = Some(chunks[2]);
 
         let controls = Paragraph::new(
-            "Left/Right: prev/next trajectory  /: jump by key  Tab: switch focus  Up/Down/PgUp/PgDn/Home/End: scroll focused pane  Mouse wheel: scroll focused pane  q: quit",
+            "[Copy] c: copy LaTeX trajectory  Left/Right: prev/next  /: jump  Tab: focus  Up/Down/PgUp/PgDn/Home/End: scroll  q: quit",
         )
         .block(Block::default().borders(Borders::ALL).title("Controls"));
         frame.render_widget(controls, chunks[3]);
+        self.controls_area = Some(chunks[3]);
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> bool {
@@ -420,6 +426,10 @@ impl<M: LlmModelMarker> App<M> {
             KeyCode::Char('/') => {
                 self.jump_input_active = true;
                 self.jump_status = None;
+                false
+            }
+            KeyCode::Char('c') => {
+                self.copy_current_trajectory_latex();
                 false
             }
             KeyCode::Char(ch) if ch.is_ascii_digit() => {
@@ -550,6 +560,14 @@ impl<M: LlmModelMarker> App<M> {
                 self.jump_status = None;
             }
         }
+        if let Some(controls_area) = self.controls_area {
+            if contains_point(controls_area, mouse.column, mouse.row)
+                && matches!(mouse.kind, MouseEventKind::Down(_))
+            {
+                self.copy_current_trajectory_latex();
+                return;
+            }
+        }
 
         match mouse.kind {
             MouseEventKind::ScrollUp => {
@@ -601,6 +619,19 @@ impl<M: LlmModelMarker> App<M> {
                 let scaled = magnitude.saturating_mul(CONVERSATION_SCROLL_SENSITIVITY);
                 self.conversation_scroll = self.conversation_scroll.saturating_add(scaled)
             }
+        }
+    }
+
+    fn copy_current_trajectory_latex(&mut self) {
+        self.ensure_selected_loaded();
+        let Some(loaded) = &self.loaded else {
+            self.jump_status = Some("Nothing to copy".to_string());
+            return;
+        };
+        let latex = build_latex_conversation_export::<M>(&loaded.trajectory);
+        match copy_to_terminal_clipboard(&latex) {
+            Ok(()) => self.jump_status = Some("Copied LaTeX trajectory".to_string()),
+            Err(error) => self.jump_status = Some(format!("Copy failed: {error}")),
         }
     }
 }
@@ -659,6 +690,98 @@ fn advantage_to_color(advantage: f32) -> Color {
         (255, ((1.0 + x) * 255.0).round() as u8)
     };
     Color::Rgb(red, green, 0)
+}
+
+fn color_to_rgb(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(red, green, blue) => (red, green, blue),
+        Color::Black => (0, 0, 0),
+        Color::Red => (255, 0, 0),
+        Color::Green => (0, 255, 0),
+        Color::Yellow => (255, 255, 0),
+        Color::Blue => (0, 0, 255),
+        Color::Magenta => (255, 0, 255),
+        Color::Cyan => (0, 255, 255),
+        Color::Gray | Color::DarkGray => (128, 128, 128),
+        Color::LightRed => (255, 96, 96),
+        Color::LightGreen => (96, 255, 96),
+        Color::LightYellow => (255, 255, 96),
+        Color::LightBlue => (96, 96, 255),
+        Color::LightMagenta => (255, 96, 255),
+        Color::LightCyan => (96, 255, 255),
+        Color::White => (255, 255, 255),
+        _ => (255, 255, 255),
+    }
+}
+
+fn latex_escape_char(ch: char, output: &mut String) {
+    match ch {
+        '\\' => output.push_str("\\textbackslash{}"),
+        '{' => output.push_str("\\{"),
+        '}' => output.push_str("\\}"),
+        '$' => output.push_str("\\$"),
+        '&' => output.push_str("\\&"),
+        '#' => output.push_str("\\#"),
+        '_' => output.push_str("\\_"),
+        '%' => output.push_str("\\%"),
+        '^' => output.push_str("\\textasciicircum{}"),
+        '~' => output.push_str("\\textasciitilde{}"),
+        '\n' => output.push_str("\\\\\n"),
+        ' ' => output.push('~'),
+        '\t' => output.push_str("\\quad{}"),
+        _ => output.push(ch),
+    }
+}
+
+fn latex_escape_text(text: &str) -> String {
+    let mut output = String::new();
+    for ch in text.chars() {
+        latex_escape_char(ch, &mut output);
+    }
+    output
+}
+
+fn push_latex_colored_group(output: &mut String, rgb: Option<(u8, u8, u8)>, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    let escaped = latex_escape_text(text);
+    if let Some((red, green, blue)) = rgb {
+        output.push_str(&format!(
+            "\\textcolor[RGB]{{{red},{green},{blue}}}{{{escaped}}}"
+        ));
+    } else {
+        output.push_str(&escaped);
+    }
+}
+
+fn build_latex_conversation_export<M: LlmModelMarker>(
+    trajectory: &DirectTrainingTrajectory<M>,
+) -> String {
+    let mut output = String::from("\\begingroup\\ttfamily\\small\n");
+    let mut current_rgb: Option<(u8, u8, u8)> = None;
+    let mut current_text = String::new();
+
+    for index in 0..trajectory.input_ids.len() {
+        let token_id = trajectory.input_ids[index];
+        let label = trajectory.labels[index];
+        let advantage = trajectory.advantages[index];
+        let token_text = <M::Tokenizer as MyTokenizer<M>>::decode_i32_ids(&[token_id]);
+        let token_rgb = if label == -100 {
+            None
+        } else {
+            Some(color_to_rgb(advantage_to_color(advantage)))
+        };
+        if token_rgb != current_rgb {
+            push_latex_colored_group(&mut output, current_rgb, &current_text);
+            current_text.clear();
+            current_rgb = token_rgb;
+        }
+        current_text.push_str(&token_text);
+    }
+    push_latex_colored_group(&mut output, current_rgb, &current_text);
+    output.push_str("\n\\endgroup\n");
+    output
 }
 
 fn compress_advantage_changes(advantages: &[f32]) -> Vec<f32> {

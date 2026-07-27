@@ -520,7 +520,14 @@ def _translate_vllm_completion_to_sglang(response: dict[str, Any]) -> dict[str, 
                         generated_logprob = output_token_logprobs[idx][0]
                         candidates.append([generated_logprob, token_id, None])
                     candidates.sort(key=lambda candidate: candidate[0], reverse=True)
-                    output_top_logprobs.append(candidates[:8])
+                    top_candidates = candidates[:8]
+                    if not any(candidate[1] == token_id for candidate in top_candidates):
+                        generated_logprob = output_token_logprobs[idx][0]
+                        if len(top_candidates) < 8:
+                            top_candidates.append([generated_logprob, token_id, None])
+                        else:
+                            top_candidates[-1] = [generated_logprob, token_id, None]
+                    output_top_logprobs.append(top_candidates)
             result["meta_info"] = {
                 "output_token_logprobs": output_token_logprobs,
                 "output_top_logprobs": output_top_logprobs,

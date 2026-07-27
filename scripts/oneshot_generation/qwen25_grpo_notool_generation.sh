@@ -7,7 +7,7 @@ set -euo pipefail
 # Prerequisite:
 #   1. Run the oneshot rollout step first so the rollout volume contains action logs.
 
-uv run -m src_py.modal.launch_modal_oneshot_generation \
+uv run --project pyprojects/minimal -m src_py.modal.launch_modal_oneshot_generation \
     --model-cli-name qwen25 \
     --config-nickname-rollout grpo_notool_rollout \
     --config-nickname-generation grpo_notool_generation \

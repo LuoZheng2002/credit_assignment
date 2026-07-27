@@ -980,20 +980,13 @@ fn build_segment_graph_lines<M: LlmModelMarker, S: DatasetSplit>(
     (lines, rendered_segments)
 }
 
-pub(super) fn render_tree_line<M: LlmModelMarker, S: DatasetSplit>(
+fn tree_line_chars_and_styles<M: LlmModelMarker, S: DatasetSplit>(
     tree_page: &TreePage<M, S>,
     row: usize,
-    horizontal_scroll: usize,
     color_mode: TreeColorMode,
-) -> Line<'static> {
-    let line = tree_page
-        .tree_lines
-        .get(row)
-        .expect("tree row must be in bounds");
+) -> Option<(Vec<char>, Vec<Option<Style>>)> {
+    let line = tree_page.tree_lines.get(row)?;
     let line_chars: Vec<char> = line.chars().collect();
-    if horizontal_scroll >= line_chars.len() {
-        return Line::from(String::new());
-    }
     let mut styles: Vec<Option<Style>> = vec![None; line_chars.len()];
 
     for rendered in tree_page.rendered_segments.iter().copied() {
@@ -1139,6 +1132,22 @@ pub(super) fn render_tree_line<M: LlmModelMarker, S: DatasetSplit>(
         }
     }
 
+    Some((line_chars, styles))
+}
+
+pub(super) fn render_tree_line<M: LlmModelMarker, S: DatasetSplit>(
+    tree_page: &TreePage<M, S>,
+    row: usize,
+    horizontal_scroll: usize,
+    color_mode: TreeColorMode,
+) -> Line<'static> {
+    let Some((line_chars, styles)) = tree_line_chars_and_styles(tree_page, row, color_mode) else {
+        return Line::from(String::new());
+    };
+    if horizontal_scroll >= line_chars.len() {
+        return Line::from(String::new());
+    }
+
     let mut spans = Vec::new();
     let mut segment_text = String::new();
     let mut segment_style = styles[horizontal_scroll];
@@ -1164,6 +1173,63 @@ pub(super) fn render_tree_line<M: LlmModelMarker, S: DatasetSplit>(
         });
     }
     Line::from(spans)
+}
+
+pub(super) fn export_tree_with_color_prefixes<M: LlmModelMarker, S: DatasetSplit>(
+    tree_page: &TreePage<M, S>,
+    color_mode: TreeColorMode,
+) -> String {
+    let mut output = String::new();
+    for row in 0..tree_page.tree_lines.len() {
+        if row > 0 {
+            output.push('\n');
+        }
+        let Some((line_chars, styles)) = tree_line_chars_and_styles(tree_page, row, color_mode)
+        else {
+            continue;
+        };
+        let mut current_rgb: Option<(u8, u8, u8)> = None;
+        for (idx, ch) in line_chars.iter().copied().enumerate() {
+            if !ch.is_whitespace() {
+                let rgb = tree_style_rgb(styles[idx]);
+                if current_rgb != Some(rgb) {
+                    output.push_str(&format!("({},{},{})", rgb.0, rgb.1, rgb.2));
+                    current_rgb = Some(rgb);
+                }
+            }
+            output.push(ch);
+        }
+    }
+    output
+}
+
+fn tree_style_rgb(style: Option<Style>) -> (u8, u8, u8) {
+    style
+        .and_then(|style| style.fg)
+        .map(color_to_rgb)
+        .unwrap_or((255, 255, 255))
+}
+
+fn color_to_rgb(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Reset | Color::White => (255, 255, 255),
+        Color::Black => (0, 0, 0),
+        Color::Red => (255, 0, 0),
+        Color::Green => (0, 255, 0),
+        Color::Yellow => (255, 255, 0),
+        Color::Blue => (0, 0, 255),
+        Color::Magenta => (255, 0, 255),
+        Color::Cyan => (0, 255, 255),
+        Color::Gray | Color::DarkGray => (128, 128, 128),
+        Color::LightRed => (255, 96, 96),
+        Color::LightGreen => (96, 255, 96),
+        Color::LightYellow => (255, 255, 96),
+        Color::LightBlue => (96, 96, 255),
+        Color::LightMagenta => (255, 96, 255),
+        Color::LightCyan => (96, 255, 255),
+        Color::Rgb(red, green, blue) => (red, green, blue),
+        Color::Indexed(_) => (255, 255, 255),
+    }
 }
 
 pub(super) fn tree_segment_at_mouse<M: LlmModelMarker, S: DatasetSplit>(

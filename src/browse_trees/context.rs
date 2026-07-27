@@ -27,13 +27,15 @@ pub(super) fn parse_action_logs_context(
             )
         })?;
     let dataset_split_name = file_name.strip_suffix(".extsort").unwrap_or(file_name);
-    let dataset_split = match dataset_split_name {
-        "action_logs_training" => DatasetSplitEnum::Training,
-        "action_logs_validation" => DatasetSplitEnum::Validation,
-        "action_logs_testing" => DatasetSplitEnum::Testing,
+    let (dataset_split, is_oneshot) = match dataset_split_name {
+        "action_logs_training" => (DatasetSplitEnum::Training, false),
+        "action_logs_validation" => (DatasetSplitEnum::Validation, false),
+        "action_logs_testing" => (DatasetSplitEnum::Testing, false),
+        "action_logs_training_oneshot" => (DatasetSplitEnum::Training, true),
+        "action_logs_validation_oneshot" => (DatasetSplitEnum::Validation, true),
         other => {
             return Err(format!(
-                "Unsupported action logs file name {}. Expected action_logs_training[.extsort], action_logs_validation[.extsort], or action_logs_testing[.extsort]",
+                "Unsupported action logs file name {}. Expected action_logs_training[.extsort], action_logs_validation[.extsort], action_logs_testing[.extsort], action_logs_training_oneshot[.extsort], or action_logs_validation_oneshot[.extsort]",
                 other
             ));
         }
@@ -45,32 +47,36 @@ pub(super) fn parse_action_logs_context(
             action_logs_path.display()
         )
     })?;
-    let epoch_dir_name = epoch_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
+    let (epoch, config_dir) = if is_oneshot && matches!(dataset_split, DatasetSplitEnum::Training) {
+        (0, epoch_dir)
+    } else {
+        let epoch_dir_name = epoch_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                format!(
+                    "Action logs path {} must have a UTF-8 epoch directory name",
+                    action_logs_path.display()
+                )
+            })?;
+        let epoch = epoch_dir_name
+            .strip_prefix("epoch_")
+            .ok_or_else(|| {
+                format!(
+                    "Action logs path {} must be inside an epoch_<n> directory",
+                    action_logs_path.display()
+                )
+            })?
+            .parse::<usize>()
+            .map_err(|err| format!("Failed to parse epoch from {}: {}", epoch_dir_name, err))?;
+        let config_dir = epoch_dir.parent().ok_or_else(|| {
             format!(
-                "Action logs path {} must have a UTF-8 epoch directory name",
+                "Action logs path {} must be inside a config nickname directory",
                 action_logs_path.display()
             )
         })?;
-    let epoch = epoch_dir_name
-        .strip_prefix("epoch_")
-        .ok_or_else(|| {
-            format!(
-                "Action logs path {} must be inside an epoch_<n> directory",
-                action_logs_path.display()
-            )
-        })?
-        .parse::<usize>()
-        .map_err(|err| format!("Failed to parse epoch from {}: {}", epoch_dir_name, err))?;
-
-    let config_dir = epoch_dir.parent().ok_or_else(|| {
-        format!(
-            "Action logs path {} must be inside a config nickname directory",
-            action_logs_path.display()
-        )
-    })?;
+        (epoch, config_dir)
+    };
     let config_nickname = config_dir
         .file_name()
         .and_then(|name| name.to_str())

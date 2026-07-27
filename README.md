@@ -28,7 +28,7 @@ We have:
 For example to download the small files folder, run:
 
 ```bash
-uv run scripts/download_modal_small_files.py --model-cli-name qwen2.5-7b --config-nickname std
+uv run --project pyprojects/minimal scripts/download_modal_small_files.py --model-cli-name qwen2.5-7b --config-nickname std
 ```
 
 The `--model-cli-name` options can be found in `src/llm_model/llm_model_name.rs`.
@@ -42,7 +42,7 @@ The `--model-cli-name` options can be found in `src/llm_model/llm_model_name.rs`
 ## Browse the action logs that form the trees
 1. Download a specific action log artifact. For example:
    ```bash
-   uv run scripts/download_action_logs.py --model-cli-name qwen2.5-7b --config-nickname std --epoch 0 --split train
+   uv run --project pyprojects/minimal scripts/download_action_logs.py --model-cli-name qwen2.5-7b --config-nickname std --epoch 0 --split train
    ```
 2. Locate the downloaded action log path, for example: `results/medium_files/qwen2.5-7b/std/epoch_0/action_logs_training.extsort` or `results/medium_files/qwen2.5-7b/std/epoch_0/action_logs_validation.extsort`.
 3. Run `cargo run --bin bin_browse_trees -- --action-logs-path [action log files path]`

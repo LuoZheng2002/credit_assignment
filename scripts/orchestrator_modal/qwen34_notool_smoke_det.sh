@@ -1,4 +1,4 @@
-uv run -m src_py.modal.launch_modal_orchestration \
+uv run --project pyprojects/minimal -m src_py.modal.launch_modal_orchestration \
     --model-cli-name qwen34 \
     --config-nickname notool_smoke_det \
     --use-tool false \

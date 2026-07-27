@@ -20,7 +20,7 @@ use crate::{
     llm_model::LlmModelMarker,
     posterior_calculation_config::PosteriorCalculationConfig,
     rollout_config::RolloutConfig,
-    tree_action::DirectTreeAction,
+    tree_action::{DirectTreeAction, deserialize_direct_tree_action_compat},
 };
 
 const SORT_GENERATIONS_DIR_NAME: &str = "sorted_generations";
@@ -225,7 +225,7 @@ impl ExtSortActionRow {
     }
 
     fn decode_action<M: LlmModelMarker>(&self) -> Result<DirectTreeAction<M>, String> {
-        bincode::deserialize(&self.action_payload).map_err(|e| {
+        deserialize_direct_tree_action_compat(&self.action_payload).map_err(|e| {
             format!("failed to deserialize DirectTreeAction from extsort bincode payload: {e}")
         })
     }

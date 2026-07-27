@@ -357,6 +357,8 @@ async fn spawn_python_tool_server_worker() -> Result<PythonToolServerWorker, Str
     let mut command = Command::new("uv");
     command
         .arg("run")
+        .arg("--project")
+        .arg("pyprojects/minimal")
         .arg("python")
         .arg("-u")
         .arg("-B")

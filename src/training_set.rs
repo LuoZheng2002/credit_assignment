@@ -253,16 +253,18 @@ fn generated_token_old_logprob(
     token_id: i32,
     token_logprobs: &crate::llm_model::Top8Candidates,
 ) -> f32 {
-    token_logprobs
+    if let Some(candidate) = token_logprobs
         .iter()
         .find(|candidate| candidate.token_id == token_id)
-        .unwrap_or_else(|| {
-            panic!(
-                "generated token id {} missing from stored rollout top-k logprobs",
-                token_id
-            )
-        })
-        .logprob
+    {
+        return candidate.logprob;
+    }
+
+    token_logprobs
+        .iter()
+        .filter_map(|candidate| candidate.logprob.is_finite().then_some(candidate.logprob))
+        .min_by(|a, b| a.total_cmp(b))
+        .unwrap_or(f32::NEG_INFINITY)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1208,6 +1210,7 @@ pub struct DirectTrainingTrajectory<M: LlmModelMarker> {
     pub input_ids: Vec<i32>,
     pub labels: Vec<i32>, // we may not need to let model learn to stop at tool-call boundaries or end since our framework already handled this
     pub advantages: Vec<f32>,
+    #[serde(default)]
     pub old_logprobs: Vec<f32>,
     pub average_absolute_segment_advantage: f32,
     #[serde(skip)]

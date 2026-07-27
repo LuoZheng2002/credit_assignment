@@ -312,7 +312,7 @@ def main() -> int:
     )
     print(
         "Download the corresponding small_files folder with: "
-        "uv run python scripts/download_modal_small_files.py "
+        "uv run --project pyprojects/minimal python scripts/download_modal_small_files.py "
         f"--model-cli-name {model_cli_name} --config-nickname {config_nickname}",
         flush=True,
     )

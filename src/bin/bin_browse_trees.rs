@@ -1,40 +1,22 @@
-use std::{
-    backtrace::Backtrace,
-    error::Error,
-    io,
-    path::{Path, PathBuf},
-    process::Stdio,
-};
+use std::{backtrace::Backtrace, error::Error, io, path::PathBuf};
 
 use clap::{Parser, ValueEnum};
 use credit_assignment::browse_trees;
+use credit_assignment::directories::{
+    action_logs_oneshot_path, action_logs_path as standard_action_logs_path,
+};
+use credit_assignment::hybrid_dataset::{Testing, Training, Validation};
 use credit_assignment::json_toml_utils::read_json;
 use credit_assignment::posterior_calculation_config::PosteriorHyperparameters;
 use crossterm::cursor::Show;
 use crossterm::execute;
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
-use tokio::process::Command;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum ActionLogsSplit {
     Train,
     Validation,
-}
-
-impl ActionLogsSplit {
-    fn script_arg(self) -> &'static str {
-        match self {
-            ActionLogsSplit::Train => "train",
-            ActionLogsSplit::Validation => "validation",
-        }
-    }
-
-    fn artifact_name(self) -> &'static str {
-        match self {
-            ActionLogsSplit::Train => "action_logs_training.extsort",
-            ActionLogsSplit::Validation => "action_logs_validation.extsort",
-        }
-    }
+    Testing,
 }
 
 #[derive(Parser, Debug)]
@@ -52,6 +34,10 @@ struct Args {
     epoch: usize,
     #[arg(long, value_enum)]
     split: ActionLogsSplit,
+    #[arg(long, default_value = "results")]
+    mount_dir: String,
+    #[arg(long)]
+    oneshot: bool,
     #[arg(long)]
     override_hyperparameters_path: Option<String>,
 }
@@ -60,66 +46,55 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn action_logs_path(
+fn resolved_action_logs_path(
+    mount_dir: &str,
     model_cli_name: &str,
     config_nickname: &str,
     epoch: usize,
     split: ActionLogsSplit,
-) -> PathBuf {
-    repo_root()
-        .join("results")
-        .join("medium_files")
-        .join(model_cli_name)
-        .join(config_nickname)
-        .join(format!("epoch_{}", epoch))
-        .join(split.artifact_name())
+) -> Result<PathBuf, String> {
+    let path = match split {
+        ActionLogsSplit::Train => standard_action_logs_path::<Training>(
+            mount_dir,
+            model_cli_name,
+            config_nickname,
+            epoch,
+        )?,
+        ActionLogsSplit::Validation => standard_action_logs_path::<Validation>(
+            mount_dir,
+            model_cli_name,
+            config_nickname,
+            epoch,
+        )?,
+        ActionLogsSplit::Testing => {
+            standard_action_logs_path::<Testing>(mount_dir, model_cli_name, config_nickname, epoch)?
+        }
+    };
+    Ok(repo_root().join(path))
 }
 
-async fn download_action_logs(
+fn oneshot_action_logs_path(
+    mount_dir: &str,
     model_cli_name: &str,
     config_nickname: &str,
     epoch: usize,
     split: ActionLogsSplit,
-    destination: &Path,
-) -> Result<(), Box<dyn Error>> {
-    let mut command = Command::new("uv");
-    command
-        .arg("run")
-        .arg("python")
-        .arg("scripts/download_action_logs.py")
-        .arg("--model-cli-name")
-        .arg(model_cli_name)
-        .arg("--config-nickname")
-        .arg(config_nickname)
-        .arg("--epoch")
-        .arg(epoch.to_string())
-        .arg("--split")
-        .arg(split.script_arg())
-        .current_dir(repo_root())
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-
-    let status = command.status().await?;
-
-    if !status.success() {
-        return Err(format!(
-            "download_action_logs.py failed with status {} while fetching {}",
-            status,
-            destination.display()
-        )
-        .into());
-    }
-
-    if !destination.exists() {
-        return Err(format!(
-            "download_action_logs.py completed but the expected action log path is still missing: {}",
-            destination.display()
-        )
-        .into());
-    }
-
-    Ok(())
+) -> Result<PathBuf, String> {
+    let path = match split {
+        ActionLogsSplit::Train => {
+            action_logs_oneshot_path::<Training>(mount_dir, model_cli_name, config_nickname, epoch)?
+        }
+        ActionLogsSplit::Validation => action_logs_oneshot_path::<Validation>(
+            mount_dir,
+            model_cli_name,
+            config_nickname,
+            epoch,
+        )?,
+        ActionLogsSplit::Testing => {
+            return Err("Testing split is not supported for one-shot action logs".to_string());
+        }
+    };
+    Ok(repo_root().join(path))
 }
 
 fn restore_terminal_after_panic() {
@@ -152,24 +127,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
         config_nickname,
         epoch,
         split,
+        mount_dir,
+        oneshot,
         override_hyperparameters_path,
     } = Args::parse();
 
-    let action_logs_path = action_logs_path(&model_cli_name, &config_nickname, epoch, split);
+    let action_logs_path = if oneshot {
+        oneshot_action_logs_path(&mount_dir, &model_cli_name, &config_nickname, epoch, split)?
+    } else {
+        resolved_action_logs_path(&mount_dir, &model_cli_name, &config_nickname, epoch, split)?
+    };
 
     if !action_logs_path.exists() {
-        eprintln!(
-            "Missing action logs for {}/{}/epoch_{} ({:?}); downloading...",
-            model_cli_name, config_nickname, epoch, split
-        );
-        download_action_logs(
-            &model_cli_name,
-            &config_nickname,
-            epoch,
-            split,
-            &action_logs_path,
+        return Err(format!(
+            "Missing action logs at {}. Auto-download is temporarily disabled; pass --mount-dir for the storage root or copy/symlink the rollout artifact into this exact path before browsing.",
+            action_logs_path.display()
         )
-        .await?;
+        .into());
     }
 
     let override_hyperparameters = override_hyperparameters_path

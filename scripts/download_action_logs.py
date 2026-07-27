@@ -60,6 +60,8 @@ def main() -> int:
     command = [
         "uv",
         "run",
+        "--project",
+        "pyprojects/minimal",
         "modal",
         "volume",
         "get",

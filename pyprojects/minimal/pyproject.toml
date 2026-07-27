@@ -4,7 +4,16 @@ version = "0.1.0"
 description = "Lightweight local utilities for paper plots and document maintenance."
 requires-python = ">=3.11"
 dependencies = [
+    "datasets>=4.8.5",
     "matplotlib>=3.10",
+    "modal>=1.4.4.dev21",
+    "numexpr>=2.14.1",
+    "numpy>=2.4.6",
+    "pydantic==2.11.7",
+    "python-dotenv>=1.0.0",
+    "scipy>=1.17.1",
+    "sympy>=1.14.0",
+    "transformers",
 ]
 
 [tool.uv]

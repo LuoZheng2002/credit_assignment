@@ -19,6 +19,7 @@ pub mod prompt;
 pub mod python_training_config;
 pub mod rollout;
 pub mod rollout_config;
+pub mod terminal_clipboard;
 pub mod token_array;
 pub mod tool_call_python;
 pub mod training_set;

@@ -228,11 +228,13 @@ pub(crate) fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Blocking helper that runs a Python script via `uv run python` from the repo root.
+/// Blocking helper that runs a lightweight Python script via the minimal uv project.
 pub(crate) fn run_python_script(script_path: &str, args: &[&str]) -> Result<(), String> {
     let mut command = Command::new("uv");
     command
         .arg("run")
+        .arg("--project")
+        .arg("pyprojects/minimal")
         .arg("python")
         .arg(script_path)
         .current_dir(repo_root());
@@ -241,9 +243,12 @@ pub(crate) fn run_python_script(script_path: &str, args: &[&str]) -> Result<(), 
         command.arg(arg);
     }
 
-    let output = command
-        .output()
-        .map_err(|err| format!("Failed to execute 'uv run python {}': {}", script_path, err))?;
+    let output = command.output().map_err(|err| {
+        format!(
+            "Failed to execute 'uv run --project pyprojects/minimal python {}': {}",
+            script_path, err
+        )
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

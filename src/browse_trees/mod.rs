@@ -23,6 +23,7 @@ use crate::{
     constants,
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     rollout_config::RolloutConfig,
+    terminal_clipboard::copy_to_terminal_clipboard,
     tree_action_log::{
         ActionLogConfigBundle, ActionLogStore, DirectTreeActionLog,
         action_log_config_bundle_file_path,
@@ -73,6 +74,7 @@ struct App<M: LlmModelMarker, S: DatasetSplit> {
     home_list_area: Option<Rect>,
     summary_area: Option<Rect>,
     conversation_area: Option<Rect>,
+    controls_area: Option<Rect>,
     tree_page: Option<TreePage<M, S>>,
     tree_focus: TreePaneFocus,
     tree_scroll_mode: TreeScrollMode,
@@ -84,6 +86,7 @@ struct App<M: LlmModelMarker, S: DatasetSplit> {
     conversation_scroll: usize,
     conversation_max_scroll: usize,
     conversation_metrics: Option<PaneMetrics>,
+    copy_status: Option<String>,
     home_page_load_request: Option<HomePageLoadRequest>,
     last_tree_scroll_at: Option<Instant>,
 }
@@ -133,6 +136,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
             home_list_area: None,
             summary_area: None,
             conversation_area: None,
+            controls_area: None,
             tree_page: None,
             tree_focus: TreePaneFocus::Tree,
             tree_scroll_mode: TreeScrollMode::Scaling,
@@ -144,6 +148,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
             conversation_scroll: 0,
             conversation_max_scroll: 0,
             conversation_metrics: None,
+            copy_status: None,
             home_page_load_request: None,
             last_tree_scroll_at: None,
             question_store,
@@ -397,6 +402,7 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
                 Constraint::Length(8),
                 Constraint::Min(8),
                 Constraint::Length(tree_window_height_u16),
+                Constraint::Length(3),
             ])
             .split(frame.area());
 
@@ -609,6 +615,20 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
             chunks[2],
             &mut state,
         );
+
+        self.controls_area = Some(chunks[3]);
+        let mut controls_text = format!(
+            "[Copy] c: copy colored tree  Tab: focus  1:scale 2:pan 3:evolve  4-9: colors  q/Esc: back  color:{}",
+            self.tree_color_mode.label()
+        );
+        if let Some(status) = &self.copy_status {
+            controls_text.push_str(&format!("  [{status}]"));
+        }
+        frame.render_widget(
+            Paragraph::new(controls_text)
+                .block(Block::default().borders(Borders::ALL).title("Controls")),
+            chunks[3],
+        );
     }
 
     fn handle_home_key(&mut self, key: KeyEvent) -> bool {
@@ -664,6 +684,12 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
                 self.conversation_scroll = 0;
                 self.conversation_max_scroll = 0;
                 self.conversation_metrics = None;
+                self.controls_area = None;
+                self.copy_status = None;
+                false
+            }
+            KeyCode::Char('c') => {
+                self.copy_current_tree();
                 false
             }
             KeyCode::Left => {
@@ -796,9 +822,29 @@ impl<M: LlmModelMarker, S: DatasetSplit> App<M, S> {
         true
     }
 
+    fn copy_current_tree(&mut self) {
+        let Some(tree_page) = self.tree_page.as_ref() else {
+            self.copy_status = Some("Nothing to copy".to_string());
+            return;
+        };
+        let text = export_tree_with_color_prefixes(tree_page, self.tree_color_mode);
+        match copy_to_terminal_clipboard(&text) {
+            Ok(()) => self.copy_status = Some("Copied colored tree".to_string()),
+            Err(error) => self.copy_status = Some(format!("Copy failed: {error}")),
+        }
+    }
+
     fn handle_tree_mouse(&mut self, mouse: MouseEvent) {
         if self.tree_page.is_none() {
             return;
+        }
+        if let Some(controls_area) = self.controls_area {
+            if contains_point(controls_area, mouse.column, mouse.row)
+                && matches!(mouse.kind, MouseEventKind::Down(_))
+            {
+                self.copy_current_tree();
+                return;
+            }
         }
         if let Some(summary_area) = self.summary_area {
             if contains_point(summary_area, mouse.column, mouse.row) {

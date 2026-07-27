@@ -384,6 +384,15 @@ fn parse_sglang_response_with_logprobs<M>(
         for (slot, candidate) in candidates.into_iter().take(8).enumerate() {
             top8[slot] = candidate;
         }
+        if !top8
+            .iter()
+            .any(|candidate| candidate.token_id == generated_token_id)
+        {
+            top8[7] = TokenLogprobCandidate {
+                token_id: generated_token_id,
+                logprob: generated_logprob,
+            };
+        }
         aligned_logprobs.push(top8);
     }
 

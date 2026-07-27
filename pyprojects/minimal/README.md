@@ -1,8 +1,12 @@
 # Minimal Python Environment
 
-This environment is intentionally lightweight for local paper utilities such as
-plot generation. Do not add CUDA, PyTorch, Transformers, vLLM, SGLang, or other
-LLM runtime dependencies here.
+This environment is intentionally lightweight for utilities that do not need
+CUDA, PyTorch, vLLM, SGLang, or other GPU runtime dependencies. It is used for
+paper utilities, Modal submission/download helpers, dataset preparation,
+tokenizer downloads, and the Python tool sandbox.
+
+Do not add CUDA-enabled packages or GPU inference/training runtimes here. Keep
+those dependencies in the root project or dedicated runtime environments.
 
 Example:
 

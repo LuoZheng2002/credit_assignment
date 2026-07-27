@@ -51,6 +51,100 @@ pub enum DirectTreeAction<M> {
     },
 }
 
+#[derive(Deserialize, Debug)]
+#[serde(bound(deserialize = ""))]
+enum LegacyDirectTreeAction<M> {
+    AppendSegmentContent(SegmentContent<M>),
+    SubmitAnswer(FinalAnswer),
+    BranchFromSegmentOrNodeGuided {
+        position: TokenPositionInTree,
+        new_branch_start_token: i32,
+        branch_from_node: bool,
+    },
+    BranchFromSegmentOrNodeSpontaneous {
+        position: TokenPositionInTree,
+        branch_from_node: bool,
+        position_in_segment: TokenPositionInSegment,
+    },
+    NoAvailableBranchPoint,
+    PrefixTrimNewSegment {
+        trim_position: TokenPositionInSegment,
+    },
+    SplitTreeSegment {
+        position: TokenPositionInTree,
+        branch_from_node: bool,
+    },
+    JudgeAnswer(CorrectnessJudgment),
+    AttachSegmentToTree {
+        parent_segment_id: SegmentId,
+        finalized_content_array: Vec<SegmentContent<M>>,
+        correctness_judgment: CorrectnessJudgment,
+    },
+}
+
+impl<M> From<LegacyDirectTreeAction<M>> for DirectTreeAction<M> {
+    fn from(value: LegacyDirectTreeAction<M>) -> Self {
+        match value {
+            LegacyDirectTreeAction::AppendSegmentContent(content) => {
+                Self::AppendSegmentContent(content)
+            }
+            LegacyDirectTreeAction::SubmitAnswer(final_answer) => Self::SubmitAnswer(final_answer),
+            LegacyDirectTreeAction::BranchFromSegmentOrNodeGuided {
+                position,
+                new_branch_start_token,
+                branch_from_node,
+            } => Self::BranchFromSegmentOrNodeGuided {
+                position,
+                new_branch_start_token,
+                new_branch_start_logprob: default_branch_start_logprob(),
+                branch_from_node,
+            },
+            LegacyDirectTreeAction::BranchFromSegmentOrNodeSpontaneous {
+                position,
+                branch_from_node,
+                position_in_segment,
+            } => Self::BranchFromSegmentOrNodeSpontaneous {
+                position,
+                branch_from_node,
+                position_in_segment,
+            },
+            LegacyDirectTreeAction::NoAvailableBranchPoint => Self::NoAvailableBranchPoint,
+            LegacyDirectTreeAction::PrefixTrimNewSegment { trim_position } => {
+                Self::PrefixTrimNewSegment { trim_position }
+            }
+            LegacyDirectTreeAction::SplitTreeSegment {
+                position,
+                branch_from_node,
+            } => Self::SplitTreeSegment {
+                position,
+                branch_from_node,
+            },
+            LegacyDirectTreeAction::JudgeAnswer(judgment) => Self::JudgeAnswer(judgment),
+            LegacyDirectTreeAction::AttachSegmentToTree {
+                parent_segment_id,
+                finalized_content_array,
+                correctness_judgment,
+            } => Self::AttachSegmentToTree {
+                parent_segment_id,
+                finalized_content_array,
+                correctness_judgment,
+            },
+        }
+    }
+}
+
+pub fn deserialize_direct_tree_action_compat<M>(
+    payload: &[u8],
+) -> Result<DirectTreeAction<M>, bincode::Error> {
+    match bincode::deserialize::<DirectTreeAction<M>>(payload) {
+        Ok(action) => Ok(action),
+        Err(current_error) => match bincode::deserialize::<LegacyDirectTreeAction<M>>(payload) {
+            Ok(action) => Ok(action.into()),
+            Err(_) => Err(current_error),
+        },
+    }
+}
+
 impl<M> Clone for DirectTreeAction<M> {
     fn clone(&self) -> Self {
         match self {

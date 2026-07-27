@@ -10,7 +10,7 @@ set -euo pipefail
 #   2. This script launches its own SGLang server internally — no external
 #      SGLang endpoint is needed.
 
-uv run -m src_py.modal.launch_modal_oneshot_training \
+uv run --project pyprojects/minimal -m src_py.modal.launch_modal_oneshot_training \
     --model-cli-name qwen25 \
     --config-nickname-training grpo_notool_training_full \
     --config-nickname-generation grpo_notool_generation \

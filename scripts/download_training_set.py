@@ -41,6 +41,8 @@ def _download_volume_path(
     command = [
         "uv",
         "run",
+        "--project",
+        "pyprojects/minimal",
         "modal",
         "volume",
         "get",
