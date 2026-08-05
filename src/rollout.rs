@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::marker::PhantomData;
 
 use std::sync::{
@@ -10,7 +10,6 @@ use arc_swap::ArcSwapOption;
 use serde::{Deserialize, Serialize};
 
 use kll_rs::KllFloatSketch;
-use rand::{RngExt, SeedableRng, rngs::StdRng};
 use reqwest::Client;
 use research_utility::progress_text_logger::{
     delete_worker_progress_bar, log_info, log_key_value_pair, log_master_progress, log_warning,
@@ -25,9 +24,12 @@ use ordered_float::NotNan;
 
 use crate::{
     atomic_count_guard::AtomicCountGuardRef,
+    directories::{tree_artifacts_oneshot_chunk_done_path, tree_artifacts_oneshot_chunk_path},
     hybrid_dataset::{DatasetSplit, HybridDatasetQuestion, QuestionFlatId, open_hybrid_dataset},
     llm_model::{InferenceEndpoint, LlmCallable, LlmModelMarker},
-    model_answer_judgment_cache::commit_pending_writes_if_any,
+    model_answer_judgment_cache::{
+        commit_pending_writes_if_any, reset_model_answer_judgment_cache_if_any,
+    },
     posterior_calculation_config::PosteriorCalculationConfig,
     rollout_config::RolloutConfig,
     tool_call_python::init_python_tool_pool,
@@ -37,6 +39,7 @@ use crate::{
     tree_action_log::{
         ActionLogConfigBundle, ActionLogStore, DirectTreeActionLog, open_action_logs,
     },
+    tree_artifact::{TreeArtifact, write_tree_artifacts_msgpack},
     tree_status::{
         DirectTreeStatus, GuidedBranchingSubStatus, SpontaneousBranchingSubStatus, TrunkSubStatus,
     },
@@ -290,6 +293,7 @@ pub struct RolloutStats {
     pub(crate) num_correct_branches: AtomicUsize,
     pub(crate) num_all_correct_trees: AtomicUsize,
     pub(crate) num_all_incorrect_trees: AtomicUsize,
+    pub(crate) num_unjudged_trees: AtomicUsize,
     pub(crate) model_answers_completed: AtomicUsize,
     pub(crate) model_answers_context_window_overflow: AtomicUsize,
     pub(crate) model_answers_only_eos: AtomicUsize,
@@ -330,6 +334,7 @@ impl RolloutAllGuard {
             num_correct_branches: AtomicUsize::new(0),
             num_all_correct_trees: AtomicUsize::new(0),
             num_all_incorrect_trees: AtomicUsize::new(0),
+            num_unjudged_trees: AtomicUsize::new(0),
             model_answers_completed: AtomicUsize::new(0),
             model_answers_context_window_overflow: AtomicUsize::new(0),
             model_answers_only_eos: AtomicUsize::new(0),
@@ -430,23 +435,28 @@ impl RolloutStats {
         );
     }
 
-    fn log_tree_completion(&self, tree_correctness: TreeCorrectness) {
-        match tree_correctness {
-            TreeCorrectness::AllCorrect => {
-                self.num_all_correct_trees.fetch_add(1, Ordering::Relaxed);
+    fn log_tree_completion(&self, tree_correctness: TreeCorrectness, has_judgments: bool) {
+        if has_judgments {
+            match tree_correctness {
+                TreeCorrectness::AllCorrect => {
+                    self.num_all_correct_trees.fetch_add(1, Ordering::Relaxed);
+                }
+                TreeCorrectness::AllIncorrect => {
+                    self.num_all_incorrect_trees.fetch_add(1, Ordering::Relaxed);
+                }
+                TreeCorrectness::Mixed => {}
             }
-            TreeCorrectness::AllIncorrect => {
-                self.num_all_incorrect_trees.fetch_add(1, Ordering::Relaxed);
-            }
-            TreeCorrectness::Mixed => {}
+        } else {
+            self.num_unjudged_trees.fetch_add(1, Ordering::Relaxed);
         }
         let finished = self.num_finished_trees.fetch_add(1, Ordering::Relaxed) + 1;
         let num_all_correct = self.num_all_correct_trees.load(Ordering::Relaxed);
         let num_all_incorrect = self.num_all_incorrect_trees.load(Ordering::Relaxed);
-        let mixed = finished - num_all_correct - num_all_incorrect;
+        let num_unjudged = self.num_unjudged_trees.load(Ordering::Relaxed);
+        let mixed = finished - num_all_correct - num_all_incorrect - num_unjudged;
         log_key_value_pair(
-            "trees_correctness (✓, ❌, mixed)",
-            format!("({num_all_correct}, {num_all_incorrect}, {mixed})"),
+            "trees_correctness (✓, ❌, mixed, unjudged)",
+            format!("({num_all_correct}, {num_all_incorrect}, {mixed}, {num_unjudged})"),
         );
         log_worker_progress(
             "trees",
@@ -466,20 +476,27 @@ impl RolloutStats {
     fn log_final_tree_correctness_summary(&self) {
         let num_all_correct = self.num_all_correct_trees.load(Ordering::Relaxed);
         let num_all_incorrect = self.num_all_incorrect_trees.load(Ordering::Relaxed);
+        let num_unjudged = self.num_unjudged_trees.load(Ordering::Relaxed);
         let finished_trees = self.num_finished_trees.load(Ordering::Relaxed);
-        let mixed = finished_trees - num_all_correct - num_all_incorrect;
+        let mixed = finished_trees - num_all_correct - num_all_incorrect - num_unjudged;
         log_info(format!(
-            "rollout_all finished; trees_correctness (✓, ❌, mixed) = ({num_all_correct}, {num_all_incorrect}, {mixed})"
+            "rollout_all finished; trees_correctness (✓, ❌, mixed, unjudged) = ({num_all_correct}, {num_all_incorrect}, {mixed}, {num_unjudged})"
         ));
         log_key_value_pair(
-            "trees_correctness (✓, ❌, mixed)",
-            format!("({num_all_correct}, {num_all_incorrect}, {mixed})"),
+            "trees_correctness (✓, ❌, mixed, unjudged)",
+            format!("({num_all_correct}, {num_all_incorrect}, {mixed}, {num_unjudged})"),
         );
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct StopRequestedError;
+
+struct RolloutTaskResult<S: DatasetSplit> {
+    question_flat_id: QuestionFlatId<S>,
+    tree_correctness: TreeCorrectness,
+    has_judgments: bool,
+}
 
 async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
     mut action_log: DirectTreeActionLog<M, S>,
@@ -490,7 +507,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
     start_time: Instant,
     elapsed_offset: f32,
     branching_options: BranchingRuntimeOptions,
-) -> Result<TreeCorrectness, StopRequestedError> {
+) -> Result<RolloutTaskResult<S>, StopRequestedError> {
     let rollout_stats = RolloutStats::global();
     let _active_rollouts_guard =
         AtomicCountGuardRef::new(&rollout_stats.num_active_rollouts, "num_active_rollouts");
@@ -509,15 +526,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
             .await?;
 
         match &action {
-            DirectTreeAction::JudgeAnswer(correctness_judgment) => {
-                let num_correct = if correctness_judgment.is_correct {
-                    rollout_stats
-                        .num_correct_branches
-                        .fetch_add(1, Ordering::SeqCst)
-                        + 1
-                } else {
-                    rollout_stats.num_correct_branches.load(Ordering::SeqCst)
-                };
+            DirectTreeAction::AttachSegmentToTreeUnjudged { final_answer, .. } => {
                 let finished = rollout_stats
                     .num_finished_branches
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -533,9 +542,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
                         finished, total_branches_to_finish
                     ),
                 );
-                let running_accuracy = num_correct as f32 / finished as f32;
-                log_key_value_pair("Rollout running accuracy", running_accuracy.to_string());
-                match &correctness_judgment.model_answer {
+                match final_answer {
                     FinalAnswer::ModelProvided(_) => {
                         let _ = rollout_stats
                             .model_answers_completed
@@ -567,7 +574,7 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
                 }
                 if let Some(trajectory_length) = trajectory_length_being_judged(&tree) {
                     rollout_stats
-                        .log_trajectory_length(trajectory_length, correctness_judgment.is_correct)
+                        .log_trajectory_length(trajectory_length, false)
                         .await;
                 }
             }
@@ -620,9 +627,14 @@ async fn rollout<M: LlmModelMarker, S: DatasetSplit>(
         }
     }
     let final_tree = DirectTree::<M, S>::from_action_log(&action_log);
+    let has_judgments = !final_tree.leaf_segment_judgments.is_empty();
     let tree_correctness = final_tree.get_correctness();
     rollout_stats.log_llm_calls_per_tree(llm_calls_so_far).await;
-    Ok(tree_correctness)
+    Ok(RolloutTaskResult {
+        question_flat_id: action_log.question.flat_id,
+        tree_correctness,
+        has_judgments,
+    })
 }
 
 pub struct RolloutProgramConfig<S: DatasetSplit> {
@@ -633,6 +645,7 @@ pub struct RolloutProgramConfig<S: DatasetSplit> {
     pub client: Client,
     pub inference_endpoint: InferenceEndpoint,
     pub rollout_secs: usize,
+    pub finish_all_questions: bool,
     pub total_epochs: usize,
     /// If set, open the action log store at this path instead of the default orchestrator path.
     pub action_log_store_override_path: Option<String>,
@@ -640,6 +653,11 @@ pub struct RolloutProgramConfig<S: DatasetSplit> {
     pub fixed_temperature: NotNan<f32>,
     pub max_concurrent_rollout: usize,
     pub branching_options: BranchingRuntimeOptions,
+    pub tree_artifact_output_path: Option<String>,
+    pub tree_artifact_chunk_question_count: Option<usize>,
+    pub question_flat_id_start: Option<usize>,
+    pub question_flat_id_end: Option<usize>,
+    pub question_flat_ids: Option<BTreeSet<usize>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -654,10 +672,231 @@ pub struct RolloutExecutionSummary {
     pub num_all_incorrect_trees: usize,
 }
 
+fn build_completed_tree_artifacts<M: LlmModelMarker, S: DatasetSplit>(
+    store: &ActionLogStore<M, S>,
+    mount_dir: &str,
+    config_nickname: &str,
+    epoch: usize,
+    rollout_config: &RolloutConfig<S>,
+    posterior_calculation_config: &PosteriorCalculationConfig,
+    use_tool: bool,
+    fixed_temperature: NotNan<f32>,
+    question_map: &BTreeMap<usize, HybridDatasetQuestion<S>>,
+) -> Result<Vec<TreeArtifact<M, S>>, String> {
+    let keys = store.get_keys()?;
+    let mut artifacts = Vec::new();
+    for key in keys {
+        let Some(question) = question_map.get(&key.0).cloned() else {
+            return Err(format!(
+                "action log key {} does not exist in the hybrid dataset",
+                key.0
+            ));
+        };
+        let actions = store.load_action_log(key)?;
+        let action_log = DirectTreeActionLog {
+            mount_dir: mount_dir.to_string(),
+            config_nickname: config_nickname.to_string(),
+            question,
+            rollout_config: rollout_config.clone(),
+            posterior_calculation_config: posterior_calculation_config.clone(),
+            use_tool,
+            fixed_temperature,
+            actions,
+        };
+        let tree = DirectTree::<M, S>::from_action_log(&action_log);
+        if !tree.completed() {
+            continue;
+        }
+        let artifact_id = format!(
+            "{}:{}:{}:{}",
+            S::dataset_file_postfix(),
+            M::CLI_NAME,
+            config_nickname,
+            key.0
+        );
+        artifacts.push(TreeArtifact::from_direct_tree(
+            &tree,
+            artifact_id,
+            M::CLI_NAME.to_string(),
+            config_nickname.to_string(),
+            epoch,
+        ));
+    }
+    Ok(artifacts)
+}
+
+fn artifact_chunk_index(flat_id: usize, chunk_question_count: Option<usize>) -> usize {
+    match chunk_question_count {
+        Some(chunk_question_count) => {
+            assert!(
+                chunk_question_count > 0,
+                "chunk_question_count must be positive"
+            );
+            flat_id / chunk_question_count
+        }
+        None => 0,
+    }
+}
+
+fn expected_flat_ids_by_chunk_from_keys(
+    question_keys: &[usize],
+    chunk_question_count: Option<usize>,
+) -> BTreeMap<usize, BTreeSet<usize>> {
+    let mut expected = BTreeMap::new();
+    for flat_id in question_keys {
+        expected
+            .entry(artifact_chunk_index(*flat_id, chunk_question_count))
+            .or_insert_with(BTreeSet::new)
+            .insert(*flat_id);
+    }
+    expected
+}
+
+fn write_completed_tree_artifact_chunks<M: LlmModelMarker, S: DatasetSplit>(
+    tree_artifact_output_dir: &str,
+    tree_artifacts: &[TreeArtifact<M, S>],
+    expected_by_chunk: &BTreeMap<usize, BTreeSet<usize>>,
+    chunk_question_count: Option<usize>,
+) -> Result<(), String> {
+    std::fs::create_dir_all(tree_artifact_output_dir).map_err(|err| {
+        format!(
+            "failed to create tree artifact output dir {}: {}",
+            tree_artifact_output_dir, err
+        )
+    })?;
+    let mut artifacts_by_chunk: BTreeMap<usize, Vec<TreeArtifact<M, S>>> = BTreeMap::new();
+    for artifact in tree_artifacts {
+        let chunk_index = artifact_chunk_index(artifact.question.flat_id.0, chunk_question_count);
+        artifacts_by_chunk
+            .entry(chunk_index)
+            .or_default()
+            .push(artifact.clone());
+    }
+    for (chunk_index, artifacts) in artifacts_by_chunk {
+        let chunk_path = tree_artifacts_oneshot_chunk_path(tree_artifact_output_dir, chunk_index);
+        write_tree_artifacts_msgpack(&chunk_path, &artifacts)?;
+        let completed_flat_ids = artifacts
+            .iter()
+            .map(|artifact| artifact.question.flat_id.0)
+            .collect::<BTreeSet<_>>();
+        let expected_flat_ids = expected_by_chunk.get(&chunk_index).ok_or_else(|| {
+            format!(
+                "tree artifact chunk {} has completed artifacts but no expected flat-id range",
+                chunk_index
+            )
+        })?;
+        if &completed_flat_ids == expected_flat_ids {
+            let done_path =
+                tree_artifacts_oneshot_chunk_done_path(tree_artifact_output_dir, chunk_index);
+            std::fs::write(&done_path, b"done\n").map_err(|err| {
+                format!(
+                    "failed to write tree artifact done marker {}: {}",
+                    done_path, err
+                )
+            })?;
+            log_info(format!(
+                "Wrote complete tree artifact chunk {} with {} trees and marker {}",
+                chunk_index,
+                artifacts.len(),
+                done_path
+            ));
+        } else {
+            log_warning(format!(
+                "Tree artifact chunk {} is incomplete: completed {} / expected {}; marker not written",
+                chunk_index,
+                completed_flat_ids.len(),
+                expected_flat_ids.len()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn write_completed_tree_artifact_chunk_if_ready<M: LlmModelMarker, S: DatasetSplit>(
+    store: &ActionLogStore<M, S>,
+    tree_artifact_output_dir: &str,
+    chunk_index: usize,
+    expected_by_chunk: &BTreeMap<usize, BTreeSet<usize>>,
+    mount_dir: &str,
+    config_nickname: &str,
+    epoch: usize,
+    rollout_config: &RolloutConfig<S>,
+    posterior_calculation_config: &PosteriorCalculationConfig,
+    use_tool: bool,
+    fixed_temperature: NotNan<f32>,
+    question_map: &BTreeMap<usize, HybridDatasetQuestion<S>>,
+) -> Result<(), String> {
+    let done_path = tree_artifacts_oneshot_chunk_done_path(tree_artifact_output_dir, chunk_index);
+    if std::path::Path::new(&done_path).exists() {
+        return Ok(());
+    }
+    let Some(expected_flat_ids) = expected_by_chunk.get(&chunk_index) else {
+        return Ok(());
+    };
+    let mut artifacts = Vec::new();
+    for flat_id in expected_flat_ids {
+        let key = QuestionFlatId(*flat_id, PhantomData);
+        let Ok(actions) = store.load_action_log(key) else {
+            return Ok(());
+        };
+        let Some(question) = question_map.get(flat_id).cloned() else {
+            return Err(format!(
+                "missing question flat id {} in question map",
+                flat_id
+            ));
+        };
+        let action_log = DirectTreeActionLog {
+            mount_dir: mount_dir.to_string(),
+            config_nickname: config_nickname.to_string(),
+            question,
+            rollout_config: rollout_config.clone(),
+            posterior_calculation_config: posterior_calculation_config.clone(),
+            use_tool,
+            fixed_temperature,
+            actions,
+        };
+        let tree = DirectTree::<M, S>::from_action_log(&action_log);
+        if !tree.completed() {
+            return Ok(());
+        }
+        let artifact_id = format!(
+            "{}:{}:{}:{}",
+            S::dataset_file_postfix(),
+            M::CLI_NAME,
+            config_nickname,
+            flat_id
+        );
+        artifacts.push(TreeArtifact::from_direct_tree(
+            &tree,
+            artifact_id,
+            M::CLI_NAME.to_string(),
+            config_nickname.to_string(),
+            epoch,
+        ));
+    }
+    let chunk_path = tree_artifacts_oneshot_chunk_path(tree_artifact_output_dir, chunk_index);
+    write_tree_artifacts_msgpack(&chunk_path, &artifacts)?;
+    std::fs::write(&done_path, b"done\n")
+        .map_err(|err| format!("failed to write done marker {}: {}", done_path, err))?;
+    log_info(format!(
+        "Immediately wrote complete tree artifact chunk {} with {} trees and marker {}",
+        chunk_index,
+        artifacts.len(),
+        done_path
+    ));
+    Ok(())
+}
+
 pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     mount_dir: &str,
     program_config: RolloutProgramConfig<S>,
 ) -> RolloutExecutionSummary {
+    if let Err(error) = reset_model_answer_judgment_cache_if_any() {
+        log_warning(format!(
+            "Failed to reset legacy model answer judgment cache before rollout_all: {}",
+            error
+        ));
+    }
     let RolloutProgramConfig {
         config_nickname,
         rollout_config,
@@ -666,15 +905,27 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         client,
         inference_endpoint,
         rollout_secs,
+        finish_all_questions,
         total_epochs,
         action_log_store_override_path,
         use_tool,
         fixed_temperature,
         max_concurrent_rollout,
         branching_options,
+        tree_artifact_output_path,
+        tree_artifact_chunk_question_count,
+        question_flat_id_start,
+        question_flat_id_end,
+        question_flat_ids,
     } = program_config;
     assert!(rollout_secs > 0, "rollout_secs must be positive");
     assert!(total_epochs > 0, "total_epochs must be positive");
+    if finish_all_questions {
+        log_info(format!(
+            "rollout_all running in full-completion mode; rollout_secs={} is used only for progress reporting",
+            rollout_secs
+        ));
+    }
     log_info(format!(
         "rollout_all using fixed_temperature={} for LLM sampling",
         fixed_temperature
@@ -717,24 +968,48 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         .map(|r| r.expect("failed to read question from hybrid dataset during rollout"))
         .map(|(idx, q)| (idx, q))
         .collect();
-    let mut question_keys: Vec<usize> = (0..num_questions).collect();
+    let start_question_flat_id = question_flat_id_start.unwrap_or(0).min(num_questions);
+    let end_question_flat_id = question_flat_id_end
+        .unwrap_or(num_questions)
+        .min(num_questions);
+    assert!(
+        start_question_flat_id <= end_question_flat_id,
+        "question_flat_id_start ({start_question_flat_id}) must be <= question_flat_id_end ({end_question_flat_id})"
+    );
+    let requested_question_keys: Vec<usize> = question_flat_ids
+        .map(|flat_ids| {
+            flat_ids
+                .into_iter()
+                .filter(|flat_id| *flat_id < num_questions)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| (start_question_flat_id..end_question_flat_id).collect());
+    let expected_by_chunk = expected_flat_ids_by_chunk_from_keys(
+        &requested_question_keys,
+        tree_artifact_chunk_question_count,
+    );
+    let question_keys: Vec<usize> = requested_question_keys
+        .into_iter()
+        .filter(|flat_id| {
+            let Some(tree_artifact_output_path) = &tree_artifact_output_path else {
+                return true;
+            };
+            let chunk_index = artifact_chunk_index(*flat_id, tree_artifact_chunk_question_count);
+            let done_path =
+                tree_artifacts_oneshot_chunk_done_path(tree_artifact_output_path, chunk_index);
+            !std::path::Path::new(&done_path).exists()
+        })
+        .collect();
+    log_key_value_pair("question_flat_id_start", start_question_flat_id.to_string());
+    log_key_value_pair(
+        "question_flat_id_end_exclusive",
+        end_question_flat_id.to_string(),
+    );
     if S::IS_TRAINING {
         assert!(
             epoch < total_epochs,
             "epoch ({epoch}) must be less than total_epochs ({total_epochs}) for training split"
         );
-        let training_segment_start = if question_keys.is_empty() {
-            0
-        } else {
-            let mut training_segment_rng = StdRng::seed_from_u64(epoch as u64);
-            training_segment_rng.random_range(0..question_keys.len())
-        };
-        question_keys.rotate_left(training_segment_start);
-        log_key_value_pair(
-            "training_segment_start_index",
-            training_segment_start.to_string(),
-        );
-        log_key_value_pair("training_segment_start_seed", epoch.to_string());
         log_key_value_pair(
             "training_segment_total_keys",
             question_keys.len().to_string(),
@@ -746,7 +1021,11 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     let (previous_elapsed, deadline, total_secs) = {
         let prev = action_store.lock().await.read_elapsed_time().unwrap_or(0.0);
         let remaining = (rollout_secs as f32 - prev).max(0.0);
-        let deadline = start_time + Duration::from_secs_f32(remaining);
+        let deadline = if finish_all_questions {
+            start_time + Duration::from_secs(365 * 24 * 60 * 60)
+        } else {
+            start_time + Duration::from_secs_f32(remaining)
+        };
         if prev > 0.0 {
             log_info(format!(
                 "Resuming rollout: previous elapsed={prev:.1}s, remaining={remaining:.1}s"
@@ -825,8 +1104,36 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
             }
             joined = join_set.join_next(), if !join_set.is_empty() => {
                 match joined.expect("join_set must have at least one task") {
-                    Ok(Ok(tree_correctness)) => {
-                        rollout_stats.log_tree_completion(tree_correctness);
+                    Ok(Ok(task_result)) => {
+                        rollout_stats.log_tree_completion(
+                            task_result.tree_correctness,
+                            task_result.has_judgments,
+                        );
+                        if let Some(tree_artifact_output_path) = &tree_artifact_output_path {
+                            let chunk_index = artifact_chunk_index(
+                                task_result.question_flat_id.0,
+                                tree_artifact_chunk_question_count,
+                            );
+                            let store = action_store.lock().await;
+                            store.sort().unwrap();
+                            write_completed_tree_artifact_chunk_if_ready::<M, S>(
+                                &store,
+                                tree_artifact_output_path,
+                                chunk_index,
+                                &expected_by_chunk,
+                                mount_dir,
+                                &config_nickname,
+                                epoch,
+                                &rollout_config,
+                                &posterior_calculation_config,
+                                use_tool,
+                                fixed_temperature,
+                                &question_map,
+                            )
+                            .unwrap_or_else(|err| {
+                                panic!("failed to write ready tree artifact chunk: {err}")
+                            });
+                    }
                     }
                     Ok(Err(StopRequestedError)) => {}
                     Err(join_err) => panic!("rollout task panicked: {join_err}"),
@@ -842,6 +1149,32 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     {
         let store = action_store.lock().await;
         store.sort().unwrap();
+        if let Some(tree_artifact_output_path) = &tree_artifact_output_path {
+            let tree_artifacts = build_completed_tree_artifacts::<M, S>(
+                &store,
+                mount_dir,
+                &config_nickname,
+                epoch,
+                &rollout_config,
+                &posterior_calculation_config,
+                use_tool,
+                fixed_temperature,
+                &question_map,
+            )
+            .unwrap_or_else(|err| panic!("failed to build completed tree artifacts: {err}"));
+            write_completed_tree_artifact_chunks::<M, S>(
+                tree_artifact_output_path,
+                &tree_artifacts,
+                &expected_by_chunk,
+                tree_artifact_chunk_question_count,
+            )
+            .unwrap_or_else(|err| panic!("failed to write tree artifact chunks: {err}"));
+            log_info(format!(
+                "Wrote {} completed tree artifacts under {}",
+                tree_artifacts.len(),
+                tree_artifact_output_path
+            ));
+        }
     }
 
     ROLLOUT_STOP_SIGNAL.store(true, Ordering::Relaxed);

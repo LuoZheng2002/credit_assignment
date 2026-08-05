@@ -18,3 +18,13 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+research-utility = { path = "../../research-utility", editable = true }
+
+[dependency-groups]
+dev = [
+    "msgpack>=1.2.1",
+    "pytest>=9.1.1",
+    "research-utility",
+]

@@ -10,6 +10,7 @@ use crate::{
     rollout_config::RolloutConfig,
     tree::DirectTree,
     tree_action_log::{ActionLogStore, DirectTreeActionLog, open_action_logs},
+    tree_artifact::{TreeJudged, load_available_tree_judged_artifacts, load_tree_judged_artifacts},
 };
 
 use serde::{Deserialize, Serialize};
@@ -106,6 +107,29 @@ fn tree_accuracy<M: LlmModelMarker, S: DatasetSplit>(
     Some((num_correct_trajectories, total_trajectories))
 }
 
+fn tree_judged_accuracy<M: LlmModelMarker, S: DatasetSplit>(
+    tree_judged: &TreeJudged<M, S>,
+) -> Option<(usize, usize)> {
+    let total_trajectories = tree_judged.tree.leaf_answers.len();
+    if total_trajectories == 0 {
+        return None;
+    }
+    let num_correct_trajectories = tree_judged
+        .tree
+        .leaf_answers
+        .iter()
+        .filter(|leaf| {
+            tree_judged
+                .judgment
+                .judgments_by_model_answer
+                .get(&leaf.model_answer_string)
+                .copied()
+                .unwrap_or(false)
+        })
+        .count();
+    Some((num_correct_trajectories, total_trajectories))
+}
+
 fn build_question_map<S: DatasetSplit>() -> BTreeMap<usize, HybridDatasetQuestion<S>> {
     let question_store = open_hybrid_dataset::<S>();
     question_store
@@ -113,6 +137,69 @@ fn build_question_map<S: DatasetSplit>() -> BTreeMap<usize, HybridDatasetQuestio
         .expect("failed to iterate hybrid dataset")
         .map(|r| r.expect("failed to read question from hybrid dataset"))
         .collect()
+}
+
+pub async fn get_accuracy_from_tree_judgments_at_path<M: LlmModelMarker, S: DatasetSplit>(
+    tree_artifacts_path: &str,
+    tree_judgment_jsonl_path: &str,
+    progress_bar_label: &str,
+) -> AccuracyStats {
+    let tree_judged_artifacts =
+        load_available_tree_judged_artifacts::<M, S>(tree_artifacts_path, tree_judgment_jsonl_path)
+            .unwrap_or_else(|err| panic!("failed to load judged tree artifacts: {}", err));
+    let num_keys = tree_judged_artifacts.len();
+    let mut weighted_num_wins = 0.0f32;
+    let mut weighted_total_plays = 0.0f32;
+    let mut num_trees_with_judgments = 0usize;
+    let mut num_trajectories_judged = 0usize;
+    let mut deepmath_stats = DatasetBucketStats::new();
+    let mut math_stats = DatasetBucketStats::new();
+    let mut numinamath_stats = DatasetBucketStats::new();
+
+    log_master_progress(0.0, format!("{}: Calculating", progress_bar_label));
+    for (index, tree_judged) in tree_judged_artifacts.iter().enumerate() {
+        let dataset_name = dataset_bucket_name(&tree_judged.tree.question.dataset_name);
+        if let Some((num_correct_trajectories, total_trajectories)) =
+            tree_judged_accuracy(tree_judged)
+        {
+            weighted_num_wins += num_correct_trajectories as f32 / total_trajectories as f32;
+            weighted_total_plays += 1.0;
+            num_trees_with_judgments += 1;
+            num_trajectories_judged += total_trajectories;
+            match dataset_name {
+                DEEPMATH_DATASET_NAME => {
+                    deepmath_stats.update(num_correct_trajectories, total_trajectories)
+                }
+                MATH_DATASET_NAME => {
+                    math_stats.update(num_correct_trajectories, total_trajectories)
+                }
+                NUMINAMATH_DATASET_NAME => {
+                    numinamath_stats.update(num_correct_trajectories, total_trajectories)
+                }
+                _ => unreachable!("dataset name was validated"),
+            }
+        }
+        let progress = if num_keys == 0 {
+            1.0
+        } else {
+            (index + 1) as f32 / num_keys as f32
+        };
+        log_master_progress(progress, format!("{}: Calculating", progress_bar_label));
+    }
+    log_master_progress(1.0, format!("{}: Done", progress_bar_label));
+
+    AccuracyStats {
+        weighted_num_wins,
+        weighted_total_plays,
+        num_trees_with_judgments,
+        num_trajectories_judged,
+        deepmath_weighted_num_wins: deepmath_stats.weighted_num_wins,
+        deepmath_weighted_total_plays: deepmath_stats.weighted_total_plays,
+        math_weighted_num_wins: math_stats.weighted_num_wins,
+        math_weighted_total_plays: math_stats.weighted_total_plays,
+        numinamath_weighted_num_wins: numinamath_stats.weighted_num_wins,
+        numinamath_weighted_total_plays: numinamath_stats.weighted_total_plays,
+    }
 }
 
 async fn compute_accuracy_stats<M: LlmModelMarker, S: DatasetSplit>(
@@ -274,6 +361,29 @@ fn tree_per_trunk_correctness<M: LlmModelMarker, S: DatasetSplit>(
     Some(correctness)
 }
 
+fn tree_judged_per_trunk_correctness<M: LlmModelMarker, S: DatasetSplit>(
+    tree_judged: &TreeJudged<M, S>,
+) -> Option<Vec<bool>> {
+    if tree_judged.tree.leaf_answers.is_empty() {
+        return None;
+    }
+    Some(
+        tree_judged
+            .tree
+            .leaf_answers
+            .iter()
+            .map(|leaf| {
+                tree_judged
+                    .judgment
+                    .judgments_by_model_answer
+                    .get(&leaf.model_answer_string)
+                    .copied()
+                    .unwrap_or(false)
+            })
+            .collect(),
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatasetAccuracies {
     pub accuracy_values: Vec<f32>,
@@ -397,6 +507,91 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
             .map(|a| (a - mean).powi(2))
             .sum::<f32>()
             / (n - 1.0);
+        let std_err = (variance / n).sqrt();
+        let confidence_interval_half_width = 1.96 * std_err;
+        per_dataset.insert(
+            dataset_name,
+            DatasetAccuracies {
+                accuracy_values,
+                mean_accuracy: mean,
+                confidence_interval_half_width,
+            },
+        );
+    }
+
+    TestAccuracyResult { per_dataset }
+}
+
+pub async fn get_test_accuracies_from_tree_judgments_at_path<M: LlmModelMarker, S: DatasetSplit>(
+    tree_artifacts_path: &str,
+    tree_judgment_jsonl_path: &str,
+    progress_bar_label: &str,
+    num_trunks: usize,
+) -> TestAccuracyResult {
+    let tree_judged_artifacts =
+        load_tree_judged_artifacts::<M, S>(tree_artifacts_path, tree_judgment_jsonl_path)
+            .unwrap_or_else(|err| panic!("failed to load judged test tree artifacts: {}", err));
+
+    log_master_progress(
+        0.0,
+        format!("{}: Calculating per-dataset", progress_bar_label),
+    );
+
+    let num_keys = tree_judged_artifacts.len();
+    let mut dataset_per_trunk_correct: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut dataset_total_trees: BTreeMap<String, usize> = BTreeMap::new();
+
+    for (index, tree_judged) in tree_judged_artifacts.iter().enumerate() {
+        if let Some(trunk_correctness) = tree_judged_per_trunk_correctness(tree_judged) {
+            assert_eq!(
+                trunk_correctness.len(),
+                num_trunks,
+                "Expected {} trunks per tree but got {}",
+                num_trunks,
+                trunk_correctness.len()
+            );
+            let dataset_name = tree_judged.tree.question.dataset_name.clone();
+            let per_trunk = dataset_per_trunk_correct
+                .entry(dataset_name.clone())
+                .or_insert_with(|| vec![0usize; num_trunks]);
+            for (trunk_index, &is_correct) in trunk_correctness.iter().enumerate() {
+                if is_correct {
+                    per_trunk[trunk_index] += 1;
+                }
+            }
+            *dataset_total_trees.entry(dataset_name).or_insert(0) += 1;
+        }
+        let progress = if num_keys == 0 {
+            1.0
+        } else {
+            (index + 1) as f32 / num_keys as f32
+        };
+        log_master_progress(
+            progress,
+            format!("{}: Calculating per-dataset", progress_bar_label),
+        );
+    }
+
+    log_master_progress(1.0, format!("{}: Done", progress_bar_label));
+
+    let mut per_dataset = BTreeMap::new();
+    for (dataset_name, per_trunk_correct) in dataset_per_trunk_correct {
+        let total_trees = dataset_total_trees[&dataset_name] as f32;
+        let accuracy_values: Vec<f32> = per_trunk_correct
+            .iter()
+            .map(|&correct| correct as f32 / total_trees)
+            .collect();
+        let n = accuracy_values.len() as f32;
+        let mean = accuracy_values.iter().sum::<f32>() / n;
+        let variance = if n > 1.0 {
+            accuracy_values
+                .iter()
+                .map(|a| (a - mean).powi(2))
+                .sum::<f32>()
+                / (n - 1.0)
+        } else {
+            0.0
+        };
         let std_err = (variance / n).sqrt();
         let confidence_interval_half_width = 1.96 * std_err;
         per_dataset.insert(

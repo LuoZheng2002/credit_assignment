@@ -19,6 +19,8 @@ class TestMain(unittest.TestCase):
                 "advantage_clip": 3.0,
                 "learning_rate": 1e-5,
                 "weight_decay": 0.01,
+                "use_adam_state": True,
+                "use_lr_warmup": True,
                 "grad_accum_steps": 1,
                 "log_time_interval": 1,
                 "lr_warmup_steps": 100,

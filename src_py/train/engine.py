@@ -70,9 +70,11 @@ class TrainConfig:
     advantage_clip: float
     learning_rate: float
     weight_decay: float
+    use_adam_state: bool
+    use_lr_warmup: bool
     training_time: float
     num_iterations_limit: int
-    grad_accum_steps: int
+    min_grad_accum_steps: int
     log_time_interval: float
     lora_rank: int
     lora_alpha: int
@@ -111,8 +113,8 @@ def _reset_oneshot_epoch_resume_state(resume_state: ResumeState) -> ResumeState:
     """Reset per-epoch budget counters while preserving optimizer/data cursor state.
 
     One-shot multi-epoch training intentionally carries model weights, optimizer
-    state, and sample cursor across epochs. However, the wall-clock budget and
-    dataset-pass limit are defined per epoch, so those counters must be reset
+    state, and sample cursor across epochs. However, the wall-clock budget is
+    defined per epoch, so that counter must be reset
     before starting the next epoch.
     """
     return ResumeState(
@@ -874,6 +876,26 @@ def _resolve_local_model_path(model_parent_dir: str) -> str:
     )
     assert normalized.is_dir(), f"model folder must be a directory: {normalized}"
 
+    if (normalized / "adapter_config.json").is_file():
+        required_adapter_files = [
+            normalized / "adapter_config.json",
+            normalized / "adapter_model.safetensors",
+            normalized / "tokenizer_config.json",
+        ]
+        for required_file in required_adapter_files:
+            assert required_file.is_file(), (
+                f"missing required LoRA adapter file: {required_file}"
+            )
+        base_model_path = _resolve_peft_adapter_base_model_path(str(normalized))
+        assert base_model_path is not None, (
+            f"LoRA adapter model folder is missing base model metadata: {normalized}"
+        )
+        resolved_base_model_path = Path(base_model_path).expanduser().resolve()
+        assert resolved_base_model_path.exists(), (
+            f"LoRA adapter base model path does not exist: {resolved_base_model_path}"
+        )
+        return str(normalized)
+
     required_files = [
         normalized / "config.json",
         normalized / "tokenizer_config.json",
@@ -1237,11 +1259,11 @@ def train(config: TrainConfig) -> None:
     assert config.learning_rate > 0.0, "learning_rate must be positive"
     assert config.weight_decay >= 0.0, "weight_decay must be non-negative"
     assert config.training_time > 0.0, "training_time must be positive"
-    assert config.num_iterations_limit > 0, "num_iterations_limit must be positive"
-    assert config.grad_accum_steps > 0, "grad_accum_steps must be positive"
+    assert config.min_grad_accum_steps > 0, "grad_accum_steps must be positive"
     assert config.log_time_interval > 0.0, "log_time_interval must be positive"
-    assert 0.0 < config.adam_beta1 < 1.0, "adam_beta1 must be in (0, 1)"
-    assert 0.0 < config.adam_beta2 < 1.0, "adam_beta2 must be in (0, 1)"
+    if config.use_adam_state:
+        assert 0.0 < config.adam_beta1 < 1.0, "adam_beta1 must be in (0, 1)"
+        assert 0.0 < config.adam_beta2 < 1.0, "adam_beta2 must be in (0, 1)"
     assert len(config.training_summary_parent_dir.strip()) > 0, (
         "training_summary_parent_dir cannot be empty"
     )
@@ -1259,7 +1281,7 @@ def train(config: TrainConfig) -> None:
     device = _init_distributed_device()
     rank, world_size = _get_rank_world_size()
     max_grad_norm = _resolve_max_grad_norm_from_env()
-    lr_warmup_steps = config.lr_warmup_steps
+    lr_warmup_steps = config.lr_warmup_steps if config.use_lr_warmup else 0
     lr_min_scale = _resolve_lr_min_scale_from_env()
 
     if _is_primary_rank():
@@ -1278,12 +1300,14 @@ def train(config: TrainConfig) -> None:
         _text_info(
             "optimization_stability=1 "
             f"max_grad_norm={max_grad_norm:.4f} "
+            f"use_lr_warmup={int(config.use_lr_warmup)} "
             f"lr_warmup_steps={lr_warmup_steps} "
-            f"grad_accum_steps={config.grad_accum_steps} "
+            f"grad_accum_steps={config.min_grad_accum_steps} "
             f"lr_min_scale={lr_min_scale:.4f}"
         )
         _text_info(
             "optimizer_config=1 "
+            f"use_adam_state={int(config.use_adam_state)} "
             f"adam_beta1={config.adam_beta1:.4f} "
             f"adam_beta2={config.adam_beta2:.4f} "
         )
@@ -1342,14 +1366,26 @@ def train(config: TrainConfig) -> None:
     # raw_model holds the unwrapped module for reference-model creation
     # (set above per training plan: model for LoRA/DDP, optional deepcopy for FSDP)
 
-    optimizer = torch.optim.AdamW(
-        [parameter for parameter in model.parameters() if parameter.requires_grad],
-        lr=config.learning_rate,
-        weight_decay=config.weight_decay,
-        betas=(config.adam_beta1, config.adam_beta2),
-    )
+    trainable_parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
+    if config.use_adam_state:
+        optimizer = torch.optim.AdamW(
+            trainable_parameters,
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+            betas=(config.adam_beta1, config.adam_beta2),
+        )
+        optimizer_name = "AdamW"
+    else:
+        optimizer = torch.optim.SGD(
+            trainable_parameters,
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+        )
+        optimizer_name = "SGD"
     if _is_primary_rank():
-        _memtrace("post_optimizer_init optimizer=AdamW")
+        _memtrace(f"post_optimizer_init optimizer={optimizer_name}")
 
     if distributed_strategy == DIST_STRATEGY_DDP and world_size > 1:
         model = torch.nn.parallel.DistributedDataParallel(

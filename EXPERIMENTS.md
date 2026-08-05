@@ -7,7 +7,7 @@ This file tracks completed or materially informative training experiments for th
 - The most reliable positive signal so far is Qwen2.5 no-tool GRPO with single-GPU LoRA.
 - TreeMAPPO no-tool has a positive signal at LoRA rank 16 and at rank 32 with a low learning rate, but collapses at rank 32 with the original high learning rate.
 - Mistral no-tool LoRA currently collapses after the first validated epoch and is not a main-paper path.
-- Qwen34 completed training, but trained-epoch validation is blocked by vLLM `/update_model` reliability, so it is not yet a finished accuracy result.
+- Qwen34 now has completed held-out tool tests for GRPO and TreeMAPPO; GRPO is ahead on the current six-dataset serious test (`0.6609` vs `0.6478`).
 
 ## Successful Experiments
 
@@ -79,6 +79,56 @@ This file tracks completed or materially informative training experiments for th
   - final gain: `+0.0170`
 - Conclusion: lowering the learning rate prevents the rank-32 TreeMAPPO collapse and gives a modest positive signal.
 
+## Held-Out Serious Tests
+
+These results use the broader six-dataset held-out test mixture and should be interpreted more conservatively than validation curves.
+
+### Qwen34 Tool GRPO, LoRA Rank 32, Low Learning Rate
+
+- Config: `config/testing/qwen34_tool_grpo_r32_lr1e6_best_serious_test.json`
+- Tested checkpoint: best validation checkpoint, epoch 9.
+- Training mode: tool GRPO, single-GPU LoRA, rank 32, learning rate `1e-6`.
+- Held-out accuracy by dataset:
+  - AMC2023: `0.5676`
+  - CollegeMath: `0.7823`
+  - DeepMath: `0.6540`
+  - GaoKao Math 2024: `0.6087`
+  - MATH: `0.7608`
+  - NuminaMath: `0.5918`
+- Mean held-out accuracy: `0.6609`.
+- Conclusion: current strongest completed Qwen34 tool held-out result.
+
+### Qwen34 Tool TreeMAPPO, LoRA Rank 32, Low Learning Rate
+
+- Config: `config/testing/qwen34_tool_tree_r32_lr1e6_best_serious_test.json`
+- Tested checkpoint: best validation checkpoint, epoch 1.
+- Training mode: tool TreeMAPPO, single-GPU LoRA, rank 32, learning rate `1e-6`.
+- Held-out accuracy by dataset:
+  - AMC2023: `0.5897`
+  - CollegeMath: `0.7843`
+  - DeepMath: `0.6306`
+  - GaoKao Math 2024: `0.5217`
+  - MATH: `0.7497`
+  - NuminaMath: `0.6105`
+- Mean held-out accuracy: `0.6478`.
+- Conclusion: behind matched Qwen34 tool GRPO on aggregate, despite better AMC2023, CollegeMath, and NuminaMath.
+
+### Qwen2.5 No-Tool Positive-Advantage-Only TreeMAPPO
+
+- Config: `config/testing/qwen25_tree_notool_positive_only_best_serious_test.json`
+- Tested checkpoint: epoch 5.
+- Training mode: no-tool TreeMAPPO, positive advantages only, single-GPU LoRA, rank 32, learning rate `1e-6`.
+- Mean held-out accuracy: `0.6800`.
+- Conclusion: stable but not clearly better than the standard no-tool TreeMAPPO validation story; keep as an ablation rather than the primary result.
+
+### Qwen2.5 Tool Positive-Advantage-Only TreeMAPPO
+
+- Config: `config/testing/qwen25_tree_tool_positive_only_best_serious_test.json`
+- Tested checkpoint: epoch 2.
+- Training mode: tool TreeMAPPO, positive advantages only, single-GPU LoRA, rank 32, learning rate `1e-6`.
+- Mean held-out accuracy: `0.6117`.
+- Conclusion: weak result; positive-only filtering does not currently rescue the tool setting.
+
 ## Failed Accuracy Experiments
 
 ### Qwen2.5 No-Tool TreeMAPPO, LoRA Rank 32, High Learning Rate
@@ -133,7 +183,15 @@ This file tracks completed or materially informative training experiments for th
 
 ## Practical Conclusions
 
-- For immediate paper evidence, focus on Qwen2.5 no-tool GRPO rank 32 and TreeMAPPO rank 16 / rank 32 low-learning-rate comparisons.
+- For immediate paper evidence, focus on Qwen2.5 no-tool GRPO vs TreeMAPPO rank-32 low-learning-rate comparisons; this remains the cleanest positive story.
+- Treat Qwen34 tool as a mixed result: both methods trained and tested, but GRPO currently beats TreeMAPPO on aggregate held-out accuracy.
+- Treat positive-advantage-only TreeMAPPO as an ablation, not a primary method improvement.
 - Treat large learning rates such as `5e-5` as unsafe for higher-rank TreeMAPPO LoRA unless validated otherwise.
 - Do not use Mistral as the primary evidence path until the post-epoch-1 collapse is diagnosed.
-- Fixing vLLM validation restart reliability is necessary before Qwen34 or rank-48 results can be considered complete.
+
+## Local Artifact Cleanup — 2026-08-04
+
+- Removed local `results/` after confirming it only contained derived experiment artifacts.
+- Largest local artifact was `results/medium_files/qwen25/tree_notool_generation/training_trajectories/trajectories.msgpack` at about 53 MB.
+- Essential experiment information is retained in this document: each tracked experiment's config path, model/setup, LoRA rank, learning rate, validation/test outcome, and current interpretation.
+- Cluster artifacts are not removed by this local cleanup step.

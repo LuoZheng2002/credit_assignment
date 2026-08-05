@@ -46,7 +46,10 @@ pub struct TrainingHyperparameters {
     pub advantage_clip: f32,
     pub learning_rate: f32,
     pub weight_decay: f32,
-    pub grad_accum_steps: usize,
+    pub use_adam_state: bool,
+    pub use_lr_warmup: bool,
+    #[serde(alias = "grad_accum_steps")]
+    pub min_grad_accum_steps: usize,
     pub log_time_interval: f32,
     pub seed: u64,
     pub adam_beta1: f32,

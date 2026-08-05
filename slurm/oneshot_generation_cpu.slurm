@@ -4,9 +4,10 @@
 #SBATCH --output=slurm/logs/generation_%j.out
 #SBATCH --error=slurm/logs/generation_%j.err
 #SBATCH --partition=cpu
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=16
 #SBATCH --ntasks=1
-#SBATCH --mem=32G
+#SBATCH --mem=16G
+#SBATCH --time=00:30:00
 #SBATCH --account=bfsl-delta-cpu
 
 set -euo pipefail
@@ -20,6 +21,7 @@ fi
 CONFIG_PATH="$1"
 NOTIFY_START_MSG="${2:-}"
 NOTIFY_END_MSG="${3:-}"
+EXTRA_ARGS=("${@:4}")
 
 if [[ -n "$NOTIFY_END_MSG" ]]; then
     trap 'python research-utility/scripts/pushover_notify.py "$NOTIFY_END_MSG"' EXIT
@@ -34,7 +36,7 @@ if [[ -n "$NOTIFY_START_MSG" ]]; then
     python research-utility/scripts/pushover_notify.py "$NOTIFY_START_MSG"
 fi
 
-echo "Running CPU-only oneshot generation with config: $CONFIG_PATH"
+echo "Running CPU-only oneshot generation with config: $CONFIG_PATH extra_args=${EXTRA_ARGS[*]:-}"
 echo "Repo root: $REPO_ROOT"
 
-cargo run --release --bin bin_oneshot_generation -- --config-path "$CONFIG_PATH"
+scripts/hpc/cargo_run_with_rebuild.sh bin_oneshot_generation --config-path "$CONFIG_PATH" "${EXTRA_ARGS[@]}"

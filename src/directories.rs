@@ -158,12 +158,70 @@ pub fn action_logs_oneshot_path<S: DatasetSplit>(
     }
 }
 
+pub fn tree_artifacts_oneshot_path<S: DatasetSplit>(
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+) -> Result<String, String> {
+    match S::dataset_file_postfix().as_str() {
+        "train" => Ok(format!(
+            "{mount_dir}/medium_files/{model_cli_name}/{config_nickname}/trees_training_oneshot"
+        )),
+        "val" => Ok(format!(
+            "{mount_dir}/medium_files/{model_cli_name}/{config_nickname}/epoch_{epoch}/trees_validation_oneshot"
+        )),
+        "test" => Ok(format!(
+            "{mount_dir}/medium_files/{model_cli_name}/{config_nickname}/epoch_{epoch}/trees_testing_oneshot"
+        )),
+        other => Err(format!("Unsupported dataset split postfix: {}", other)),
+    }
+}
+
+pub fn tree_artifacts_oneshot_chunk_path(tree_artifacts_dir: &str, chunk_index: usize) -> String {
+    format!("{tree_artifacts_dir}/chunk_{chunk_index}.msgpack")
+}
+
+pub fn tree_artifacts_oneshot_chunk_done_path(
+    tree_artifacts_dir: &str,
+    chunk_index: usize,
+) -> String {
+    format!("{tree_artifacts_dir}/chunk_{chunk_index}_done")
+}
+
+pub fn tree_judgments_oneshot_path<S: DatasetSplit>(
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+) -> Result<String, String> {
+    match S::dataset_file_postfix().as_str() {
+        "train" => Ok(format!(
+            "{mount_dir}/medium_files/{model_cli_name}/{config_nickname}/tree_judgments_training_oneshot.jsonl"
+        )),
+        "val" => Ok(format!(
+            "{mount_dir}/medium_files/{model_cli_name}/{config_nickname}/epoch_{epoch}/tree_judgments_validation_oneshot.jsonl"
+        )),
+        "test" => Ok(format!(
+            "{mount_dir}/medium_files/{model_cli_name}/{config_nickname}/epoch_{epoch}/tree_judgments_testing_oneshot.jsonl"
+        )),
+        other => Err(format!("Unsupported dataset split postfix: {}", other)),
+    }
+}
+
 pub fn training_trajectories_oneshot_path(
     mount_dir: &str,
     model_cli_name: &str,
     config_nickname: &str,
 ) -> String {
     format!("{mount_dir}/medium_files/{model_cli_name}/{config_nickname}/training_trajectories")
+}
+
+pub fn training_trajectories_oneshot_chunk_path(
+    training_trajectories_dir: &str,
+    chunk_index: usize,
+) -> String {
+    format!("{training_trajectories_dir}/chunk_{chunk_index}.msgpack")
 }
 
 pub fn training_trajectories_stats_oneshot_path(

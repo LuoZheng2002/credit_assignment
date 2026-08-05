@@ -5,8 +5,8 @@
 #SBATCH --gres=gpu:nvidia_a100:1
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks=1
-#SBATCH --mem=32G
+#SBATCH --mem=16G
 #SBATCH --account=bfsl-delta-gpu
-#SBATCH --time=03:00:00
+#SBATCH --time=00:30:00
 
 sleep infinity

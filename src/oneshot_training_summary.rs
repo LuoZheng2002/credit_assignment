@@ -45,6 +45,7 @@ pub fn write_training_summary(
     validation_accuracies: &BTreeMap<usize, (f32, f32, f32, f32)>,
     training_throughputs: &BTreeMap<usize, f32>,
     training_samples_trained: &BTreeMap<usize, usize>,
+    training_iterations_trained_cumulative: &BTreeMap<usize, f32>,
     training_longest_non_oom_trajectory_lengths: &BTreeMap<usize, usize>,
 ) {
     std::fs::create_dir_all(summary_parent_dir).unwrap_or_else(|err| {
@@ -74,6 +75,10 @@ pub fn write_training_summary(
     for (epoch, samples_trained) in training_samples_trained {
         samples_json.insert(format!("epoch_{}", epoch), *samples_trained);
     }
+    let mut iterations_json: BTreeMap<String, f32> = BTreeMap::new();
+    for (epoch, iterations_trained) in training_iterations_trained_cumulative {
+        iterations_json.insert(format!("epoch_{}", epoch), *iterations_trained);
+    }
     let mut lengths_json: BTreeMap<String, usize> = BTreeMap::new();
     for (epoch, longest_length) in training_longest_non_oom_trajectory_lengths {
         lengths_json.insert(format!("epoch_{}", epoch), *longest_length);
@@ -98,6 +103,9 @@ pub fn write_training_summary(
                     .copied()
             })
             .unwrap_or(0);
+        let iterations_trained_cumulative = training_epoch
+            .and_then(|epoch| training_iterations_trained_cumulative.get(&epoch).copied())
+            .unwrap_or(0.0);
         serde_json::json!({
             "epoch": latest_epoch,
             "validation_accuracy": {
@@ -107,6 +115,7 @@ pub fn write_training_summary(
             },
             "training_throughput": throughput,
             "training_samples_trained": samples_trained,
+            "training_iterations_trained_cumulative": iterations_trained_cumulative,
             "longest_non_oom_trajectory_length": longest_non_oom_trajectory_length,
         })
     };
@@ -138,6 +147,7 @@ pub fn write_training_summary(
         "validation_accuracies": accuracies_json,
         "training_throughputs": throughputs_json,
         "training_samples_trained": samples_json,
+        "training_iterations_trained_cumulative": iterations_json,
         "training_longest_non_oom_trajectory_lengths": lengths_json,
     });
     std::fs::write(
@@ -159,9 +169,15 @@ pub fn write_training_summary(
 
 #[derive(Deserialize)]
 struct PythonTrainingSummary {
+    #[serde(default)]
+    samples_available: usize,
     samples_trained: usize,
     #[serde(default)]
     samples_trained_this_run: usize,
+    #[serde(default)]
+    iterations: f32,
+    #[serde(default)]
+    training_iterations_trained_cumulative: f32,
     total_training_time_sec: f32,
     #[serde(default)]
     longest_non_oom_trajectory_length: usize,
@@ -170,6 +186,7 @@ struct PythonTrainingSummary {
 pub struct OneshotTrainingEpochStats {
     pub throughputs: BTreeMap<usize, f32>,
     pub samples_trained: BTreeMap<usize, usize>,
+    pub iterations_trained_cumulative: BTreeMap<usize, f32>,
     pub longest_non_oom_trajectory_lengths: BTreeMap<usize, usize>,
 }
 
@@ -179,15 +196,17 @@ pub fn read_oneshot_training_epoch_stats(
 ) -> OneshotTrainingEpochStats {
     let mut throughputs: BTreeMap<usize, f32> = BTreeMap::new();
     let mut samples_trained_by_epoch: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut iterations_trained_cumulative_by_epoch: BTreeMap<usize, f32> = BTreeMap::new();
     let mut longest_lengths_by_epoch: BTreeMap<usize, usize> = BTreeMap::new();
     let mut previous_samples_trained = 0usize;
+    let mut cumulative_iterations_trained = 0.0f32;
     for epoch in 0..num_oneshot_epochs {
         let summary_path = Path::new(oneshot_model_output_root)
             .join(format!("oneshot_epoch_{}/training_summary.json", epoch + 1));
         let summary = fs::read_to_string(&summary_path)
             .ok()
             .and_then(|content| serde_json::from_str::<PythonTrainingSummary>(&content).ok());
-        let (samples_this_run, throughput, longest_non_oom_trajectory_length) =
+        let (samples_this_run, throughput, iterations_this_run, longest_non_oom_trajectory_length) =
             if let Some(summary) = summary {
                 let samples_this_run = if summary.samples_trained_this_run > 0 {
                     summary.samples_trained_this_run
@@ -202,21 +221,32 @@ pub fn read_oneshot_training_epoch_stats(
                 } else {
                     samples_this_run as f32 / summary.total_training_time_sec
                 };
+                let iterations_this_run = if summary.samples_available > 0 {
+                    samples_this_run as f32 / summary.samples_available as f32
+                } else if summary.training_iterations_trained_cumulative > 0.0 {
+                    summary.training_iterations_trained_cumulative
+                } else {
+                    summary.iterations
+                };
                 (
                     samples_this_run,
                     throughput,
+                    iterations_this_run,
                     summary.longest_non_oom_trajectory_length,
                 )
             } else {
-                (0usize, 0.0f32, 0usize)
+                (0usize, 0.0f32, 0.0f32, 0usize)
             };
+        cumulative_iterations_trained += iterations_this_run;
         throughputs.insert(epoch, throughput);
         samples_trained_by_epoch.insert(epoch, samples_this_run);
+        iterations_trained_cumulative_by_epoch.insert(epoch, cumulative_iterations_trained);
         longest_lengths_by_epoch.insert(epoch, longest_non_oom_trajectory_length);
     }
     OneshotTrainingEpochStats {
         throughputs,
         samples_trained: samples_trained_by_epoch,
+        iterations_trained_cumulative: iterations_trained_cumulative_by_epoch,
         longest_non_oom_trajectory_lengths: longest_lengths_by_epoch,
     }
 }

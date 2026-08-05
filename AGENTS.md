@@ -76,6 +76,11 @@ ssh delta 'cd /u/zluo8/credit_assignment && sacct -j <jobid> -n -o State,Elapsed
 ## Delta job submission reporting
 When submitting SLURM jobs on Delta:
 
+- Before any serious pipeline job submission, run the same Rust binary or
+  pipeline launcher on the Delta login node with `--login-smoke`. Submit the
+  real SLURM job only if this smoke check passes. This catches trivial failures
+  such as duplicated CLI arguments, invalid config paths, and TOML/JSON schema
+  mismatches before spending queue time.
 - Prefer the `scripts/hpc/*` launchers so resource requests such as GPU count
   and time limit are passed explicitly to `sbatch`.
 - Do not rely on hardcoded `#SBATCH --time` fallbacks in reusable oneshot job

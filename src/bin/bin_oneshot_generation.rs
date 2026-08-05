@@ -7,8 +7,9 @@ use serde::Deserialize;
 use credit_assignment::{
     check_python_env::check_sympy_availability,
     directories::{
-        action_logs_oneshot_path, text_logger_summary_path, text_logger_verbose_path,
-        training_trajectories_oneshot_path, training_trajectories_stats_oneshot_path,
+        text_logger_summary_path, text_logger_verbose_path, training_trajectories_oneshot_path,
+        training_trajectories_stats_oneshot_path, tree_artifacts_oneshot_path,
+        tree_judgments_oneshot_path,
     },
     hybrid_dataset::Training,
     json_toml_utils::read_json,
@@ -18,7 +19,7 @@ use credit_assignment::{
     },
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     rollout_config::{RolloutConfig, TrainingAdvantagePolicy},
-    training_set::{TrainingSetSortMode, generate_training_trajectories_with_path},
+    training_set::{TrainingSetSortMode, tree_judgments_to_training_trajectories},
     utils::configure_mount_dir,
 };
 use research_utility::progress_text_logger::ProgressTextLogger;
@@ -27,6 +28,10 @@ use research_utility::progress_text_logger::ProgressTextLogger;
 struct CliArgs {
     #[arg(short = 'c', long)]
     config_path: String,
+    #[arg(long)]
+    positive_advantage_only: Option<bool>,
+    #[arg(long, default_value_t = false)]
+    login_smoke: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -48,12 +53,15 @@ struct Args {
     #[serde(default)]
     total_time_limit_hours: f32,
     training_set_sort_mode: TrainingSetSortMode,
+    #[serde(default)]
+    num_questions_per_chunk: Option<usize>,
 }
 
 macro_rules! generate_trajectories {
     (
         $model_name:expr,
-        $action_log_store_path:expr,
+        $tree_artifacts_msgpack_path:expr,
+        $tree_judgment_jsonl_path:expr,
         $trajectories_dir:expr,
         $trajectories_msgpack_path:expr,
         $stats_path:expr,
@@ -63,24 +71,57 @@ macro_rules! generate_trajectories {
         $training_advantage_policy:expr,
         $positive_advantage_only:expr,
         $use_tool:expr,
-        $training_set_sort_mode:expr;
+        $training_set_sort_mode:expr,
+        $num_questions_per_chunk:expr;
         $( $model_enum:path, $model_ty:ty ),+ $(,)?
     ) => {
         match $model_name {
             $(
                 $model_enum => {
-                    generate_training_trajectories_with_path::<$model_ty>(
-                        $action_log_store_path,
-                        $trajectories_dir,
-                        $trajectories_msgpack_path,
-                        $stats_path,
+                    std::fs::create_dir_all($trajectories_dir).unwrap();
+                    if std::path::Path::new($trajectories_msgpack_path).exists() {
+                        std::fs::remove_file($trajectories_msgpack_path).unwrap();
+                    }
+                    if let Ok(entries) = std::fs::read_dir($trajectories_dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            let is_stale_chunk = path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .is_some_and(|name| {
+                                    name.starts_with("chunk_") && name.ends_with(".msgpack")
+                                });
+                            if is_stale_chunk {
+                                std::fs::remove_file(&path).unwrap_or_else(|err| {
+                                    panic!(
+                                        "failed to remove stale trajectory chunk {}: {}",
+                                        path.display(),
+                                        err
+                                    )
+                                });
+                            }
+                        }
+                    }
+                    credit_assignment::json_toml_utils::write_json(
                         $config_bundle_path,
+                        &credit_assignment::training_set::TrainingTrajectoryConfigBundle {
+                            rollout_config: $rollout_config.clone(),
+                            posterior_calculation_config: $posterior_calculation_config.clone(),
+                        },
+                    )
+                    .unwrap();
+                    tree_judgments_to_training_trajectories::<$model_ty>(
+                        $tree_artifacts_msgpack_path,
+                        $tree_judgment_jsonl_path,
+                        $trajectories_msgpack_path.to_string(),
+                        $stats_path.to_string(),
                         $rollout_config,
                         $posterior_calculation_config,
                         $training_advantage_policy,
                         $positive_advantage_only,
                         $use_tool,
                         $training_set_sort_mode,
+                        $num_questions_per_chunk,
                     )
                     .await
                 }
@@ -101,11 +142,18 @@ async fn main() {
         std::process::abort();
     }));
     dotenvy::dotenv().ok();
-    let CliArgs { config_path } = CliArgs::parse();
+    let CliArgs {
+        config_path,
+        positive_advantage_only,
+        login_smoke,
+    } = CliArgs::parse();
     let config_contents = std::fs::read_to_string(&config_path)
         .unwrap_or_else(|err| panic!("failed to read config file '{}': {}", config_path, err));
-    let args: Args = toml::from_str(&config_contents)
+    let mut args: Args = toml::from_str(&config_contents)
         .unwrap_or_else(|err| panic!("failed to parse config file '{}': {}", config_path, err));
+    if let Some(positive_advantage_only) = positive_advantage_only {
+        args.positive_advantage_only = positive_advantage_only;
+    }
     let process_title = format!(
         "oneshot_generation_{}_{}",
         args.model_cli_name, args.config_nickname_generation
@@ -113,25 +161,6 @@ async fn main() {
     set_title(&process_title);
     check_sympy_availability().unwrap();
     assert!(args.num_gpus > 0, "--num-gpus must be positive");
-    configure_mount_dir(&args.rollout_mount_dir)
-        .unwrap_or_else(|err| panic!("failed to configure rollout mount dir: {}", err));
-    configure_mount_dir(&args.generation_mount_dir)
-        .unwrap_or_else(|err| panic!("failed to configure generation mount dir: {}", err));
-
-    let text_log_summary_path = text_logger_summary_path(
-        &args.generation_mount_dir,
-        &args.model_cli_name,
-        &args.config_nickname_generation,
-    );
-    let text_log_verbose_path = text_logger_verbose_path(
-        &args.generation_mount_dir,
-        &args.model_cli_name,
-        &args.config_nickname_generation,
-    );
-    ProgressTextLogger::initialize(text_log_summary_path, text_log_verbose_path)
-        .await
-        .unwrap();
-
     let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
         credit_assignment::directories::POSTERIOR_HYPERPARAMETERS_PATH,
     )
@@ -154,17 +183,54 @@ async fn main() {
         &args.config_nickname_generation,
     );
     let config_bundle_path = format!("{}/config_bundle.json", trajectories_dir);
-    let action_log_store_path = action_logs_oneshot_path::<Training>(
+    let tree_artifacts_msgpack_path = tree_artifacts_oneshot_path::<Training>(
         &args.rollout_mount_dir,
         &args.model_cli_name,
         &args.config_nickname_rollout,
         args.epoch,
     )
-    .unwrap_or_else(|err| panic!("failed to resolve action logs path: {}", err));
+    .unwrap_or_else(|err| panic!("failed to resolve tree artifacts path: {}", err));
+    let tree_judgment_jsonl_path = tree_judgments_oneshot_path::<Training>(
+        &args.rollout_mount_dir,
+        &args.model_cli_name,
+        &args.config_nickname_rollout,
+        args.epoch,
+    )
+    .unwrap_or_else(|err| panic!("failed to resolve tree judgments path: {}", err));
+    if login_smoke {
+        println!(
+            "login-smoke passed for bin_oneshot_generation: model={}, rollout_config={}, generation_config={}, tree_artifacts={}, tree_judgments={}",
+            args.model_cli_name,
+            args.config_nickname_rollout,
+            args.config_nickname_generation,
+            tree_artifacts_msgpack_path,
+            tree_judgment_jsonl_path
+        );
+        return;
+    }
+    configure_mount_dir(&args.rollout_mount_dir)
+        .unwrap_or_else(|err| panic!("failed to configure rollout mount dir: {}", err));
+    configure_mount_dir(&args.generation_mount_dir)
+        .unwrap_or_else(|err| panic!("failed to configure generation mount dir: {}", err));
+
+    let text_log_summary_path = text_logger_summary_path(
+        &args.generation_mount_dir,
+        &args.model_cli_name,
+        &args.config_nickname_generation,
+    );
+    let text_log_verbose_path = text_logger_verbose_path(
+        &args.generation_mount_dir,
+        &args.model_cli_name,
+        &args.config_nickname_generation,
+    );
+    ProgressTextLogger::initialize(text_log_summary_path, text_log_verbose_path)
+        .await
+        .unwrap();
 
     generate_trajectories!(
         model_name,
-        &action_log_store_path,
+        &tree_artifacts_msgpack_path,
+        &tree_judgment_jsonl_path,
         &trajectories_dir,
         &trajectories_msgpack_path,
         &stats_path,
@@ -174,7 +240,8 @@ async fn main() {
         args.training_advantage_policy,
         args.positive_advantage_only,
         args.use_tool,
-        args.training_set_sort_mode;
+        args.training_set_sort_mode,
+        args.num_questions_per_chunk;
         LlmModelName::Qwen25_7b, Qwen25_7B,
         LlmModelName::Qwen3_06b, Qwen3_06B,
         LlmModelName::Qwen3_4b, Qwen3_4B,

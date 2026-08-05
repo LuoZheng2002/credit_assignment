@@ -1,0 +1,12 @@
+model_cli_name = "qwen25"
+config_nickname_rollout = "grpo_notool_rep1_rollout"
+rollout_config_path = "config/rollout_config_training_grpo.json"
+use_tool = false
+dataset_split = "Training"
+epoch = 0
+total_epochs = 1
+rollout_secs = 7200
+mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
+num_gpus = 1
+inference_backend = "vllm"
+total_time_limit_hours = 2.5

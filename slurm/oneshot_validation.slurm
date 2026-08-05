@@ -19,6 +19,7 @@ fi
 CONFIG_PATH="$1"
 NOTIFY_START_MSG="${2:-}"
 NOTIFY_END_MSG="${3:-}"
+EXTRA_ARGS=("${@:4}")
 
 if [[ -n "$NOTIFY_END_MSG" ]]; then
     trap 'python research-utility/scripts/pushover_notify.py "$NOTIFY_END_MSG"' EXIT
@@ -31,7 +32,7 @@ export PATH="$REPO_ROOT/.venv/bin:$PATH"
 
 export SGLANG_MEM_FRACTION_STATIC="${SGLANG_MEM_FRACTION_STATIC:-0.70}"
 export SGLANG_MAX_RUNNING_REQUESTS="${SGLANG_MAX_RUNNING_REQUESTS:-32}"
-export VALIDATION_MAX_CONCURRENT_ROLLOUT="${VALIDATION_MAX_CONCURRENT_ROLLOUT:-32}"
+export VALIDATION_MAX_CONCURRENT_ROLLOUT=200
 export VLLM_VENV="${VLLM_VENV:-/work/nvme/bhph/zluo8/credit_assignment/venvs/vllm-0.25.1-cu129}"
 export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-4096}"
 export VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-32}"
@@ -50,4 +51,4 @@ if [[ -n "$NOTIFY_START_MSG" ]]; then
     python research-utility/scripts/pushover_notify.py "$NOTIFY_START_MSG"
 fi
 
-cargo run --release --bin bin_oneshot_validation -- --config-path "$CONFIG_PATH"
+scripts/hpc/cargo_run_with_rebuild.sh bin_oneshot_validation --config-path "$CONFIG_PATH" "${EXTRA_ARGS[@]}"

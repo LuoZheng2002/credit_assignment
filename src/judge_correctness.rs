@@ -21,8 +21,13 @@ const JUDGE_TOTAL_ATTEMPTS: usize = 10;
 /// Returns the trimmed inner text, or `None` if no boxed content is found.
 pub fn extract_boxed_verdict(response: &str) -> Option<String> {
     let marker = "\\boxed{";
-    let start = response.rfind(marker)?;
-    let content_start = start + marker.len();
+    let fallback_marker = "boxed{";
+    let (start, marker_len) = if let Some(start) = response.rfind(marker) {
+        (start, marker.len())
+    } else {
+        (response.rfind(fallback_marker)?, fallback_marker.len())
+    };
+    let content_start = start + marker_len;
     let remaining = &response[content_start..];
     let mut depth: u32 = 1;
     for (i, c) in remaining.char_indices() {
@@ -199,6 +204,85 @@ pub async fn fetch_judge_evaluation_with_url(
     }
 
     // OpenRouter responds with "reasoning", DeepSeek official responds with "reasoning_content".
+    let reasoning_content = response_json["choices"][0]["message"]
+        .as_object()
+        .and_then(|msg| {
+            msg.get("reasoning_content")
+                .or_else(|| msg.get("reasoning"))
+                .and_then(|v| v.as_str())
+        })
+        .and_then(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+    let content = &response_json["choices"][0]["message"]["content"];
+    if let Some(evaluation) = content.as_str() {
+        return Ok((evaluation.to_string(), reasoning_content));
+    }
+    if let Some(parts) = content.as_array() {
+        let merged = parts
+            .iter()
+            .filter_map(|entry| entry["text"].as_str())
+            .collect::<String>();
+        if !merged.is_empty() {
+            return Ok((merged, reasoning_content));
+        }
+    }
+
+    Err(format!("Judge response is invalid: {response_json:?}"))
+}
+
+pub async fn fetch_judge_evaluation_for_model(
+    client: &Client,
+    model_name: &str,
+    prompt: &str,
+    temperature: f64,
+    thinking_enabled: bool,
+) -> Result<(String, Option<String>), String> {
+    let api_key = std::env::var("OPENROUTER_API_KEY")
+        .map_err(|_| "OPENROUTER_API_KEY environment variable not set".to_string())?;
+    let mut body_map = serde_json::json!({
+        "model": model_name,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_completion_tokens": 4096,
+        "temperature": temperature,
+        "reasoning": {
+            "effort": if thinking_enabled { "high" } else { "none" }
+        }
+    });
+    if !thinking_enabled {
+        body_map["reasoning"] = serde_json::json!({"effort": "none"});
+    }
+
+    let response = client
+        .post(OPENROUTER_CHAT_COMPLETIONS_URL)
+        .json(&body_map)
+        .bearer_auth(api_key)
+        .header("HTTP-Referer", "https://github.com/luoz/credit_assignment")
+        .header("X-Title", "credit_assignment")
+        .send()
+        .await
+        .map_err(|err| format!("Failed to send judge request: {err}"))?;
+    let response_bytes = response
+        .bytes()
+        .await
+        .map_err(|err| format!("Failed to read judge response body: {err}"))?;
+    let response_json = serde_json::from_slice::<Value>(&response_bytes).map_err(|_| {
+        format!(
+            "Failed to parse judge response as JSON. Response text: {:?}",
+            String::from_utf8_lossy(&response_bytes)
+        )
+    })?;
+
+    if let Some(error_message) = response_json["error"]["message"].as_str() {
+        return Err(error_message.to_string());
+    }
+
     let reasoning_content = response_json["choices"][0]["message"]
         .as_object()
         .and_then(|msg| {

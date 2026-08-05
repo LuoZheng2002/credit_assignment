@@ -573,14 +573,20 @@ impl Orchestrator {
                 .map(|handle| handle.inference_endpoint.clone())
                 .expect(
                     "Orchestrator did not launch the inference server before validation rollout",
-                ),
+            ),
             rollout_secs: self.validation_rollout_secs,
+            finish_all_questions: true,
             total_epochs: self.num_total_epochs,
             action_log_store_override_path: None,
             use_tool: self.use_tool,
             fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
             max_concurrent_rollout: get_max_concurrent_rollout(self.num_gpus),
             branching_options: BranchingRuntimeOptions::default(),
+            tree_artifact_output_path: None,
+            tree_artifact_chunk_question_count: None,
+            question_flat_id_start: None,
+            question_flat_id_end: None,
+            question_flat_ids: None,
         };
         let rollout_summary =
             rollout_all::<M, Validation>(&self.mount_dir, validation_rollout_program_config).await;
@@ -624,12 +630,18 @@ impl Orchestrator {
             client: self.client.clone(),
             inference_endpoint,
             rollout_secs: self.training_rollout_secs,
+            finish_all_questions: false,
             total_epochs: self.num_total_epochs,
             action_log_store_override_path: None,
             use_tool: self.use_tool,
             fixed_temperature: NotNan::new(constants::TRAINING_TEMPERATURE).unwrap(),
             max_concurrent_rollout: get_max_concurrent_rollout(self.num_gpus),
             branching_options: BranchingRuntimeOptions::default(),
+            tree_artifact_output_path: None,
+            tree_artifact_chunk_question_count: None,
+            question_flat_id_start: None,
+            question_flat_id_end: None,
+            question_flat_ids: None,
         };
         let rollout_summary =
             rollout_all::<M, Training>(&self.mount_dir, training_set_rollout_program_config).await;

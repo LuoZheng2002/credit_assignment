@@ -1,0 +1,11 @@
+[
+  {
+    "model_cli_name": "qwen34",
+    "config_nickname": "tree_tool_lora_r32_lr1e6_10ep_training",
+    "testing_rollout_config_path": "config/rollout_config_testing.json",
+    "epoch": 1,
+    "total_epochs": 10,
+    "mount_dir": "/work/hdd/bhph/zluo8/credit_assignment/results",
+    "use_tool": true
+  }
+]

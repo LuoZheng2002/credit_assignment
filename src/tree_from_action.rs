@@ -2,7 +2,8 @@ use crate::{
     hybrid_dataset::DatasetSplit,
     llm_model::{LlmModelMarker, TokenArrayWithLogprob},
     rollout_config::BranchingPolicy,
-    tree::{DirectTree, Segment, SegmentContent, SegmentId, TreeCorrectness},
+    trajectory::FinalAnswer,
+    tree::{DirectTree, Segment, SegmentContent, SegmentId},
     tree_action::{DirectTreeAction, TokenPositionInTree},
     tree_spontaneous_branching::TokenPositionInSegment,
     tree_status::{
@@ -258,61 +259,93 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                 finalized_content_array,
                 correctness_judgment,
             } => {
-                let new_segment_id = SegmentId(self.next_segment_id);
-                self.next_segment_id += 1;
-                let new_segment = Segment {
-                    segment_id: new_segment_id,
-                    content: finalized_content_array.clone(),
-                    child_ids: vec![],
-                    parent_id: Some(*parent_segment_id),
-                };
-                self.segments.insert(new_segment_id, new_segment);
-                let Some(parent_segment) = self.segments.get_mut(&parent_segment_id) else {
-                    panic!("Parent segment must exist");
-                };
-                parent_segment.child_ids.push(new_segment_id);
-                assert!(!self.leaf_segment_judgments.contains_key(&new_segment_id));
-                self.leaf_segment_judgments
-                    .insert(new_segment_id, correctness_judgment.clone());
-                match &self.status {
-                    DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::AttachingToTree {
-                        ..
-                    }) => {
-                        // we are still working on the trunk, so we add the new segment to trunk leaf segments
-                        self.trunk_leaf_segments.insert(new_segment_id);
-                    }
-                    DirectTreeStatus::WorkingOnGuidedBranching(
-                        GuidedBranchingSubStatus::AttachingToTree { .. },
-                    )
-                    | DirectTreeStatus::WorkingOnSpontaneousBranching(
-                        SpontaneousBranchingSubStatus::AttachingToTree { .. },
-                    ) => {
-                        // do nothing
-                    }
-                    _ => unreachable!(),
-                }
-                self.status = self.determine_status_after_segment_attachment();
+                self.attach_segment_to_tree(
+                    *parent_segment_id,
+                    finalized_content_array.clone(),
+                    correctness_judgment.model_answer.clone(),
+                    Some(correctness_judgment.clone()),
+                );
+            }
+            DirectTreeAction::AttachSegmentToTreeUnjudged {
+                parent_segment_id,
+                finalized_content_array,
+                final_answer,
+            } => {
+                self.attach_segment_to_tree(
+                    *parent_segment_id,
+                    finalized_content_array.clone(),
+                    final_answer.clone(),
+                    None,
+                );
             }
         };
     }
+
+    fn attach_segment_to_tree(
+        &mut self,
+        parent_segment_id: SegmentId,
+        finalized_content_array: Vec<SegmentContent<M>>,
+        final_answer: FinalAnswer,
+        correctness_judgment: Option<crate::judge_correctness::CorrectnessJudgment>,
+    ) {
+        let new_segment_id = SegmentId(self.next_segment_id);
+        self.next_segment_id += 1;
+        let new_segment = Segment {
+            segment_id: new_segment_id,
+            content: finalized_content_array,
+            child_ids: vec![],
+            parent_id: Some(parent_segment_id),
+        };
+        self.segments.insert(new_segment_id, new_segment);
+        let Some(parent_segment) = self.segments.get_mut(&parent_segment_id) else {
+            panic!("Parent segment must exist");
+        };
+        parent_segment.child_ids.push(new_segment_id);
+        assert!(!self.leaf_segment_answers.contains_key(&new_segment_id));
+        self.leaf_segment_answers
+            .insert(new_segment_id, final_answer);
+        if let Some(correctness_judgment) = correctness_judgment {
+            assert!(!self.leaf_segment_judgments.contains_key(&new_segment_id));
+            self.leaf_segment_judgments
+                .insert(new_segment_id, correctness_judgment);
+        }
+        match &self.status {
+            DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::AttachingToTree { .. })
+            | DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::JudgingSegment { .. }) => {
+                self.trunk_leaf_segments.insert(new_segment_id);
+            }
+            DirectTreeStatus::WorkingOnGuidedBranching(
+                GuidedBranchingSubStatus::AttachingToTree { .. },
+            )
+            | DirectTreeStatus::WorkingOnGuidedBranching(
+                GuidedBranchingSubStatus::JudgingSegment { .. },
+            )
+            | DirectTreeStatus::WorkingOnSpontaneousBranching(
+                SpontaneousBranchingSubStatus::AttachingToTree { .. },
+            )
+            | DirectTreeStatus::WorkingOnSpontaneousBranching(
+                SpontaneousBranchingSubStatus::JudgingSegment { .. },
+            ) => {}
+            _ => unreachable!(),
+        }
+        self.status = self.determine_status_after_segment_attachment();
+    }
+
     fn determine_status_after_segment_attachment(&self) -> DirectTreeStatus<M> {
         // we can choose to work on trunk, (guided branch or spontaneous branch), or conclude the tree
         let rollout_config = &self.action_log.rollout_config;
-        let leaf_segment_judgments_len = self.leaf_segment_judgments.len();
-        let should_early_stop = S::IS_TRAINING
-            && leaf_segment_judgments_len >= rollout_config.num_early_stopping_leaves
-            && !matches!(self.get_correctness(), TreeCorrectness::Mixed);
-        if should_early_stop {
-            DirectTreeStatus::Complete
-        } else if self.trunk_leaf_segments.len() < rollout_config.num_trunks {
+        let leaf_segment_answers_len = self.leaf_segment_answers.len();
+        if self.trunk_leaf_segments.len() < rollout_config.num_trunks {
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::CollectingSegmentContents {
                 cumulative_content_array: vec![],
             })
-        } else if leaf_segment_judgments_len < rollout_config.num_leaves {
+        } else if leaf_segment_answers_len < rollout_config.num_leaves {
             match rollout_config.branching_policy {
-                BranchingPolicy::TreeMappoGuided => DirectTreeStatus::WorkingOnGuidedBranching(
-                    GuidedBranchingSubStatus::DeterminingBranchingPoint,
-                ),
+                BranchingPolicy::TreeMappoGuided | BranchingPolicy::TreeRlEntropyGuided => {
+                    DirectTreeStatus::WorkingOnGuidedBranching(
+                        GuidedBranchingSubStatus::DeterminingBranchingPoint,
+                    )
+                }
                 BranchingPolicy::TempoSpontaneous => {
                     DirectTreeStatus::WorkingOnSpontaneousBranching(
                         SpontaneousBranchingSubStatus::CollectingSegmentContents {
@@ -417,6 +450,10 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         if let Some(judgment) = self.leaf_segment_judgments.remove(&position.segment_id) {
             self.leaf_segment_judgments
                 .insert(new_second_half_id, judgment);
+        }
+        if let Some(final_answer) = self.leaf_segment_answers.remove(&position.segment_id) {
+            self.leaf_segment_answers
+                .insert(new_second_half_id, final_answer);
         }
         if let true = self.trunk_leaf_segments.remove(&position.segment_id) {
             self.trunk_leaf_segments.insert(new_second_half_id);

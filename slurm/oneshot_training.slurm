@@ -47,4 +47,4 @@ if [[ -n "$NOTIFY_START_MSG" ]]; then
     python research-utility/scripts/pushover_notify.py "$NOTIFY_START_MSG"
 fi
 
-cargo run --release --bin bin_oneshot_training -- --config-path "$CONFIG_PATH"
+scripts/hpc/cargo_run_with_rebuild.sh bin_oneshot_training --config-path "$CONFIG_PATH"

@@ -44,6 +44,11 @@ pub enum DirectTreeAction<M> {
         branch_from_node: bool, // if true, the branching happens at the boundary between segments, and the position points to the segment boundary
     },
     JudgeAnswer(CorrectnessJudgment),
+    AttachSegmentToTreeUnjudged {
+        parent_segment_id: SegmentId,
+        finalized_content_array: Vec<SegmentContent<M>>,
+        final_answer: FinalAnswer,
+    },
     AttachSegmentToTree {
         parent_segment_id: SegmentId,
         finalized_content_array: Vec<SegmentContent<M>>,
@@ -199,6 +204,15 @@ impl<M> Clone for DirectTreeAction<M> {
             DirectTreeAction::JudgeAnswer(judgment) => {
                 DirectTreeAction::JudgeAnswer(judgment.clone())
             }
+            DirectTreeAction::AttachSegmentToTreeUnjudged {
+                parent_segment_id,
+                finalized_content_array,
+                final_answer,
+            } => DirectTreeAction::AttachSegmentToTreeUnjudged {
+                parent_segment_id: *parent_segment_id,
+                finalized_content_array: finalized_content_array.clone(),
+                final_answer: final_answer.clone(),
+            },
         }
     }
 }

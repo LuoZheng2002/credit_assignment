@@ -9,15 +9,19 @@ use serde::Deserialize;
 
 use credit_assignment::{
     check_python_env::check_sympy_availability,
+    chunked_judging::{
+        DEFAULT_CACHE_CHUNK_QUESTION_COUNT, DEFAULT_CACHE_VERSION,
+        DEFAULT_REQUEST_CONCURRENCY_PER_MODEL, judge_requests, read_judging_outputs,
+    },
     constants,
-    constants::get_max_concurrent_rollout,
     directories::{
         action_logs_oneshot_path, base_model_dir, inference_wrapper_log_path,
         oneshot_epochs_parent_dir, oneshot_model_parent_dir, text_logger_summary_path,
-        text_logger_verbose_path, training_summary_oneshot_parent_dir,
+        text_logger_verbose_path, training_summary_oneshot_parent_dir, tree_artifacts_oneshot_path,
+        tree_judgments_oneshot_path,
     },
-    get_accuracy::get_accuracy_at_path,
-    hybrid_dataset::Validation,
+    get_accuracy::get_accuracy_from_tree_judgments_at_path,
+    hybrid_dataset::{DatasetSplit, Validation},
     json_toml_utils::read_json,
     launch_inference_wrapper::{
         self, InferenceBackend, best_effort_shutdown_stale_inference_wrapper,
@@ -28,15 +32,15 @@ use credit_assignment::{
         Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
     oneshot_training_summary::{
-        derive_phase_log_path, ensure_parent_dir_exists, prune_non_best_oneshot_models,
-        read_existing_validation_summary, read_oneshot_training_epoch_stats,
-        write_training_summary,
+        derive_phase_log_path, ensure_parent_dir_exists, read_existing_validation_summary,
+        read_oneshot_training_epoch_stats, write_training_summary,
     },
     oneshot_utils::oneshot_epoch_model_ready,
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     python_training_config::TrainingHyperparameters,
     rollout::{RolloutProgramConfig, rollout_all},
     rollout_config::RolloutConfig,
+    tree_artifact::{TreeJudgment, read_available_tree_artifact_chunks},
     tree_to_action::BranchingRuntimeOptions,
     utils::configure_mount_dir,
 };
@@ -45,18 +49,108 @@ use research_utility::progress_text_logger::{
     ProgressTextLogger, log_info, log_key_value_pair, log_state, log_warning,
 };
 
-fn validation_max_concurrent_rollout(num_gpus: usize) -> usize {
-    std::env::var("VALIDATION_MAX_CONCURRENT_ROLLOUT")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or_else(|| get_max_concurrent_rollout(num_gpus))
+fn validation_max_concurrent_rollout(_num_gpus: usize) -> usize {
+    200
+}
+
+async fn judge_validation_tree_artifacts<M: LlmModelMarker>(
+    tree_artifact_path: &str,
+    tree_judgment_jsonl_path: &str,
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+) {
+    let artifacts = read_available_tree_artifact_chunks::<M, Validation>(tree_artifact_path)
+        .unwrap_or_else(|err| panic!("failed to read marked validation tree chunks: {}", err));
+    let requests = artifacts
+        .iter()
+        .flat_map(|artifact| artifact.to_judging_requests(DEFAULT_CACHE_VERSION))
+        .collect::<Vec<_>>();
+    let judging_output_jsonl_path = format!(
+        "{mount_dir}/medium_files/{model_cli_name}/{config_nickname}/epoch_{epoch}/validation_judging_outputs.jsonl"
+    );
+    let cache_dir =
+        format!("{mount_dir}/medium_files/{model_cli_name}/{config_nickname}/judgment_cache");
+    let escalation_jsonl_path = format!(
+        "{mount_dir}/small_files/{model_cli_name}/{config_nickname}/judgment_escalations.jsonl"
+    );
+    let summary = judge_requests(
+        requests,
+        std::path::Path::new(&judging_output_jsonl_path),
+        std::path::Path::new(&cache_dir),
+        std::path::Path::new(&escalation_jsonl_path),
+        DEFAULT_CACHE_VERSION,
+        DEFAULT_CACHE_CHUNK_QUESTION_COUNT,
+        DEFAULT_REQUEST_CONCURRENCY_PER_MODEL,
+    )
+    .await
+    .unwrap_or_else(|err| panic!("failed to judge validation tree artifacts: {}", err));
+    log_info(format!("Validation judging summary: {summary:#?}"));
+
+    let outputs = read_judging_outputs(std::path::Path::new(&judging_output_jsonl_path))
+        .unwrap_or_else(|err| panic!("failed to read validation judging outputs: {}", err));
+    let mut outputs_by_artifact_id = std::collections::BTreeMap::<String, Vec<_>>::new();
+    for output in outputs {
+        let Some(artifact_id) = output.request.artifact_id.clone() else {
+            continue;
+        };
+        outputs_by_artifact_id
+            .entry(artifact_id)
+            .or_default()
+            .push(output);
+    }
+    if let Some(parent) = std::path::Path::new(tree_judgment_jsonl_path).parent() {
+        std::fs::create_dir_all(parent).unwrap_or_else(|err| {
+            panic!(
+                "failed to create validation tree judgment parent {}: {}",
+                parent.display(),
+                err
+            )
+        });
+    }
+    let mut file = std::fs::File::create(tree_judgment_jsonl_path).unwrap_or_else(|err| {
+        panic!(
+            "failed to create validation tree judgment JSONL {}: {}",
+            tree_judgment_jsonl_path, err
+        )
+    });
+    for artifact in artifacts {
+        let outputs = outputs_by_artifact_id
+            .remove(&artifact.artifact_id)
+            .unwrap_or_default();
+        let judgment = TreeJudgment::from_judging_outputs(
+            artifact.artifact_id.clone(),
+            DEFAULT_CACHE_VERSION.to_string(),
+            Validation::dataset_file_postfix(),
+            artifact.question.flat_id.0,
+            outputs,
+        )
+        .unwrap_or_else(|err| panic!("failed to build validation tree judgment: {}", err));
+        serde_json::to_writer(&mut file, &judgment)
+            .unwrap_or_else(|err| panic!("failed to serialize validation tree judgment: {}", err));
+        use std::io::Write;
+        writeln!(file)
+            .unwrap_or_else(|err| panic!("failed to write validation tree judgment: {}", err));
+    }
 }
 
 #[derive(Parser, Debug)]
 struct CliArgs {
     #[arg(short = 'c', long)]
     config_path: String,
+    #[arg(long, default_value = "all")]
+    phase: ValidationPhase,
+    #[arg(long, default_value_t = false)]
+    login_smoke: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ValidationPhase {
+    All,
+    Rollout,
+    Judge,
+    Score,
 }
 
 #[derive(Deserialize, Debug)]
@@ -98,6 +192,7 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
     inference_backend: InferenceBackend,
     inference_wrapper_log_path: &str,
     use_tool: bool,
+    phase: ValidationPhase,
 ) {
     let client = Client::new();
     let oneshot_training_summary_parent_dir =
@@ -107,7 +202,8 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
     let (already_validated_epochs, mut validation_accuracies) =
         read_existing_validation_summary(&oneshot_training_summary_parent_dir);
 
-    if already_validated_epochs.contains(&0)
+    if matches!(phase, ValidationPhase::All | ValidationPhase::Score)
+        && already_validated_epochs.contains(&0)
         && (1..=num_oneshot_epochs).all(|epoch| already_validated_epochs.contains(&epoch))
     {
         log_info("All requested oneshot epochs are already validated; skipping validation phase");
@@ -118,29 +214,35 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
         "Will validate base epoch plus trained epochs 1..={} (already validated: {:?})",
         num_oneshot_epochs, already_validated_epochs
     ));
-    best_effort_shutdown_stale_inference_wrapper().await;
+    let mut launched_inference = None;
+    if matches!(phase, ValidationPhase::All | ValidationPhase::Rollout) {
+        best_effort_shutdown_stale_inference_wrapper().await;
 
-    let launch_model_parent_dir = base_model_dir(mount_dir, model_cli_name);
-    let launch_model_path = format!("{}/model", launch_model_parent_dir);
-    let (sglang_port, mut handle) = launch_inference_wrapper::launch_inference_wrapper_process(
-        inference_backend,
-        &launch_model_path,
-        model_cli_name,
-        config_nickname_training,
-        0,
-        M::API_NAME,
-        num_gpus,
-        inference_wrapper_log_path,
-    )
-    .await
-    .unwrap_or_else(|err| panic!("failed to launch inference server: {}", err));
-    log_info(format!(
-        "Inference server listening on port {} for validation",
-        sglang_port
-    ));
+        let launch_model_parent_dir = base_model_dir(mount_dir, model_cli_name);
+        let launch_model_path = format!("{}/model", launch_model_parent_dir);
+        let (sglang_port, handle) = launch_inference_wrapper::launch_inference_wrapper_process(
+            inference_backend,
+            &launch_model_path,
+            model_cli_name,
+            config_nickname_training,
+            0,
+            M::API_NAME,
+            num_gpus,
+            inference_wrapper_log_path,
+        )
+        .await
+        .unwrap_or_else(|err| panic!("failed to launch inference server: {}", err));
+        log_info(format!(
+            "Inference server listening on port {} for validation",
+            sglang_port
+        ));
+        launched_inference = Some((sglang_port, handle));
+    }
 
     for epoch in 0..=num_oneshot_epochs {
-        if already_validated_epochs.contains(&epoch) {
+        if matches!(phase, ValidationPhase::All | ValidationPhase::Score)
+            && already_validated_epochs.contains(&epoch)
+        {
             log_info(format!("Epoch {}: already validated; skipping", epoch));
             continue;
         }
@@ -149,7 +251,7 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
             epoch, num_oneshot_epochs
         ));
 
-        if epoch > 0 {
+        if matches!(phase, ValidationPhase::All | ValidationPhase::Rollout) && epoch > 0 {
             let wait_deadline = std::time::Instant::now() + Duration::from_secs(600);
             while !oneshot_epoch_model_ready(&oneshot_model_output_root, epoch) {
                 if std::time::Instant::now() >= wait_deadline {
@@ -188,7 +290,10 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
                 "Epoch {}: Updating inference model weights to {}",
                 epoch, model_path
             ));
-            update_inference_model(sglang_port, &model_path, inference_wrapper_log_path)
+            let (sglang_port, _) = launched_inference
+                .as_ref()
+                .expect("validation rollout phase must have inference server");
+            update_inference_model(*sglang_port, &model_path, inference_wrapper_log_path)
                 .await
                 .unwrap_or_else(|err| {
                     panic!(
@@ -210,55 +315,102 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
                 epoch, err
             )
         });
-        let validation_program_config = RolloutProgramConfig {
-            config_nickname: config_nickname_training.to_string(),
-            rollout_config: validation_rollout_config.clone(),
-            posterior_calculation_config: posterior_calculation_config.clone(),
+        let validation_tree_artifact_path = tree_artifacts_oneshot_path::<Validation>(
+            mount_dir,
+            model_cli_name,
+            config_nickname_training,
             epoch,
-            client: client.clone(),
-            inference_endpoint: InferenceEndpoint::SglangPort(sglang_port),
-            rollout_secs: validation_rollout_secs,
-            total_epochs: num_oneshot_epochs,
-            action_log_store_override_path: Some(validation_action_log_path.clone()),
-            use_tool,
-            fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
-            max_concurrent_rollout: validation_max_concurrent_rollout(num_gpus),
-            branching_options: BranchingRuntimeOptions::default(),
-        };
-        let validation_summary =
-            rollout_all::<M, Validation>(mount_dir, validation_program_config).await;
-        log_info(format!(
-            "Epoch {}: Validation rollout finished ({:.3}s, {} LLM calls)",
-            epoch, validation_summary.elapsed_secs, validation_summary.total_llm_calls,
-        ));
-
-        let accuracy_stats = get_accuracy_at_path::<M, Validation>(
-            &validation_action_log_path,
-            validation_rollout_config.clone(),
-            posterior_calculation_config.clone(),
-            "Validation accuracy (one-shot)",
-            use_tool,
         )
-        .await;
-        if let Some(accuracies) = accuracy_stats.accuracy_tuple() {
-            validation_accuracies.insert(epoch, accuracies);
-            log_key_value_pair(
-                format!("epoch_{}_validation_accuracy_deepmath", epoch),
-                accuracies.1.to_string(),
-            );
-            log_key_value_pair(
-                format!("epoch_{}_validation_accuracy_math", epoch),
-                accuracies.2.to_string(),
-            );
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to resolve one-shot validation tree artifacts path for epoch {}: {}",
+                epoch, err
+            )
+        });
+        let validation_tree_judgment_path = tree_judgments_oneshot_path::<Validation>(
+            mount_dir,
+            model_cli_name,
+            config_nickname_training,
+            epoch,
+        )
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to resolve one-shot validation tree judgments path for epoch {}: {}",
+                epoch, err
+            )
+        });
+        if matches!(phase, ValidationPhase::All | ValidationPhase::Rollout) {
+            let (sglang_port, _) = launched_inference
+                .as_ref()
+                .expect("validation rollout phase must have inference server");
+            let validation_program_config = RolloutProgramConfig {
+                config_nickname: config_nickname_training.to_string(),
+                rollout_config: validation_rollout_config.clone(),
+                posterior_calculation_config: posterior_calculation_config.clone(),
+                epoch,
+                client: client.clone(),
+                inference_endpoint: InferenceEndpoint::SglangPort(*sglang_port),
+                rollout_secs: validation_rollout_secs,
+                finish_all_questions: true,
+                total_epochs: num_oneshot_epochs,
+                action_log_store_override_path: Some(validation_action_log_path.clone()),
+                use_tool,
+                fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
+                max_concurrent_rollout: validation_max_concurrent_rollout(num_gpus),
+                branching_options: BranchingRuntimeOptions::default(),
+                tree_artifact_output_path: Some(validation_tree_artifact_path.clone()),
+                tree_artifact_chunk_question_count: None,
+                question_flat_id_start: None,
+                question_flat_id_end: None,
+                question_flat_ids: None,
+            };
+            let validation_summary =
+                rollout_all::<M, Validation>(mount_dir, validation_program_config).await;
             log_info(format!(
-                "Epoch {}: Validation accuracy (avg={:.6}, deepmath={:.6}, math={:.6}, numinamath={:.6})",
-                epoch, accuracies.0, accuracies.1, accuracies.2, accuracies.3,
+                "Epoch {}: Validation rollout finished ({:.3}s, {} LLM calls)",
+                epoch, validation_summary.elapsed_secs, validation_summary.total_llm_calls,
             ));
-        } else {
-            log_warning(format!(
-                "Epoch {}: No validation accuracy data available",
-                epoch
-            ));
+        }
+
+        if matches!(phase, ValidationPhase::All | ValidationPhase::Judge) {
+            judge_validation_tree_artifacts::<M>(
+                &validation_tree_artifact_path,
+                &validation_tree_judgment_path,
+                mount_dir,
+                model_cli_name,
+                config_nickname_training,
+                epoch,
+            )
+            .await;
+        }
+
+        if matches!(phase, ValidationPhase::All | ValidationPhase::Score) {
+            let accuracy_stats = get_accuracy_from_tree_judgments_at_path::<M, Validation>(
+                &validation_tree_artifact_path,
+                &validation_tree_judgment_path,
+                "Validation accuracy (one-shot)",
+            )
+            .await;
+            if let Some(accuracies) = accuracy_stats.accuracy_tuple() {
+                validation_accuracies.insert(epoch, accuracies);
+                log_key_value_pair(
+                    format!("epoch_{}_validation_accuracy_deepmath", epoch),
+                    accuracies.1.to_string(),
+                );
+                log_key_value_pair(
+                    format!("epoch_{}_validation_accuracy_math", epoch),
+                    accuracies.2.to_string(),
+                );
+                log_info(format!(
+                    "Epoch {}: Validation accuracy (avg={:.6}, deepmath={:.6}, math={:.6}, numinamath={:.6})",
+                    epoch, accuracies.0, accuracies.1, accuracies.2, accuracies.3,
+                ));
+            } else {
+                log_warning(format!(
+                    "Epoch {}: No validation accuracy data available",
+                    epoch
+                ));
+            }
         }
 
         if Path::new(&validation_action_log_path).exists() {
@@ -274,35 +426,29 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
             }
         }
 
-        let training_epoch_stats =
-            read_oneshot_training_epoch_stats(&oneshot_model_output_root, num_oneshot_epochs);
-        write_training_summary(
-            &oneshot_training_summary_parent_dir,
-            epoch,
-            num_oneshot_epochs,
-            &validation_accuracies,
-            &training_epoch_stats.throughputs,
-            &training_epoch_stats.samples_trained,
-            &training_epoch_stats.longest_non_oom_trajectory_lengths,
-        );
-
-        let validated_trained_epochs: Vec<usize> = validation_accuracies
-            .keys()
-            .copied()
-            .filter(|validated_epoch| *validated_epoch > 0)
-            .collect();
-        prune_non_best_oneshot_models(
-            &oneshot_model_output_root,
-            &validated_trained_epochs,
-            &validation_accuracies,
-        );
+        if matches!(phase, ValidationPhase::All | ValidationPhase::Score) {
+            let training_epoch_stats =
+                read_oneshot_training_epoch_stats(&oneshot_model_output_root, num_oneshot_epochs);
+            write_training_summary(
+                &oneshot_training_summary_parent_dir,
+                epoch,
+                num_oneshot_epochs,
+                &validation_accuracies,
+                &training_epoch_stats.throughputs,
+                &training_epoch_stats.samples_trained,
+                &training_epoch_stats.iterations_trained_cumulative,
+                &training_epoch_stats.longest_non_oom_trajectory_lengths,
+            );
+        }
     }
 
-    log_info("Shutting down inference server after oneshot validation");
-    let _ = handle.stop_signal_tx.send(true);
-    shut_down_inference_wrapper_process(&mut handle.child).await;
-    let _ = handle.listener_handle.await;
-    log_info("Inference server shut down");
+    if let Some((_, mut handle)) = launched_inference {
+        log_info("Shutting down inference server after oneshot validation rollout");
+        let _ = handle.stop_signal_tx.send(true);
+        shut_down_inference_wrapper_process(&mut handle.child).await;
+        let _ = handle.listener_handle.await;
+        log_info("Inference server shut down");
+    }
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -317,7 +463,11 @@ async fn main() {
         std::process::abort();
     }));
     dotenvy::dotenv().ok();
-    let CliArgs { config_path } = CliArgs::parse();
+    let CliArgs {
+        config_path,
+        phase,
+        login_smoke,
+    } = CliArgs::parse();
     let config_contents = std::fs::read_to_string(&config_path)
         .unwrap_or_else(|err| panic!("failed to read config file '{}': {}", config_path, err));
     let Args {
@@ -342,13 +492,35 @@ async fn main() {
     );
     set_title(&process_title);
     check_sympy_availability().unwrap();
-    configure_mount_dir(&mount_dir)
-        .unwrap_or_else(|err| panic!("failed to configure mount dir: {}", err));
     assert!(num_gpus > 0, "--num-gpus must be positive");
     assert!(
         validation_total_epochs > 0,
         "validation_total_epochs/num_oneshot_epochs must be positive"
     );
+    let validation_rollout_config: RolloutConfig<Validation> =
+        read_json(credit_assignment::directories::VALIDATION_ROLLOUT_CONFIG_PATH).unwrap();
+    let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
+        credit_assignment::directories::POSTERIOR_HYPERPARAMETERS_PATH,
+    )
+    .unwrap();
+    let posterior_calculation_config = PosteriorCalculationConfig {
+        hyperparameters: posterior_hyperparameters,
+    };
+    let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
+    if login_smoke {
+        println!(
+            "login-smoke passed for bin_oneshot_validation: model={}, training_config={}, phase={:?}, validation_epochs={}, backend={:?}, num_gpus={}",
+            model_cli_name,
+            config_nickname_training,
+            phase,
+            validation_total_epochs,
+            inference_backend,
+            num_gpus
+        );
+        return;
+    }
+    configure_mount_dir(&mount_dir)
+        .unwrap_or_else(|err| panic!("failed to configure mount dir: {}", err));
 
     let inference_wrapper_log_path = derive_phase_log_path(
         &inference_wrapper_log_path(&mount_dir, &model_cli_name, &config_nickname_training),
@@ -381,17 +553,6 @@ async fn main() {
         .await
         .unwrap();
 
-    let validation_rollout_config: RolloutConfig<Validation> =
-        read_json(credit_assignment::directories::VALIDATION_ROLLOUT_CONFIG_PATH).unwrap();
-    let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
-        credit_assignment::directories::POSTERIOR_HYPERPARAMETERS_PATH,
-    )
-    .unwrap();
-    let posterior_calculation_config = PosteriorCalculationConfig {
-        hyperparameters: posterior_hyperparameters,
-    };
-    let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
-
     match model_name {
         LlmModelName::Gemma3_4b => {
             run_oneshot_validation::<Gemma3_4BIt>(
@@ -407,6 +568,7 @@ async fn main() {
                 inference_backend,
                 &inference_wrapper_log_path,
                 use_tool,
+                phase,
             )
             .await
         }
@@ -424,6 +586,7 @@ async fn main() {
                 inference_backend,
                 &inference_wrapper_log_path,
                 use_tool,
+                phase,
             )
             .await
         }
@@ -441,6 +604,7 @@ async fn main() {
                 inference_backend,
                 &inference_wrapper_log_path,
                 use_tool,
+                phase,
             )
             .await
         }
@@ -458,6 +622,7 @@ async fn main() {
                 inference_backend,
                 &inference_wrapper_log_path,
                 use_tool,
+                phase,
             )
             .await
         }
@@ -475,6 +640,7 @@ async fn main() {
                 inference_backend,
                 &inference_wrapper_log_path,
                 use_tool,
+                phase,
             )
             .await
         }
@@ -492,6 +658,7 @@ async fn main() {
                 inference_backend,
                 &inference_wrapper_log_path,
                 use_tool,
+                phase,
             )
             .await
         }
@@ -509,6 +676,7 @@ async fn main() {
                 inference_backend,
                 &inference_wrapper_log_path,
                 use_tool,
+                phase,
             )
             .await
         }
@@ -526,6 +694,7 @@ async fn main() {
                 inference_backend,
                 &inference_wrapper_log_path,
                 use_tool,
+                phase,
             )
             .await
         }

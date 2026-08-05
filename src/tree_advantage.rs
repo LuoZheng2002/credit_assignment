@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::{
     hybrid_dataset::DatasetSplit,
@@ -7,6 +7,9 @@ use crate::{
     tree::{DirectTree, SegmentId},
     tree_posterior::Posterior,
 };
+
+const TREE_RPO_GROUP_DELTA_THRESHOLD: f32 = 0.1;
+const TREE_RPO_NORMALIZATION_EPSILON: f32 = 1.0e-6;
 
 #[derive(Debug, Clone)]
 pub struct WinRate {
@@ -87,46 +90,102 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         segment_advantages
     }
     pub fn calculate_segment_advantages_from_win_rate(&self) -> BTreeMap<SegmentId, f32> {
+        let root_segment_id = self.root_segment_id.expect("The tree must have a root id");
         let mut segment_win_rate_memo: BTreeMap<SegmentId, WinRate> = BTreeMap::new();
-        let mut segment_ids: BTreeSet<SegmentId> = self.segments.keys().cloned().collect();
-        segment_ids.remove(&self.root_segment_id.expect("The tree must have a root id"));
-        for segment_id in segment_ids {
+        for segment_id in self.segments.keys().copied() {
             self.find_segment_win_rate(segment_id, &mut segment_win_rate_memo);
         }
-        let advantage_unnormalized = segment_win_rate_memo
-            .into_iter()
-            .map(|(segment_id, win_rate)| {
-                assert!(win_rate.total_plays > 0);
-                let win_rate_value = win_rate.num_wins as f32 / win_rate.total_plays as f32;
-                (segment_id, win_rate_value)
-            })
-            .collect::<Vec<(SegmentId, f32)>>();
-        let advantage_mean = advantage_unnormalized
-            .iter()
-            .map(|(_, advantage)| *advantage)
-            .sum::<f32>()
-            / advantage_unnormalized.len() as f32;
-        let advantage_std = (advantage_unnormalized
-            .iter()
-            .map(|(_, advantage)| {
-                let diff = *advantage - advantage_mean;
-                diff * diff
-            })
-            .sum::<f32>()
-            / advantage_unnormalized.len() as f32)
-            .sqrt();
-        let advantage_normalized: BTreeMap<SegmentId, f32> = advantage_unnormalized
-            .iter()
-            .map(|(segment_id, advantage)| {
-                let normalized_advantage = if advantage_std > 0.0 {
-                    (*advantage - advantage_mean) / advantage_std
-                } else {
-                    0.0
-                };
-                (*segment_id, normalized_advantage)
-            })
-            .collect();
-        advantage_normalized
+        let mut segment_advantages = self
+            .segments
+            .keys()
+            .copied()
+            .map(|segment_id| (segment_id, 0.0))
+            .collect::<BTreeMap<_, _>>();
+
+        for (parent_segment_id, parent_segment) in self.segments.iter() {
+            if *parent_segment_id == root_segment_id && parent_segment.child_ids.is_empty() {
+                continue;
+            }
+            if parent_segment.child_ids.len() < 2 {
+                continue;
+            }
+            let child_values = parent_segment
+                .child_ids
+                .iter()
+                .map(|child_segment_id| {
+                    let win_rate = segment_win_rate_memo
+                        .get(child_segment_id)
+                        .expect("Child segment must have backed-up win rate");
+                    assert!(win_rate.total_plays > 0);
+                    (
+                        *child_segment_id,
+                        win_rate.num_wins as f32 / win_rate.total_plays as f32,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let min_value = child_values
+                .iter()
+                .map(|(_, value)| *value)
+                .fold(f32::INFINITY, f32::min);
+            let max_value = child_values
+                .iter()
+                .map(|(_, value)| *value)
+                .fold(f32::NEG_INFINITY, f32::max);
+            if max_value - min_value <= TREE_RPO_GROUP_DELTA_THRESHOLD {
+                continue;
+            }
+            let mean = child_values.iter().map(|(_, value)| *value).sum::<f32>()
+                / child_values.len() as f32;
+            let denominator = (mean * (1.0 - mean)).abs();
+            if denominator <= TREE_RPO_NORMALIZATION_EPSILON {
+                continue;
+            }
+            for (child_segment_id, child_value) in child_values {
+                segment_advantages.insert(child_segment_id, (child_value - mean) / denominator);
+            }
+        }
+
+        segment_advantages
+    }
+
+    pub fn calculate_segment_advantages_from_treerl_local_global(
+        &self,
+    ) -> BTreeMap<SegmentId, f32> {
+        let root_segment_id = self.root_segment_id.expect("The tree must have a root id");
+        let mut segment_win_rate_memo: BTreeMap<SegmentId, WinRate> = BTreeMap::new();
+        for segment_id in self.segments.keys().copied() {
+            self.find_segment_win_rate(segment_id, &mut segment_win_rate_memo);
+        }
+        let root_value = Self::win_rate_value(
+            segment_win_rate_memo
+                .get(&root_segment_id)
+                .expect("Root segment must have backed-up win rate"),
+        );
+        let mut segment_advantages = BTreeMap::new();
+        for (segment_id, segment) in self.segments.iter() {
+            if *segment_id == root_segment_id {
+                segment_advantages.insert(*segment_id, 0.0);
+                continue;
+            }
+            let Some(parent_segment_id) = segment.parent_id else {
+                segment_advantages.insert(*segment_id, 0.0);
+                continue;
+            };
+            let segment_value = Self::win_rate_value(
+                segment_win_rate_memo
+                    .get(segment_id)
+                    .expect("Segment must have backed-up win rate"),
+            );
+            let parent_value = Self::win_rate_value(
+                segment_win_rate_memo
+                    .get(&parent_segment_id)
+                    .expect("Parent segment must have backed-up win rate"),
+            );
+            let local_advantage = segment_value - parent_value;
+            let global_advantage = segment_value - root_value;
+            segment_advantages.insert(*segment_id, 0.5 * (local_advantage + global_advantage));
+        }
+        segment_advantages
     }
 
     pub fn calculate_segment_advantages_from_grpo_terminal_reward(
@@ -239,5 +298,10 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
             memo.insert(segment_id, win_rate.clone());
             return win_rate;
         }
+    }
+
+    fn win_rate_value(win_rate: &WinRate) -> f32 {
+        assert!(win_rate.total_plays > 0);
+        win_rate.num_wins as f32 / win_rate.total_plays as f32
     }
 }

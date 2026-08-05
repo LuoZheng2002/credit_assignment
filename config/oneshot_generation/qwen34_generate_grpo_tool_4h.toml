@@ -1,0 +1,13 @@
+model_cli_name = "qwen34"
+config_nickname_rollout = "grpo_tool_rollout_4h"
+config_nickname_generation = "grpo_tool_generation_4h"
+rollout_config_path = "config/rollout_config_training_grpo.json"
+use_tool = true
+epoch = 0
+training_advantage_policy = "GrpoTerminalReward"
+positive_advantage_only = false
+rollout_mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
+generation_mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
+num_gpus = 1
+total_time_limit_hours = 1.0
+training_set_sort_mode = "ByQuestion"

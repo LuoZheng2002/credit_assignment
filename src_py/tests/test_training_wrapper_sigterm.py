@@ -33,6 +33,8 @@ class TestTrainingWrapperSigterm(unittest.TestCase):
                 advantage_clip=1.0,
                 learning_rate=1e-4,
                 weight_decay=0.01,
+                use_adam_state=True,
+                use_lr_warmup=True,
                 grad_accum_steps=1,
                 log_time_interval=5.0,
                 lr_warmup_steps=100,
@@ -47,6 +49,7 @@ class TestTrainingWrapperSigterm(unittest.TestCase):
                 base_model_parent_dir="/tmp/results/qwen35_4b/sigterm_test/epoch_1",
             ),
             num_iterations_limit=10,
+            training_trajectory_len_cutoff=4096,
             model_cli_name="qwen35_4b",
             config_nickname="sigterm_test",
         )

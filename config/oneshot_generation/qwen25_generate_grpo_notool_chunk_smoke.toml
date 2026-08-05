@@ -1,0 +1,14 @@
+model_cli_name = "qwen25"
+config_nickname_rollout = "grpo_notool_chunk_smoke_rollout"
+config_nickname_generation = "grpo_notool_chunk_smoke_generation"
+rollout_config_path = "config/rollout_config_training_grpo.json"
+use_tool = false
+epoch = 0
+training_advantage_policy = "GrpoTerminalReward"
+positive_advantage_only = false
+rollout_mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
+generation_mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
+num_gpus = 1
+total_time_limit_hours = 0.25
+training_set_sort_mode = "ByQuestion"
+num_questions_per_chunk = 100

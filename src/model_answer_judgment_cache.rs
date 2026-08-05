@@ -258,15 +258,56 @@ pub fn store_cached_judgment(
 }
 
 pub fn commit_pending_writes_if_any(
-    mount_dir: &str,
+    _mount_dir: &str,
     model_cli_name: &str,
     config_nickname: &str,
 ) -> Result<bool, String> {
-    let store_mutex = get_or_init_store(mount_dir, model_cli_name, config_nickname);
+    let guard = MODEL_ANSWER_JUDGMENT_CACHE_SLOT.load();
+    let Some(slot) = guard.as_ref() else {
+        return Ok(false);
+    };
+    assert_eq!(
+        slot.model_cli_name, model_cli_name,
+        "Model answer judgment cache was already initialized with model_cli_name={}, \
+         but a different model_cli_name={} was requested. \
+         Only one (model_cli_name, config_nickname) tuple is supported per program instance.",
+        slot.model_cli_name, model_cli_name,
+    );
+    assert_eq!(
+        slot.config_nickname, config_nickname,
+        "Model answer judgment cache was already initialized with config_nickname={}, \
+         but a different config_nickname={} was requested. \
+         Only one (model_cli_name, config_nickname) tuple is supported per program instance.",
+        slot.config_nickname, config_nickname,
+    );
+    let store_mutex = Arc::clone(&slot.store);
+    drop(guard);
     let mut cache = store_mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.commit_pending_writes_if_any()
+}
+
+pub fn reset_model_answer_judgment_cache_if_any() -> Result<bool, String> {
+    let _init_guard = MODEL_ANSWER_JUDGMENT_CACHE_INIT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let guard = MODEL_ANSWER_JUDGMENT_CACHE_SLOT.swap(None);
+    let Some(slot) = guard.as_ref() else {
+        return Ok(false);
+    };
+    let mut cache = match slot.store.try_lock() {
+        Ok(cache) => cache,
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return Err(format!(
+                "legacy model answer judgment cache for model={} config={} is still in use; skipped reset to avoid blocking",
+                slot.model_cli_name, slot.config_nickname,
+            ));
+        }
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+    };
+    let committed = cache.commit_pending_writes_if_any()?;
+    Ok(committed)
 }
 
 struct ModelAnswerJudgmentCacheStore {

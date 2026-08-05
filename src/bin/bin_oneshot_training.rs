@@ -11,7 +11,8 @@ use credit_assignment::{
     directories::{
         base_model_dir, oneshot_epochs_parent_dir, text_logger_summary_path,
         text_logger_verbose_path, training_summary_oneshot_parent_dir,
-        training_trajectories_oneshot_path, training_wrapper_log_path,
+        training_trajectories_oneshot_chunk_path, training_trajectories_oneshot_path,
+        training_wrapper_log_path,
     },
     launch_inference_wrapper::InferenceBackend,
     launch_training_wrapper::run_training_wrapper_and_wait,
@@ -37,6 +38,8 @@ use research_utility::progress_text_logger::{
 struct CliArgs {
     #[arg(short = 'c', long)]
     config_path: String,
+    #[arg(long, default_value_t = false)]
+    login_smoke: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -193,33 +196,89 @@ async fn run_oneshot_training<M: LlmModelMarker>(
             start_epoch, num_oneshot_epochs
         ));
 
-        let training_config = PythonTrainingConfig {
-            hyperparameters: training_hyperparameters.clone(),
-            num_iterations_limit,
-            training_trajectory_len_cutoff,
-            training_set_sort_mode: format!("{:?}", training_set_sort_mode),
-            model_cli_name: model_cli_name.to_string(),
-            config_nickname: config_nickname_training.to_string(),
-            training_mode: TrainingMode::OneShot {
-                per_epoch_training_time: oneshot_per_epoch_training_time,
-                num_oneshot_epochs,
-                start_epoch,
-                model_output_root: oneshot_model_output_root.clone(),
-                training_summary_dir: oneshot_model_output_root.clone(),
-                base_model_parent_dir: training_base_model_parent_dir,
-            },
-        };
-
         let training_start_time = Instant::now();
-        run_training_wrapper_and_wait(
-            num_gpus,
-            M::API_NAME,
-            &training_config,
-            &oneshot_trajectories_msgpack_path,
-            training_wrapper_log_path,
-        )
-        .await
-        .unwrap_or_else(|err| panic!("Oneshot training failed: {}", err));
+        let first_chunk_path =
+            training_trajectories_oneshot_chunk_path(&oneshot_trajectories_dir, 0);
+        if Path::new(&first_chunk_path).exists() {
+            log_info(format!(
+                "Detected chunked one-shot trajectories; using one trajectory chunk per epoch from {}",
+                oneshot_trajectories_dir
+            ));
+            for epoch in start_epoch..=num_oneshot_epochs {
+                let chunk_index = epoch - 1;
+                let chunk_path = training_trajectories_oneshot_chunk_path(
+                    &oneshot_trajectories_dir,
+                    chunk_index,
+                );
+                if !Path::new(&chunk_path).exists() {
+                    panic!(
+                        "Trajectory chunk for epoch {} not found at {}; generation must produce one chunk per requested epoch",
+                        epoch, chunk_path
+                    );
+                }
+                let chunk_base_model_parent_dir = if epoch == 1 {
+                    base_model_parent_dir.clone()
+                } else {
+                    format!("{}/oneshot_epoch_{}", oneshot_model_output_root, epoch - 1)
+                };
+                let training_config = PythonTrainingConfig {
+                    hyperparameters: training_hyperparameters.clone(),
+                    num_iterations_limit,
+                    training_trajectory_len_cutoff,
+                    training_set_sort_mode: format!("{:?}", TrainingSetSortMode::ByQuestion),
+                    model_cli_name: model_cli_name.to_string(),
+                    config_nickname: config_nickname_training.to_string(),
+                    training_mode: TrainingMode::OneShot {
+                        per_epoch_training_time: oneshot_per_epoch_training_time,
+                        num_oneshot_epochs: epoch,
+                        start_epoch: epoch,
+                        model_output_root: oneshot_model_output_root.clone(),
+                        training_summary_dir: oneshot_model_output_root.clone(),
+                        base_model_parent_dir: chunk_base_model_parent_dir,
+                    },
+                };
+                log_info(format!(
+                    "Starting chunk-backed epoch {} with trajectory chunk {}",
+                    epoch, chunk_path
+                ));
+                run_training_wrapper_and_wait(
+                    num_gpus,
+                    M::API_NAME,
+                    &training_config,
+                    &chunk_path,
+                    training_wrapper_log_path,
+                )
+                .await
+                .unwrap_or_else(|err| panic!("Oneshot chunk-backed training failed: {}", err));
+            }
+        } else {
+            let training_config = PythonTrainingConfig {
+                hyperparameters: training_hyperparameters.clone(),
+                num_iterations_limit,
+                training_trajectory_len_cutoff,
+                training_set_sort_mode: format!("{:?}", training_set_sort_mode),
+                model_cli_name: model_cli_name.to_string(),
+                config_nickname: config_nickname_training.to_string(),
+                training_mode: TrainingMode::OneShot {
+                    per_epoch_training_time: oneshot_per_epoch_training_time,
+                    num_oneshot_epochs,
+                    start_epoch,
+                    model_output_root: oneshot_model_output_root.clone(),
+                    training_summary_dir: oneshot_model_output_root.clone(),
+                    base_model_parent_dir: training_base_model_parent_dir,
+                },
+            };
+
+            run_training_wrapper_and_wait(
+                num_gpus,
+                M::API_NAME,
+                &training_config,
+                &oneshot_trajectories_msgpack_path,
+                training_wrapper_log_path,
+            )
+            .await
+            .unwrap_or_else(|err| panic!("Oneshot training failed: {}", err));
+        }
         let elapsed_secs = training_start_time.elapsed().as_secs_f32();
         log_info(format!(
             "Oneshot training of {} epoch(s) finished in {:.3}s",
@@ -247,7 +306,10 @@ async fn main() {
         std::process::abort();
     }));
     dotenvy::dotenv().ok();
-    let CliArgs { config_path } = CliArgs::parse();
+    let CliArgs {
+        config_path,
+        login_smoke,
+    } = CliArgs::parse();
     let config_contents = std::fs::read_to_string(&config_path)
         .unwrap_or_else(|err| panic!("failed to read config file '{}': {}", config_path, err));
     let Args {
@@ -273,17 +335,29 @@ async fn main() {
     );
     set_title(&process_title);
     check_sympy_availability().unwrap();
+    assert!(num_gpus > 0, "--num-gpus must be positive");
+    assert!(
+        num_oneshot_epochs > 0,
+        "--num-oneshot-epochs must be positive"
+    );
+    let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
+    if login_smoke {
+        println!(
+            "login-smoke passed for bin_oneshot_training: model={}, training_config={}, generation_config={}, num_epochs={}, num_gpus={}",
+            model_cli_name,
+            config_nickname_training,
+            config_nickname_generation,
+            num_oneshot_epochs,
+            num_gpus
+        );
+        return;
+    }
     configure_mount_dir(&mount_dir)
         .unwrap_or_else(|err| panic!("failed to configure mount dir: {}", err));
     let training_wrapper_log_path =
         training_wrapper_log_path(&mount_dir, &model_cli_name, &config_nickname_training);
     ensure_parent_dir_exists(&training_wrapper_log_path)
         .unwrap_or_else(|err| panic!("failed to prepare training wrapper log directory: {}", err));
-    assert!(num_gpus > 0, "--num-gpus must be positive");
-    assert!(
-        num_oneshot_epochs > 0,
-        "--num-oneshot-epochs must be positive"
-    );
     log_info(format!("One-shot training will use num_gpus={}", num_gpus));
 
     let text_log_summary_path =
@@ -293,7 +367,6 @@ async fn main() {
     ProgressTextLogger::initialize(text_log_summary_path, text_log_verbose_path)
         .await
         .unwrap();
-    let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
 
     match model_name {
         LlmModelName::Gemma3_4b => {

@@ -1,6 +1,7 @@
 pub mod atomic_count_guard;
 pub mod browse_trees;
 pub mod check_python_env;
+pub mod chunked_judging;
 pub mod config_paths;
 pub mod constants;
 pub mod directories;
@@ -28,6 +29,7 @@ pub mod tree;
 pub mod tree_action;
 pub mod tree_action_log;
 pub mod tree_advantage;
+pub mod tree_artifact;
 pub mod tree_from_action;
 pub mod tree_posterior;
 pub mod tree_spontaneous_branching;

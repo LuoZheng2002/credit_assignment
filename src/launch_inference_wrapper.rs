@@ -48,7 +48,7 @@ pub async fn launch_inference_wrapper_process(
     num_gpus: usize,
     wrapper_log_path: &str,
 ) -> Result<(u16, PythonProcessHandle), String> {
-    let listen_port = 30000u16;
+    let listen_port = configured_wrapper_port()?;
     ensure_wrapper_port_available(listen_port).await?;
 
     if let Some(parent) = Path::new(wrapper_log_path).parent() {
@@ -205,7 +205,16 @@ pub async fn shut_down_inference_wrapper_process(process: &mut Child) {
 }
 
 pub async fn best_effort_shutdown_stale_inference_wrapper() {
-    let port = 30000u16;
+    let port = match configured_wrapper_port() {
+        Ok(port) => port,
+        Err(err) => {
+            log_warning(format!(
+                "Inference wrapper stale-shutdown check skipped: {}",
+                err
+            ));
+            return;
+        }
+    };
     if !is_port_listening(port).await {
         log_info(format!(
             "Inference wrapper stale-shutdown check: no listener on configured port {}, nothing to clean up",
@@ -337,9 +346,28 @@ async fn ensure_wrapper_port_available(port: u16) -> Result<(), String> {
         sleep(Duration::from_millis(250)).await;
     }
     Err(format!(
-        "wrapper port {} is already in use before launch (likely stale process). Please free the port or set SGLANG_PORT to an unused value",
+        "wrapper port {} is already in use before launch (likely stale process). Please free the port or set INFERENCE_WRAPPER_PORT to an unused value",
         port
     ))
+}
+
+fn configured_wrapper_port() -> Result<u16, String> {
+    match std::env::var("INFERENCE_WRAPPER_PORT") {
+        Ok(value) => {
+            let port = value.parse::<u16>().map_err(|err| {
+                format!(
+                    "INFERENCE_WRAPPER_PORT must be a valid u16 port, got {:?}: {}",
+                    value, err
+                )
+            })?;
+            if port == 0 {
+                return Err("INFERENCE_WRAPPER_PORT must not be 0".to_string());
+            }
+            Ok(port)
+        }
+        Err(std::env::VarError::NotPresent) => Ok(30000u16),
+        Err(err) => Err(format!("failed to read INFERENCE_WRAPPER_PORT: {}", err)),
+    }
 }
 
 async fn send_signal_to_process_group(pid: u32, signal: &str) {

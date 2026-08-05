@@ -68,12 +68,18 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         client,
         inference_endpoint,
         rollout_secs: args.rollout_secs,
+        finish_all_questions: false,
         total_epochs: args.total_epochs,
         action_log_store_override_path: None,
         use_tool: args.use_tool,
         fixed_temperature: constants::temperature_by_split::<S>(),
         max_concurrent_rollout: 300,
         branching_options: BranchingRuntimeOptions::default(),
+        tree_artifact_output_path: None,
+        tree_artifact_chunk_question_count: None,
+        question_flat_id_start: None,
+        question_flat_id_end: None,
+        question_flat_ids: None,
     };
     let _ = rollout_all::<M, S>("results", program_config).await;
 }

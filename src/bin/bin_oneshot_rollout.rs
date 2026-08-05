@@ -9,6 +9,7 @@ use credit_assignment::{
     directories::{
         action_logs_oneshot_path, base_model_dir, inference_wrapper_log_path, model_parent_dir,
         rollout_summary_oneshot_path, text_logger_summary_path, text_logger_verbose_path,
+        tree_artifacts_oneshot_chunk_done_path, tree_artifacts_oneshot_path,
     },
     hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
     json_toml_utils::read_json,
@@ -22,7 +23,7 @@ use credit_assignment::{
     },
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     rollout::{RolloutProgramConfig, rollout_all},
-    rollout_config::RolloutConfig,
+    rollout_config::{BranchingPolicy, RolloutConfig},
     tree_action_log::ActionLogStore,
     tree_to_action::BranchingRuntimeOptions,
     utils::configure_mount_dir,
@@ -39,6 +40,12 @@ struct CliArgs {
     enable_uncertainty_aware_branching: bool,
     #[arg(long, default_value_t = false)]
     force_selected_branch_token: bool,
+    #[arg(long)]
+    num_questions_per_chunk: Option<usize>,
+    #[arg(long)]
+    num_chunks: Option<usize>,
+    #[arg(long, default_value_t = false)]
+    login_smoke: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -64,6 +71,10 @@ struct Args {
     enable_uncertainty_aware_branching: bool,
     #[serde(default)]
     force_selected_branch_token: bool,
+    #[serde(default)]
+    num_questions_per_chunk: Option<usize>,
+    #[serde(default)]
+    num_chunks: Option<usize>,
 }
 
 fn default_total_epochs() -> usize {
@@ -86,6 +97,26 @@ fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
     })
 }
 
+fn remove_path_if_exists(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+    .map_err(|err| format!("failed to remove stale path {}: {}", path.display(), err))
+}
+
+fn remove_stale_action_log_store(action_log_store_path: &str) -> Result<(), String> {
+    let base_path = Path::new(action_log_store_path);
+    remove_path_if_exists(base_path)?;
+    remove_path_if_exists(&base_path.with_extension("config_bundle.json"))?;
+    remove_path_if_exists(&base_path.with_extension("elapsed_time.txt"))?;
+    Ok(())
+}
+
 async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     rollout_config: RolloutConfig<S>,
     args: &Args,
@@ -96,6 +127,11 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     inference_wrapper_log_path: &str,
     branching_options: BranchingRuntimeOptions,
 ) {
+    let branching_options = BranchingRuntimeOptions {
+        tree_rl_entropy_guided_branching: rollout_config.branching_policy
+            == BranchingPolicy::TreeRlEntropyGuided,
+        ..branching_options
+    };
     let action_log_store_override_path = action_logs_oneshot_path::<S>(
         &args.mount_dir,
         &args.model_cli_name,
@@ -103,6 +139,57 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         args.epoch,
     )
     .unwrap_or_else(|err| panic!("failed to resolve one-shot action logs path: {}", err));
+    let tree_artifact_output_path = tree_artifacts_oneshot_path::<S>(
+        &args.mount_dir,
+        &args.model_cli_name,
+        &args.config_nickname_rollout,
+        args.epoch,
+    )
+    .unwrap_or_else(|err| panic!("failed to resolve one-shot tree artifacts path: {}", err));
+    let (question_flat_id_start, question_flat_id_end, chunk_indices_to_check) = if S::IS_TRAINING {
+        match args.num_questions_per_chunk {
+            Some(num_questions_per_chunk) => {
+                assert!(
+                    num_questions_per_chunk > 0,
+                    "num_questions_per_chunk must be positive"
+                );
+                let num_chunks = args.num_chunks.unwrap_or(1);
+                assert!(num_chunks > 0, "num_chunks must be positive");
+                let end = num_questions_per_chunk
+                    .checked_mul(num_chunks)
+                    .expect("num_questions_per_chunk * num_chunks overflowed");
+                log_info(format!(
+                    "Using deterministic training rollout chunk range: flat_id=[0, {}) from num_questions_per_chunk={} num_chunks={}",
+                    end, num_questions_per_chunk, num_chunks
+                ));
+                (Some(0), Some(end), (0..num_chunks).collect::<Vec<_>>())
+            }
+            None => {
+                assert!(
+                    args.num_chunks.is_none(),
+                    "num_chunks requires num_questions_per_chunk"
+                );
+                (None, None, vec![0])
+            }
+        }
+    } else {
+        assert!(
+            args.num_questions_per_chunk.is_none() && args.num_chunks.is_none(),
+            "question chunk slicing is only supported for training rollout"
+        );
+        (None, None, vec![0])
+    };
+    let all_target_chunks_done = chunk_indices_to_check.iter().all(|chunk_index| {
+        Path::new(&tree_artifacts_oneshot_chunk_done_path(
+            &tree_artifact_output_path,
+            *chunk_index,
+        ))
+        .exists()
+    });
+    if !all_target_chunks_done {
+        remove_stale_action_log_store(&action_log_store_override_path)
+            .unwrap_or_else(|err| panic!("failed to remove stale action logs: {}", err));
+    }
 
     // Check if previous run already exhausted the time limit; if so, skip the
     // inference server startup and rollout entirely.
@@ -155,12 +242,18 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
             sglang_port,
         ),
         rollout_secs: args.rollout_secs,
+        finish_all_questions: false,
         total_epochs: args.total_epochs,
         action_log_store_override_path: Some(action_log_store_override_path),
         use_tool: args.use_tool,
         fixed_temperature: constants::temperature_by_split::<S>(),
         max_concurrent_rollout: get_max_concurrent_rollout(num_gpus),
         branching_options,
+        tree_artifact_output_path: Some(tree_artifact_output_path),
+        tree_artifact_chunk_question_count: args.num_questions_per_chunk,
+        question_flat_id_start,
+        question_flat_id_end,
+        question_flat_ids: None,
     };
     let summary = rollout_all::<M, S>(&args.mount_dir, program_config).await;
 
@@ -262,19 +355,23 @@ async fn main() {
         config_path,
         enable_uncertainty_aware_branching,
         force_selected_branch_token,
+        num_questions_per_chunk,
+        num_chunks,
+        login_smoke,
     } = CliArgs::parse();
     let config_contents = std::fs::read_to_string(&config_path)
         .unwrap_or_else(|err| panic!("failed to read config file '{}': {}", config_path, err));
-    let args: Args = toml::from_str(&config_contents)
+    let mut args: Args = toml::from_str(&config_contents)
         .unwrap_or_else(|err| panic!("failed to parse config file '{}': {}", config_path, err));
+    if num_questions_per_chunk.is_some() {
+        args.num_questions_per_chunk = num_questions_per_chunk;
+    }
+    if num_chunks.is_some() {
+        args.num_chunks = num_chunks;
+    }
     check_sympy_availability().unwrap();
     assert!(args.total_epochs > 0, "total_epochs must be positive");
     assert!(args.num_gpus > 0, "--num-gpus must be positive");
-    configure_mount_dir(&args.mount_dir)
-        .unwrap_or_else(|err| panic!("failed to configure mount dir: {}", err));
-
-    println!("Starting one-shot rollout pipeline...");
-    let client = Client::new();
     let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
         credit_assignment::directories::POSTERIOR_HYPERPARAMETERS_PATH,
     )
@@ -289,11 +386,40 @@ async fn main() {
             || enable_uncertainty_aware_branching,
         force_selected_branch_token: args.force_selected_branch_token
             || force_selected_branch_token,
+        tree_rl_entropy_guided_branching: false,
     };
+    match args.dataset_split {
+        DatasetSplitEnum::Training => {
+            let _: RolloutConfig<Training> = read_json(&args.rollout_config_path).unwrap();
+        }
+        DatasetSplitEnum::Validation => {
+            let _: RolloutConfig<Validation> = read_json(&args.rollout_config_path).unwrap();
+        }
+        DatasetSplitEnum::Testing => {
+            let _: RolloutConfig<Testing> = read_json(&args.rollout_config_path).unwrap();
+        }
+    }
+    if login_smoke {
+        println!(
+            "login-smoke passed for bin_oneshot_rollout: model={}, config={}, split={:?}, backend={:?}, num_gpus={}",
+            args.model_cli_name,
+            args.config_nickname_rollout,
+            args.dataset_split,
+            args.inference_backend,
+            args.num_gpus
+        );
+        return;
+    }
+    configure_mount_dir(&args.mount_dir)
+        .unwrap_or_else(|err| panic!("failed to configure mount dir: {}", err));
+
+    println!("Starting one-shot rollout pipeline...");
+    let client = Client::new();
     log_info(format!(
-        "branching_options uncertainty_aware_branching={} force_selected_branch_token={}",
+        "branching_options uncertainty_aware_branching={} force_selected_branch_token={} tree_rl_entropy_guided_branching={}",
         branching_options.uncertainty_aware_branching,
-        branching_options.force_selected_branch_token
+        branching_options.force_selected_branch_token,
+        branching_options.tree_rl_entropy_guided_branching
     ));
 
     let inference_wrapper_log_path = inference_wrapper_log_path(

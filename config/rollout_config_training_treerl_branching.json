@@ -1,0 +1,8 @@
+{
+  "split": "Training",
+  "branching_policy": "TreeRlEntropyGuided",
+  "num_trunks": 4,
+  "num_early_stopping_leaves": 6,
+  "num_leaves": 16,
+  "training_advantage_policy": "TreeMappoPosterior"
+}

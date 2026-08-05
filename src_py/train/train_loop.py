@@ -233,7 +233,7 @@ def trace_first_nonfinite_backward_signal(
     advantages: torch.Tensor,
     old_logprobs: torch.Tensor,
     advantage_clip: float,
-    grad_accum_steps: int,
+    min_grad_accum_steps: int,
 ) -> str:
     module_names = {
         module: (name if len(name) > 0 else "<root>")
@@ -305,7 +305,7 @@ def trace_first_nonfinite_backward_signal(
             old_logprobs=old_logprobs,
             advantage_clip=advantage_clip,
         )
-        replay_loss = loss_output.loss / grad_accum_steps
+        replay_loss = loss_output.loss / min_grad_accum_steps
         replay_loss.backward()
     except Exception as exc:
         detail_parts = [
@@ -488,13 +488,8 @@ def _init_training_loop_clock(
     )
 
 
-def _should_continue_training(
-    *, clock: TrainingLoopClock, iteration_index: int, num_iterations_limit: int
-) -> bool:
-    return (
-        time.monotonic() < clock.training_end_time
-        and iteration_index < num_iterations_limit
-    )
+def _should_continue_training(*, clock: TrainingLoopClock) -> bool:
+    return time.monotonic() < clock.training_end_time
 
 
 def _elapsed_training_time_sec(
@@ -506,13 +501,10 @@ def _elapsed_training_time_sec(
     return min(clock.training_time, elapsed)
 
 
-def _plan_cuda_oom(
-    *, iteration_index: int, num_iterations_limit: int
-) -> CudaOomPlan:
-    assert num_iterations_limit > 0, "num_iterations_limit must be positive"
+def _plan_cuda_oom(*, iteration_index: int) -> CudaOomPlan:
     next_iteration_index = iteration_index + 1
     return CudaOomPlan(
-        stop_training=next_iteration_index >= num_iterations_limit,
+        stop_training=True,
         next_iteration_index=next_iteration_index,
     )
 
@@ -568,7 +560,7 @@ def _probe_synthetic_sequence_length(
     pad_token_id: int,
     expected_model_name: str,
     advantage_clip: float,
-    grad_accum_steps: int,
+    min_grad_accum_steps: int,
     eng: Any,
 ) -> bool:
     sample = _make_synthetic_zero_advantage_sample(
@@ -594,7 +586,7 @@ def _probe_synthetic_sequence_length(
             old_logprobs=old_logprobs,
             advantage_clip=advantage_clip,
         )
-        loss = loss_output.loss / grad_accum_steps
+        loss = loss_output.loss / min_grad_accum_steps
         loss.backward()
         optimizer.zero_grad(set_to_none=True)
         return True
@@ -694,7 +686,7 @@ def _maybe_apply_single_gpu_lora_synthetic_oom_preflight(
         pad_token_id=pad_token_id,
         expected_model_name=expected_model_name,
         advantage_clip=config.advantage_clip,
-        grad_accum_steps=config.grad_accum_steps,
+        min_grad_accum_steps=config.min_grad_accum_steps,
         eng=eng,
     ):
         longest_valid = high
@@ -711,7 +703,7 @@ def _maybe_apply_single_gpu_lora_synthetic_oom_preflight(
                 pad_token_id=pad_token_id,
                 expected_model_name=expected_model_name,
                 advantage_clip=config.advantage_clip,
-                grad_accum_steps=config.grad_accum_steps,
+                min_grad_accum_steps=config.min_grad_accum_steps,
                 eng=eng,
             )
             _text_info(
@@ -751,16 +743,11 @@ def _plan_distributed_step_control(
     *,
     clock: TrainingLoopClock,
     iteration_index: int,
-    num_iterations_limit: int,
     sample_count: int,
     global_sample_cursor: int,
     world_size: int,
 ) -> DistributedStepControl:
-    if not _should_continue_training(
-        clock=clock,
-        iteration_index=iteration_index,
-        num_iterations_limit=num_iterations_limit,
-    ):
+    if not _should_continue_training(clock=clock):
         return DistributedStepControl(
             opcode=_DISTRIBUTED_CONTROL_STOP,
             requested_batch_size=0,
@@ -967,7 +954,7 @@ def _write_training_summary(
     samples_trained: int,
     samples_trained_this_run: int,
     global_step: int,
-    grad_accum_steps: int,
+    min_grad_accum_steps: int,
     max_average_absolute_advantage: float,
     min_average_absolute_advantage: float,
     median_average_absolute_advantage: float,
@@ -989,13 +976,14 @@ def _write_training_summary(
     )
     iterations = float(samples_trained) / float(samples_available)
     average_batch_size = 1.0
-    if global_step > 0 and grad_accum_steps > 0:
-        average_batch_size = float(samples_trained) / float(global_step * grad_accum_steps)
+    if global_step > 0:
+        average_batch_size = float(samples_trained) / float(global_step)
     payload = {
         "samples_available": int(samples_available),
         "samples_trained": int(samples_trained),
         "samples_trained_this_run": int(samples_trained_this_run),
         "iterations": float(iterations),
+        "training_iterations_trained_cumulative": float(iterations),
         "global_step": int(global_step),
         "average_batch_size": float(average_batch_size),
         "max_average_absolute_advantage": float(max_average_absolute_advantage),
@@ -1009,6 +997,34 @@ def _write_training_summary(
     output_parent.mkdir(parents=True, exist_ok=True)
     output_path = output_parent / "training_summary.json"
     output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _planned_question_rounded_accumulation_steps(
+    *,
+    lazy_loader: LazyResolvedBatchLoader,
+    start_sample_index: int,
+    min_grad_accum_steps: int,
+) -> int:
+    assert min_grad_accum_steps > 0, "min_grad_accum_steps must be positive"
+    assert 0 <= start_sample_index < lazy_loader.sample_count, (
+        "start_sample_index out of range"
+    )
+    planned_steps = 0
+    last_question_id: int | None = None
+    for sample_index in range(start_sample_index, lazy_loader.sample_count):
+        sample = lazy_loader.get_sample(sample_index)
+        planned_steps += 1
+        last_question_id = sample.id.question_id
+        next_sample_index = sample_index + 1
+        if planned_steps < min_grad_accum_steps:
+            continue
+        if next_sample_index >= lazy_loader.sample_count:
+            return planned_steps
+        next_question_id = lazy_loader.get_sample(next_sample_index).id.question_id
+        if next_question_id != last_question_id:
+            return planned_steps
+    assert planned_steps > 0, "planned accumulation window cannot be empty"
+    return planned_steps
 
 
 def _run_unified_loop(
@@ -1073,7 +1089,7 @@ def _run_unified_loop(
     # Cap warmup steps so the LR reaches its peak before the dataset is exhausted
     # in a single pass (critical for tiny datasets).
     if lr_warmup_steps > 0 and sample_count > 0:
-        max_warmup_steps = max(1, sample_count // (2 * config.grad_accum_steps))
+        max_warmup_steps = max(1, sample_count // (2 * config.min_grad_accum_steps))
         if lr_warmup_steps > max_warmup_steps:
             if _is_primary_rank():
                 _text_info(
@@ -1081,7 +1097,7 @@ def _run_unified_loop(
                     f"original_warmup_steps={lr_warmup_steps} "
                     f"capped_warmup_steps={max_warmup_steps} "
                     f"sample_count={sample_count} "
-                    f"grad_accum_steps={config.grad_accum_steps}"
+                    f"grad_accum_steps={config.min_grad_accum_steps}"
                 )
             lr_warmup_steps = max_warmup_steps
 
@@ -1154,7 +1170,12 @@ def _run_unified_loop(
         )
 
     global_step = resume_state.global_step
-    accumulation_step = resume_state.accumulation_step
+    accumulation_step = 0
+    if resume_state.accumulation_step != 0 and _is_primary_rank():
+        _text_warning(
+            "discarding_partial_accumulation_after_resume=1 "
+            f"resume_accumulation_step={resume_state.accumulation_step}"
+        )
     current_learning_rate = _set_optimizer_learning_rate(
         optimizer=optimizer,
         base_learning_rate=config.learning_rate,
@@ -1176,6 +1197,7 @@ def _run_unified_loop(
     )
     stopped_due_to_oom = False
     optimizer.zero_grad(set_to_none=True)
+    current_accumulation_target = max(1, int(config.min_grad_accum_steps))
 
     iteration_index = max(0, resume_state.next_iteration_index)
 
@@ -1188,7 +1210,6 @@ def _run_unified_loop(
                 control = _plan_distributed_step_control(
                     clock=clock,
                     iteration_index=iteration_index,
-                    num_iterations_limit=config.num_iterations_limit,
                     sample_count=sample_count,
                     global_sample_cursor=global_sample_cursor,
                     world_size=world_size,
@@ -1228,11 +1249,7 @@ def _run_unified_loop(
                 batch_index=rank_sample_start,
             )
         else:
-            if not _should_continue_training(
-                clock=clock,
-                iteration_index=iteration_index,
-                num_iterations_limit=config.num_iterations_limit,
-            ):
+            if not _should_continue_training(clock=clock):
                 break
             requested_batch_size = min(1, sample_count - global_sample_cursor)
             if requested_batch_size <= 0:
@@ -1290,10 +1307,29 @@ def _run_unified_loop(
             "labels contain token id out of model vocab range"
         )
 
+        if not is_distributed and accumulation_step == 0:
+            current_accumulation_target = _planned_question_rounded_accumulation_steps(
+                lazy_loader=lazy_loader,
+                start_sample_index=global_sample_cursor,
+                min_grad_accum_steps=config.min_grad_accum_steps,
+            )
+            if (
+                current_accumulation_target > 2 * config.min_grad_accum_steps
+                and _is_primary_rank()
+            ):
+                _text_warning(
+                    "large_question_rounded_accumulation_window=1 "
+                    f"min_grad_accum_steps={config.min_grad_accum_steps} "
+                    f"planned_accumulation_steps={current_accumulation_target} "
+                    f"start_sample_index={global_sample_cursor}"
+                )
+        elif is_distributed:
+            current_accumulation_target = config.min_grad_accum_steps
+
         if torch.cuda.is_available() and device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device=device)
         step_start = time.perf_counter()
-        should_sync = (accumulation_step + 1) == config.grad_accum_steps
+        should_sync = (accumulation_step + 1) == current_accumulation_target
         sync_context: AbstractContextManager[None] = nullcontext()
         no_sync_method = getattr(model, "no_sync", None)
         if is_distributed and callable(no_sync_method) and not should_sync:
@@ -1365,7 +1401,7 @@ def _run_unified_loop(
                     old_logprobs=old_logprobs,
                     advantage_clip=config.advantage_clip,
                 )
-                loss = loss_output.loss / config.grad_accum_steps
+                loss = loss_output.loss / current_accumulation_target
                 if emit_step_memtrace:
                     _memtrace(
                         "step_pre_backward "
@@ -1429,47 +1465,25 @@ def _run_unified_loop(
                         f"samples_trained_this_run={loop_samples_trained}"
                     )
                     break
-                oom_plan = _plan_cuda_oom(
-                    iteration_index=iteration_index,
-                    num_iterations_limit=config.num_iterations_limit,
-                )
-                if oom_plan.stop_training:
-                    stopped_due_to_oom = True
-                    eng._print_cuda_oom_stderr(
-                        rank=rank,
-                        iteration_index=iteration_index,
-                        batch_index=step_batch.batch_index,
-                        batch_token_length=batch_token_length,
-                        next_batch_size=requested_batch_size,
-                        will_retry=False,
-                    )
-                    _text_warning(
-                        "cuda_oom_stop_training=1 "
-                        f"iteration={iteration_index} "
-                        f"batch_index={step_batch.batch_index} "
-                        f"batch_token_length={batch_token_length} "
-                        f"samples_trained_this_run={loop_samples_trained}"
-                    )
-                    break
+                oom_plan = _plan_cuda_oom(iteration_index=iteration_index)
+                assert oom_plan.stop_training
+                stopped_due_to_oom = True
                 eng._print_cuda_oom_stderr(
                     rank=rank,
                     iteration_index=iteration_index,
                     batch_index=step_batch.batch_index,
                     batch_token_length=batch_token_length,
                     next_batch_size=requested_batch_size,
-                    will_retry=True,
-                    next_trajectory_length_cap=trajectory_length_cap,
+                    will_retry=False,
                 )
                 _text_warning(
-                    "cuda_oom_restart_iteration=1 "
+                    "cuda_oom_stop_training=1 "
                     f"iteration={iteration_index} "
-                    f"next_iteration={oom_plan.next_iteration_index} "
                     f"batch_index={step_batch.batch_index} "
-                    f"batch_token_length={batch_token_length}"
+                    f"batch_token_length={batch_token_length} "
+                    f"samples_trained_this_run={loop_samples_trained}"
                 )
-                global_sample_cursor = 0
-                iteration_index = oom_plan.next_iteration_index
-                continue
+                break
             if not eng._is_nonfinite_logits_exception(exc):
                 if _is_primary_rank():
                     backward_diagnostics = " ".join(
@@ -1619,7 +1633,7 @@ def _run_unified_loop(
                 global_sample_cursor = 0
                 iteration_index += 1
 
-        if accumulation_step == config.grad_accum_steps:
+        if accumulation_step == current_accumulation_target:
             try:
                 clipped_grad_norm = _maybe_clip_gradients(
                     model=model, max_grad_norm=max_grad_norm
@@ -1659,7 +1673,7 @@ def _run_unified_loop(
                                     advantages=advantages,
                                     old_logprobs=old_logprobs,
                                     advantage_clip=config.advantage_clip,
-                                    grad_accum_steps=config.grad_accum_steps,
+                                    min_grad_accum_steps=config.min_grad_accum_steps,
                                 )
                             )
                         except Exception as trace_exc:
@@ -1748,49 +1762,28 @@ def _run_unified_loop(
                         f"samples_trained_this_run={loop_samples_trained}"
                     )
                     break
-                oom_plan = _plan_cuda_oom(
-                    iteration_index=iteration_index,
-                    num_iterations_limit=config.num_iterations_limit,
-                )
-                if oom_plan.stop_training:
-                    stopped_due_to_oom = True
-                    eng._print_cuda_oom_stderr(
-                        rank=rank,
-                        iteration_index=iteration_index,
-                        batch_index=step_batch.batch_index,
-                        batch_token_length=batch_token_length,
-                        next_batch_size=requested_batch_size,
-                        will_retry=False,
-                    )
-                    _text_warning(
-                        "cuda_oom_stop_training=1 "
-                        f"iteration={iteration_index} "
-                        f"batch_index={step_batch.batch_index} "
-                        f"batch_token_length={batch_token_length} "
-                        f"samples_trained_this_run={loop_samples_trained}"
-                    )
-                    break
+                oom_plan = _plan_cuda_oom(iteration_index=iteration_index)
+                assert oom_plan.stop_training
+                stopped_due_to_oom = True
                 eng._print_cuda_oom_stderr(
                     rank=rank,
                     iteration_index=iteration_index,
                     batch_index=step_batch.batch_index,
                     batch_token_length=batch_token_length,
                     next_batch_size=requested_batch_size,
-                    will_retry=True,
-                    next_trajectory_length_cap=trajectory_length_cap,
+                    will_retry=False,
                 )
                 _text_warning(
-                    "cuda_oom_restart_iteration=1 "
+                    "cuda_oom_stop_training=1 "
                     f"iteration={iteration_index} "
-                    f"next_iteration={oom_plan.next_iteration_index} "
                     f"batch_index={step_batch.batch_index} "
-                    f"batch_token_length={batch_token_length}"
+                    f"batch_token_length={batch_token_length} "
+                    f"samples_trained_this_run={loop_samples_trained}"
                 )
-                global_sample_cursor = 0
-                iteration_index = oom_plan.next_iteration_index
-                continue
+                break
             optimizer.zero_grad(set_to_none=True)
             accumulation_step = 0
+            current_accumulation_target = config.min_grad_accum_steps
             global_step += 1
             current_learning_rate = _set_optimizer_learning_rate(
                 optimizer=optimizer,
@@ -1873,7 +1866,7 @@ def _run_unified_loop(
             samples_trained=samples_trained,
             samples_trained_this_run=samples_trained - samples_trained_at_loop_start,
             global_step=global_step,
-            grad_accum_steps=config.grad_accum_steps,
+            min_grad_accum_steps=config.min_grad_accum_steps,
             max_average_absolute_advantage=max_average_absolute_advantage,
             min_average_absolute_advantage=min_average_absolute_advantage,
             median_average_absolute_advantage=median_average_absolute_advantage,

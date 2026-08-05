@@ -6,12 +6,14 @@ use crate::hybrid_dataset::Training;
 pub enum BranchingPolicy {
     TreeMappoGuided, // our method with guided branching point determination that considers distance to center, target segment length, branching factor, target token logprob distribution, etc.
     TempoSpontaneous, // we make the model to always rollout from scratch, and derive the branching point from the divergence point
+    TreeRlEntropyGuided, // TreeRL-style ablation: choose guided branch points by token-distribution entropy while keeping the same tree infrastructure
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Copy, clap::ValueEnum)]
 pub enum TrainingAdvantagePolicy {
     TreeMappoPosterior, // our method that make assumptions about the relationship between each segment's contribution and final outcome, and then use probabilistic model and maximum-a-posteriori update to get the contribution posteriors
-    TreeRpoWinRate, // the advantage is linearly proportional to num_wins / total_plays of a segment or node's children outcomes
+    TreeRpoWinRate, // TreeRPO-style child-group win-rate advantage with bottom-up outcome backup
+    TreeRlLocalGlobal, // TreeRL-style ablation: combine local parent-child and global root-child value deltas
     GrpoTerminalReward, // flat GRPO baseline: group-normalized terminal correctness assigned to each response's supervised tokens
 }
 

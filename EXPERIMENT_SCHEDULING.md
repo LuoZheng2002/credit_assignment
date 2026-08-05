@@ -733,3 +733,456 @@ These notes record known implementation-paper mismatches that should not block t
    - Token advantages are still clipped to `[-3, 3]` during training-set materialization and clamped again by `advantage_clip = 3.0` in Python training.
    - Generated training trajectories now store old rollout token log-probabilities, and Python training uses a fixed PPO/GRPO-style clip ratio of `0.2`.
    - Existing training sets without `old_logprobs` must be regenerated before future training, because the new standard objective intentionally has no old-objective fallback path.
+
+## Latest Completed Test Update — 2026-08-01
+
+All tracked held-out serious test jobs from the latest batch completed, and the Delta queue was empty at the last poll.
+
+- Qwen34 tool GRPO best checkpoint: held-out mean accuracy `0.6609` across six datasets.
+- Qwen34 tool TreeMAPPO best checkpoint: held-out mean accuracy `0.6478` across six datasets.
+- Qwen2.5 no-tool positive-advantage-only TreeMAPPO: held-out mean accuracy `0.6800`.
+- Qwen2.5 tool positive-advantage-only TreeMAPPO: held-out mean accuracy `0.6117`.
+
+Current interpretation:
+
+1. Qwen2.5 no-tool remains the cleanest paper path because both GRPO and TreeMAPPO show modest positive validation signals under matched rank-32, learning-rate `1e-6` settings.
+2. Qwen34 tool is a mixed/negative comparison for TreeMAPPO: the Tree checkpoint is below the matched GRPO checkpoint on aggregate held-out accuracy, although it improves on a subset of datasets.
+3. Positive-advantage-only TreeMAPPO should be treated as an ablation. It is not currently stronger than the standard TreeMAPPO story, especially in the tool setting.
+4. The next scientific decision should be whether to replicate the Qwen2.5 no-tool GRPO-vs-Tree comparison for robustness or spend the next queue slots on planned ablations such as branch budget, TEMPO-style branching, and uncertainty-aware forced-token branching.
+
+
+## Qwen2.5 No-Tool GRPO-vs-Tree Replication — Submitted 2026-08-01
+
+Purpose: independently replicate the matched Qwen2.5 no-tool comparison under the current preferred LoRA recipe.
+
+Matched setup:
+
+- Model: Qwen2.5-7B no-tool.
+- Methods: GRPO terminal-reward baseline vs TreeMAPPO posterior credit assignment.
+- LoRA: rank `32`, alpha `64`, dropout `0.05`.
+- Learning rate: `1e-6`.
+- Training: 5 epochs, 15 minutes per epoch.
+- Rollout: independent replicate nicknames with 2 hours of rollout per method.
+- Generation sorting: `ByQuestion`.
+- Backend: vLLM.
+- Storage: `/work/hdd/bhph/zluo8/credit_assignment/results`.
+
+Submitted chain:
+
+- GRPO rollout: `20745568`, `qwen25_rep1_grpo_rollout`, 1 A100, 32 CPUs, 32G, `02:30:00`, account/QOS `bfsl-delta-gpu`, partition `gpuA100x4`.
+- Tree rollout: `20745569`, `qwen25_rep1_tree_rollout`, 1 A100, 32 CPUs, 32G, `02:30:00`, account/QOS `bfsl-delta-gpu`, partition `gpuA100x4`.
+- GRPO generation: `20745570`, depends on `20745568`, 32 CPUs, 32G, `01:00:00`, account/QOS `bfsl-delta-cpu`, partition `cpu`.
+- Tree generation: `20745571`, depends on `20745569`, 32 CPUs, 32G, `01:00:00`, account/QOS `bfsl-delta-cpu`, partition `cpu`.
+- GRPO training: `20745572`, depends on `20745570`, 1 A100, 32 CPUs, 32G, `02:00:00`, account/QOS `bfsl-delta-gpu`, partition `gpuA100x4`.
+- Tree training: `20745573`, depends on `20745571`, 1 A100, 32 CPUs, 32G, `02:00:00`, account/QOS `bfsl-delta-gpu`, partition `gpuA100x4`.
+- GRPO validation: `20745574`, depends on `20745572`, 1 A100, 32 CPUs, 32G, `01:30:00`, account/QOS `bfsl-delta-gpu`, partition `gpuA100x4`.
+- Tree validation: `20745575`, depends on `20745573`, 1 A100, 32 CPUs, 32G, `01:30:00`, account/QOS `bfsl-delta-gpu`, partition `gpuA100x4`.
+
+Decision rule: compare validation gains relative to each replicate's base checkpoint, then run held-out serious tests on the best GRPO and Tree checkpoints if both validation jobs complete cleanly.
+
+## Breaking Pipeline Redesign Plan — 2026-08-04
+
+This section records the planned breaking change from walltime-based one-shot experiments to chunk-size-based, crash-resumable experiments. The goal is to make rollout, training-set generation, training, and validation resumable with simple file-level state rather than complicated in-process checkpointing.
+
+### Core Design Goals
+
+1. **Question chunks replace walltime budgets.**
+   - One dataset chunk corresponds to one training epoch.
+   - Rollout and training should be specified by chunk size / chunk identity rather than by rollout seconds or per-epoch training seconds.
+   - Chunk files should be independently reproducible and safe to resume after crashes.
+
+2. **Chunk assignment is deterministic.**
+   - `bin_oneshot_rollout` should accept `--num-questions-per-chunk`.
+   - Questions are preassigned to chunks in ascending `flat_id` order.
+   - Chunk size counts raw candidate questions before knowing whether each question will survive all-correct/all-incorrect filtering.
+   - Training rollout chunks should contain the same number of raw questions, except possibly the final remainder chunk.
+   - Async rollout completion order must not affect question-to-chunk assignment.
+   - Rollout outputs should be split into multiple files/directories, one per question chunk.
+
+3. **Training-set generation follows rollout chunking.**
+   - Training trajectories are naturally chunked according to the same deterministic question chunks.
+   - Generated trajectory chunks may contain fewer questions than rollout chunks because all-correct/all-incorrect questions are filtered.
+   - Do not patch vacancies after filtering; chunk membership remains determined only by the original raw question mapping.
+   - Sorting is fixed to `ByQuestion`; remove or deprecate alternative training-set sort choices for the new pipeline.
+   - Keep filtering out questions whose outcomes are all correct or all incorrect, because they provide no within-question contrast.
+   - Remove filtering of individual trajectories based on low average advantage scale.
+
+4. **Segment advantages are shared across all containing trajectories.**
+   - Current generation assigns a segment's advantage to only one selected trajectory, then zeros the segment before selecting the next trajectory.
+   - New generation should distribute each segment's advantage uniformly across all materialized trajectories containing that segment.
+   - Without trajectory filtering, trajectory count should equal leaf count for each surviving question, so this is equivalent to dividing by all containing leaves.
+   - This preserves the same total segment-level training weight while avoiding arbitrary single-trajectory ownership of shared prefixes.
+
+5. **Gradient accumulation is question-aware.**
+   - Replace `grad_accum_steps` with `min_grad_accum_steps`.
+   - Batch size is fixed to `1`, so `min_grad_accum_steps` counts trajectories / microbatches.
+   - Training accumulates gradients until at least `min_grad_accum_steps` trajectories have been included and all trajectories for the most recent question in the accumulation window have also been included.
+   - This rounds optimizer steps up to full question groups, preventing trajectories from the same question from being split across different optimizer updates.
+   - Do not add a hard maximum accumulation cap, but print a warning if an optimizer step accumulates more than `2 * min_grad_accum_steps` trajectories.
+
+6. **Training-set validation becomes chunk-aware.**
+   - In addition to held-out validation, run validation on training chunks before and after training on each chunk.
+   - Training-chunk validation should rerun inference on the raw questions in the chunk, not evaluate only materialized training trajectories.
+   - Training-chunk validation uses deterministic inference with temperature `0`, not the training rollout temperature.
+   - Training-chunk validation after chunk `k` should evaluate the trained model/checkpoint corresponding to epoch/chunk `k`.
+   - This should expose whether the model improves on the exact chunk it trained on and whether improvements transfer to held-out validation.
+   - The validation record should identify model checkpoint, chunk id, split type (`training_chunk` vs held-out validation), and whether it is pre- or post-training for that chunk.
+
+7. **Held-out validation remains unchanged.**
+   - The current 3000-sample validation policy should remain the held-out validation path.
+   - Held-out validation runs for every trained epoch/checkpoint.
+   - Held-out validation also runs on the base model as epoch `0`.
+
+### Expected Pipeline Shape
+
+1. Rollout chunk `k`: generate deterministic action-log artifact for questions in chunk `k`.
+2. Generate training chunk `k`: materialize all eligible question-grouped training trajectories for that rollout chunk.
+3. Validate pre-training on training chunk `k`.
+4. Train on training chunk `k`, with question-aware gradient accumulation.
+5. Save checkpoint for epoch/chunk `k`.
+6. Validate post-training on training chunk `k`.
+7. Validate held-out set for checkpoint `k`.
+8. Continue with chunk `k+1`.
+
+### Implementation Notes
+
+- The chunk id should become part of artifact paths and summaries so partial completion is visible from the filesystem.
+- The new pipeline should prefer append-safe or write-then-rename artifact creation to avoid treating partially written chunks as complete.
+- Each completed chunk/epoch should write an explicit marker file, such as a separate dummy completion file.
+- Detection logic should be simple: if the marker is absent, erase stale artifacts for that chunk/epoch and restart from that whole chunk.
+- The recovery unit is the whole chunk; partial chunk resume is intentionally not supported.
+- Existing walltime-based configs and launchers will likely need breaking TOML schema changes rather than backward-compatible fallbacks.
+- Existing experiment results should be treated as legacy results; do not silently mix old unchunked artifacts with new chunked artifacts.
+- The first smoke test should use a small chunk size to verify deterministic chunk mapping, trajectory materialization, question-aware accumulation boundaries, and per-chunk validation.
+
+### Resolved Checkpoint-Pruning Decision
+
+1. **Disable LoRA checkpoint pruning during initial chunked-pipeline smoke tests.**
+   - LoRA checkpoint pruning refers to the existing validation-side disk cleanup that can delete non-best LoRA checkpoint artifacts after validation.
+   - Disable this cleanup temporarily while validating the new chunk artifact layout, completion-marker logic, and resume semantics.
+   - After the chunked pipeline is stable, re-enable pruning with chunk-aware rules.
+
+## Separate Judging-Pass Redesign Plan — 2026-08-04
+
+This section records the planned breaking change to decouple leaf judging from rollout, validation, and testing. The goal is to make correctness judgments deterministic, reusable, and consistent across experiments for the same question/answer input.
+
+### Core Design Goals
+
+1. **Judging becomes a separate pass.**
+   - Training rollout should generate trajectories without finalizing correctness judgments inline.
+   - The new implementation should not produce inline judgments at all.
+   - Training-chunk validation, held-out validation, and testing should also separate model inference from answer judging.
+   - Validation and testing should always launch a separate judging job; even exact string matches between model answer and reference answer should be judged exclusively by the judging job.
+   - Existing behavior that uses leaf judgment results during branching should be removed for simplicity and better pass decoupling.
+   - Rollout branching should rely only on non-judgment state, such as rollout structure, branch budget, and model-token signals.
+
+2. **Judgments are centralized and reusable.**
+   - Maintain a centralized judgment cache keyed by the stable judgment input.
+   - The judgment input should match the current implementation in `judge_correctness.rs`.
+   - The cache key should include split, question `flat_id`, and the model-provided answer string.
+   - Reuse cached judgments across training rollout, training-chunk validation, held-out validation, testing, and different experiment variants.
+   - Given the same judgment input, all experiments should observe the same verdict unless the cache schema/version explicitly changes.
+   - Old judgment caches should be discarded rather than migrated.
+   - Existing old embedded verdicts in legacy artifacts should be ignored.
+   - Do not invest implementation effort in old unchunked artifacts; the new pipeline should use new chunked rollout files.
+
+3. **Judgment cache files are split-aligned and human-readable.**
+   - Use readable JSONL files rather than the current database format.
+   - Cache files should be chunked by split and `flat_id`, with each chunk responsible for 1000 raw questions.
+   - Different splits correspond to different cache chunk namespaces/files; the chunk file is determined by split and `flat_id`.
+   - Cache chunk size is independent of rollout chunk size.
+   - Judging logic should locate cache chunks by split and `flat_id`, not by attempting to map rollout chunks onto cache chunks.
+   - Linear scan within a 1000-question JSONL chunk is acceptable for inspection and access.
+   - Each cache chunk should keep one canonical record per `(split, flat_id, answer_string, cache_version)` key.
+   - If a canonical decision already exists for a key, the item should not be judged again under the same cache version.
+
+4. **Judging jobs are parallel but per-chunk serialized.**
+   - Judging jobs should run on CPU nodes because judging uses API models rather than local GPU inference.
+   - API requests should be asynchronous for throughput.
+   - Slurm judging jobs may be queued in parallel, but only one job may acquire the lock for a given cache chunk at a time.
+   - Do not differentiate read and write locks for the first implementation; one exclusive per-chunk lock is simpler and safer.
+   - Judging job submission should be independent of rollout chunk size and cache chunk size.
+   - Each judging job should judge all trajectories produced by the immediately previous inference/rollout pass, which may span multiple rollout chunks and multiple cache chunks.
+   - Judging results should be dispatched to the appropriate cache chunks based on split and `flat_id`.
+   - Use separate request concurrency of `200` per model to maximize judging throughput.
+   - Prefer correctness and race freedom over maximum judging throughput.
+
+5. **OpenRouter is the judging provider.**
+   - All judging models should be accessed through OpenRouter.
+   - Use the same judging prompt for all models unless a specific model is empirically shown to be incompatible with the prompt.
+   - API calls should use up to three retry attempts.
+   - If all three attempts are exhausted and no valid judge output is produced, write back current cache/progress state and exit immediately with exit code `1`.
+
+6. **Multi-phase agreement is the default judgment protocol.**
+   - Phase 1 uses three independent lightweight judges: `deepseek-v4-flash`, `qwen3-32B`, and `google/gemini-2.5-flash-lite`.
+   - If all three phase-1 models agree, that unanimous verdict is final and cached.
+   - If phase 1 disagrees, phase 2 uses two stronger independent judges: `deepseek-v4-pro` and `gpt-4.1-mini`.
+   - Phase 2 concludes only if `deepseek-v4-pro` and `gpt-4.1-mini` agree.
+   - If the two phase-2 judges disagree, phase 3 uses `gpt-5-mini` as the exclusive final-verdict model.
+   - Judges should remain independent unless the final verdict has already been determined.
+   - Store individual judge outputs only for disagreement/escalation cases; in the worst case, record all six outputs from phases 1, 2, and 3.
+   - Escalated final-verdict cases should be recorded both in the original cache chunk and in one append-only global JSONL shared across all experiments, for human notification and later audit.
+
+7. **Judging statistics become first-class outputs.**
+   - Report total judged items, cache-hit rate, unanimous-agreement rate, phase-2 rate, final-escalation rate, and expensive-judgment percentage.
+   - Record per-dataset and per-experiment statistics where applicable.
+   - Keep enough metadata to identify whether high-cost judging is concentrated in specific datasets, models, or experiment variants.
+
+### Expected Pass Structure
+
+1. Inference/rollout pass emits raw model outputs and stable judgment inputs without correctness verdicts.
+2. Judging pass reads unresolved judgment inputs, checks the centralized cache, and schedules only cache misses.
+3. Phase-1 three-model async judging panel runs on CPU nodes for cache misses.
+4. Phase-2 two-model stronger judging runs only for phase-1 disagreements.
+5. `gpt-5-mini` final-verdict escalation runs only if disagreement remains after phase 2.
+6. Judging pass writes final verdicts, escalation audit records, and judging statistics.
+7. Downstream generation, training-set filtering, validation summaries, and test summaries consume cached final verdicts.
+
+### Dependency Structure
+
+- Training rollout judgment should be a separate Slurm job depending on training rollout.
+- Training-set generation should be a separate Slurm job depending on training rollout judgment.
+- Training-chunk validation, held-out validation, and testing should always use separate judging jobs after inference jobs.
+
+### Implementation Notes
+
+- The judgment cache should use write-then-rename marker semantics similar to the chunked pipeline where applicable.
+- The cache schema should include a version so prompt/model/protocol changes do not silently mix old and new judgments.
+- Existing experiment results and embedded inline judgments should be treated as legacy and ignored by the new chunked pipeline.
+- There are no remaining known design clarifications for the judging-pass plan; implementation may still surface code-level details.
+
+## Removing Inline Tree Judging — Implementation Plan
+
+This section records the concrete code-level plan for removing inline judging from tree construction and reconnecting judgments through a separate judging pass.
+
+### Current Coupling To Remove
+
+1. **Tree action log currently contains judgments.**
+   - `DirectTreeAction::JudgeAnswer(CorrectnessJudgment)` runs during rollout.
+   - `DirectTreeAction::AttachSegmentToTree { ..., correctness_judgment }` attaches both the generated segment and its verdict.
+   - `DirectTree::leaf_segment_judgments` is populated during `AttachSegmentToTree`.
+
+2. **Tree state machine currently has judging statuses.**
+   - Trunk, guided branching, and spontaneous branching each have a `JudgingSegment` status.
+   - `tree_to_action.rs` calls `judge_final_answer` when the tree reaches `JudgingSegment`.
+   - This makes rollout depend on API judging and old judgment-cache behavior.
+
+3. **Branching / early stopping currently can depend on correctness.**
+   - Training rollout can early-stop when enough leaves have been judged and the tree is all correct or all incorrect.
+   - This must be removed so rollout no longer needs correctness verdicts.
+
+### New Tree Construction Contract
+
+1. **Rollout emits only raw tree structure and final answers.**
+   - Keep `SubmitAnswer(FinalAnswer)` as the event that ends a leaf trajectory.
+   - Replace judged attachment with an unjudged leaf attachment action, for example `AttachSegmentToTreeUnjudged { parent_segment_id, finalized_content_array, final_answer }`.
+   - The attached leaf segment should store or be associated with its `FinalAnswer`, but not `CorrectnessJudgment`.
+   - The new chunked rollout action log should never emit `JudgeAnswer` or judged `AttachSegmentToTree`.
+
+2. **Tree reconstruction has two views.**
+   - `UnjudgedDirectTree`: reconstructs structure, leaf segment ids, trunk leaves, and final answers, but has no verdicts.
+   - `JudgedDirectTree`: combines an unjudged tree with a judgment overlay keyed by leaf segment id or by stable judgment input.
+   - Downstream code that calculates posteriors, advantages, accuracy, or all-correct/all-incorrect filtering must require `JudgedDirectTree` or an equivalent explicit judged view.
+
+3. **Leaf identity must be stable within chunk artifacts.**
+   - The judging job needs to connect verdicts back to the tree deterministically.
+   - Each emitted judgment request should include experiment artifact id, split, flat id, tree id/question id, leaf segment id, final answer, and the exact model answer string used in the cache key.
+   - The final cache lookup key remains `(split, flat_id, answer_string, cache_version)`, but the per-artifact judgment overlay should also record the leaf segment id so the tree can be annotated without ambiguity.
+
+### Judging Job Connection To Trees
+
+1. **Request extraction pass.**
+   - A judging job reads the previous inference/rollout artifacts and reconstructs unjudged trees.
+   - For each leaf with a final answer, it emits a judgment request record matching the current `judge_correctness.rs` input semantics plus split, flat id, and answer string.
+   - Failure final answers should still produce a deterministic cached verdict through the judging pass; do not short-circuit in rollout.
+
+2. **Cache resolution pass.**
+   - For each request, check the chunked JSONL judgment cache by split and flat id.
+   - If a canonical verdict already exists for `(split, flat_id, answer_string, cache_version)`, reuse it.
+   - Otherwise run the OpenRouter multi-phase judging protocol and write the canonical verdict to the appropriate cache chunk.
+
+3. **Overlay materialization pass.**
+   - After cache resolution, write a per-rollout/per-validation judgment overlay file adjacent to the inference artifact.
+   - The overlay should map each tree leaf to a verdict, for example `{ tree_key, split, flat_id, leaf_segment_id, answer_string, cache_key, is_correct }`.
+   - Write the overlay through a temporary file and then atomically create a completion marker.
+   - Downstream generation/validation/test summary jobs should require the overlay completion marker before reading judgments.
+
+4. **Judged tree loading API.**
+   - Add a loader that takes an unjudged tree artifact and its overlay, validates that every leaf has exactly one verdict, and returns a judged view.
+   - The loader should fail fast if a leaf is missing, duplicated, or mapped to a cache verdict whose answer string does not match the leaf final answer.
+   - This loader becomes the only supported path for training-set generation, posterior calculation, TreeRPO/GRPO advantage calculation, accuracy aggregation, and all-correct/all-incorrect filtering.
+
+### Migration Steps
+
+1. Add new unjudged leaf attachment action and tree fields for leaf final answers.
+2. Remove `JudgeAnswer` production from `tree_to_action.rs`.
+3. Remove inline `judge_final_answer` calls from rollout.
+4. Remove judged early stopping from tree expansion; stop by deterministic trunk/leaf budget only.
+5. Add judgment-request extraction from unjudged tree artifacts.
+6. Add chunked JSONL judgment cache and OpenRouter judging protocol.
+7. Add judgment overlay writer and completion marker.
+8. Add judged-tree loader that combines unjudged trees with overlays.
+9. Update training-set generation, validation summaries, testing, browsing, and accuracy utilities to consume judged views.
+10. Treat all old judged action logs as legacy; do not support mixing old inline-judged artifacts with the new chunked pipeline.
+
+### Code Hotspots
+
+- `src/tree_action.rs`: remove or legacy-gate `JudgeAnswer`; replace judged attach action with unjudged attach action for new artifacts.
+- `src/tree_status.rs`: remove `JudgingSegment` and `AttachingToTree` states that carry `CorrectnessJudgment`; keep only states needed to attach raw generated leaves.
+- `src/tree_to_action.rs`: remove `judge_final_answer` calls and any rollout-time correctness dependency.
+- `src/tree_from_action.rs`: attach generated leaf segments and final answers without populating `leaf_segment_judgments`.
+- `src/tree.rs`: split raw leaf final-answer storage from judged overlay storage.
+- `src/tree_posterior.rs`, `src/tree_advantage.rs`, `src/training_set.rs`, `src/get_accuracy.rs`: require judged-tree inputs.
+- `src/judge_correctness.rs`: keep prompt/input semantics but move execution to a separate judging binary/job using OpenRouter and chunked JSONL cache.
+
+## Direct Tree Artifact Storage Plan
+
+This section records the planned switch from action-log rollout artifacts to finalized tree rollout artifacts for the new chunked pipeline.
+
+### Artifact Policy
+
+1. **Finalized chunks store trees directly.**
+   - Rollout chunks should write finalized unjudged trees as the primary production artifact.
+   - Action logs take too much space and should no longer be the default downstream dependency for finalized chunks.
+   - Keep action-log infrastructure in the codebase as an optional debug/fallback path in case action-level replay is needed later.
+   - Do not remove action-log types immediately; legacy/debug code may still use them.
+
+2. **Downstream readers support both sources.**
+   - Judging should read direct tree artifacts first and action logs only as an explicit fallback/debug mode.
+   - Training trajectory generation should support direct tree input apart from action-log reconstruction.
+   - Tree browsing should support direct tree files apart from action-log files.
+   - Accuracy and validation summary utilities should consume direct tree + judgment artifacts in the new pipeline.
+
+3. **Tree and judgment data are separate.**
+   - Define a tree struct that contains only rollout-produced structure and final answers, with no correctness verdicts.
+   - Define a separate tree-judgment struct that contains judgment results.
+   - Define `TreeJudged` as an explicit combined struct containing both tree and judgment fields.
+   - This makes the pass boundary concrete: rollout produces trees; judging produces judgments; downstream training/validation consumes `TreeJudged`.
+
+4. **Judgment mapping avoids leaf-index fragility.**
+   - The tree judgment should include a mapping from model answer string to boolean verdict.
+   - This is intended to avoid index-mismatch bugs when connecting judgments back to tree leaves.
+   - The judged-tree loader should validate that every model-provided leaf answer in the tree has exactly one verdict in the judgment mapping.
+   - If multiple leaves produce the same answer string, they intentionally share the same cached judgment verdict.
+
+### Direct Tree Artifact Contents
+
+Each direct tree artifact should preserve enough information for judging, training, browsing, and debugging:
+
+- Question metadata: split, flat id, dataset/source, raw question, reference answer.
+- Rollout metadata: model, config nickname, rollout config, backend, chunk id, artifact schema version.
+- Tree structure: segment ids, parent ids, child ids, trunk leaf ids, root id.
+- Segment contents: prompt/tool response/supervised model tokens, token ids, decoded text where useful, and rollout old logprobs.
+- Leaf outputs: final answer object and normalized model answer string for judgment-cache lookup.
+- Optional debug provenance: branch decisions, selected branch token/logprob, seeds if available, and generation parameters.
+
+### Migration Steps
+
+1. Add direct serializable tree artifact structs for unjudged trees.
+2. Add `TreeJudgment` and `TreeJudged` structs with explicit pass boundaries.
+3. Add writer for finalized chunk tree artifacts and completion markers.
+4. Make rollout write direct tree artifacts by default, with action logs optional/debug-only.
+5. Add direct tree readers for judging, training-set generation, tree browsing, validation summaries, and testing.
+6. Keep action-log replay readers behind explicit fallback/debug flags.
+7. Smoke test direct tree round-trip: rollout tree -> judgment overlay -> `TreeJudged` -> generation/browse/accuracy.
+
+### Implementation Status As Of 2026-08-04
+
+Completed:
+
+1. **Direct tree artifacts.**
+   - Added direct unjudged tree artifacts, per-chunk tree files, and `chunk_{n}_done` markers.
+   - Rollout now writes completed chunk artifacts as soon as all questions in a chunk are complete, while retaining action logs as debug/replay infrastructure.
+
+2. **Separate judging pass infrastructure.**
+   - Added chunked JSONL judgment cache and `bin_oneshot_judging`.
+   - Added a reusable CPU-only SLURM launcher for judging jobs.
+   - Added a dependency-aware one-shot pipeline launcher for rollout -> training-judging -> generation -> training -> validation.
+   - Added `TreeJudgment` and `TreeJudged`; generation, validation accuracy, and testing accuracy can now consume direct trees plus judgment overlays.
+
+3. **Training-set generation changes.**
+   - Direct judged-tree generation is implemented.
+   - The old low-advantage trajectory filter is removed.
+   - Segment advantages are now split uniformly across all leaves/trajectories containing the segment.
+   - Generated trajectory output is fixed to question ordering for the new pipeline and can additionally emit `chunk_{n}.msgpack` trajectory files by preassigned question flat-id ranges.
+
+4. **Training accumulation changes.**
+   - `grad_accum_steps` is now semantically treated as `min_grad_accum_steps` and serialized as `min_grad_accum_steps`; old TOML keys are accepted as an alias.
+   - Single-process training rounds accumulation up to include all trajectories from the last question in the accumulation window.
+   - Training logs a warning if the rounded accumulation window exceeds twice the configured minimum.
+
+5. **Chunk-backed training resume.**
+   - One-shot training now prefers generated `chunk_{n}.msgpack` trajectory files when present.
+   - Each chunk maps to one one-shot epoch, and recovery resumes at the first missing epoch model artifact.
+
+Current implementation status and remaining verification:
+
+1. **Training-chunk validation.**
+   - Implemented as a diagnostic-only separate binary: `bin_oneshot_training_chunk_validation`.
+   - It reads the generated `training_trajectories/chunk_{n}.msgpack` file as the source of truth and collects the observed unique training-question flat ids.
+   - It reruns deterministic inference on exactly the observed flat ids, not the pre-filter chunk range, so filtered-out questions do not get vacancy-patched back into diagnostics.
+   - For `num_oneshot_epochs = N`, diagnostic validation performs `2N` validations: for each chunk/epoch `n`, it evaluates checkpoint `n - 1` before training on chunk `n` and checkpoint `n` after training on the same chunk.
+   - It records chunk index, observed trajectory count, observed question count, min/max observed flat id, before/after epoch, before/after accuracy, and artifact paths at `{mount_dir}/small_files/{model}/{config}/training_chunk_validation/chunk_{n}.json`.
+   - It supports explicit `--phase rollout`, `--phase judge`, and `--phase score`; `all` remains available as a compatibility/debug path.
+   - The pipeline launcher schedules one all-chunk rollout job, one all-chunk judging job, and one all-chunk diagnostic scoring job for the whole experiment, rather than three jobs per chunk.
+   - It must not affect model pruning, best-epoch selection, checkpoint cleanup, or the success criteria of held-out validation.
+
+2. **Standalone validation/testing judging jobs.**
+   - Training rollout judging is now wired as a standalone CPU pass in the one-shot pipeline launcher.
+   - Held-out validation now supports explicit `--phase rollout`, `--phase judge`, and `--phase score`; `all` remains available as a compatibility path.
+   - Testing now supports explicit `--phase rollout`, `--phase judge`, and `--phase score`; `all` remains available as a compatibility path.
+   - The one-shot pipeline launcher schedules held-out validation as rollout GPU -> judge CPU -> score CPU.
+   - For `num_oneshot_epochs = N`, held-out validation performs `N + 1` validations: the base model as epoch `0`, then trained checkpoints `1..N`.
+   - Testing has separate GPU and CPU SLURM scripts for rollout versus judging/scoring.
+
+3. **Checkpoint pruning.**
+   - Checkpoint pruning is now a separate CPU job (`bin_oneshot_prune`).
+   - The one-shot pipeline launcher schedules pruning only after held-out validation scoring and the all-chunk diagnostic training-chunk validation scoring job succeeds.
+   - Additional diagnostic validation job ids can be added to the prune dependency with `--prune-after-job-id`.
+
+4. **Next implementation step.**
+   - Run a small end-to-end dry submission on Delta using one chunk and a short walltime to validate path conventions and dependency ordering.
+   - If the dry run passes, migrate active experiment submissions to `scripts/hpc/bin_oneshot_pipeline.py`.
+
+## Chunked Pipeline Smoke Test — Submitted 2026-08-04
+
+Purpose: verify the new chunked one-shot pipeline end to end before using it for serious experiments.
+
+Setup:
+
+- Model: Qwen2.5 no-tool.
+- Method: GRPO terminal-reward baseline.
+- Training: single-GPU LoRA, rank `32`, learning rate `1e-6`.
+- Chunking: `2` epochs/chunks, `100` raw questions per chunk.
+- Training time: `300` seconds per epoch.
+- Validation: held-out validation total epochs `2`, plus diagnostic training-chunk validation over all chunks.
+- Optimizer switches: `use_adam_state = true`, `use_lr_warmup = true`.
+- Configs:
+  - `config/oneshot_rollout/qwen25_rollout_grpo_notool_chunk_smoke.toml`
+  - `config/oneshot_generation/qwen25_generate_grpo_notool_chunk_smoke.toml`
+  - `config/oneshot_train/qwen25_train_grpo_notool_chunk_smoke_lora_r32_lr1e6_2ep.toml`
+
+Pre-submit login smoke:
+
+- Passed locally and on the Delta login node.
+- The smoke caught and fixed two trivial blockers before SLURM submission:
+  - Diagnostic training-chunk validation initially rejected `validation_total_epochs`.
+  - Prune initially used an underspecified training-config schema.
+
+Submitted SLURM chain:
+
+- Rollout: `20861708`, 1 A100, 32 CPUs, 32G, `00:50:00`, account `bfsl-delta-gpu`, partition `gpuA100x4`, pending reason `Priority`.
+- Training judging: `20861709`, CPU, 32 CPUs, 32G, `01:00:00`, dependency `afterok:20861708`.
+- Generation: `20861710`, CPU, 32 CPUs, 32G, `00:17:00`, dependency `afterok:20861709`.
+- Training: `20861711`, 1 A100, 32 CPUs, 32G, `00:50:00`, dependency `afterok:20861710`.
+- Diagnostic chunk rollout: `20861712`, 1 A100, 32 CPUs, 32G, `00:50:00`, dependency `afterok:20861711`.
+- Diagnostic chunk judging: `20861713`, CPU, 32 CPUs, 32G, `00:50:00`, dependency `afterok:20861712`.
+- Diagnostic chunk scoring: `20861714`, CPU, 32 CPUs, 32G, `00:50:00`, dependency `afterok:20861713`.
+- Held-out validation rollout: `20861715`, 1 A100, 32 CPUs, 32G, `00:50:00`, dependency `afterok:20861711`.
+- Held-out validation judging: `20861716`, CPU, 32 CPUs, 32G, `00:50:00`, dependency `afterok:20861715`.
+- Held-out validation scoring: `20861717`, CPU, 32 CPUs, 32G, `00:50:00`, dependency `afterok:20861716`.
+- Prune: `20861718`, CPU, 32 CPUs, 32G, `00:50:00`, dependencies `afterok:20861717` and `afterok:20861714`.
+
+3. **Legacy inline-judgment cleanup.**
+   - New downstream generation/accuracy paths use `TreeJudged`.
+   - Legacy `JudgeAnswer` actions and old judged action-log replay remain for debug/fallback and should be removed or explicitly gated after the new pipeline is smoke-tested.

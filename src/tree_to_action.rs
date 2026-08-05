@@ -6,7 +6,6 @@ use research_utility::progress_text_logger::log_warning;
 
 use crate::atomic_count_guard::AtomicCountGuardRef;
 use crate::hybrid_dataset::{DatasetSplit, QuestionFlatId};
-use crate::judge_correctness::judge_final_answer;
 use crate::llm_model::MyTokenizer;
 use crate::rollout::{ROLLOUT_STOP_SIGNAL, RolloutStats, StopRequestedError};
 use crate::tool_call_python::{PythonToolResponse, execute_python_tool_call, python_tool_pool};
@@ -27,6 +26,7 @@ use crate::{
 pub struct BranchingRuntimeOptions {
     pub uncertainty_aware_branching: bool,
     pub force_selected_branch_token: bool,
+    pub tree_rl_entropy_guided_branching: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -125,9 +125,15 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     } else {
                         1.0
                     };
-                    let branching_score = uncertainty_multiplier
-                        * best_token_relative_probability
-                        * branching_factor_penalty_multiplier;
+                    let branching_base_score = if branching_options.tree_rl_entropy_guided_branching
+                    {
+                        Self::normalized_topk_entropy(&token_view.logprobs)
+                    } else {
+                        best_token_relative_probability
+                    };
+                    let branching_score = branching_base_score
+                        * branching_factor_penalty_multiplier
+                        * uncertainty_multiplier;
                     TokenBranchingScore {
                         token_id,
                         token_logprob,
@@ -163,9 +169,15 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     } else {
                         1.0
                     };
-                    let branching_score = uncertainty_multiplier
-                        * best_token_relative_probability
-                        * segment_length_penalty_multiplier;
+                    let branching_base_score = if branching_options.tree_rl_entropy_guided_branching
+                    {
+                        Self::normalized_topk_entropy(&token_view.logprobs)
+                    } else {
+                        best_token_relative_probability
+                    };
+                    let branching_score = branching_base_score
+                        * segment_length_penalty_multiplier
+                        * uncertainty_multiplier;
                     TokenBranchingScore {
                         token_id,
                         token_logprob,
@@ -188,7 +200,7 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
     pub async fn produce_action_from_direct_tree(
         &self,
         llm_callable: &M::Callable,
-        client: Client,
+        _client: Client,
         branching_options: BranchingRuntimeOptions,
     ) -> Result<DirectTreeAction<M>, StopRequestedError> {
         let result = match &self.status {
@@ -251,26 +263,34 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
             }
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::JudgingSegment {
                 final_answer,
-                ..
-            })
-            | DirectTreeStatus::WorkingOnGuidedBranching(
-                GuidedBranchingSubStatus::JudgingSegment { final_answer, .. },
-            )
-            | DirectTreeStatus::WorkingOnSpontaneousBranching(
-                SpontaneousBranchingSubStatus::JudgingSegment { final_answer, .. },
-            ) => {
-                let correctness_judgment = judge_final_answer(
-                    &final_answer,
-                    &self.action_log.question.correct_answer,
-                    &self.action_log.question.question,
-                    &self.action_log.mount_dir,
-                    M::CLI_NAME,
-                    &self.action_log.config_nickname,
-                    client,
-                )
-                .await;
-                DirectTreeAction::JudgeAnswer(correctness_judgment)
-            }
+                finalized_content_array,
+            }) => DirectTreeAction::AttachSegmentToTreeUnjudged {
+                parent_segment_id: self.root_segment_id.unwrap(),
+                finalized_content_array: finalized_content_array.clone(),
+                final_answer: final_answer.clone(),
+            },
+            DirectTreeStatus::WorkingOnGuidedBranching(
+                GuidedBranchingSubStatus::JudgingSegment {
+                    final_answer,
+                    parent_segment_id,
+                    finalized_content_array,
+                },
+            ) => DirectTreeAction::AttachSegmentToTreeUnjudged {
+                parent_segment_id: *parent_segment_id,
+                finalized_content_array: finalized_content_array.clone(),
+                final_answer: final_answer.clone(),
+            },
+            DirectTreeStatus::WorkingOnSpontaneousBranching(
+                SpontaneousBranchingSubStatus::JudgingSegment {
+                    final_answer,
+                    parent_segment_id,
+                    prefix_trimmed_content_array,
+                },
+            ) => DirectTreeAction::AttachSegmentToTreeUnjudged {
+                parent_segment_id: *parent_segment_id,
+                finalized_content_array: prefix_trimmed_content_array.clone(),
+                final_answer: final_answer.clone(),
+            },
             DirectTreeStatus::WorkingOnTrunk(TrunkSubStatus::AttachingToTree {
                 correctness_judgment,
                 parent_segment_id,
@@ -445,6 +465,33 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
             .logprob
     }
 
+    fn normalized_topk_entropy(token_logprobs: &Top8Candidates) -> f32 {
+        let probabilities = token_logprobs
+            .iter()
+            .filter(|candidate| candidate.logprob.is_finite())
+            .map(|candidate| candidate.logprob.exp())
+            .collect::<Vec<_>>();
+        if probabilities.len() <= 1 {
+            return 0.0;
+        }
+        let sum = probabilities.iter().sum::<f32>();
+        if sum <= 0.0 || !sum.is_finite() {
+            return 0.0;
+        }
+        let entropy = probabilities
+            .iter()
+            .map(|probability| {
+                let normalized = probability / sum;
+                if normalized > 0.0 {
+                    -normalized * normalized.ln()
+                } else {
+                    0.0
+                }
+            })
+            .sum::<f32>();
+        entropy / (probabilities.len() as f32).ln()
+    }
+
     pub fn branching_factor_penalty_multiplier(mut branching_factor: usize) -> f32 {
         branching_factor = branching_factor.max(1); // ensure branching factor is at least 1 to avoid zero or negative values
         // assert!(branching_factor >= 1);
@@ -469,16 +516,15 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         // linear relationship
         scaled_ratio
     }
+
     pub fn posteriors_to_segment_uncertainty_scores(
         &self,
         posteriors: &BTreeMap<SegmentId, Posterior>,
     ) -> BTreeMap<SegmentId, f32> {
         let eps = 1e-8_f32;
-        // avoid division by zero
         if posteriors.is_empty() {
             return BTreeMap::new();
         }
-        // the raw uncertainty or signal-to-noise ratio score
         let mean_div_stds: BTreeMap<SegmentId, f32> = posteriors
             .iter()
             .map(|(segment_id, posterior)| {
@@ -486,7 +532,6 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                 (*segment_id, posterior.mean / (std + eps))
             })
             .collect();
-
         let mean_of_mean_div_stds =
             mean_div_stds.values().sum::<f32>() / mean_div_stds.len() as f32;
         let std_of_mean_div_stds = (mean_div_stds
@@ -495,26 +540,18 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
             .sum::<f32>()
             / mean_div_stds.len() as f32)
             .sqrt();
-
-        let mean_div_stds_normalized: BTreeMap<SegmentId, f32> = mean_div_stds
+        mean_div_stds
             .iter()
             .map(|(segment_id, mean_div_std)| {
                 let mean_div_std_norm =
                     (*mean_div_std - mean_of_mean_div_stds) / (std_of_mean_div_stds + eps);
-                (*segment_id, mean_div_std_norm)
-            })
-            .collect();
-        // then we need to find uncertainty score that ranges from 0 to 1
-        let uncertainty_scores: BTreeMap<SegmentId, f32> = mean_div_stds_normalized
-            .iter()
-            .map(|(segment_id, mean_div_std_norm)| {
                 let alpha = 1.0_f32;
                 let uncertainty_score = (-alpha * mean_div_std_norm.powi(2)).exp();
                 (*segment_id, uncertainty_score)
             })
-            .collect();
-        uncertainty_scores
+            .collect()
     }
+
     // async fn generate_continuing_segment_contents(
     //     &self,
     //     // mut current_contents: Vec<SegmentContent>,
@@ -587,17 +624,9 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         &self,
         branching_options: BranchingRuntimeOptions,
     ) -> DirectTreeAction<M> {
-        assert!(!self.leaf_segment_judgments.is_empty());
-
-        let posteriors = self.calculate_segment_posteriors(None);
-        assert!(
-            !posteriors.is_empty(),
-            "Posteriors must not be empty when determining guided branching action"
-        );
-        let mut segment_uncertainty_scores =
-            self.posteriors_to_segment_uncertainty_scores(&posteriors);
+        let mut segment_uncertainty_scores = BTreeMap::new();
         for segment_id in self.segments.keys().copied() {
-            segment_uncertainty_scores.entry(segment_id).or_insert(0.0);
+            segment_uncertainty_scores.entry(segment_id).or_insert(1.0);
         }
         let per_token_branching_scores = self
             .calculate_per_token_branching_scores(&segment_uncertainty_scores, branching_options);

@@ -12,7 +12,7 @@ from pathlib import Path
 from types import UnionType
 from typing import Annotated, Any, Literal, TypeVar, Union, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +28,12 @@ class TrainingHyperparametersRequest(BaseModel):
     advantage_clip: float
     learning_rate: float
     weight_decay: float
-    grad_accum_steps: int
+    use_adam_state: bool
+    use_lr_warmup: bool
+    min_grad_accum_steps: int = Field(
+        validation_alias=AliasChoices("min_grad_accum_steps", "grad_accum_steps"),
+        serialization_alias="min_grad_accum_steps",
+    )
     log_time_interval: float
     seed: int
     adam_beta1: float = 0.9
