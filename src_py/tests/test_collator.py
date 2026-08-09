@@ -14,6 +14,7 @@ class TestCollator(unittest.TestCase):
                 input_length=2,
                 token_advantages=[0.0, 1.2],
                 old_logprobs=[0.0, -0.1],
+                ref_logprobs=None,
                 model_official_name="Qwen/Qwen2.5-7B-Instruct",
             ),
             TrainingSampleTokenized(
@@ -23,6 +24,7 @@ class TestCollator(unittest.TestCase):
                 input_length=4,
                 token_advantages=[0.0, -0.5, -0.5, -0.5],
                 old_logprobs=[0.0, -0.2, -0.3, -0.4],
+                ref_logprobs=None,
                 model_official_name="Qwen/Qwen2.5-7B-Instruct",
             ),
         ]
@@ -34,6 +36,7 @@ class TestCollator(unittest.TestCase):
         self.assertEqual((2, 4), tuple(collated.attention_mask.shape))
         self.assertEqual((2, 4), tuple(collated.advantages.shape))
         self.assertEqual((2, 4), tuple(collated.old_logprobs.shape))
+        self.assertIsNone(collated.ref_logprobs)
 
         self.assertEqual([101, 102, 0, 0], collated.input_ids[0].tolist())
         self.assertEqual(

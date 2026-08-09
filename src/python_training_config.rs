@@ -44,6 +44,8 @@ pub struct TrainingHyperparameters {
     pub lora_or_full: String,
     pub distributed_strategy: String,
     pub advantage_clip: f32,
+    #[serde(default)]
+    pub kl_beta: f32,
     pub learning_rate: f32,
     pub weight_decay: f32,
     pub use_adam_state: bool,

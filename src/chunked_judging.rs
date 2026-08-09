@@ -203,7 +203,10 @@ async fn judge_with_model(
     model_answer: &str,
     correct_answer: &str,
 ) -> Result<JudgeModelOutput, String> {
-    let prompt = build_judge_prompt(question, model_answer, correct_answer);
+    let mut prompt = build_judge_prompt(question, model_answer, correct_answer);
+    if model.contains("qwen") {
+        prompt.push_str("\n/no_think");
+    }
     let mut last_error = None;
     for attempt in 0..JUDGE_ATTEMPTS {
         let temperature = if attempt == 0 { 0.0 } else { 0.7 };
@@ -249,10 +252,15 @@ async fn judge_with_model(
             sleep(Duration::from_secs(1)).await;
         }
     }
-    Err(format!(
-        "judge model {model} failed after {JUDGE_ATTEMPTS} attempts: {}",
-        last_error.unwrap_or_else(|| "unknown error".to_string())
-    ))
+    let error = last_error.unwrap_or_else(|| "unknown error".to_string());
+    Ok(JudgeModelOutput {
+        model: model.to_string(),
+        verdict: false,
+        raw_output: format!(
+            "JUDGE_FAILURE_MARKED_INCORRECT: judge model {model} failed after {JUDGE_ATTEMPTS} attempts: {error}"
+        ),
+        reasoning: None,
+    })
 }
 
 async fn judge_with_model_timed(

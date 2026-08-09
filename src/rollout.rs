@@ -1045,6 +1045,7 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
     let semaphore = Arc::new(Semaphore::new(max_concurrent_rollout));
     let mut join_set = JoinSet::new();
     let mut next_question_index = 0;
+    let mut completed_flat_ids_by_chunk: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     let halfway_time = start_time + (deadline - start_time) / 2;
     let mut did_set_halfway_threshold = false;
 
@@ -1114,25 +1115,36 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
                                 task_result.question_flat_id.0,
                                 tree_artifact_chunk_question_count,
                             );
-                            let store = action_store.lock().await;
-                            store.sort().unwrap();
-                            write_completed_tree_artifact_chunk_if_ready::<M, S>(
-                                &store,
-                                tree_artifact_output_path,
-                                chunk_index,
-                                &expected_by_chunk,
-                                mount_dir,
-                                &config_nickname,
-                                epoch,
-                                &rollout_config,
-                                &posterior_calculation_config,
-                                use_tool,
-                                fixed_temperature,
-                                &question_map,
-                            )
-                            .unwrap_or_else(|err| {
-                                panic!("failed to write ready tree artifact chunk: {err}")
-                            });
+                            let completed_flat_ids = completed_flat_ids_by_chunk
+                                .entry(chunk_index)
+                                .or_default();
+                            completed_flat_ids.insert(task_result.question_flat_id.0);
+                            let chunk_ready = expected_by_chunk
+                                .get(&chunk_index)
+                                .is_some_and(|expected_flat_ids| {
+                                    completed_flat_ids == expected_flat_ids
+                                });
+                            if chunk_ready {
+                                let store = action_store.lock().await;
+                                store.sort().unwrap();
+                                write_completed_tree_artifact_chunk_if_ready::<M, S>(
+                                    &store,
+                                    tree_artifact_output_path,
+                                    chunk_index,
+                                    &expected_by_chunk,
+                                    mount_dir,
+                                    &config_nickname,
+                                    epoch,
+                                    &rollout_config,
+                                    &posterior_calculation_config,
+                                    use_tool,
+                                    fixed_temperature,
+                                    &question_map,
+                                )
+                                .unwrap_or_else(|err| {
+                                    panic!("failed to write ready tree artifact chunk: {err}")
+                                });
+                            }
                     }
                     }
                     Ok(Err(StopRequestedError)) => {}

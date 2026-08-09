@@ -39,7 +39,6 @@ class TrainingLoopClock:
     training_time: float
     resumed_elapsed_training_time_sec: float
     run_start_time: float
-    training_end_time: float
     last_checkpoint_save_time: float
     last_log_time: float
     last_master_progress_time: float
@@ -100,6 +99,13 @@ def _truncate_sample_to_cap(
     assert len(truncated_input_ids) == len(truncated_old_logprobs), (
         "truncated old logprobs must align"
     )
+    truncated_ref_logprobs = (
+        sample.ref_logprobs[start:] if sample.ref_logprobs is not None else None
+    )
+    if truncated_ref_logprobs is not None:
+        assert len(truncated_input_ids) == len(truncated_ref_logprobs), (
+            "truncated ref logprobs must align"
+        )
     return TrainingSampleTokenized(
         id=sample.id,
         input_ids=truncated_input_ids,
@@ -107,6 +113,7 @@ def _truncate_sample_to_cap(
         input_length=len(truncated_input_ids),
         token_advantages=truncated_token_advantages,
         old_logprobs=truncated_old_logprobs,
+        ref_logprobs=truncated_ref_logprobs,
         model_official_name=sample.model_official_name,
     )
 
@@ -232,7 +239,9 @@ def trace_first_nonfinite_backward_signal(
     labels: torch.Tensor,
     advantages: torch.Tensor,
     old_logprobs: torch.Tensor,
+    ref_logprobs: torch.Tensor | None,
     advantage_clip: float,
+    kl_beta: float,
     min_grad_accum_steps: int,
 ) -> str:
     module_names = {
@@ -303,7 +312,9 @@ def trace_first_nonfinite_backward_signal(
             labels=labels,
             advantages=advantages,
             old_logprobs=old_logprobs,
+            ref_logprobs=ref_logprobs,
             advantage_clip=advantage_clip,
+            kl_beta=kl_beta,
         )
         replay_loss = loss_output.loss / min_grad_accum_steps
         replay_loss.backward()
@@ -480,16 +491,16 @@ def _init_training_loop_clock(
         training_time=training_time,
         resumed_elapsed_training_time_sec=resumed_elapsed_training_time_sec,
         run_start_time=run_start_time,
-        training_end_time=run_start_time
-        + max(0.0, training_time - resumed_elapsed_training_time_sec),
         last_checkpoint_save_time=run_start_time,
         last_log_time=run_start_time,
         last_master_progress_time=run_start_time - 1.0,
     )
 
 
-def _should_continue_training(*, clock: TrainingLoopClock) -> bool:
-    return time.monotonic() < clock.training_end_time
+def _should_continue_training_iterations(
+    *, iteration_index: int, num_iterations_limit: int
+) -> bool:
+    return iteration_index < num_iterations_limit
 
 
 def _elapsed_training_time_sec(
@@ -497,8 +508,7 @@ def _elapsed_training_time_sec(
 ) -> float:
     if now is None:
         now = time.monotonic()
-    elapsed = clock.resumed_elapsed_training_time_sec + (now - clock.run_start_time)
-    return min(clock.training_time, elapsed)
+    return clock.resumed_elapsed_training_time_sec + (now - clock.run_start_time)
 
 
 def _plan_cuda_oom(*, iteration_index: int) -> CudaOomPlan:
@@ -546,6 +556,7 @@ def _make_synthetic_zero_advantage_sample(
         input_length=sequence_length,
         token_advantages=[0.0] * sequence_length,
         old_logprobs=[0.0] * sequence_length,
+        ref_logprobs=[0.0] * sequence_length,
         model_official_name=model_official_name,
     )
 
@@ -568,7 +579,7 @@ def _probe_synthetic_sequence_length(
         token_id=token_id,
         model_official_name=expected_model_name,
     )
-    collated = input_ids = labels = attention_mask = advantages = old_logprobs = logits = loss_output = loss = None
+    collated = input_ids = labels = attention_mask = advantages = old_logprobs = ref_logprobs = logits = loss_output = loss = None
     try:
         collated = collate_training_samples(samples=[sample], pad_token_id=pad_token_id)
         input_ids = collated.input_ids.to(device=device, non_blocking=True)
@@ -576,6 +587,11 @@ def _probe_synthetic_sequence_length(
         attention_mask = collated.attention_mask.to(device=device, non_blocking=True)
         advantages = collated.advantages.to(device=device, non_blocking=True)
         old_logprobs = collated.old_logprobs.to(device=device, non_blocking=True)
+        ref_logprobs = (
+            collated.ref_logprobs.to(device=device, non_blocking=True)
+            if collated.ref_logprobs is not None
+            else None
+        )
         logits = eng._forward_logits(
             model, input_ids=input_ids, attention_mask=attention_mask
         )
@@ -584,7 +600,9 @@ def _probe_synthetic_sequence_length(
             labels=labels,
             advantages=advantages,
             old_logprobs=old_logprobs,
+            ref_logprobs=ref_logprobs,
             advantage_clip=advantage_clip,
+            kl_beta=0.0,
         )
         loss = loss_output.loss / min_grad_accum_steps
         loss.backward()
@@ -602,6 +620,7 @@ def _probe_synthetic_sequence_length(
         attention_mask = None
         advantages = None
         old_logprobs = None
+        ref_logprobs = None
         logits = None
         loss_output = None
         loss = None
@@ -741,13 +760,15 @@ def _maybe_apply_single_gpu_lora_synthetic_oom_preflight(
 
 def _plan_distributed_step_control(
     *,
-    clock: TrainingLoopClock,
+    num_iterations_limit: int,
     iteration_index: int,
     sample_count: int,
     global_sample_cursor: int,
     world_size: int,
 ) -> DistributedStepControl:
-    if not _should_continue_training(clock=clock):
+    if not _should_continue_training_iterations(
+        iteration_index=iteration_index, num_iterations_limit=num_iterations_limit
+    ):
         return DistributedStepControl(
             opcode=_DISTRIBUTED_CONTROL_STOP,
             requested_batch_size=0,
@@ -774,14 +795,21 @@ def _plan_distributed_step_control(
 
 
 def _maybe_emit_master_progress(
-    *, clock: TrainingLoopClock, samples_trained: int
+    *,
+    clock: TrainingLoopClock,
+    samples_trained: int,
+    iteration_index: int,
+    num_iterations_limit: int,
 ) -> None:
     now = time.monotonic()
     if (not _is_primary_rank()) or (now - clock.last_master_progress_time < 1.0):
         return
     elapsed = _elapsed_training_time_sec(clock=clock, now=now)
-    progress = min(1.0, elapsed / clock.training_time)
-    label = f"Training: {samples_trained} samples trained ({elapsed:.1f}s/{clock.training_time:.1f}s)"
+    progress = min(1.0, float(iteration_index) / float(num_iterations_limit))
+    label = (
+        f"Training: {samples_trained} samples trained "
+        f"(iteration {iteration_index}/{num_iterations_limit}, elapsed {elapsed:.1f}s)"
+    )
     _text_master_progress(progress, label)
     clock.last_master_progress_time = now
 
@@ -1027,6 +1055,34 @@ def _planned_question_rounded_accumulation_steps(
     return planned_steps
 
 
+def _planned_question_rounded_accumulation_samples(
+    *,
+    lazy_loader: LazyResolvedBatchLoader,
+    start_sample_index: int,
+    min_samples: int,
+) -> int:
+    assert min_samples > 0, "min_samples must be positive"
+    assert 0 <= start_sample_index < lazy_loader.sample_count, (
+        "start_sample_index out of range"
+    )
+    planned_samples = 0
+    last_question_id: int | None = None
+    for sample_index in range(start_sample_index, lazy_loader.sample_count):
+        sample = lazy_loader.get_sample(sample_index)
+        planned_samples += 1
+        last_question_id = sample.id.question_id
+        next_sample_index = sample_index + 1
+        if planned_samples < min_samples:
+            continue
+        if next_sample_index >= lazy_loader.sample_count:
+            return planned_samples
+        next_question_id = lazy_loader.get_sample(next_sample_index).id.question_id
+        if next_question_id != last_question_id:
+            return planned_samples
+    assert planned_samples > 0, "planned accumulation window cannot be empty"
+    return planned_samples
+
+
 def _run_unified_loop(
     *,
     config: Any,
@@ -1198,17 +1254,31 @@ def _run_unified_loop(
     stopped_due_to_oom = False
     optimizer.zero_grad(set_to_none=True)
     current_accumulation_target = max(1, int(config.min_grad_accum_steps))
+    current_accumulation_target_samples = current_accumulation_target
+    accumulation_samples = 0
+    max_batch_tokens = max(0, int(getattr(config, "max_batch_tokens", 0)))
+    if _is_primary_rank():
+        _text_info(
+            "dynamic_batching_config=1 "
+            f"max_batch_tokens={max_batch_tokens} "
+            f"single_gpu_enabled={int((not is_distributed) and max_batch_tokens > 0)}"
+        )
 
     iteration_index = max(0, resume_state.next_iteration_index)
 
     while True:
-        _maybe_emit_master_progress(clock=clock, samples_trained=samples_trained)
+        _maybe_emit_master_progress(
+            clock=clock,
+            samples_trained=samples_trained,
+            iteration_index=iteration_index,
+            num_iterations_limit=config.num_iterations_limit,
+        )
 
         if is_distributed:
             control_tensor = torch.zeros(4, dtype=torch.int64, device=device)
             if _is_primary_rank():
                 control = _plan_distributed_step_control(
-                    clock=clock,
+                    num_iterations_limit=config.num_iterations_limit,
                     iteration_index=iteration_index,
                     sample_count=sample_count,
                     global_sample_cursor=global_sample_cursor,
@@ -1249,13 +1319,38 @@ def _run_unified_loop(
                 batch_index=rank_sample_start,
             )
         else:
-            if not _should_continue_training(clock=clock):
+            if not _should_continue_training_iterations(
+                iteration_index=iteration_index,
+                num_iterations_limit=config.num_iterations_limit,
+            ):
                 break
-            requested_batch_size = min(1, sample_count - global_sample_cursor)
-            if requested_batch_size <= 0:
+            remaining_samples = sample_count - global_sample_cursor
+            if remaining_samples <= 0:
                 global_sample_cursor = 0
                 iteration_index += 1
                 continue
+            if accumulation_step == 0:
+                current_accumulation_target_samples = (
+                    _planned_question_rounded_accumulation_samples(
+                        lazy_loader=lazy_loader,
+                        start_sample_index=global_sample_cursor,
+                        min_samples=config.min_grad_accum_steps,
+                    )
+                )
+                if (
+                    current_accumulation_target_samples > 2 * config.min_grad_accum_steps
+                    and _is_primary_rank()
+                ):
+                    _text_warning(
+                        "large_question_rounded_accumulation_window=1 "
+                        f"min_grad_accum_steps={config.min_grad_accum_steps} "
+                        f"planned_accumulation_samples={current_accumulation_target_samples} "
+                        f"start_sample_index={global_sample_cursor}"
+                    )
+            samples_needed_for_accumulation = max(
+                1, current_accumulation_target_samples - accumulation_samples
+            )
+            requested_batch_size = min(samples_needed_for_accumulation, remaining_samples)
 
             worker_progress = float(global_sample_cursor) / sample_count
             _text_worker_progress(
@@ -1263,11 +1358,19 @@ def _run_unified_loop(
                 worker_progress,
                 f"Sample {global_sample_cursor}/{sample_count}",
             )
-            window = lazy_loader.resolve_batch(
-                sample_index=global_sample_cursor,
-                batch_size=requested_batch_size,
-                batch_index=global_sample_cursor,
-            )
+            if max_batch_tokens > 0:
+                window = lazy_loader.resolve_token_budget_batch(
+                    sample_index=global_sample_cursor,
+                    max_batch_tokens=max_batch_tokens,
+                    max_batch_size=requested_batch_size,
+                    batch_index=global_sample_cursor,
+                )
+            else:
+                window = lazy_loader.resolve_batch(
+                    sample_index=global_sample_cursor,
+                    batch_size=min(1, requested_batch_size),
+                    batch_index=global_sample_cursor,
+                )
 
         resolved_batch = window.resolved_batch
         step_start_global_sample_cursor = global_sample_cursor
@@ -1307,7 +1410,7 @@ def _run_unified_loop(
             "labels contain token id out of model vocab range"
         )
 
-        if not is_distributed and accumulation_step == 0:
+        if not is_distributed and max_batch_tokens <= 0 and accumulation_step == 0:
             current_accumulation_target = _planned_question_rounded_accumulation_steps(
                 lazy_loader=lazy_loader,
                 start_sample_index=global_sample_cursor,
@@ -1329,7 +1432,12 @@ def _run_unified_loop(
         if torch.cuda.is_available() and device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device=device)
         step_start = time.perf_counter()
-        should_sync = (accumulation_step + 1) == current_accumulation_target
+        if not is_distributed and max_batch_tokens > 0:
+            should_sync = (
+                accumulation_samples + len(step_batch.samples)
+            ) >= current_accumulation_target_samples
+        else:
+            should_sync = (accumulation_step + 1) == current_accumulation_target
         sync_context: AbstractContextManager[None] = nullcontext()
         no_sync_method = getattr(model, "no_sync", None)
         if is_distributed and callable(no_sync_method) and not should_sync:
@@ -1340,6 +1448,7 @@ def _run_unified_loop(
         attention_mask = None
         advantages = None
         old_logprobs = None
+        ref_logprobs = None
         logits = None
         loss_output = None
         loss = None
@@ -1366,7 +1475,8 @@ def _run_unified_loop(
                     f"input_ids_shape={tuple(collated.input_ids.shape)} "
                     f"labels_shape={tuple(collated.labels.shape)} "
                     f"advantages_shape={tuple(collated.advantages.shape)} "
-                    f"old_logprobs_shape={tuple(collated.old_logprobs.shape)}"
+                    f"old_logprobs_shape={tuple(collated.old_logprobs.shape)} "
+                    f"ref_logprobs_shape={tuple(collated.ref_logprobs.shape) if collated.ref_logprobs is not None else None}"
                 )
                 _memtrace(f"step_pre_device_copy batch_index={step_batch.batch_index}")
             input_ids = collated.input_ids.to(device=device, non_blocking=True)
@@ -1376,6 +1486,11 @@ def _run_unified_loop(
             )
             advantages = collated.advantages.to(device=device, non_blocking=True)
             old_logprobs = collated.old_logprobs.to(device=device, non_blocking=True)
+            ref_logprobs = (
+                collated.ref_logprobs.to(device=device, non_blocking=True)
+                if collated.ref_logprobs is not None
+                else None
+            )
             if emit_step_memtrace:
                 _memtrace(
                     "step_post_device_copy "
@@ -1399,9 +1514,17 @@ def _run_unified_loop(
                     labels=labels,
                     advantages=advantages,
                     old_logprobs=old_logprobs,
+                    ref_logprobs=ref_logprobs,
                     advantage_clip=config.advantage_clip,
+                    kl_beta=config.kl_beta,
                 )
-                loss = loss_output.loss / current_accumulation_target
+                if not is_distributed and max_batch_tokens > 0:
+                    loss = loss_output.loss * (
+                        float(len(step_batch.samples))
+                        / float(current_accumulation_target_samples)
+                    )
+                else:
+                    loss = loss_output.loss / current_accumulation_target
                 if emit_step_memtrace:
                     _memtrace(
                         "step_pre_backward "
@@ -1424,6 +1547,7 @@ def _run_unified_loop(
                 attention_mask = None
                 advantages = None
                 old_logprobs = None
+                ref_logprobs = None
                 logits = None
                 loss_output = None
                 loss = None
@@ -1431,6 +1555,7 @@ def _run_unified_loop(
                 global_sample_cursor = step_start_global_sample_cursor
                 iteration_index = step_start_iteration_index
                 accumulation_step = 0
+                accumulation_samples = 0
                 eng._print_cuda_oom_diagnostics_stderr(
                     rank=rank,
                     iteration_index=iteration_index,
@@ -1524,6 +1649,7 @@ def _run_unified_loop(
                 labels = None
                 advantages = None
                 old_logprobs = None
+                ref_logprobs = None
                 eng._release_step_memory(device)
                 try:
                     nonfinite_forward_trace = eng.trace_first_nonfinite_forward_module(
@@ -1542,6 +1668,7 @@ def _run_unified_loop(
             attention_mask = None
             advantages = None
             old_logprobs = None
+            ref_logprobs = None
             logits = None
             loss_output = None
             loss = None
@@ -1618,6 +1745,7 @@ def _run_unified_loop(
                 _text_key_value(stat_key, f"{stat_value:.6f}")
 
         accumulation_step += 1
+        accumulation_samples += len(step_batch.samples)
         if is_distributed:
             samples_trained += requested_batch_size * world_size
         else:
@@ -1633,7 +1761,12 @@ def _run_unified_loop(
                 global_sample_cursor = 0
                 iteration_index += 1
 
-        if accumulation_step == current_accumulation_target:
+        reached_accumulation_target = (
+            accumulation_samples >= current_accumulation_target_samples
+            if (not is_distributed and max_batch_tokens > 0)
+            else accumulation_step == current_accumulation_target
+        )
+        if reached_accumulation_target:
             try:
                 clipped_grad_norm = _maybe_clip_gradients(
                     model=model, max_grad_norm=max_grad_norm
@@ -1672,7 +1805,9 @@ def _run_unified_loop(
                                     labels=labels,
                                     advantages=advantages,
                                     old_logprobs=old_logprobs,
+                                    ref_logprobs=ref_logprobs,
                                     advantage_clip=config.advantage_clip,
+                                    kl_beta=config.kl_beta,
                                     min_grad_accum_steps=config.min_grad_accum_steps,
                                 )
                             )
@@ -1728,6 +1863,7 @@ def _run_unified_loop(
                 global_sample_cursor = step_start_global_sample_cursor
                 iteration_index = step_start_iteration_index
                 accumulation_step = 0
+                accumulation_samples = 0
                 eng._print_cuda_oom_diagnostics_stderr(
                     rank=rank,
                     iteration_index=iteration_index,
@@ -1783,7 +1919,9 @@ def _run_unified_loop(
                 break
             optimizer.zero_grad(set_to_none=True)
             accumulation_step = 0
+            accumulation_samples = 0
             current_accumulation_target = config.min_grad_accum_steps
+            current_accumulation_target_samples = config.min_grad_accum_steps
             global_step += 1
             current_learning_rate = _set_optimizer_learning_rate(
                 optimizer=optimizer,

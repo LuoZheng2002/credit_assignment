@@ -56,13 +56,14 @@ pub fn write_training_summary(
     });
 
     let mut accuracies_json: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-    for (epoch, (avg, deepmath, math, _numinamath)) in validation_accuracies {
+    for (epoch, (avg, deepmath, math, numinamath)) in validation_accuracies {
         accuracies_json.insert(
             format!("epoch_{}", epoch),
             serde_json::json!({
                 "avg": avg,
                 "deepmath": deepmath,
                 "math": math,
+                "numinamath": numinamath,
             }),
         );
     }
@@ -85,7 +86,7 @@ pub fn write_training_summary(
     }
 
     let latest_epoch_data = {
-        let (avg, deepmath, math, _numinamath) = validation_accuracies
+        let (avg, deepmath, math, numinamath) = validation_accuracies
             .get(&latest_epoch)
             .map(|(a, b, c, d)| (*a, *b, *c, *d))
             .unwrap_or((0.0, 0.0, 0.0, 0.0));
@@ -112,6 +113,7 @@ pub fn write_training_summary(
                 "avg": avg,
                 "deepmath": deepmath,
                 "math": math,
+                "numinamath": numinamath,
             },
             "training_throughput": throughput,
             "training_samples_trained": samples_trained,

@@ -6,9 +6,13 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CPU_CPUS_PER_TASK = "16"
@@ -39,6 +43,16 @@ def _require_positive_number(config: dict[str, object], key: str) -> float:
     value = config.get(key)
     if not isinstance(value, (int, float)) or value <= 0:
         raise ValueError(f"{key} is missing or not a positive number")
+    return float(value)
+
+
+def _kl_beta(config: dict[str, object]) -> float:
+    hyperparameters = config.get("training_hyperparameters")
+    if not isinstance(hyperparameters, dict):
+        return 0.0
+    value = hyperparameters.get("kl_beta", 0.0)
+    if not isinstance(value, (int, float)) or value < 0:
+        raise ValueError("training_hyperparameters.kl_beta must be a non-negative number")
     return float(value)
 
 
@@ -292,15 +306,15 @@ def main() -> int:
     )
     parser.add_argument("--judging-time", default=CPU_TIME_LIMIT)
     parser.add_argument(
-        "--prune-after-job-id",
-        action="append",
-        default=[],
-        help="Additional diagnostic validation job id(s) that pruning must wait for.",
-    )
-    parser.add_argument(
         "--skip-training-chunk-validation",
         action="store_true",
         help="Do not schedule diagnostic training-chunk validation jobs.",
+    )
+    parser.add_argument(
+        "--validation-epoch-interval",
+        type=int,
+        default=3,
+        help="Validate held-out epoch 0 and trained epochs divisible by this interval.",
     )
     parser.add_argument(
         "--login-smoke",
@@ -308,6 +322,8 @@ def main() -> int:
         help="Run login-node smoke checks for all composed binaries and submit nothing.",
     )
     args = parser.parse_args()
+    if args.validation_epoch_interval <= 0:
+        parser.error("--validation-epoch-interval must be positive")
 
     rollout_path = _resolve_config(args.rollout_config)
     generation_path = _resolve_config(args.generation_config)
@@ -365,6 +381,10 @@ def main() -> int:
         _run_login_smoke(
             _cargo_smoke("bin_oneshot_generation", "--config-path", str(generation_path))
         )
+        if _kl_beta(training_config) > 0.0:
+            _run_login_smoke(
+                _cargo_smoke("bin_oneshot_ref_logprobs", "--config-path", str(training_path))
+            )
         _run_login_smoke(_cargo_smoke("bin_oneshot_training", "--config-path", str(training_path)))
         if not args.skip_training_chunk_validation:
             _run_login_smoke(
@@ -384,9 +404,10 @@ def main() -> int:
                 str(validation_path),
                 "--phase",
                 "rollout",
+                "--epoch-interval",
+                str(args.validation_epoch_interval),
             )
         )
-        _run_login_smoke(_cargo_smoke("bin_oneshot_prune", "--config-path", str(validation_path)))
         print("All login-smoke checks passed; no jobs submitted.")
         return 0
 
@@ -425,6 +446,23 @@ def main() -> int:
         extra_script_args=None,
     )
     jobs.append(generation)
+    training_dependency_job_id = generation.job_id
+    if _kl_beta(training_config) > 0.0:
+        ref_logprobs = _submit_config_job(
+            phase="ref_logprobs",
+            config_path=training_path,
+            config=training_config,
+            nickname_key="config_nickname_generation",
+            job_prefix="ref_logprobs_",
+            script_name="oneshot_ref_logprobs.slurm",
+            account="bfsl-delta-gpu",
+            partition=None,
+            request_gpu=True,
+            dependency=f"afterok:{generation.job_id}",
+            extra_script_args=None,
+        )
+        jobs.append(ref_logprobs)
+        training_dependency_job_id = ref_logprobs.job_id
     training = _submit_config_job(
         phase="training",
         config_path=training_path,
@@ -435,7 +473,7 @@ def main() -> int:
         account="bfsl-delta-gpu",
         partition=None,
         request_gpu=True,
-        dependency=f"afterok:{generation.job_id}",
+        dependency=f"afterok:{training_dependency_job_id}",
         extra_script_args=None,
     )
     jobs.append(training)
@@ -496,7 +534,12 @@ def main() -> int:
         partition=None,
         request_gpu=True,
         dependency=f"afterok:{training.job_id}",
-        extra_script_args=["--phase", "rollout"],
+        extra_script_args=[
+            "--phase",
+            "rollout",
+            "--epoch-interval",
+            str(args.validation_epoch_interval),
+        ],
     )
     jobs.append(validation_rollout)
     validation_judge = _submit_config_job(
@@ -510,7 +553,12 @@ def main() -> int:
         partition="cpu",
         request_gpu=False,
         dependency=f"afterok:{validation_rollout.job_id}",
-        extra_script_args=["--phase", "judge"],
+        extra_script_args=[
+            "--phase",
+            "judge",
+            "--epoch-interval",
+            str(args.validation_epoch_interval),
+        ],
     )
     jobs.append(validation_judge)
     validation_score = _submit_config_job(
@@ -524,29 +572,14 @@ def main() -> int:
         partition="cpu",
         request_gpu=False,
         dependency=f"afterok:{validation_judge.job_id}",
-        extra_script_args=["--phase", "score"],
+        extra_script_args=[
+            "--phase",
+            "score",
+            "--epoch-interval",
+            str(args.validation_epoch_interval),
+        ],
     )
     jobs.append(validation_score)
-    prune_dependency_job_ids = [
-        validation_score.job_id,
-        *training_chunk_score_job_ids,
-        *args.prune_after_job_id,
-    ]
-    prune = _submit_config_job(
-        phase="prune",
-        config_path=validation_path,
-        config=validation_config,
-        nickname_key="config_nickname_training",
-        job_prefix="prune_",
-        script_name="oneshot_prune_cpu.slurm",
-        account="bfsl-delta-cpu",
-        partition="cpu",
-        request_gpu=False,
-        dependency="afterok:" + ":".join(prune_dependency_job_ids),
-        extra_script_args=None,
-    )
-    jobs.append(prune)
-
     print("\nSubmitted pipeline jobs:")
     for job in jobs:
         print(

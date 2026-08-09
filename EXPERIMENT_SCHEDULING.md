@@ -707,7 +707,7 @@ These are project-level setbacks that explain why the schedule remains adaptive 
    - They remain a backup route rather than an active blocker.
 
 6. **Storage and artifact pruning continue to affect bookkeeping.**
-   - Validation prunes non-best epoch snapshots, which saves quota but means result interpretation must rely on summary JSON and logs.
+   - Model checkpoint pruning saves quota but must be launched manually after diagnostics/testing no longer need intermediate checkpoints.
    - Some prerequisites still live on NVMe while newer outputs are on HDD.
 
 7. **The main scientific comparison is close but not finalized.**
@@ -1110,10 +1110,18 @@ Completed:
    - `grad_accum_steps` is now semantically treated as `min_grad_accum_steps` and serialized as `min_grad_accum_steps`; old TOML keys are accepted as an alias.
    - Single-process training rounds accumulation up to include all trajectories from the last question in the accumulation window.
    - Training logs a warning if the rounded accumulation window exceeds twice the configured minimum.
+   - Planned follow-up: extend the single-GPU LoRA synthetic preflight to estimate a conservative `max_batch_tokens` budget for adaptive batching. The current preflight only finds a safe single-trajectory length cutoff; it does not yet binary-search a safe padded batch tensor budget. The adaptive-batching preflight should account for the fact that input tensors scale as `batch_size * longest_trajectory_length_in_batch`, then apply a safety multiplier before enabling packed microbatches.
 
-5. **Chunk-backed training resume.**
+5. **Training checkpoint status resume.**
+   - One-shot training now stores epoch-boundary optimizer/status state as `training_status.pt` next to each completed `oneshot_epoch_{n}` model checkpoint.
+   - The status includes optimizer state and global optimization step, so resumed chunk-backed training can continue Adam/SGD state and learning-rate schedule from the latest completed epoch.
+   - After a new epoch checkpoint and status are written, the previous epoch's `training_status.pt` is removed, keeping only the latest resume status.
+   - Legacy model checkpoints without `training_status.pt` remain valid: training resumes from the model weights and initializes optimizer/status fresh.
+
+6. **Chunk-backed training resume.**
    - One-shot training now prefers generated `chunk_{n}.msgpack` trajectory files when present.
    - Each chunk maps to one one-shot epoch, and recovery resumes at the first missing epoch model artifact.
+   - If prior one-shot artifacts were created with a different `num_oneshot_epochs`, training no longer exits early; it refreshes the run manifest to the current request and appends from the first missing contiguous epoch when possible.
 
 Current implementation status and remaining verification:
 
@@ -1136,9 +1144,9 @@ Current implementation status and remaining verification:
    - Testing has separate GPU and CPU SLURM scripts for rollout versus judging/scoring.
 
 3. **Checkpoint pruning.**
-   - Checkpoint pruning is now a separate CPU job (`bin_oneshot_prune`).
-   - The one-shot pipeline launcher schedules pruning only after held-out validation scoring and the all-chunk diagnostic training-chunk validation scoring job succeeds.
-   - Additional diagnostic validation job ids can be added to the prune dependency with `--prune-after-job-id`.
+   - Checkpoint pruning is a separate manual CPU job (`bin_oneshot_prune`), not part of the default one-shot pipeline launcher.
+   - Run pruning only after held-out validation, diagnostic training-chunk validation, testing, and any manual inspection that needs intermediate epoch checkpoints are complete.
+   - This avoids deleting checkpoints that diagnostic validation or follow-up testing still needs.
 
 4. **Next implementation step.**
    - Run a small end-to-end dry submission on Delta using one chunk and a short walltime to validate path conventions and dependency ordering.
@@ -1186,3 +1194,99 @@ Submitted SLURM chain:
 3. **Legacy inline-judgment cleanup.**
    - New downstream generation/accuracy paths use `TreeJudged`.
    - Legacy `JudgeAnswer` actions and old judged action-log replay remain for debug/fallback and should be removed or explicitly gated after the new pipeline is smoke-tested.
+
+## Serious Chunked Training Rollout Schedule — Planned 2026-08-05
+
+Purpose: collect larger chunked training rollouts while keeping GPU queue pressure controlled.
+
+Batching and rollout policy:
+
+- Extend the four Qwen2.5 serious training rollouts to `30` chunks:
+  - GRPO no-tool: `250` questions/chunk, `30` chunks.
+  - GRPO tool: `250` questions/chunk, `30` chunks.
+  - Tree no-tool: `125` questions/chunk, `30` chunks.
+  - Tree tool: `125` questions/chunk, `30` chunks.
+- Add Qwen3-34B, Gemma, and Mistral no-tool training rollouts for GRPO and Tree:
+  - GRPO no-tool: `250` questions/chunk, `10` chunks.
+  - Tree no-tool: `125` questions/chunk, `10` chunks.
+- The chunk sizes are chosen so that, without question filtering, each chunk corresponds to roughly `2000` generated leaves/trajectories for both GRPO (`8` leaves/question) and Tree (`16` leaves/question).
+- Use vLLM backend, one A100, HDD result storage, and a requested SLURM walltime of `4:00:00` for each rollout job.
+- Maintain at most three newly submitted rollout jobs at a time; submit follow-up jobs as earlier rollout jobs finish or fail.
+- Before each serious rollout submission, run `bin_oneshot_rollout --login-smoke` on the Delta login node and submit only if it passes.
+
+Submission status:
+
+- Login-smoke passed on Delta for all ten planned rollout configs.
+- First submitted batch, respecting the three-new-rollout cap:
+  - `20883076`: Qwen2.5 GRPO no-tool, `30` chunks, `4:00:00`, 1 A100, 32 CPUs, 32G, pending for resources.
+  - `20883077`: Qwen2.5 Tree no-tool, `30` chunks, `4:00:00`, 1 A100, 32 CPUs, 32G, pending for resources.
+  - `20883078`: Qwen2.5 GRPO tool, `30` chunks, `4:00:00`, 1 A100, 32 CPUs, 32G, pending for resources.
+- Remaining rollout queue, to submit as slots free:
+  - Qwen2.5 Tree tool, `30` chunks.
+  - Qwen3-34B GRPO no-tool, `10` chunks.
+  - Qwen3-34B Tree no-tool, `10` chunks.
+  - Gemma GRPO no-tool, `10` chunks.
+  - Gemma Tree no-tool, `10` chunks.
+  - Mistral GRPO no-tool, `10` chunks.
+  - Mistral Tree no-tool, `10` chunks.
+- After all four Qwen2.5 30-chunk rollouts complete, append the existing Qwen2.5 GRPO/Tree no-tool Adam and SGD/no-warmup training runs from `10` to `30` epochs using the same training config nicknames. The existing first ten checkpoints remain the prefix; generation should be rerun over the expanded 30 chunks before appending epochs `11..30`.
+
+Deferred Qwen2.5 50-epoch extension:
+
+- Extend the active Qwen2.5 no-tool Adam experiments from `30` to `50` epochs after the current GPU queue is empty.
+- Scope: GRPO no-tool Adam and Tree no-tool Adam under the matched rank-32, learning-rate `1e-6`, Adam-state, warmup-enabled recipe.
+- Do not submit while Qwen34/Gemma/Mistral validation or training jobs are still running or pending; this is intentionally deferred to avoid blocking current cross-model evidence collection.
+- Before submission, update the relevant training configs to `num_oneshot_epochs = 50` and `validation_total_epochs = 50`, rerun generation if additional rollout chunks are needed, and run login-smoke on Delta.
+- Held-out validation for the 50-epoch extension should use `--epoch-interval 3`; expected validation epochs are `0, 3, 6, ..., 48`.
+- If checkpoint `30` and its training status are present, training should resume from epoch `31` rather than restarting.
+
+Submission update:
+
+- Submitted on 2026-08-08 because the GPU queue was near empty.
+- GRPO no-tool Adam chain:
+  - Rollout append to 50 chunks: `20941294`.
+  - Training judging: `20941295`.
+  - Generation refresh: `20941296`.
+  - Training append to 50 epochs: `20941297`.
+  - Held-out validation rollout with `--epoch-interval 3`: `20941298`.
+  - Held-out validation judging: `20941299`.
+  - Held-out validation scoring: `20941300`.
+- Tree no-tool Adam chain:
+  - Rollout append to 50 chunks: `20941301`.
+  - Training judging: `20941302`.
+  - Generation refresh: `20941303`.
+  - Training append to 50 epochs: `20941304`.
+  - Held-out validation rollout with `--epoch-interval 3`: `20941305`.
+  - Held-out validation judging: `20941306`.
+  - Held-out validation scoring: `20941307`.
+
+Adaptive batching follow-up:
+
+- Add a future preflight pass that estimates `max_batch_tokens` for single-GPU LoRA adaptive batching.
+- This preflight should binary-search a safe padded batch tensor budget using synthetic samples, then apply a conservative safety multiplier.
+- Until this exists, `max_batch_tokens` remains a manually configured training hyperparameter and should be treated as experimental.
+
+Held-out validation cadence:
+
+- Future held-out validation jobs should use `--epoch-interval 3`.
+- This validates epoch `0` plus trained epochs divisible by `3`, reducing validation GPU cost while preserving coarse accuracy trends over long runs.
+- The one-shot pipeline launcher defaults to this policy; override it only when a dense per-epoch curve is explicitly needed for a figure or debugging.
+
+### SGD / No-Warmup Queue Policy — 2026-08-07
+
+The Qwen2.5 no-tool SGD/no-warmup ablation is concluded as ineffective under the current rank-32, learning-rate `1e-6` LoRA recipe. Partial validation through approximately epoch 20/21 did not show a reliable increasing trend, and Tree SGD was below its base accuracy at the latest scored epoch. Do not schedule more SGD/no-warmup jobs unless a new optimizer-specific hypothesis is introduced.
+
+### Offline Reference-Logprob KL Plan — 2026-08-09
+
+Add KL regularization without loading a second reference model during training.
+
+- Insert a new reference-logprob annotation pass after trajectory generation and before training.
+- The annotation pass loads the frozen base model, runs teacher-forced inference over generated training trajectories, and stores one scalar reference log probability for each actual trajectory token.
+- Store `ref_logprobs` only in the training trajectory artifact, aligned with `input_ids`, `labels`, `advantages`, and `old_logprobs`; do not enlarge rollout tree artifacts.
+- Prompt and ignored-label positions use `0.0` because they are masked out by the training loss.
+- Training requires `ref_logprobs` only when `kl_beta > 0`; non-KL runs with `kl_beta = 0` remain compatible with existing non-annotated trajectory artifacts.
+- The KL term is a sampled-token approximation, not full-distribution KL: it constrains the generated trajectory tokens but does not account for unobserved candidate tokens.
+- Future KL-enabled pipelines should run `rollout -> judging -> generation -> reference-logprob annotation -> training -> validation`.
+- Implemented artifact naming keeps the original trajectory files intact: `trajectories_ref_logprobs.msgpack` for unchunked runs and `chunk_{n}_ref_logprobs.msgpack` for chunked runs.
+- `bin_oneshot_training` automatically consumes the annotated artifact only when `training_hyperparameters.kl_beta > 0`.
+- `scripts/hpc/bin_oneshot_pipeline.py` automatically inserts the GPU reference-logprob annotation stage when `kl_beta > 0`.

@@ -1503,6 +1503,7 @@ fn direct_tree_to_selected_trajectories<M: LlmModelMarker>(
                     labels,
                     advantages,
                     old_logprobs,
+                    ref_logprobs: None,
                     average_absolute_segment_advantage: average_absolute_advantage,
                     _phantom: std::marker::PhantomData::<M>,
                 },
@@ -1565,6 +1566,8 @@ pub struct DirectTrainingTrajectory<M: LlmModelMarker> {
     pub advantages: Vec<f32>,
     #[serde(default)]
     pub old_logprobs: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_logprobs: Option<Vec<f32>>,
     pub average_absolute_segment_advantage: f32,
     #[serde(skip)]
     pub _phantom: std::marker::PhantomData<M>,

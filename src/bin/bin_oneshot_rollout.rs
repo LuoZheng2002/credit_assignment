@@ -8,8 +8,9 @@ use credit_assignment::{
     constants::get_max_concurrent_rollout,
     directories::{
         action_logs_oneshot_path, base_model_dir, inference_wrapper_log_path, model_parent_dir,
-        rollout_summary_oneshot_path, text_logger_summary_path, text_logger_verbose_path,
-        tree_artifacts_oneshot_chunk_done_path, tree_artifacts_oneshot_path,
+        rollout_chunk_timing_oneshot_path, rollout_summary_oneshot_path,
+        text_logger_summary_path, text_logger_verbose_path, tree_artifacts_oneshot_chunk_done_path,
+        tree_artifacts_oneshot_path,
     },
     hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
     json_toml_utils::read_json,
@@ -30,7 +31,9 @@ use credit_assignment::{
 };
 use reqwest::Client;
 use research_utility::progress_text_logger::{ProgressTextLogger, log_info};
+use serde::Serialize;
 use serde::Deserialize;
+use std::time::Instant;
 
 #[derive(Parser, Debug)]
 struct CliArgs {
@@ -75,6 +78,20 @@ struct Args {
     num_questions_per_chunk: Option<usize>,
     #[serde(default)]
     num_chunks: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct RolloutChunkTimingFirstRun {
+    config_nickname_rollout: String,
+    dataset_split: String,
+    epoch: usize,
+    num_questions_per_chunk: usize,
+    num_chunks: usize,
+    rollout_num_leaves: usize,
+    total_target_questions: usize,
+    completed_chunks: usize,
+    elapsed_secs_first_run: f64,
+    average_elapsed_secs_per_chunk: f64,
 }
 
 fn default_total_epochs() -> usize {
@@ -232,6 +249,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     .await
     .unwrap_or_else(|err| panic!("failed to launch inference server: {}", err));
 
+    let rollout_num_leaves = rollout_config.num_leaves;
     let program_config = RolloutProgramConfig {
         config_nickname: args.config_nickname_rollout.clone(),
         rollout_config,
@@ -249,13 +267,71 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         fixed_temperature: constants::temperature_by_split::<S>(),
         max_concurrent_rollout: get_max_concurrent_rollout(num_gpus),
         branching_options,
-        tree_artifact_output_path: Some(tree_artifact_output_path),
+        tree_artifact_output_path: Some(tree_artifact_output_path.clone()),
         tree_artifact_chunk_question_count: args.num_questions_per_chunk,
         question_flat_id_start,
         question_flat_id_end,
         question_flat_ids: None,
     };
+    let timing_path = rollout_chunk_timing_oneshot_path(
+        &args.mount_dir,
+        &args.model_cli_name,
+        &args.config_nickname_rollout,
+    );
+    let should_write_first_run_timing = S::IS_TRAINING
+        && args.num_questions_per_chunk.is_some()
+        && args.num_chunks.is_some()
+        && !Path::new(&timing_path).exists();
+    let rollout_start = Instant::now();
     let summary = rollout_all::<M, S>(&args.mount_dir, program_config).await;
+    let rollout_elapsed_secs = rollout_start.elapsed().as_secs_f64();
+
+    if should_write_first_run_timing {
+        let completed_chunks = chunk_indices_to_check
+            .iter()
+            .filter(|chunk_index| {
+                Path::new(&tree_artifacts_oneshot_chunk_done_path(
+                    &tree_artifact_output_path,
+                    **chunk_index,
+                ))
+                .exists()
+            })
+            .count();
+        let num_questions_per_chunk = args
+            .num_questions_per_chunk
+            .expect("checked before enabling timing");
+        let num_chunks = args.num_chunks.expect("checked before enabling timing");
+        let timing = RolloutChunkTimingFirstRun {
+            config_nickname_rollout: args.config_nickname_rollout.clone(),
+            dataset_split: S::dataset_file_postfix(),
+            epoch: args.epoch,
+            num_questions_per_chunk,
+            num_chunks,
+            rollout_num_leaves,
+            total_target_questions: num_questions_per_chunk * num_chunks,
+            completed_chunks,
+            elapsed_secs_first_run: rollout_elapsed_secs,
+            average_elapsed_secs_per_chunk: rollout_elapsed_secs / num_chunks as f64,
+        };
+        ensure_parent_dir_exists(&timing_path)
+            .unwrap_or_else(|err| panic!("failed to prepare rollout timing directory: {err}"));
+        let timing_json = serde_json::to_string_pretty(&timing)
+            .unwrap_or_else(|err| panic!("failed to serialize rollout timing: {err}"));
+        std::fs::write(&timing_path, timing_json).unwrap_or_else(|err| {
+            panic!(
+                "failed to write first-run rollout chunk timing to {}: {}",
+                timing_path, err
+            )
+        });
+        log_info(format!(
+            "first_run_rollout_chunk_timing_written=1 path={} elapsed_secs={:.3} num_chunks={} completed_chunks={} average_elapsed_secs_per_chunk={:.3}",
+            timing_path,
+            rollout_elapsed_secs,
+            num_chunks,
+            completed_chunks,
+            rollout_elapsed_secs / num_chunks as f64
+        ));
+    }
 
     let _ = handle.stop_signal_tx.send(true);
     shut_down_inference_wrapper_process(&mut handle.child).await;

@@ -57,6 +57,7 @@ export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-4096}"
 export VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-32}"
 export VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-4096}"
 export VALIDATION_MAX_CONCURRENT_ROLLOUT=200
+export INFERENCE_WRAPPER_PORT="${INFERENCE_WRAPPER_PORT:-$((30000 + SLURM_JOB_ID % 1000))}"
 
 _NVIDIA_LIBS=$(find "$REPO_ROOT/.venv/lib/python3.12/site-packages/nvidia" \
     -name "lib" -type d -print 2>/dev/null | tr '\n' ':')
@@ -69,6 +70,7 @@ if [[ -n "$NOTIFY_START_MSG" ]]; then
 fi
 
 echo "Running training chunk validation config=$CONFIG_PATH chunk=${CHUNK_INDEX:-all} phase=$PHASE"
+echo "Inference wrapper port: $INFERENCE_WRAPPER_PORT"
 CMD=(
     scripts/hpc/cargo_run_with_rebuild.sh bin_oneshot_training_chunk_validation
     --config-path "$CONFIG_PATH"

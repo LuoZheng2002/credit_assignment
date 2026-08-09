@@ -68,6 +68,7 @@ class TrainConfig:
     training_summary_parent_dir: str
     final_model_output_parent_dir: str
     advantage_clip: float
+    kl_beta: float
     learning_rate: float
     weight_decay: float
     use_adam_state: bool
@@ -75,6 +76,7 @@ class TrainConfig:
     training_time: float
     num_iterations_limit: int
     min_grad_accum_steps: int
+    max_batch_tokens: int
     log_time_interval: float
     lora_rank: int
     lora_alpha: int
@@ -106,6 +108,171 @@ class ResumeState:
     samples_trained_this_run: int = 0
     longest_non_oom_trajectory_length: int = 0
     stopped_due_to_oom: bool = False
+
+
+_TRAINING_STATUS_FILENAME = "training_status.pt"
+_TRAINING_STATUS_VERSION = 1
+
+
+def _training_status_path(checkpoint_parent_dir: Path) -> Path:
+    return checkpoint_parent_dir / _TRAINING_STATUS_FILENAME
+
+
+def _resume_state_to_jsonable(resume_state: ResumeState) -> dict[str, int | float | bool]:
+    return {
+        "global_step": int(resume_state.global_step),
+        "next_iteration_index": int(resume_state.next_iteration_index),
+        "next_batch_cursor": int(resume_state.next_batch_cursor),
+        "accumulation_step": int(resume_state.accumulation_step),
+        "next_sample_index": int(resume_state.next_sample_index),
+        "elapsed_training_time_sec": float(resume_state.elapsed_training_time_sec),
+        "samples_trained": int(resume_state.samples_trained),
+        "samples_available": int(resume_state.samples_available),
+        "max_average_absolute_advantage": float(
+            resume_state.max_average_absolute_advantage
+        ),
+        "min_average_absolute_advantage": float(
+            resume_state.min_average_absolute_advantage
+        ),
+        "median_average_absolute_advantage": float(
+            resume_state.median_average_absolute_advantage
+        ),
+        "samples_trained_this_run": int(resume_state.samples_trained_this_run),
+        "longest_non_oom_trajectory_length": int(
+            resume_state.longest_non_oom_trajectory_length
+        ),
+        "stopped_due_to_oom": bool(resume_state.stopped_due_to_oom),
+    }
+
+
+def _fresh_dataset_resume_state_from_checkpoint(
+    checkpoint_resume_state: Mapping[str, Any],
+) -> ResumeState:
+    return ResumeState(
+        global_step=int(checkpoint_resume_state.get("global_step", 0)),
+        next_iteration_index=0,
+        next_batch_cursor=0,
+        accumulation_step=0,
+        next_sample_index=0,
+        elapsed_training_time_sec=0.0,
+        samples_trained=0,
+        samples_available=0,
+        max_average_absolute_advantage=-1.0,
+        min_average_absolute_advantage=-1.0,
+        median_average_absolute_advantage=-1.0,
+        samples_trained_this_run=0,
+        longest_non_oom_trajectory_length=0,
+        stopped_due_to_oom=False,
+    )
+
+
+def _save_training_checkpoint_status(
+    *,
+    checkpoint_parent_dir: Path,
+    optimizer: torch.optim.Optimizer,
+    resume_state: ResumeState,
+    config: TrainConfig,
+    optimizer_name: str,
+) -> None:
+    if not _is_primary_rank():
+        return
+    checkpoint_parent_dir.mkdir(parents=True, exist_ok=True)
+    status_path = _training_status_path(checkpoint_parent_dir)
+    tmp_path = status_path.with_suffix(status_path.suffix + ".tmp")
+    payload: dict[str, Any] = {
+        "version": _TRAINING_STATUS_VERSION,
+        "kind": "epoch_boundary",
+        "optimizer_name": optimizer_name,
+        "optimizer_state_dict": optimizer.state_dict(),
+        "resume_state": _resume_state_to_jsonable(resume_state),
+        "training_config": {
+            "use_adam_state": bool(config.use_adam_state),
+            "use_lr_warmup": bool(config.use_lr_warmup),
+            "advantage_clip": float(config.advantage_clip),
+            "kl_beta": float(config.kl_beta),
+            "learning_rate": float(config.learning_rate),
+            "weight_decay": float(config.weight_decay),
+            "adam_beta1": float(config.adam_beta1),
+            "adam_beta2": float(config.adam_beta2),
+            "lr_warmup_steps": int(config.lr_warmup_steps),
+            "min_grad_accum_steps": int(config.min_grad_accum_steps),
+            "max_batch_tokens": int(config.max_batch_tokens),
+        },
+    }
+    torch.save(payload, tmp_path)
+    tmp_path.replace(status_path)
+    _text_info(
+        "training_checkpoint_status_saved=1 "
+        f"path={status_path} global_step={resume_state.global_step}"
+    )
+
+
+def _delete_training_checkpoint_status_if_present(checkpoint_parent_dir: Path) -> None:
+    if not _is_primary_rank():
+        return
+    status_path = _training_status_path(checkpoint_parent_dir)
+    tmp_path = status_path.with_suffix(status_path.suffix + ".tmp")
+    for path in (status_path, tmp_path):
+        if path.exists():
+            assert path.is_file(), f"training status path must be a file: {path}"
+            path.unlink()
+            _text_info(f"training_checkpoint_status_deleted=1 path={path}")
+
+
+def _try_load_training_checkpoint_status(
+    *,
+    checkpoint_parent_dir: Path,
+    optimizer: torch.optim.Optimizer,
+    optimizer_name: str,
+    device: torch.device,
+) -> ResumeState | None:
+    status_path = _training_status_path(checkpoint_parent_dir)
+    if not status_path.exists():
+        if _is_primary_rank():
+            _text_warning(
+                "training_checkpoint_status_missing=1 "
+                f"path={status_path} optimizer_resume=0"
+            )
+        return None
+    try:
+        payload = torch.load(status_path, map_location=device, weights_only=False)
+        assert isinstance(payload, Mapping), "training status payload must be a mapping"
+        version = int(payload.get("version", 0))
+        assert version == _TRAINING_STATUS_VERSION, (
+            f"unsupported training status version: {version}"
+        )
+        saved_optimizer_name = str(payload.get("optimizer_name", ""))
+        assert saved_optimizer_name == optimizer_name, (
+            "training status optimizer does not match current optimizer: "
+            f"saved={saved_optimizer_name} current={optimizer_name}"
+        )
+        optimizer_state_dict = payload.get("optimizer_state_dict")
+        assert isinstance(optimizer_state_dict, Mapping), (
+            "optimizer_state_dict must be present in training status"
+        )
+        optimizer.load_state_dict(optimizer_state_dict)
+        checkpoint_resume_state = payload.get("resume_state")
+        assert isinstance(checkpoint_resume_state, Mapping), (
+            "resume_state must be present in training status"
+        )
+        resume_state = _fresh_dataset_resume_state_from_checkpoint(
+            checkpoint_resume_state
+        )
+    except Exception as exc:
+        if _is_primary_rank():
+            _text_warning(
+                "training_checkpoint_status_load_failed=1 "
+                f"path={status_path} optimizer_resume=0 "
+                f"error_type={type(exc).__name__} error_message={exc}"
+            )
+        return None
+    if _is_primary_rank():
+        _text_info(
+            "training_checkpoint_status_loaded=1 "
+            f"path={status_path} optimizer_resume=1 "
+            f"global_step={resume_state.global_step}"
+        )
+    return resume_state
 
 
 
@@ -1137,14 +1304,21 @@ def _train_oneshot_multiepoch(
     lr_warmup_steps: int,
     lr_min_scale: float,
     lazy_loader: LazyResolvedBatchLoader,
+    initial_resume_state: ResumeState | None,
+    optimizer_name: str,
 ) -> None:
     """Multi-epoch oneshot training: all oneshot epochs in a single process.
 
-    Model weights, optimizer state, and sample cursor persist across epochs
-    entirely in memory. One-shot training does not write training-state
-    checkpoints and does not support resume from prior runs.
+    Model weights, optimizer state, and global optimization step persist across
+    epochs. At each epoch boundary, the model checkpoint also stores optimizer
+    status so a later process can resume from the latest complete epoch. If the
+    status file is absent, one-shot training still resumes from the model
+    checkpoint with freshly initialized optimizer state.
 
-    Each epoch runs for config.training_time seconds independently.
+    Each epoch runs until config.num_iterations_limit full passes over its
+    trajectory chunk are completed. The training_time field is retained for
+    logging and backward-compatible request schemas, but it is not a stop
+    condition for the training loop.
     """
     from . import engine as eng
     from .train_loop import _run_unified_loop
@@ -1155,7 +1329,7 @@ def _train_oneshot_multiepoch(
         "oneshot_start_epoch cannot exceed oneshot_num_epochs + 1"
     )
 
-    resume_state = ResumeState(
+    resume_state = initial_resume_state or ResumeState(
         global_step=0,
         next_iteration_index=0,
         next_batch_cursor=0,
@@ -1182,6 +1356,12 @@ def _train_oneshot_multiepoch(
                 f"epoch_start_global_step={epoch_start_global_step} "
                 f"epoch_start_samples_trained={epoch_start_samples_trained} "
                 f"epoch_start_next_sample_index={epoch_start_next_sample_index}"
+            )
+
+        previous_checkpoint_parent = Path(config.model_parent_dir)
+        if epoch_number > 1:
+            previous_checkpoint_parent = (
+                Path(config.oneshot_model_output_root) / f"oneshot_epoch_{epoch_number - 1}"
             )
 
         resume_state = _run_unified_loop(
@@ -1222,6 +1402,17 @@ def _train_oneshot_multiepoch(
                 100.0 * float(epoch_samples_trained) / float(epoch_samples_available)
             )
         if _is_primary_rank():
+            _save_training_checkpoint_status(
+                checkpoint_parent_dir=output_dir,
+                optimizer=optimizer,
+                resume_state=resume_state,
+                config=config,
+                optimizer_name=optimizer_name,
+            )
+            if previous_checkpoint_parent != output_dir:
+                _delete_training_checkpoint_status_if_present(
+                    previous_checkpoint_parent
+                )
             _text_info(
                 f"oneshot_epoch_complete=1 oneshot_epoch_number={epoch_number} "
                 f"epoch_global_step_start={epoch_start_global_step} "
@@ -1256,10 +1447,13 @@ def train(config: TrainConfig) -> None:
     lora_or_full = assert_supported_lora_or_full(config.lora_or_full)
     distributed_strategy = assert_supported_distributed_strategy(config.distributed_strategy)
     assert config.advantage_clip > 0.0, "advantage_clip must be positive"
+    assert config.kl_beta >= 0.0, "kl_beta must be non-negative"
     assert config.learning_rate > 0.0, "learning_rate must be positive"
     assert config.weight_decay >= 0.0, "weight_decay must be non-negative"
     assert config.training_time > 0.0, "training_time must be positive"
+    assert config.num_iterations_limit > 0, "num_iterations_limit must be positive"
     assert config.min_grad_accum_steps > 0, "grad_accum_steps must be positive"
+    assert config.max_batch_tokens >= 0, "max_batch_tokens must be non-negative"
     assert config.log_time_interval > 0.0, "log_time_interval must be positive"
     if config.use_adam_state:
         assert 0.0 < config.adam_beta1 < 1.0, "adam_beta1 must be in (0, 1)"
@@ -1294,7 +1488,7 @@ def train(config: TrainConfig) -> None:
         _text_info(
             f"start_training=1 lora_or_full={lora_or_full} "
             f"distributed_strategy={distributed_strategy} "
-            f"world_size={world_size} training_time={config.training_time:.1f}s "
+            f"world_size={world_size} num_iterations_limit={config.num_iterations_limit} "
             f"model_path={resolved_model_path}"
         )
         _text_info(
@@ -1387,6 +1581,15 @@ def train(config: TrainConfig) -> None:
     if _is_primary_rank():
         _memtrace(f"post_optimizer_init optimizer={optimizer_name}")
 
+    initial_resume_state: ResumeState | None = None
+    if config.training_mode == "oneshot" and config.oneshot_start_epoch > 1:
+        initial_resume_state = _try_load_training_checkpoint_status(
+            checkpoint_parent_dir=Path(config.model_parent_dir),
+            optimizer=optimizer,
+            optimizer_name=optimizer_name,
+            device=device,
+        )
+
     if distributed_strategy == DIST_STRATEGY_DDP and world_size > 1:
         model = torch.nn.parallel.DistributedDataParallel(
             model,
@@ -1452,6 +1655,8 @@ def train(config: TrainConfig) -> None:
                 lr_warmup_steps=lr_warmup_steps,
                 lr_min_scale=lr_min_scale,
                 lazy_loader=lazy_loader,
+                initial_resume_state=initial_resume_state,
+                optimizer_name=optimizer_name,
             )
         else:
             run_training_loop(

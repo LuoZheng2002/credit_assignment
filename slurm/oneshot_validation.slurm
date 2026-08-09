@@ -37,6 +37,7 @@ export VLLM_VENV="${VLLM_VENV:-/work/nvme/bhph/zluo8/credit_assignment/venvs/vll
 export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-4096}"
 export VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-32}"
 export VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-4096}"
+export INFERENCE_WRAPPER_PORT="${INFERENCE_WRAPPER_PORT:-$((30000 + SLURM_JOB_ID % 1000))}"
 
 _NVIDIA_LIBS=$(find "$REPO_ROOT/.venv/lib/python3.12/site-packages/nvidia" \
     -name "lib" -type d -print 2>/dev/null | tr '\n' ':')
@@ -46,6 +47,7 @@ fi
 
 echo "Running oneshot validation with config: $CONFIG_PATH"
 echo "Repo root: $REPO_ROOT"
+echo "Inference wrapper port: $INFERENCE_WRAPPER_PORT"
 
 if [[ -n "$NOTIFY_START_MSG" ]]; then
     python research-utility/scripts/pushover_notify.py "$NOTIFY_START_MSG"

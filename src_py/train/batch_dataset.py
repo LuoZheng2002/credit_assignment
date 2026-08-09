@@ -176,3 +176,59 @@ class LazyResolvedBatchLoader:
             ),
             next_sample_index=end_sample_index,
         )
+
+    def resolve_token_budget_batch(
+        self,
+        sample_index: int,
+        max_batch_tokens: int,
+        max_batch_size: int,
+        batch_index: int,
+    ) -> LazyBatchWindow:
+        assert sample_index >= 0, "sample_index must be non-negative"
+        assert sample_index < self.sample_count, "sample_index out of range"
+        assert max_batch_tokens > 0, "max_batch_tokens must be positive"
+        assert max_batch_size > 0, "max_batch_size must be positive"
+        assert batch_index >= 0, "batch_index must be non-negative"
+        emit_debug = sample_index == 0 or batch_index < 3
+        if emit_debug:
+            _memtrace(
+                "resolve_token_budget_batch_begin "
+                f"sample_index={sample_index} max_batch_tokens={max_batch_tokens} "
+                f"max_batch_size={max_batch_size} batch_index={batch_index}"
+            )
+
+        samples: list[TrainingSampleTokenized] = []
+        ids: list[QuestionNodeId] = []
+        max_input_length = 0
+        end_sample_index = sample_index
+        while end_sample_index < self.sample_count and len(samples) < max_batch_size:
+            sample = self._store.get_sample(end_sample_index)
+            candidate_max_input_length = max(max_input_length, sample.input_length)
+            candidate_padded_tokens = candidate_max_input_length * (len(samples) + 1)
+            if samples and candidate_padded_tokens > max_batch_tokens:
+                break
+            samples.append(sample)
+            ids.append(sample.id)
+            max_input_length = candidate_max_input_length
+            end_sample_index += 1
+
+        assert len(samples) > 0, "resolved token-budget batch cannot be empty"
+        if emit_debug:
+            lengths = [sample.input_length for sample in samples]
+            _memtrace(
+                "resolve_token_budget_batch_end "
+                f"batch_index={batch_index} resolved_samples={len(samples)} "
+                f"min_input_length={min(lengths)} max_input_length={max(lengths)} "
+                f"padded_tokens={max(lengths) * len(samples)} "
+                f"next_sample_index={end_sample_index}"
+            )
+
+        return LazyBatchWindow(
+            resolved_batch=ResolvedTrainingBatch(
+                batch_index=batch_index,
+                ids=ids,
+                samples=samples,
+                model_official_name=self._model_official_name,
+            ),
+            next_sample_index=end_sample_index,
+        )

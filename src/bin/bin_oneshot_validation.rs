@@ -53,6 +53,30 @@ fn validation_max_concurrent_rollout(_num_gpus: usize) -> usize {
     200
 }
 
+fn tree_artifact_has_done_marker(tree_artifact_path: &str) -> bool {
+    let path = Path::new(tree_artifact_path);
+    if path.is_file() {
+        return true;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            return false;
+        };
+        file_name.starts_with("chunk_") && file_name.ends_with("_done")
+    })
+}
+
+fn requested_validation_epochs(num_oneshot_epochs: usize, epoch_interval: usize) -> Vec<usize> {
+    assert!(epoch_interval > 0, "--epoch-interval must be positive");
+    (0..=num_oneshot_epochs)
+        .filter(|epoch| *epoch == 0 || *epoch % epoch_interval == 0)
+        .collect()
+}
+
 async fn judge_validation_tree_artifacts<M: LlmModelMarker>(
     tree_artifact_path: &str,
     tree_judgment_jsonl_path: &str,
@@ -141,6 +165,8 @@ struct CliArgs {
     config_path: String,
     #[arg(long, default_value = "all")]
     phase: ValidationPhase,
+    #[arg(long, default_value_t = 1)]
+    epoch_interval: usize,
     #[arg(long, default_value_t = false)]
     login_smoke: bool,
 }
@@ -193,6 +219,7 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
     inference_wrapper_log_path: &str,
     use_tool: bool,
     phase: ValidationPhase,
+    epoch_interval: usize,
 ) {
     let client = Client::new();
     let oneshot_training_summary_parent_dir =
@@ -201,18 +228,20 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
         oneshot_epochs_parent_dir(mount_dir, model_cli_name, config_nickname_training);
     let (already_validated_epochs, mut validation_accuracies) =
         read_existing_validation_summary(&oneshot_training_summary_parent_dir);
+    let requested_epochs = requested_validation_epochs(num_oneshot_epochs, epoch_interval);
 
     if matches!(phase, ValidationPhase::All | ValidationPhase::Score)
-        && already_validated_epochs.contains(&0)
-        && (1..=num_oneshot_epochs).all(|epoch| already_validated_epochs.contains(&epoch))
+        && requested_epochs
+            .iter()
+            .all(|epoch| already_validated_epochs.contains(epoch))
     {
         log_info("All requested oneshot epochs are already validated; skipping validation phase");
         return;
     }
 
     log_info(format!(
-        "Will validate base epoch plus trained epochs 1..={} (already validated: {:?})",
-        num_oneshot_epochs, already_validated_epochs
+        "Will validate epochs {:?} from base epoch plus trained epochs 1..={} with epoch interval {} (already validated: {:?})",
+        requested_epochs, num_oneshot_epochs, epoch_interval, already_validated_epochs
     ));
     let mut launched_inference = None;
     if matches!(phase, ValidationPhase::All | ValidationPhase::Rollout) {
@@ -239,7 +268,7 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
         launched_inference = Some((sglang_port, handle));
     }
 
-    for epoch in 0..=num_oneshot_epochs {
+    for epoch in requested_epochs {
         if matches!(phase, ValidationPhase::All | ValidationPhase::Score)
             && already_validated_epochs.contains(&epoch)
         {
@@ -373,6 +402,13 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
         }
 
         if matches!(phase, ValidationPhase::All | ValidationPhase::Judge) {
+            if !tree_artifact_has_done_marker(&validation_tree_artifact_path) {
+                log_warning(format!(
+                    "Epoch {}: validation tree artifacts are incomplete or missing at {}; skipping judge phase for this epoch",
+                    epoch, validation_tree_artifact_path
+                ));
+                continue;
+            }
             judge_validation_tree_artifacts::<M>(
                 &validation_tree_artifact_path,
                 &validation_tree_judgment_path,
@@ -385,6 +421,20 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
         }
 
         if matches!(phase, ValidationPhase::All | ValidationPhase::Score) {
+            if !tree_artifact_has_done_marker(&validation_tree_artifact_path) {
+                log_warning(format!(
+                    "Epoch {}: validation tree artifacts are incomplete or missing at {}; skipping score phase for this epoch",
+                    epoch, validation_tree_artifact_path
+                ));
+                continue;
+            }
+            if !Path::new(&validation_tree_judgment_path).exists() {
+                log_warning(format!(
+                    "Epoch {}: validation tree judgments are missing at {}; skipping score phase for this epoch",
+                    epoch, validation_tree_judgment_path
+                ));
+                continue;
+            }
             let accuracy_stats = get_accuracy_from_tree_judgments_at_path::<M, Validation>(
                 &validation_tree_artifact_path,
                 &validation_tree_judgment_path,
@@ -466,6 +516,7 @@ async fn main() {
     let CliArgs {
         config_path,
         phase,
+        epoch_interval,
         login_smoke,
     } = CliArgs::parse();
     let config_contents = std::fs::read_to_string(&config_path)
@@ -497,6 +548,7 @@ async fn main() {
         validation_total_epochs > 0,
         "validation_total_epochs/num_oneshot_epochs must be positive"
     );
+    assert!(epoch_interval > 0, "--epoch-interval must be positive");
     let validation_rollout_config: RolloutConfig<Validation> =
         read_json(credit_assignment::directories::VALIDATION_ROLLOUT_CONFIG_PATH).unwrap();
     let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
@@ -509,11 +561,13 @@ async fn main() {
     let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
     if login_smoke {
         println!(
-            "login-smoke passed for bin_oneshot_validation: model={}, training_config={}, phase={:?}, validation_epochs={}, backend={:?}, num_gpus={}",
+            "login-smoke passed for bin_oneshot_validation: model={}, training_config={}, phase={:?}, validation_epochs={}, epoch_interval={}, requested_epochs={:?}, backend={:?}, num_gpus={}",
             model_cli_name,
             config_nickname_training,
             phase,
             validation_total_epochs,
+            epoch_interval,
+            requested_validation_epochs(validation_total_epochs, epoch_interval),
             inference_backend,
             num_gpus
         );
@@ -569,6 +623,7 @@ async fn main() {
                 &inference_wrapper_log_path,
                 use_tool,
                 phase,
+                epoch_interval,
             )
             .await
         }
@@ -587,6 +642,7 @@ async fn main() {
                 &inference_wrapper_log_path,
                 use_tool,
                 phase,
+                epoch_interval,
             )
             .await
         }
@@ -605,6 +661,7 @@ async fn main() {
                 &inference_wrapper_log_path,
                 use_tool,
                 phase,
+                epoch_interval,
             )
             .await
         }
@@ -623,6 +680,7 @@ async fn main() {
                 &inference_wrapper_log_path,
                 use_tool,
                 phase,
+                epoch_interval,
             )
             .await
         }
@@ -641,6 +699,7 @@ async fn main() {
                 &inference_wrapper_log_path,
                 use_tool,
                 phase,
+                epoch_interval,
             )
             .await
         }
@@ -659,6 +718,7 @@ async fn main() {
                 &inference_wrapper_log_path,
                 use_tool,
                 phase,
+                epoch_interval,
             )
             .await
         }
@@ -677,6 +737,7 @@ async fn main() {
                 &inference_wrapper_log_path,
                 use_tool,
                 phase,
+                epoch_interval,
             )
             .await
         }
@@ -695,6 +756,7 @@ async fn main() {
                 &inference_wrapper_log_path,
                 use_tool,
                 phase,
+                epoch_interval,
             )
             .await
         }

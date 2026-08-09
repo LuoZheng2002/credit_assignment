@@ -16,6 +16,7 @@ class CollatedTrainingBatch:
     attention_mask: torch.Tensor
     advantages: torch.Tensor
     old_logprobs: torch.Tensor
+    ref_logprobs: torch.Tensor | None
 
 
 def collate_training_samples(
@@ -33,6 +34,8 @@ def collate_training_samples(
     attention_rows: list[list[int]] = []
     advantages: list[list[float]] = []
     old_logprobs: list[list[float]] = []
+    ref_logprobs: list[list[float]] = []
+    has_ref_logprobs = samples[0].ref_logprobs is not None
 
     for sample in samples:
         assert len(sample.input_ids) == len(sample.labels), (
@@ -46,6 +49,13 @@ def collate_training_samples(
         assert len(sample.old_logprobs) == sample.input_length, (
             "old_logprobs and input_ids lengths must match"
         )
+        assert (sample.ref_logprobs is not None) == has_ref_logprobs, (
+            "all samples in a batch must consistently include or omit ref_logprobs"
+        )
+        if sample.ref_logprobs is not None:
+            assert len(sample.ref_logprobs) == sample.input_length, (
+                "ref_logprobs and input_ids lengths must match"
+            )
 
         pad_count = max_length - sample.input_length
         assert pad_count >= 0, "pad_count cannot be negative"
@@ -55,12 +65,17 @@ def collate_training_samples(
         attention_rows.append([1] * sample.input_length + [0] * pad_count)
         advantages.append(sample.token_advantages + [0.0] * pad_count)
         old_logprobs.append(sample.old_logprobs + [0.0] * pad_count)
+        if sample.ref_logprobs is not None:
+            ref_logprobs.append(sample.ref_logprobs + [0.0] * pad_count)
 
     input_ids_tensor = torch.tensor(input_id_rows, dtype=torch.long)
     labels_tensor = torch.tensor(label_rows, dtype=torch.long)
     attention_mask_tensor = torch.tensor(attention_rows, dtype=torch.long)
     advantages_tensor = torch.tensor(advantages, dtype=torch.float32)
     old_logprobs_tensor = torch.tensor(old_logprobs, dtype=torch.float32)
+    ref_logprobs_tensor = (
+        torch.tensor(ref_logprobs, dtype=torch.float32) if has_ref_logprobs else None
+    )
 
     assert input_ids_tensor.ndim == 2, "input_ids tensor must be rank-2"
     assert labels_tensor.shape == input_ids_tensor.shape, (
@@ -75,6 +90,10 @@ def collate_training_samples(
     assert old_logprobs_tensor.shape == input_ids_tensor.shape, (
         "old_logprobs tensor shape must match input_ids"
     )
+    if ref_logprobs_tensor is not None:
+        assert ref_logprobs_tensor.shape == input_ids_tensor.shape, (
+            "ref_logprobs tensor shape must match input_ids"
+        )
 
     return CollatedTrainingBatch(
         input_ids=input_ids_tensor,
@@ -82,4 +101,5 @@ def collate_training_samples(
         attention_mask=attention_mask_tensor,
         advantages=advantages_tensor,
         old_logprobs=old_logprobs_tensor,
+        ref_logprobs=ref_logprobs_tensor,
     )

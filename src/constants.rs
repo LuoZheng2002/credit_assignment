@@ -14,7 +14,7 @@ pub fn sglang_context_length(use_tool: bool) -> usize {
 }
 
 pub fn get_max_concurrent_rollout(num_gpus: usize) -> usize {
-    200 * num_gpus
+    300 * num_gpus
 }
 
 /// Temperature used for training rollouts (0.7).

@@ -249,10 +249,10 @@ pub async fn fetch_judge_evaluation_for_model(
     let mut body_map = serde_json::json!({
         "model": model_name,
         "messages": [{"role": "user", "content": prompt}],
-        "max_completion_tokens": 4096,
+        "max_completion_tokens": 1024,
         "temperature": temperature,
         "reasoning": {
-            "effort": if thinking_enabled { "high" } else { "none" }
+            "effort": if thinking_enabled { "low" } else { "none" }
         }
     });
     if !thinking_enabled {

@@ -26,6 +26,7 @@ class TrainingSampleTokenized:
     input_length: int
     token_advantages: list[float]
     old_logprobs: list[float]
+    ref_logprobs: list[float] | None
     model_official_name: str
 
 
@@ -122,6 +123,7 @@ def _parse_tokenized_payload(payload: object) -> TrainingSampleTokenized:
         input_length=input_length,
         token_advantages=token_advantages,
         old_logprobs=old_logprobs,
+        ref_logprobs=None,
         model_official_name=model_official_name_obj,
     )
 
@@ -169,6 +171,14 @@ def _parse_direct_training_trajectory_payload(
     for element in old_logprobs_obj:
         old_logprobs.append(_parse_finite_float(element, "old_logprobs[]"))
 
+    ref_logprobs: list[float] | None = None
+    if "ref_logprobs" in payload_obj:
+        ref_logprobs_obj = payload_obj["ref_logprobs"]
+        assert isinstance(ref_logprobs_obj, list), "ref_logprobs must be a list"
+        ref_logprobs = []
+        for element in ref_logprobs_obj:
+            ref_logprobs.append(_parse_finite_float(element, "ref_logprobs[]"))
+
     assert len(input_ids) > 0, "input_ids cannot be empty"
     assert len(labels) == len(input_ids), "labels and input_ids lengths must match"
     assert len(token_advantages) == len(input_ids), (
@@ -177,6 +187,10 @@ def _parse_direct_training_trajectory_payload(
     assert len(old_logprobs) == len(input_ids), (
         "old_logprobs and input_ids lengths must match"
     )
+    if ref_logprobs is not None:
+        assert len(ref_logprobs) == len(input_ids), (
+            "ref_logprobs and input_ids lengths must match"
+        )
 
     assert len(input_ids) >= 2, "trajectory must contain at least two tokens"
 
@@ -197,6 +211,7 @@ def _parse_direct_training_trajectory_payload(
         input_length=len(input_ids),
         token_advantages=token_advantages,
         old_logprobs=old_logprobs,
+        ref_logprobs=ref_logprobs,
         model_official_name="",
     )
 

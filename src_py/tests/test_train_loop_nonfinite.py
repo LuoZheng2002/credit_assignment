@@ -127,6 +127,7 @@ class TestTrainLoopNonfinite(unittest.TestCase):
         attention_mask = torch.ones_like(input_ids)
         labels = torch.tensor([[-100, 2, 3]], dtype=torch.long)
         advantages = torch.tensor([[0.0, 1.0, 1.0]], dtype=torch.float32)
+        old_logprobs = torch.zeros_like(advantages)
 
         trace = trace_first_nonfinite_backward_signal(
             model=model,
@@ -134,8 +135,11 @@ class TestTrainLoopNonfinite(unittest.TestCase):
             attention_mask=attention_mask,
             labels=labels,
             advantages=advantages,
+            old_logprobs=old_logprobs,
+            ref_logprobs=None,
             advantage_clip=3.0,
-            grad_accum_steps=1,
+            kl_beta=0.0,
+            min_grad_accum_steps=1,
         )
 
         self.assertIn("nonfinite_backward_trace=1", trace)

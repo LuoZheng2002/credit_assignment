@@ -26,6 +26,7 @@ class TrainingHyperparametersRequest(BaseModel):
     lora_or_full: str
     distributed_strategy: str
     advantage_clip: float
+    kl_beta: float = 0.0
     learning_rate: float
     weight_decay: float
     use_adam_state: bool
@@ -34,6 +35,7 @@ class TrainingHyperparametersRequest(BaseModel):
         validation_alias=AliasChoices("min_grad_accum_steps", "grad_accum_steps"),
         serialization_alias="min_grad_accum_steps",
     )
+    max_batch_tokens: int = 0
     log_time_interval: float
     seed: int
     adam_beta1: float = 0.9

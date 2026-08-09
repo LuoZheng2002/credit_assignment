@@ -32,9 +32,11 @@ cd "$REPO_ROOT"
 # resolves the vLLM runtime from VLLM_VENV when a config uses vLLM.
 export PATH="$REPO_ROOT/.venv/bin:$PATH"
 export VLLM_VENV="${VLLM_VENV:-/work/nvme/bhph/zluo8/credit_assignment/venvs/vllm-0.25.1-cu129}"
+export INFERENCE_WRAPPER_PORT="${INFERENCE_WRAPPER_PORT:-$((30000 + SLURM_JOB_ID % 1000))}"
 
 echo "Running oneshot rollout with config: $CONFIG_PATH"
 echo "Repo root: $REPO_ROOT"
+echo "Inference wrapper port: $INFERENCE_WRAPPER_PORT"
 
 if [[ -n "$NOTIFY_START_MSG" ]]; then
     python research-utility/scripts/pushover_notify.py "$NOTIFY_START_MSG"

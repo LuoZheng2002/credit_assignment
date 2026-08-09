@@ -130,6 +130,55 @@ class TestAdvantageWeightedLoss(unittest.TestCase):
         self.assertLessEqual(abs(output.stats["advantage_normalized_mean"]), 0.25)
         self.assertGreater(output.stats["advantage_raw_std"], 0.0)
 
+    def test_kl_beta_adds_sampled_token_kl(self) -> None:
+        logits = torch.tensor(
+            [[[2.0, 0.0], [0.0, 2.0], [1.0, 0.0]]],
+            dtype=torch.float32,
+        )
+        labels = torch.tensor([[IGNORE_LABEL, 1, 0]], dtype=torch.long)
+        advantages = torch.zeros((1, 3), dtype=torch.float32)
+        old_logprobs = torch.zeros_like(advantages)
+        ref_logprobs = torch.tensor([[0.0, -0.25, -0.5]], dtype=torch.float32)
+        kl_beta = 0.3
+
+        output = compute_advantage_weighted_causal_lm_loss(
+            logits=logits,
+            labels=labels,
+            advantages=advantages,
+            old_logprobs=old_logprobs,
+            ref_logprobs=ref_logprobs,
+            kl_beta=kl_beta,
+            advantage_clip=3.0,
+        )
+
+        log_probs = torch.log_softmax(logits[:, :-1, :], dim=-1)
+        selected = log_probs.gather(
+            dim=-1,
+            index=labels[:, 1:].unsqueeze(-1),
+        ).squeeze(-1)
+        expected_kl = (selected - ref_logprobs[:, 1:]).mean()
+        self.assertTrue(
+            torch.allclose(output.loss.detach(), kl_beta * expected_kl, atol=1e-6)
+        )
+        self.assertAlmostEqual(float(expected_kl.item()), output.stats["loss_kl"], places=6)
+
+    def test_kl_beta_requires_ref_logprobs(self) -> None:
+        logits = torch.randn(1, 2, 3, dtype=torch.float32)
+        labels = torch.tensor([[IGNORE_LABEL, 1]], dtype=torch.long)
+        advantages = torch.zeros((1, 2), dtype=torch.float32)
+        old_logprobs = torch.zeros_like(advantages)
+
+        with self.assertRaises(AssertionError) as context:
+            compute_advantage_weighted_causal_lm_loss(
+                logits=logits,
+                labels=labels,
+                advantages=advantages,
+                old_logprobs=old_logprobs,
+                advantage_clip=3.0,
+                kl_beta=0.1,
+            )
+        self.assertIn("ref_logprobs must be provided", str(context.exception))
+
     def test_raises_when_batch_has_no_supervised_token(self) -> None:
         logits = torch.randn(2, 4, 5, dtype=torch.float32)
         labels = torch.tensor(

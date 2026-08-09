@@ -224,6 +224,19 @@ pub fn training_trajectories_oneshot_chunk_path(
     format!("{training_trajectories_dir}/chunk_{chunk_index}.msgpack")
 }
 
+pub fn training_trajectories_oneshot_ref_logprobs_path(
+    training_trajectories_dir: &str,
+) -> String {
+    format!("{training_trajectories_dir}/trajectories_ref_logprobs.msgpack")
+}
+
+pub fn training_trajectories_oneshot_chunk_ref_logprobs_path(
+    training_trajectories_dir: &str,
+    chunk_index: usize,
+) -> String {
+    format!("{training_trajectories_dir}/chunk_{chunk_index}_ref_logprobs.msgpack")
+}
+
 pub fn training_trajectories_stats_oneshot_path(
     mount_dir: &str,
     model_cli_name: &str,
@@ -248,6 +261,16 @@ pub fn rollout_summary_oneshot_path(
     config_nickname: &str,
 ) -> String {
     format!("{mount_dir}/small_files/{model_cli_name}/{config_nickname}/rollout_summary.json")
+}
+
+pub fn rollout_chunk_timing_oneshot_path(
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
+) -> String {
+    format!(
+        "{mount_dir}/small_files/{model_cli_name}/{config_nickname}/rollout_chunk_timing_first_run.json"
+    )
 }
 
 /// Parent directory that contains all oneshot epoch subdirectories

@@ -237,6 +237,58 @@ class TestBatchDataset(unittest.TestCase):
             self.assertEqual(3, lazy_loader.get_sample(1).input_length)
             lazy_loader.close()
 
+    def test_lazy_loader_resolve_token_budget_batch_uses_padded_budget(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".msgpack") as trajectory_db:
+            trajectory_entries: list[object] = []
+            for index, length in enumerate([4, 5, 6, 3]):
+                trajectory_entries.append(
+                    {
+                        "question": {
+                            "flat_id": 100 + index,
+                            "dataset_name": "deepmath",
+                            "question_id": index,
+                            "question": f"q{index}",
+                            "correct_answer": f"a{index}",
+                        },
+                        "input_ids": list(range(10, 10 + length)),
+                        "labels": [-100] + list(range(11, 10 + length)),
+                        "advantages": [0.1] * length,
+                        "old_logprobs": [0.0] + [-0.1] * (length - 1),
+                        "average_absolute_segment_advantage": 0.1,
+                    }
+                )
+            _write_entries(trajectory_db.name, trajectory_entries)
+
+            lazy_loader = LazyResolvedBatchLoader(
+                training_trajectory_path=trajectory_db.name,
+                training_trajectory_len_cutoff=4096,
+                model_official_name="Qwen/Qwen2.5-7B-Instruct",
+                first_n_training_samples=0,
+            )
+            window = lazy_loader.resolve_token_budget_batch(
+                sample_index=0,
+                max_batch_tokens=10,
+                max_batch_size=4,
+                batch_index=0,
+            )
+            self.assertEqual(2, len(window.resolved_batch.samples))
+            self.assertEqual(2, window.next_sample_index)
+            self.assertEqual(
+                [4, 5],
+                [sample.input_length for sample in window.resolved_batch.samples],
+            )
+
+            window = lazy_loader.resolve_token_budget_batch(
+                sample_index=2,
+                max_batch_tokens=10,
+                max_batch_size=4,
+                batch_index=2,
+            )
+            self.assertEqual(1, len(window.resolved_batch.samples))
+            self.assertEqual(3, window.next_sample_index)
+            self.assertEqual(6, window.resolved_batch.samples[0].input_length)
+            lazy_loader.close()
+
 
 if __name__ == "__main__":
     unittest.main()

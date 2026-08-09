@@ -58,6 +58,8 @@ def compute_advantage_weighted_causal_lm_loss(
     advantages: torch.Tensor,
     old_logprobs: torch.Tensor,
     advantage_clip: float,
+    ref_logprobs: torch.Tensor | None = None,
+    kl_beta: float = 0.0,
 ) -> AdvantageWeightedLossOutput:
     assert logits.ndim == 3, "logits must be [batch, seq_len, vocab]"
     assert labels.ndim == 2, "labels must be [batch, seq_len]"
@@ -75,18 +77,36 @@ def compute_advantage_weighted_causal_lm_loss(
     assert old_logprobs.shape[1] == seq_len, (
         "old_logprobs seq_len must match logits"
     )
+    if ref_logprobs is not None:
+        assert ref_logprobs.ndim == 2, "ref_logprobs must be [batch, seq_len]"
+        assert ref_logprobs.shape[0] == batch_size, (
+            "ref_logprobs batch size must match logits"
+        )
+        assert ref_logprobs.shape[1] == seq_len, (
+            "ref_logprobs seq_len must match logits"
+        )
     assert seq_len >= 2, "seq_len must be >= 2 to support causal shift"
     assert vocab_size >= 2, "vocab_size must be >= 2"
     assert advantage_clip > 0.0, "advantage_clip must be > 0"
+    assert kl_beta >= 0.0, "kl_beta must be non-negative"
+    if kl_beta > 0.0:
+        assert ref_logprobs is not None, (
+            "ref_logprobs must be provided when kl_beta > 0"
+        )
 
     shifted_logits = logits[:, :-1, :].contiguous()
     shifted_labels = labels[:, 1:].contiguous()
     shifted_advantages = advantages[:, 1:].contiguous()
     shifted_old_logprobs = old_logprobs[:, 1:].contiguous()
+    shifted_ref_logprobs = (
+        ref_logprobs[:, 1:].contiguous() if ref_logprobs is not None else None
+    )
 
     _assert_tensor_finite(shifted_logits, "logits")
     _assert_tensor_finite(shifted_advantages, "advantages")
     _assert_tensor_finite(shifted_old_logprobs, "old_logprobs")
+    if shifted_ref_logprobs is not None:
+        _assert_tensor_finite(shifted_ref_logprobs, "ref_logprobs")
 
     token_losses = F.cross_entropy(
         shifted_logits.view(-1, vocab_size),
@@ -106,6 +126,11 @@ def compute_advantage_weighted_causal_lm_loss(
     supervised_count_fp = supervised_count.to(token_losses.dtype)
     raw_supervised_advantages = shifted_advantages.masked_select(supervised_mask)
     supervised_old_logprobs = shifted_old_logprobs.masked_select(supervised_mask)
+    supervised_ref_logprobs = (
+        shifted_ref_logprobs.masked_select(supervised_mask)
+        if shifted_ref_logprobs is not None
+        else None
+    )
     advantage_mean, advantage_std = _local_mean_std(raw_supervised_advantages)
     per_token_advantages = torch.clamp(
         raw_supervised_advantages,
@@ -130,7 +155,13 @@ def compute_advantage_weighted_causal_lm_loss(
     policy_loss = -surrogate.sum() / supervised_count_fp
     _assert_tensor_finite(policy_loss, "policy_loss")
 
-    total_loss = policy_loss
+    if supervised_ref_logprobs is not None:
+        sampled_kl = supervised_new_logprobs - supervised_ref_logprobs
+        kl_loss = sampled_kl.sum() / supervised_count_fp
+    else:
+        sampled_kl = None
+        kl_loss = torch.zeros((), dtype=policy_loss.dtype, device=policy_loss.device)
+    total_loss = policy_loss + (float(kl_beta) * kl_loss)
 
     _assert_tensor_finite(total_loss, "total_loss")
 
@@ -161,6 +192,15 @@ def compute_advantage_weighted_causal_lm_loss(
         total_loss.detach() * local_supervised_tokens,
         local_supervised_tokens,
     )
+    local_kl_loss = _local_weighted_mean(
+        kl_loss.detach() * local_supervised_tokens,
+        local_supervised_tokens,
+    )
+    local_sampled_kl_mean = (
+        _local_weighted_mean(sampled_kl.detach().sum(), local_supervised_tokens)
+        if sampled_kl is not None
+        else torch.zeros((), dtype=token_losses.dtype, device=logits.device)
+    )
     local_adv_norm_mean = _local_weighted_mean(
         per_token_advantages.detach().sum(),
         local_supervised_tokens,
@@ -172,11 +212,14 @@ def compute_advantage_weighted_causal_lm_loss(
     stats = {
         "loss_weighted": float(local_policy_loss.item()),
         "loss_policy_surrogate": float(local_policy_loss.item()),
+        "loss_kl": float(local_kl_loss.item()),
         "loss_total": float(local_total_loss.item()),
         "loss_unweighted_ce": float(local_unweighted_ce.item()),
         "policy_ratio_mean": float(local_mean_ratio.item()),
         "policy_ratio_clip_fraction": float(local_clip_fraction.item()),
         "policy_ratio_clip": float(POLICY_RATIO_CLIP),
+        "sampled_kl_mean": float(local_sampled_kl_mean.item()),
+        "kl_beta": float(kl_beta),
         "advantage_raw_mean": float(advantage_mean.item()),
         "advantage_raw_std": float(advantage_std.item()),
         "advantage_normalized_mean": float(local_adv_norm_mean.item()),
@@ -185,4 +228,3 @@ def compute_advantage_weighted_causal_lm_loss(
     }
 
     return AdvantageWeightedLossOutput(loss=total_loss, stats=stats)
-

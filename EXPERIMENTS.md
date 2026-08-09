@@ -195,3 +195,13 @@ These results use the broader six-dataset held-out test mixture and should be in
 - Largest local artifact was `results/medium_files/qwen25/tree_notool_generation/training_trajectories/trajectories.msgpack` at about 53 MB.
 - Essential experiment information is retained in this document: each tracked experiment's config path, model/setup, LoRA rank, learning rate, validation/test outcome, and current interpretation.
 - Cluster artifacts are not removed by this local cleanup step.
+
+### Qwen2.5 No-Tool SGD / No-Warmup Ablation, Rank 32, Low Learning Rate
+
+- Configs:
+  - `config/oneshot_train/qwen25_train_grpo_notool_10chunk_lora_r32_lr1e6_sgd_nowarmup_10ep.toml`
+  - `config/oneshot_train/qwen25_train_tree_notool_10chunk_lora_r32_lr1e6_sgd_nowarmup_10ep.toml`
+- Training mode: single-GPU LoRA, rank 32, learning rate `1e-6`, no Adam state and no LR warmup.
+- Validation status: partial through roughly epoch 20/21 after 30-epoch training.
+- Outcome: no clear increasing trend; latest GRPO SGD is only about `+0.17%` over base, and latest Tree SGD is below base.
+- Conclusion: SGD/no-warmup is not effective under the current recipe and should not consume additional queue slots.
