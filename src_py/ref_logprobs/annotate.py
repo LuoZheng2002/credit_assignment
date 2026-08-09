@@ -65,7 +65,18 @@ def _trajectory_files(input_dir: Path) -> list[tuple[Path, Path]]:
 
 def _load_model(model_path_or_name: str, fallback_model_name: str) -> tuple[Any, Any]:
     model_source = model_path_or_name if Path(model_path_or_name).exists() else fallback_model_name
-    tokenizer = AutoTokenizer.from_pretrained(model_source)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_source)
+    except Exception as exc:
+        if model_source == fallback_model_name:
+            raise
+        print(
+            "local_tokenizer_load_failed=1 "
+            f"model_source={model_source} fallback_model_name={fallback_model_name} "
+            f"error_type={type(exc).__name__} error_message={exc}",
+            flush=True,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(fallback_model_name)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
