@@ -11,4 +11,4 @@ num_gpus = 1
 inference_backend = "vllm"
 total_time_limit_hours = 3.6364
 num_questions_per_chunk = 250
-num_chunks = 30
+num_chunks = 50

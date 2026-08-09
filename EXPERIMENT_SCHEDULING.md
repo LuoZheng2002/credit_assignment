@@ -1290,3 +1290,14 @@ Add KL regularization without loading a second reference model during training.
 - Implemented artifact naming keeps the original trajectory files intact: `trajectories_ref_logprobs.msgpack` for unchunked runs and `chunk_{n}_ref_logprobs.msgpack` for chunked runs.
 - `bin_oneshot_training` automatically consumes the annotated artifact only when `training_hyperparameters.kl_beta > 0`.
 - `scripts/hpc/bin_oneshot_pipeline.py` automatically inserts the GPU reference-logprob annotation stage when `kl_beta > 0`.
+
+Initial KL experiment schedule:
+
+- Qwen2.5 GRPO no-tool, rank-32 LoRA, learning rate `1e-6`, Adam with warmup, 50 epochs/chunks, `kl_beta = 0.04`.
+- Qwen2.5 Tree no-tool, rank-32 LoRA, learning rate `1e-6`, Adam with warmup, 50 epochs/chunks, `kl_beta = 0.04`.
+- Reuse existing 50-chunk no-tool generation artifacts; submit only reference-logprob annotation, KL training, and validation.
+
+Tool rollout extension:
+
+- Extend Qwen2.5 GRPO tool rollout from 30 to 50 chunks using the existing `grpo_tool_rollout_10chunk` nickname so chunk completion markers prevent rerunning finished chunks.
+- Extend Qwen2.5 Tree tool rollout from 30 to 50 chunks using the existing `tree_tool_rollout_10chunk` nickname so chunk completion markers prevent rerunning finished chunks.
