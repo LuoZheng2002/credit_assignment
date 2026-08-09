@@ -10,6 +10,8 @@ dependencies = [
     "research-utility",
     "torch==2.9.1+cu128",
     "transformers",
+    "tiktoken",
+    "sentencepiece",
     "accelerate",
     "socksio>=1.0.0",
     "matplotlib>=3.10.9",
