@@ -70,7 +70,16 @@ async fn run_ref_logprobs<M: LlmModelMarker>(args: &Args, cli: &CliArgs) {
             trajectories_dir
         );
     }
-    let model_path = base_model_dir(&args.mount_dir, M::CLI_NAME);
+    let base_model_parent = base_model_dir(&args.mount_dir, M::CLI_NAME);
+    let nested_model_path = Path::new(&base_model_parent)
+        .join("model")
+        .to_string_lossy()
+        .into_owned();
+    let model_path = if Path::new(&nested_model_path).join("config.json").exists() {
+        nested_model_path
+    } else {
+        base_model_parent
+    };
     let mut command = Command::new("python3");
     command
         .arg("-m")
