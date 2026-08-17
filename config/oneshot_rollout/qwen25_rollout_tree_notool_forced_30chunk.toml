@@ -1,5 +1,5 @@
 model_cli_name = "qwen25"
-config_nickname_rollout = "tree_notool_uncert_forced_rollout_4h"
+config_nickname_rollout = "tree_notool_forced_rollout_30chunk"
 rollout_config_path = "config/rollout_config_training_tree.json"
 use_tool = false
 dataset_split = "Training"
@@ -9,6 +9,7 @@ rollout_secs = 14400
 mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
 num_gpus = 1
 inference_backend = "vllm"
-total_time_limit_hours = 4.5
-enable_uncertainty_aware_branching = true
+total_time_limit_hours = 4.0
 force_selected_branch_token = true
+num_questions_per_chunk = 125
+num_chunks = 30

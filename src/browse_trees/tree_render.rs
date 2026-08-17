@@ -440,7 +440,7 @@ fn segment_branching_score_display<M: crate::llm_model::LlmModelMarker, S: Datas
     tree: &DirectTree<'_, M, S>,
     width_division_ratio: usize,
     segment_display_widths: &BTreeMap<SegmentId, usize>,
-    override_hyperparameters: Option<&PosteriorHyperparameters>,
+    _override_hyperparameters: Option<&PosteriorHyperparameters>,
 ) -> BTreeMap<SegmentId, Vec<Option<f32>>> {
     let mut displays = BTreeMap::new();
     if tree.segments.is_empty() {
@@ -454,18 +454,10 @@ fn segment_branching_score_display<M: crate::llm_model::LlmModelMarker, S: Datas
         return displays;
     }
 
-    let posteriors = tree.calculate_segment_posteriors(override_hyperparameters);
-    let mut segment_uncertainty_scores = tree.posteriors_to_segment_uncertainty_scores(&posteriors);
-    for segment_id in tree.segments.keys().copied() {
-        segment_uncertainty_scores.entry(segment_id).or_insert(0.0);
-    }
     let per_token_branching_scores: BTreeMap<
         SegmentId,
         BTreeMap<ContentIndex, BTreeMap<usize, TokenBranchingScore>>,
-    > = tree.calculate_per_token_branching_scores(
-        &segment_uncertainty_scores,
-        BranchingRuntimeOptions::default(),
-    );
+    > = tree.calculate_per_token_branching_scores(BranchingRuntimeOptions::default());
     for (segment_id, segment) in &tree.segments {
         let mut token_level_scores: Vec<Option<f32>> = Vec::new();
         for (content_index, content) in segment.content.iter().enumerate() {

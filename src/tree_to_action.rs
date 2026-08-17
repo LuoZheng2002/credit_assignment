@@ -24,7 +24,6 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BranchingRuntimeOptions {
-    pub uncertainty_aware_branching: bool,
     pub force_selected_branch_token: bool,
     pub tree_rl_entropy_guided_branching: bool,
 }
@@ -52,7 +51,6 @@ pub struct TokenBranchingScore {
 impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
     pub fn calculate_per_token_branching_scores(
         &self,
-        segment_uncertainty_scores: &BTreeMap<SegmentId, f32>,
         branching_options: BranchingRuntimeOptions,
     ) -> BTreeMap<SegmentId, BTreeMap<ContentIndex, BTreeMap<usize, TokenBranchingScore>>> {
         assert!(
@@ -102,12 +100,6 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                         })
                         .collect::<Vec<i32>>();
 
-                    let node_uncertainty_score =
-                        Self::node_uncertainty_score_from_parent_and_child_ids(
-                            parent_segment,
-                            &child_segments,
-                            segment_uncertainty_scores,
-                        );
                     let Some((token_id, best_token_relative_probability)) =
                         Self::best_token_and_relative_probability(
                             &token_view.logprobs, // this might be the cause for the logprobs to be different for gpt models
@@ -120,20 +112,14 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                         Self::token_logprob_from_candidates(&token_view.logprobs, token_id);
                     let branching_factor_penalty_multiplier =
                         Self::branching_factor_penalty_multiplier(child_segments.len());
-                    let uncertainty_multiplier = if branching_options.uncertainty_aware_branching {
-                        node_uncertainty_score
-                    } else {
-                        1.0
-                    };
                     let branching_base_score = if branching_options.tree_rl_entropy_guided_branching
                     {
                         Self::normalized_topk_entropy(&token_view.logprobs)
                     } else {
                         best_token_relative_probability
                     };
-                    let branching_score = branching_base_score
-                        * branching_factor_penalty_multiplier
-                        * uncertainty_multiplier;
+                    let branching_score =
+                        branching_base_score * branching_factor_penalty_multiplier;
                     TokenBranchingScore {
                         token_id,
                         token_logprob,
@@ -142,9 +128,6 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                     }
                 } else {
                     // branching type is segment
-                    let segment_uncertainty_score = *segment_uncertainty_scores
-                        .get(segment_id)
-                        .expect("Each segment must have an uncertainty score");
                     let reasoning_only_segment_length = reasoning_only_tokens.len();
                     let first_half_length_after_split = token_index_in_reasoning;
                     let second_half_length_after_split =
@@ -164,20 +147,13 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
                         second_half_length_after_split,
                         average_trunk_token_length,
                     );
-                    let uncertainty_multiplier = if branching_options.uncertainty_aware_branching {
-                        segment_uncertainty_score
-                    } else {
-                        1.0
-                    };
                     let branching_base_score = if branching_options.tree_rl_entropy_guided_branching
                     {
                         Self::normalized_topk_entropy(&token_view.logprobs)
                     } else {
                         best_token_relative_probability
                     };
-                    let branching_score = branching_base_score
-                        * segment_length_penalty_multiplier
-                        * uncertainty_multiplier;
+                    let branching_score = branching_base_score * segment_length_penalty_multiplier;
                     TokenBranchingScore {
                         token_id,
                         token_logprob,
@@ -390,43 +366,6 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         }
     }
 
-    fn node_uncertainty_score_from_parent_and_children(
-        parent_uncertainty_score: f32,
-        children_uncertainty_score: &[f32],
-    ) -> f32 {
-        // parent has the same weight as the sum of children
-        let b = children_uncertainty_score.len() as f32;
-        (b * parent_uncertainty_score + children_uncertainty_score.iter().sum::<f32>()) / (2.0 * b)
-    }
-    fn node_uncertainty_score_from_parent_and_child_ids(
-        parent_segment_id: SegmentId,
-        child_segment_ids: &[SegmentId],
-        segment_uncertainty_scores: &BTreeMap<SegmentId, f32>,
-    ) -> f32 {
-        let parent_uncertainty_score = segment_uncertainty_scores.get(&parent_segment_id).copied();
-        let children_uncertainty_score: Vec<f32> = child_segment_ids
-            .iter()
-            .map(|child_id| {
-                segment_uncertainty_scores
-                    .get(child_id)
-                    .expect("Child segment must have an uncertainty score")
-            })
-            .cloned()
-            .collect();
-        if children_uncertainty_score.is_empty() {
-            return 0.0;
-        }
-
-        if let Some(parent_uncertainty_score) = parent_uncertainty_score {
-            return Self::node_uncertainty_score_from_parent_and_children(
-                parent_uncertainty_score,
-                &children_uncertainty_score,
-            );
-        }
-
-        children_uncertainty_score.iter().sum::<f32>() / children_uncertainty_score.len() as f32
-    }
-
     fn best_token_and_relative_probability(
         token_logprobs: &Top8Candidates,
         token_ids_to_exclude: &[i32],
@@ -624,12 +563,8 @@ impl<'a, M: LlmModelMarker, S: DatasetSplit> DirectTree<'a, M, S> {
         &self,
         branching_options: BranchingRuntimeOptions,
     ) -> DirectTreeAction<M> {
-        let mut segment_uncertainty_scores = BTreeMap::new();
-        for segment_id in self.segments.keys().copied() {
-            segment_uncertainty_scores.entry(segment_id).or_insert(1.0);
-        }
-        let per_token_branching_scores = self
-            .calculate_per_token_branching_scores(&segment_uncertainty_scores, branching_options);
+        let per_token_branching_scores =
+            self.calculate_per_token_branching_scores(branching_options);
 
         let mut best_candidate: Option<(SegmentId, ContentIndex, usize, TokenBranchingScore)> =
             None;

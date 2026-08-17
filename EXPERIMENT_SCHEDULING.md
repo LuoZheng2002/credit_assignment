@@ -718,10 +718,10 @@ These are project-level setbacks that explain why the schedule remains adaptive 
 
 These notes record known implementation-paper mismatches that should not block the immediate abstract-oriented experiment schedule, but should be resolved or explicitly scoped before a final paper submission.
 
-1. **Guided branching features are now runtime-controlled but not yet rerun.**
-   - One-shot rollout supports `enable_uncertainty_aware_branching` and `force_selected_branch_token` via TOML fields or CLI flags.
+1. **Guided branching forced-token feature is runtime-controlled but not yet rerun.**
+   - One-shot rollout supports `force_selected_branch_token` via TOML fields or CLI flags.
    - The forced-token path now preserves the selected token's old rollout log-probability instead of inserting it with synthetic logprob `0.0`, which is important under the clipped policy-ratio training objective.
-   - Deferred qwen25 no-tool TreeMAPPO configs are prepared for a serious uncertainty-aware + forced-token run: `config/oneshot_rollout/qwen25_rollout_tree_notool_uncert_forced_4h.toml`, `config/oneshot_generation/qwen25_generate_tree_notool_uncert_forced_4h.toml`, and `config/oneshot_train/qwen25_train_tree_notool_uncert_forced_lora_r32_lr1e6_10ep_15m.toml`.
+   - Deferred qwen25 no-tool TreeMAPPO configs are prepared for a serious forced-token run: `config/oneshot_rollout/qwen25_rollout_tree_notool_forced_30chunk.toml`, `config/oneshot_generation/qwen25_generate_tree_notool_forced_30chunk.toml`, and `config/oneshot_train/qwen25_train_tree_notool_forced_lora_r32_lr1e6_30ep_adam.toml`.
    - Do not submit this run while the queue is heavily contended; submit it later as the next strict test of the full guided-branching mechanism.
 
 3. **GRPO configs now use explicit group-normalized terminal reward credit.**
@@ -748,7 +748,7 @@ Current interpretation:
 1. Qwen2.5 no-tool remains the cleanest paper path because both GRPO and TreeMAPPO show modest positive validation signals under matched rank-32, learning-rate `1e-6` settings.
 2. Qwen34 tool is a mixed/negative comparison for TreeMAPPO: the Tree checkpoint is below the matched GRPO checkpoint on aggregate held-out accuracy, although it improves on a subset of datasets.
 3. Positive-advantage-only TreeMAPPO should be treated as an ablation. It is not currently stronger than the standard TreeMAPPO story, especially in the tool setting.
-4. The next scientific decision should be whether to replicate the Qwen2.5 no-tool GRPO-vs-Tree comparison for robustness or spend the next queue slots on planned ablations such as branch budget, TEMPO-style branching, and uncertainty-aware forced-token branching.
+4. The next scientific decision should be whether to replicate the Qwen2.5 no-tool GRPO-vs-Tree comparison for robustness or spend the next queue slots on planned ablations such as branch budget, TEMPO-style branching, and forced-token guided branching.
 
 
 ## Qwen2.5 No-Tool GRPO-vs-Tree Replication — Submitted 2026-08-01
@@ -1321,7 +1321,7 @@ Near-term non-KL priority order:
 
 1. **Complete matched Qwen2.5 no-tool evidence.** Keep the GRPO-vs-Tree comparison as the primary baseline pair, with matched rank `32`, learning rate `1e-6`, Adam/warmup, and 50-epoch curves where available.
 2. **Complete matched Qwen2.5 tool evidence.** Extend or validate GRPO-tool and Tree-tool under the same fixed recipe so the paper can compare no-tool and tool settings under one policy.
-3. **Run strict Tree mechanism ablation.** Schedule the uncertainty-aware plus forced-first-token Tree run as a non-KL Tree variant, because it directly addresses the difference between the paper description and the earlier disabled rollout features.
+3. **Run strict Tree mechanism ablation.** Schedule the forced-first-token Tree run as a non-KL Tree variant, because it directly tests whether explicit token-level branch enforcement helps the guided branching mechanism.
 4. **Run branching-budget ablations.** Schedule branch-budget variants such as branch `8` and branch `32` after the standard Tree result is validated, using the same training recipe.
 5. **Run related-method ablations.** Schedule TEMPO-style branching and TreeRPO/TreeRL-style advantage ablations only after the core GRPO-vs-Tree curves are available, so they explain the mechanism rather than delaying the main comparison.
 6. **Add model-family evidence selectively.** Prioritize Qwen-family extensions first; treat Gemma and Mistral as lower priority unless the paper needs cross-model coverage. Mistral remains risky because previous runs showed collapse.
@@ -1336,7 +1336,7 @@ Decision rules:
 Recommended next submissions when queue capacity is available:
 
 - Submit or continue Qwen2.5 tool GRPO and Tree non-KL validation/training to complete comparable epoch-interval-3 curves.
-- Submit Qwen2.5 no-tool strict Tree with uncertainty-aware branching and forced selected first token enabled.
+- Submit Qwen2.5 no-tool strict Tree with forced selected first token enabled.
 - Submit Qwen2.5 no-tool branch-budget ablations after strict Tree is queued or completed.
 - Submit TEMPO-style and TreeRPO/TreeRL-style ablations only if the queue has spare capacity after the above jobs.
 

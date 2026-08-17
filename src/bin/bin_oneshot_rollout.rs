@@ -40,8 +40,6 @@ struct CliArgs {
     #[arg(short = 'c', long)]
     config_path: String,
     #[arg(long, default_value_t = false)]
-    enable_uncertainty_aware_branching: bool,
-    #[arg(long, default_value_t = false)]
     force_selected_branch_token: bool,
     #[arg(long)]
     num_questions_per_chunk: Option<usize>,
@@ -70,8 +68,6 @@ struct Args {
     inference_backend: InferenceBackend,
     #[serde(default)]
     total_time_limit_hours: f32,
-    #[serde(default)]
-    enable_uncertainty_aware_branching: bool,
     #[serde(default)]
     force_selected_branch_token: bool,
     #[serde(default)]
@@ -429,7 +425,6 @@ async fn main() {
     dotenvy::dotenv().ok();
     let CliArgs {
         config_path,
-        enable_uncertainty_aware_branching,
         force_selected_branch_token,
         num_questions_per_chunk,
         num_chunks,
@@ -458,8 +453,6 @@ async fn main() {
 
     let model_name = LlmModelName::from_str(&args.model_cli_name, true).unwrap();
     let branching_options = BranchingRuntimeOptions {
-        uncertainty_aware_branching: args.enable_uncertainty_aware_branching
-            || enable_uncertainty_aware_branching,
         force_selected_branch_token: args.force_selected_branch_token
             || force_selected_branch_token,
         tree_rl_entropy_guided_branching: false,
@@ -492,8 +485,7 @@ async fn main() {
     println!("Starting one-shot rollout pipeline...");
     let client = Client::new();
     log_info(format!(
-        "branching_options uncertainty_aware_branching={} force_selected_branch_token={} tree_rl_entropy_guided_branching={}",
-        branching_options.uncertainty_aware_branching,
+        "branching_options force_selected_branch_token={} tree_rl_entropy_guided_branching={}",
         branching_options.force_selected_branch_token,
         branching_options.tree_rl_entropy_guided_branching
     ));

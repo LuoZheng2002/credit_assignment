@@ -1,9 +1,9 @@
 model_cli_name = "qwen25"
-config_nickname_training = "tree_notool_uncert_forced_lora_r32_lr1e6_10ep_15m_training"
-config_nickname_generation = "tree_notool_uncert_forced_generation_4h"
+config_nickname_training = "tree_notool_forced_lora_r32_lr1e6_30ep_adam_training"
+config_nickname_generation = "tree_notool_forced_generation_30chunk"
 use_tool = false
-num_oneshot_epochs = 10
-validation_total_epochs = 10
+num_oneshot_epochs = 30
+validation_total_epochs = 30
 validation_rollout_secs = 600
 oneshot_per_epoch_training_time = 900.0
 num_iterations_limit = 3
@@ -11,7 +11,7 @@ num_gpus = 1
 inference_backend = "vllm"
 training_trajectory_len_cutoff = 4096
 training_set_sort_mode = "ByQuestion"
-total_time_limit_hours = 4.0
+total_time_limit_hours = 6.0
 mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
 generation_mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
 
@@ -32,3 +32,4 @@ lr_warmup_steps = 100
 lora_rank = 32
 lora_alpha = 64
 lora_dropout = 0.05
+lora_save_mode = "adapter"
