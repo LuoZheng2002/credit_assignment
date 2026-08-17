@@ -273,7 +273,7 @@ def _resolve_vllm_python_executable() -> str:
     default = Path(
         os.environ.get(
             "VLLM_VENV",
-            "/work/nvme/bhph/zluo8/credit_assignment/venvs/vllm-0.25.1-cu129",
+            "/work/hdd/bhph/zluo8/credit_assignment/venvs/vllm-latest-cu130",
         )
     )
     python_bin = default / "bin" / "python"

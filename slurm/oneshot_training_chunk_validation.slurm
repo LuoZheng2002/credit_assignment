@@ -54,7 +54,7 @@ cd "$REPO_ROOT"
 source "$REPO_ROOT/slurm/setup_cuda_12_8.sh"
 
 export PATH="$REPO_ROOT/.venv/bin:$PATH"
-export VLLM_VENV="${VLLM_VENV:-/work/nvme/bhph/zluo8/credit_assignment/venvs/vllm-0.25.1-cu129}"
+export VLLM_VENV="${VLLM_VENV:-/work/hdd/bhph/zluo8/credit_assignment/venvs/vllm-latest-cu130}"
 export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-4096}"
 export VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-32}"
 export VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-4096}"

@@ -17,14 +17,16 @@ cd "$REPO_ROOT"
 
 source "$REPO_ROOT/slurm/setup_cuda_12_8.sh"
 
-VLLM_VENV="${VLLM_VENV:-/work/nvme/bhph/zluo8/credit_assignment/venvs/vllm-0.25.1-cu129}"
+VLLM_VENV="${VLLM_VENV:-/work/hdd/bhph/zluo8/credit_assignment/venvs/vllm-latest-cu130}"
 BASE_PYTHON="${BASE_PYTHON:-$REPO_ROOT/.venv/bin/python}"
-VLLM_WHEEL_URL="${VLLM_WHEEL_URL:-https://github.com/vllm-project/vllm/releases/download/v0.25.1/vllm-0.25.1%2Bcu129-cp38-abi3-manylinux_2_28_x86_64.whl}"
+VLLM_INSTALL_PACKAGE="${VLLM_INSTALL_PACKAGE:-vllm}"
+VLLM_TORCH_BACKEND="${VLLM_TORCH_BACKEND:-cu130}"
 
 echo "Repo root: $REPO_ROOT"
 echo "vLLM venv: $VLLM_VENV"
 echo "Base python: $BASE_PYTHON"
-echo "vLLM wheel: $VLLM_WHEEL_URL"
+echo "vLLM install package: $VLLM_INSTALL_PACKAGE"
+echo "vLLM torch backend: $VLLM_TORCH_BACKEND"
 
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/work/nvme/bhph/zluo8/credit_assignment/uv-cache}"
 
@@ -35,9 +37,8 @@ fi
 
 if [ "${VLLM_SMOKE_INSTALL:-0}" = "1" ]; then
     uv pip install --python "$VLLM_VENV/bin/python" --upgrade \
-        "$VLLM_WHEEL_URL" \
-        --extra-index-url https://download.pytorch.org/whl/cu129 \
-        --index-strategy unsafe-best-match
+        --torch-backend "$VLLM_TORCH_BACKEND" \
+        "$VLLM_INSTALL_PACKAGE"
 fi
 uv pip show --python "$VLLM_VENV/bin/python" vllm | sed -n '1,20p'
 
