@@ -660,6 +660,24 @@ pub struct RolloutProgramConfig<S: DatasetSplit> {
     pub question_flat_ids: Option<BTreeSet<usize>>,
 }
 
+pub struct MultiTrialRolloutProgramConfig<S: DatasetSplit> {
+    pub config_nickname: String,
+    pub rollout_config: RolloutConfig<S>,
+    pub posterior_calculation_config: PosteriorCalculationConfig,
+    pub epoch: usize,
+    pub client: Client,
+    pub inference_endpoint: InferenceEndpoint,
+    pub rollout_secs: usize,
+    pub total_epochs: usize,
+    pub action_log_store_paths: Vec<String>,
+    pub tree_artifact_output_paths: Vec<String>,
+    pub use_tool: bool,
+    pub fixed_temperature: NotNan<f32>,
+    pub max_concurrent_rollout: usize,
+    pub branching_options: BranchingRuntimeOptions,
+    pub tree_artifact_chunk_question_count: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RolloutExecutionSummary {
     pub llm_call_throughput_per_sec: f32,
@@ -1237,5 +1255,303 @@ pub async fn rollout_all<M: LlmModelMarker, S: DatasetSplit>(
         num_correct_branches,
         num_all_correct_trees,
         num_all_incorrect_trees,
+    }
+}
+
+pub async fn rollout_testing_trials<M: LlmModelMarker, S: DatasetSplit>(
+    mount_dir: &str,
+    program_config: MultiTrialRolloutProgramConfig<S>,
+) -> RolloutExecutionSummary {
+    if let Err(error) = reset_model_answer_judgment_cache_if_any() {
+        log_warning(format!(
+            "Failed to reset legacy model answer judgment cache before rollout_testing_trials: {}",
+            error
+        ));
+    }
+    let MultiTrialRolloutProgramConfig {
+        config_nickname,
+        rollout_config,
+        posterior_calculation_config,
+        epoch,
+        client,
+        inference_endpoint,
+        rollout_secs,
+        total_epochs,
+        action_log_store_paths,
+        tree_artifact_output_paths,
+        use_tool,
+        fixed_temperature,
+        max_concurrent_rollout,
+        branching_options,
+        tree_artifact_chunk_question_count,
+    } = program_config;
+    assert!(rollout_secs > 0, "rollout_secs must be positive");
+    assert!(total_epochs > 0, "total_epochs must be positive");
+    assert!(
+        !action_log_store_paths.is_empty(),
+        "at least one testing trial is required"
+    );
+    assert_eq!(
+        action_log_store_paths.len(),
+        tree_artifact_output_paths.len(),
+        "each testing trial must have one action log path and one tree artifact path"
+    );
+    log_info(format!(
+        "rollout_testing_trials using {} trials, fixed_temperature={}, max_concurrent_rollout={}",
+        action_log_store_paths.len(),
+        fixed_temperature,
+        max_concurrent_rollout
+    ));
+    let start_time = Instant::now();
+
+    if use_tool {
+        init_python_tool_pool(4)
+            .await
+            .expect("failed to initialize python tool server pool");
+    }
+    let llm_callable = M::Callable::from_inference_endpoint(client.clone(), &inference_endpoint);
+    let dataset = open_hybrid_dataset::<S>();
+    let num_questions = dataset.len();
+    let question_map: BTreeMap<usize, HybridDatasetQuestion<S>> = dataset
+        .iter()
+        .unwrap()
+        .map(|r| r.expect("failed to read question from hybrid dataset during testing rollout"))
+        .map(|(idx, q)| (idx, q))
+        .collect();
+    let requested_question_keys = (0..num_questions).collect::<Vec<_>>();
+    let expected_by_chunk = expected_flat_ids_by_chunk_from_keys(
+        &requested_question_keys,
+        tree_artifact_chunk_question_count,
+    );
+
+    let mut action_stores = Vec::new();
+    for action_log_store_path in &action_log_store_paths {
+        let store = ActionLogStore::<M, S>::initialize_if_missing(action_log_store_path.clone())
+            .unwrap_or_else(|e| {
+                panic!("Failed to open action log store at {action_log_store_path}: {e}")
+            });
+        store
+            .write_config_bundle_if_missing(&ActionLogConfigBundle {
+                rollout_config: rollout_config.clone(),
+                posterior_calculation_config: posterior_calculation_config.clone(),
+                use_tool,
+                fixed_temperature,
+            })
+            .unwrap();
+        store.sort().unwrap();
+        action_stores.push(Arc::new(tokio::sync::Mutex::new(store)));
+    }
+
+    let mut work_items = Vec::new();
+    for (trial_index, tree_artifact_output_path) in tree_artifact_output_paths.iter().enumerate() {
+        let trial_question_keys = requested_question_keys
+            .iter()
+            .copied()
+            .filter(|flat_id| {
+                let chunk_index =
+                    artifact_chunk_index(*flat_id, tree_artifact_chunk_question_count);
+                let done_path =
+                    tree_artifacts_oneshot_chunk_done_path(tree_artifact_output_path, chunk_index);
+                !std::path::Path::new(&done_path).exists()
+            })
+            .collect::<Vec<_>>();
+        log_key_value_pair(
+            &format!("testing_trial_{trial_index}_remaining_questions"),
+            trial_question_keys.len().to_string(),
+        );
+        for flat_id in trial_question_keys {
+            work_items.push((trial_index, flat_id));
+        }
+    }
+    log_key_value_pair(
+        "testing_trial_total_remaining_questions",
+        work_items.len().to_string(),
+    );
+
+    let _rollout_all_guard = RolloutAllGuard::new(rollout_config.num_leaves, work_items.len());
+    let rollout_stats = RolloutStats::global();
+    rollout_stats.reset_model_answer_judgment_cache_hit_rate();
+    let deadline = start_time + Duration::from_secs(rollout_secs as u64);
+    let _progress_timer_handle = tokio::spawn(run_progress_timer(
+        start_time,
+        deadline,
+        rollout_secs as f32,
+        mount_dir.to_string(),
+        M::CLI_NAME.to_string(),
+        config_nickname.clone(),
+    ));
+
+    let semaphore = Arc::new(Semaphore::new(max_concurrent_rollout));
+    let mut join_set = JoinSet::new();
+    let mut next_work_item_index = 0;
+    let mut completed_flat_ids_by_trial_chunk: BTreeMap<(usize, usize), BTreeSet<usize>> =
+        BTreeMap::new();
+
+    while next_work_item_index < work_items.len() || !join_set.is_empty() {
+        tokio::select! {
+            permit_result = semaphore.clone().acquire_owned(), if next_work_item_index < work_items.len()
+                && !ROLLOUT_STOP_SIGNAL.load(Ordering::Relaxed) => {
+                let permit = permit_result.expect("rollout semaphore should not be closed");
+                let (trial_index, flat_id) = work_items[next_work_item_index];
+                next_work_item_index += 1;
+                let question_key = QuestionFlatId(flat_id, PhantomData);
+                let question = question_map
+                    .get(&flat_id)
+                    .expect("question key from testing rollout queue must exist")
+                    .clone();
+                let action_store = action_stores[trial_index].clone();
+                let actions = {
+                    let store = action_store.lock().await;
+                    store.load_or_init_action_log(question_key).unwrap()
+                };
+                let action_log = DirectTreeActionLog {
+                    mount_dir: mount_dir.to_string(),
+                    config_nickname: config_nickname.clone(),
+                    question,
+                    rollout_config: rollout_config.clone(),
+                    posterior_calculation_config: posterior_calculation_config.clone(),
+                    use_tool,
+                    fixed_temperature,
+                    actions,
+                };
+                let llm_callable = llm_callable.clone();
+                let client = client.clone();
+                join_set.spawn(async move {
+                    rollout::<M, S>(
+                        action_log,
+                        action_store,
+                        llm_callable,
+                        client,
+                        permit,
+                        start_time,
+                        0.0,
+                        branching_options,
+                    )
+                    .await
+                    .map(|task_result| (trial_index, task_result))
+                });
+            }
+            joined = join_set.join_next(), if !join_set.is_empty() => {
+                match joined.expect("join_set must have at least one task") {
+                    Ok(Ok((trial_index, task_result))) => {
+                        rollout_stats.log_tree_completion(
+                            task_result.tree_correctness,
+                            task_result.has_judgments,
+                        );
+                        let chunk_index = artifact_chunk_index(
+                            task_result.question_flat_id.0,
+                            tree_artifact_chunk_question_count,
+                        );
+                        let completed_flat_ids = completed_flat_ids_by_trial_chunk
+                            .entry((trial_index, chunk_index))
+                            .or_default();
+                        completed_flat_ids.insert(task_result.question_flat_id.0);
+                        let chunk_ready = expected_by_chunk
+                            .get(&chunk_index)
+                            .is_some_and(|expected_flat_ids| completed_flat_ids == expected_flat_ids);
+                        if chunk_ready {
+                            let store = action_stores[trial_index].lock().await;
+                            store.sort().unwrap();
+                            write_completed_tree_artifact_chunk_if_ready::<M, S>(
+                                &store,
+                                &tree_artifact_output_paths[trial_index],
+                                chunk_index,
+                                &expected_by_chunk,
+                                mount_dir,
+                                &config_nickname,
+                                epoch,
+                                &rollout_config,
+                                &posterior_calculation_config,
+                                use_tool,
+                                fixed_temperature,
+                                &question_map,
+                            )
+                            .unwrap_or_else(|err| {
+                                panic!("failed to write ready testing trial tree artifact chunk: {err}")
+                            });
+                        }
+                    }
+                    Ok(Err(StopRequestedError)) => {}
+                    Err(join_err) => panic!("testing rollout task panicked: {join_err}"),
+                }
+            }
+        }
+
+        if ROLLOUT_STOP_SIGNAL.load(Ordering::Relaxed) && join_set.is_empty() {
+            break;
+        }
+    }
+
+    for (trial_index, store) in action_stores.iter().enumerate() {
+        let store = store.lock().await;
+        store.sort().unwrap();
+        let tree_artifacts = build_completed_tree_artifacts::<M, S>(
+            &store,
+            mount_dir,
+            &config_nickname,
+            epoch,
+            &rollout_config,
+            &posterior_calculation_config,
+            use_tool,
+            fixed_temperature,
+            &question_map,
+        )
+        .unwrap_or_else(|err| panic!("failed to build completed testing tree artifacts: {err}"));
+        write_completed_tree_artifact_chunks::<M, S>(
+            &tree_artifact_output_paths[trial_index],
+            &tree_artifacts,
+            &expected_by_chunk,
+            tree_artifact_chunk_question_count,
+        )
+        .unwrap_or_else(|err| panic!("failed to write testing trial tree artifact chunks: {err}"));
+        log_info(format!(
+            "Wrote {} completed testing trial {} tree artifacts under {}",
+            tree_artifacts.len(),
+            trial_index,
+            tree_artifact_output_paths[trial_index]
+        ));
+    }
+
+    ROLLOUT_STOP_SIGNAL.store(true, Ordering::Relaxed);
+    _progress_timer_handle
+        .await
+        .expect("progress timer task panicked");
+    delete_worker_progress_bar("branches");
+    delete_worker_progress_bar("trees");
+    log_master_progress(1.0, "Testing rollout: time up or all finished");
+
+    rollout_stats.log_final_tree_correctness_summary();
+    rollout_stats.log_model_answer_counts();
+
+    if let Err(error) = commit_pending_writes_if_any(mount_dir, M::CLI_NAME, &config_nickname) {
+        log_warning(format!(
+            "Failed to commit model answer judgment cache at the end of rollout_testing_trials: {}",
+            error
+        ));
+    }
+
+    let elapsed_secs = start_time.elapsed().as_secs_f32();
+    let total_llm_calls = rollout_stats.total_llm_calls.load(Ordering::Relaxed);
+    let llm_call_throughput_per_sec = if elapsed_secs <= f32::EPSILON {
+        0.0
+    } else {
+        total_llm_calls as f32 / elapsed_secs
+    };
+    log_key_value_pair(
+        "llm_call_throughput_per_sec_total",
+        format!("{llm_call_throughput_per_sec:.2}"),
+    );
+
+    RolloutExecutionSummary {
+        llm_call_throughput_per_sec,
+        elapsed_secs,
+        total_llm_calls,
+        num_finished_trees: rollout_stats.num_finished_trees.load(Ordering::Relaxed),
+        num_finished_branches: rollout_stats.num_finished_branches.load(Ordering::Relaxed),
+        num_correct_branches: rollout_stats.num_correct_branches.load(Ordering::Relaxed),
+        num_all_correct_trees: rollout_stats.num_all_correct_trees.load(Ordering::Relaxed),
+        num_all_incorrect_trees: rollout_stats
+            .num_all_incorrect_trees
+            .load(Ordering::Relaxed),
     }
 }

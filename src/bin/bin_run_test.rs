@@ -25,7 +25,9 @@ use credit_assignment::{
         Mistral7BInstructV03, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
-    rollout::{RolloutProgramConfig, rollout_all},
+    rollout::{
+        MultiTrialRolloutProgramConfig, RolloutProgramConfig, rollout_all, rollout_testing_trials,
+    },
     rollout_config::RolloutConfig,
     tree_artifact::{TreeJudgment, read_marked_tree_artifact_chunks},
     tree_to_action::BranchingRuntimeOptions,
@@ -302,41 +304,53 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
         let client = client.expect("testing rollout phase requires reqwest client");
         let inference_endpoint =
             inference_endpoint.expect("testing rollout phase requires inference endpoint");
-        let trial_indices: Vec<usize> = if use_explicit_trial_dirs {
-            (0..num_rollout_trials).collect()
+        if use_explicit_trial_dirs {
+            let action_log_store_paths = (0..num_rollout_trials)
+                .map(|trial_index| {
+                    testing_trial_action_log_path(&tree_artifact_output_path, trial_index)
+                })
+                .collect::<Vec<_>>();
+            let tree_artifact_output_paths = (0..num_rollout_trials)
+                .map(|trial_index| {
+                    testing_trial_tree_artifact_path(&tree_artifact_output_path, trial_index)
+                })
+                .collect::<Vec<_>>();
+            let program_config = MultiTrialRolloutProgramConfig {
+                config_nickname: testing_config.config_nickname.clone(),
+                rollout_config: rollout_config.clone(),
+                posterior_calculation_config: posterior_calculation_config.clone(),
+                epoch: testing_config.epoch,
+                client,
+                inference_endpoint,
+                rollout_secs: args.rollout_secs,
+                total_epochs: testing_config.total_epochs,
+                action_log_store_paths,
+                tree_artifact_output_paths,
+                use_tool: testing_config.use_tool,
+                fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
+                max_concurrent_rollout: 300,
+                branching_options: BranchingRuntimeOptions::default(),
+                tree_artifact_chunk_question_count: Some(DEFAULT_CACHE_CHUNK_QUESTION_COUNT),
+            };
+            let _ = rollout_testing_trials::<M, Testing>(&testing_config.mount_dir, program_config)
+                .await;
         } else {
-            vec![0]
-        };
-        for trial_index in trial_indices {
-            let output_path = if use_explicit_trial_dirs {
-                testing_trial_tree_artifact_path(&tree_artifact_output_path, trial_index)
-            } else {
-                tree_artifact_output_path.clone()
-            };
-            let action_log_store_override_path = if use_explicit_trial_dirs {
-                Some(testing_trial_action_log_path(
-                    &tree_artifact_output_path,
-                    trial_index,
-                ))
-            } else {
-                None
-            };
             let program_config = RolloutProgramConfig {
                 config_nickname: testing_config.config_nickname.clone(),
                 rollout_config: rollout_config.clone(),
                 posterior_calculation_config: posterior_calculation_config.clone(),
                 epoch: testing_config.epoch,
-                client: client.clone(),
-                inference_endpoint: inference_endpoint.clone(),
+                client,
+                inference_endpoint,
                 rollout_secs: args.rollout_secs,
                 finish_all_questions: false,
                 total_epochs: testing_config.total_epochs,
-                action_log_store_override_path,
+                action_log_store_override_path: None,
                 use_tool: testing_config.use_tool,
                 fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
                 max_concurrent_rollout: 300,
                 branching_options: BranchingRuntimeOptions::default(),
-                tree_artifact_output_path: Some(output_path),
+                tree_artifact_output_path: Some(tree_artifact_output_path.clone()),
                 tree_artifact_chunk_question_count: Some(DEFAULT_CACHE_CHUNK_QUESTION_COUNT),
                 question_flat_id_start: None,
                 question_flat_id_end: None,
