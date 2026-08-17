@@ -1,6 +1,6 @@
-model_cli_name = "mistral"
-config_nickname_rollout = "grpo_notool_rollout_10chunk"
-rollout_config_path = "config/rollout_config_training_grpo.json"
+model_cli_name = "qwen25"
+config_nickname_rollout = "treerpo_notool_rollout_5chunk"
+rollout_config_path = "config/rollout_config_training_treerpo.json"
 use_tool = false
 dataset_split = "Training"
 epoch = 0
@@ -10,5 +10,5 @@ mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
 num_gpus = 1
 inference_backend = "vllm"
 total_time_limit_hours = 3.6364
-num_questions_per_chunk = 250
+num_questions_per_chunk = 125
 num_chunks = 30

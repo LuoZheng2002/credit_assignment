@@ -8,8 +8,8 @@ use credit_assignment::{
     constants::get_max_concurrent_rollout,
     directories::{
         action_logs_oneshot_path, base_model_dir, inference_wrapper_log_path, model_parent_dir,
-        rollout_chunk_timing_oneshot_path, rollout_summary_oneshot_path,
-        text_logger_summary_path, text_logger_verbose_path, tree_artifacts_oneshot_chunk_done_path,
+        rollout_chunk_timing_oneshot_path, rollout_summary_oneshot_path, text_logger_summary_path,
+        text_logger_verbose_path, tree_artifacts_oneshot_chunk_done_path,
         tree_artifacts_oneshot_path,
     },
     hybrid_dataset::{DatasetSplit, DatasetSplitEnum, Testing, Training, Validation},
@@ -31,8 +31,8 @@ use credit_assignment::{
 };
 use reqwest::Client;
 use research_utility::progress_text_logger::{ProgressTextLogger, log_info};
-use serde::Serialize;
 use serde::Deserialize;
+use serde::Serialize;
 use std::time::Instant;
 
 #[derive(Parser, Debug)]

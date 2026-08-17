@@ -224,9 +224,7 @@ pub fn training_trajectories_oneshot_chunk_path(
     format!("{training_trajectories_dir}/chunk_{chunk_index}.msgpack")
 }
 
-pub fn training_trajectories_oneshot_ref_logprobs_path(
-    training_trajectories_dir: &str,
-) -> String {
+pub fn training_trajectories_oneshot_ref_logprobs_path(training_trajectories_dir: &str) -> String {
     format!("{training_trajectories_dir}/trajectories_ref_logprobs.msgpack")
 }
 

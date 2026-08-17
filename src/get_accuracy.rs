@@ -394,6 +394,53 @@ pub struct DatasetAccuracies {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestAccuracyResult {
     pub per_dataset: BTreeMap<String, DatasetAccuracies>,
+    pub macro_average: DatasetAccuracies,
+}
+
+fn summarize_accuracy_values(accuracy_values: Vec<f32>) -> DatasetAccuracies {
+    let n = accuracy_values.len() as f32;
+    let mean = if n > 0.0 {
+        accuracy_values.iter().sum::<f32>() / n
+    } else {
+        0.0
+    };
+    let variance = if n > 1.0 {
+        accuracy_values
+            .iter()
+            .map(|a| (a - mean).powi(2))
+            .sum::<f32>()
+            / (n - 1.0)
+    } else {
+        0.0
+    };
+    let std_err = if n > 0.0 { (variance / n).sqrt() } else { 0.0 };
+    DatasetAccuracies {
+        accuracy_values,
+        mean_accuracy: mean,
+        confidence_interval_half_width: 1.96 * std_err,
+    }
+}
+
+pub fn equal_dataset_macro_average(
+    per_dataset: &BTreeMap<String, DatasetAccuracies>,
+) -> DatasetAccuracies {
+    let max_trials = per_dataset
+        .values()
+        .map(|accuracies| accuracies.accuracy_values.len())
+        .max()
+        .unwrap_or(0);
+    let mut macro_values = Vec::new();
+    for trial_index in 0..max_trials {
+        let values = per_dataset
+            .values()
+            .filter_map(|accuracies| accuracies.accuracy_values.get(trial_index))
+            .copied()
+            .collect::<Vec<_>>();
+        if !values.is_empty() {
+            macro_values.push(values.iter().sum::<f32>() / values.len() as f32);
+        }
+    }
+    summarize_accuracy_values(macro_values)
 }
 
 pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
@@ -500,26 +547,14 @@ pub async fn get_test_accuracies<M: LlmModelMarker, S: DatasetSplit>(
             .iter()
             .map(|&correct| correct as f32 / total_trees)
             .collect();
-        let n = accuracy_values.len() as f32;
-        let mean = accuracy_values.iter().sum::<f32>() / n;
-        let variance = accuracy_values
-            .iter()
-            .map(|a| (a - mean).powi(2))
-            .sum::<f32>()
-            / (n - 1.0);
-        let std_err = (variance / n).sqrt();
-        let confidence_interval_half_width = 1.96 * std_err;
-        per_dataset.insert(
-            dataset_name,
-            DatasetAccuracies {
-                accuracy_values,
-                mean_accuracy: mean,
-                confidence_interval_half_width,
-            },
-        );
+        per_dataset.insert(dataset_name, summarize_accuracy_values(accuracy_values));
     }
 
-    TestAccuracyResult { per_dataset }
+    let macro_average = equal_dataset_macro_average(&per_dataset);
+    TestAccuracyResult {
+        per_dataset,
+        macro_average,
+    }
 }
 
 pub async fn get_test_accuracies_from_tree_judgments_at_path<M: LlmModelMarker, S: DatasetSplit>(
@@ -581,30 +616,14 @@ pub async fn get_test_accuracies_from_tree_judgments_at_path<M: LlmModelMarker, 
             .iter()
             .map(|&correct| correct as f32 / total_trees)
             .collect();
-        let n = accuracy_values.len() as f32;
-        let mean = accuracy_values.iter().sum::<f32>() / n;
-        let variance = if n > 1.0 {
-            accuracy_values
-                .iter()
-                .map(|a| (a - mean).powi(2))
-                .sum::<f32>()
-                / (n - 1.0)
-        } else {
-            0.0
-        };
-        let std_err = (variance / n).sqrt();
-        let confidence_interval_half_width = 1.96 * std_err;
-        per_dataset.insert(
-            dataset_name,
-            DatasetAccuracies {
-                accuracy_values,
-                mean_accuracy: mean,
-                confidence_interval_half_width,
-            },
-        );
+        per_dataset.insert(dataset_name, summarize_accuracy_values(accuracy_values));
     }
 
-    TestAccuracyResult { per_dataset }
+    let macro_average = equal_dataset_macro_average(&per_dataset);
+    TestAccuracyResult {
+        per_dataset,
+        macro_average,
+    }
 }
 
 /// Like `get_accuracy` but reads action logs from an explicit store path.

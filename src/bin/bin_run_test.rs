@@ -71,10 +71,89 @@ struct TestingConfig {
     model_cli_name: String,
     config_nickname: String,
     testing_rollout_config_path: String,
+    #[serde(default)]
+    num_rollout_trials: Option<usize>,
     epoch: usize,
     total_epochs: usize,
     mount_dir: String,
     use_tool: bool,
+}
+
+fn testing_trial_tree_artifact_path(base_path: &str, trial_index: usize) -> String {
+    format!("{base_path}/trial_{trial_index}")
+}
+
+fn testing_trial_action_log_path(base_path: &str, trial_index: usize) -> String {
+    format!(
+        "{}/action_logs_testing.extsort",
+        testing_trial_tree_artifact_path(base_path, trial_index)
+    )
+}
+
+fn testing_trial_tree_judgment_path(base_path: &str, trial_index: usize) -> String {
+    let path = Path::new(base_path);
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    let stem = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("tree_judgments_testing_oneshot");
+    let extension = path.extension().and_then(|name| name.to_str());
+    match extension {
+        Some(extension) => parent
+            .join(format!("{stem}_trial_{trial_index}.{extension}"))
+            .to_string_lossy()
+            .to_string(),
+        None => parent
+            .join(format!("{stem}_trial_{trial_index}"))
+            .to_string_lossy()
+            .to_string(),
+    }
+}
+
+fn merge_test_accuracy_results(results: Vec<TestAccuracyResult>) -> TestAccuracyResult {
+    let mut per_dataset = std::collections::BTreeMap::new();
+    for result in results {
+        for (dataset_name, dataset_accuracies) in result.per_dataset {
+            per_dataset
+                .entry(dataset_name)
+                .or_insert_with(Vec::new)
+                .extend(dataset_accuracies.accuracy_values);
+        }
+    }
+    let per_dataset = per_dataset
+        .into_iter()
+        .map(|(dataset_name, accuracy_values)| {
+            let n = accuracy_values.len() as f32;
+            let mean = if n > 0.0 {
+                accuracy_values.iter().sum::<f32>() / n
+            } else {
+                0.0
+            };
+            let variance = if n > 1.0 {
+                accuracy_values
+                    .iter()
+                    .map(|a| (a - mean).powi(2))
+                    .sum::<f32>()
+                    / (n - 1.0)
+            } else {
+                0.0
+            };
+            let std_err = if n > 0.0 { (variance / n).sqrt() } else { 0.0 };
+            (
+                dataset_name,
+                credit_assignment::get_accuracy::DatasetAccuracies {
+                    accuracy_values,
+                    mean_accuracy: mean,
+                    confidence_interval_half_width: 1.96 * std_err,
+                },
+            )
+        })
+        .collect();
+    let macro_average = credit_assignment::get_accuracy::equal_dataset_macro_average(&per_dataset);
+    TestAccuracyResult {
+        per_dataset,
+        macro_average,
+    }
 }
 
 fn model_cli_name_to_string(model_name: &LlmModelName) -> String {
@@ -211,54 +290,117 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
         testing_config.epoch,
     )
     .unwrap_or_else(|err| panic!("failed to build testing tree judgment path: {}", err));
+    let num_rollout_trials = testing_config
+        .num_rollout_trials
+        .unwrap_or(rollout_config.num_trunks);
+    assert!(
+        num_rollout_trials > 0,
+        "num_rollout_trials must be positive"
+    );
+    let use_explicit_trial_dirs = testing_config.num_rollout_trials.is_some();
     if matches!(args.phase, TestingPhase::All | TestingPhase::Rollout) {
-        let program_config = RolloutProgramConfig {
-            config_nickname: testing_config.config_nickname.clone(),
-            rollout_config: rollout_config.clone(),
-            posterior_calculation_config: posterior_calculation_config.clone(),
-            epoch: testing_config.epoch,
-            client: client.expect("testing rollout phase requires reqwest client"),
-            inference_endpoint: inference_endpoint
-                .expect("testing rollout phase requires inference endpoint"),
-            rollout_secs: args.rollout_secs,
-            finish_all_questions: false,
-            total_epochs: testing_config.total_epochs,
-            action_log_store_override_path: None,
-            use_tool: testing_config.use_tool,
-            fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
-            max_concurrent_rollout: 300,
-            branching_options: BranchingRuntimeOptions::default(),
-            tree_artifact_output_path: Some(tree_artifact_output_path.clone()),
-            tree_artifact_chunk_question_count: Some(DEFAULT_CACHE_CHUNK_QUESTION_COUNT),
-            question_flat_id_start: None,
-            question_flat_id_end: None,
-            question_flat_ids: None,
+        let client = client.expect("testing rollout phase requires reqwest client");
+        let inference_endpoint =
+            inference_endpoint.expect("testing rollout phase requires inference endpoint");
+        let trial_indices: Vec<usize> = if use_explicit_trial_dirs {
+            (0..num_rollout_trials).collect()
+        } else {
+            vec![0]
         };
-        let _ = rollout_all::<M, Testing>(&testing_config.mount_dir, program_config).await;
+        for trial_index in trial_indices {
+            let output_path = if use_explicit_trial_dirs {
+                testing_trial_tree_artifact_path(&tree_artifact_output_path, trial_index)
+            } else {
+                tree_artifact_output_path.clone()
+            };
+            let action_log_store_override_path = if use_explicit_trial_dirs {
+                Some(testing_trial_action_log_path(
+                    &tree_artifact_output_path,
+                    trial_index,
+                ))
+            } else {
+                None
+            };
+            let program_config = RolloutProgramConfig {
+                config_nickname: testing_config.config_nickname.clone(),
+                rollout_config: rollout_config.clone(),
+                posterior_calculation_config: posterior_calculation_config.clone(),
+                epoch: testing_config.epoch,
+                client: client.clone(),
+                inference_endpoint: inference_endpoint.clone(),
+                rollout_secs: args.rollout_secs,
+                finish_all_questions: false,
+                total_epochs: testing_config.total_epochs,
+                action_log_store_override_path,
+                use_tool: testing_config.use_tool,
+                fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
+                max_concurrent_rollout: 300,
+                branching_options: BranchingRuntimeOptions::default(),
+                tree_artifact_output_path: Some(output_path),
+                tree_artifact_chunk_question_count: Some(DEFAULT_CACHE_CHUNK_QUESTION_COUNT),
+                question_flat_id_start: None,
+                question_flat_id_end: None,
+                question_flat_ids: None,
+            };
+            let _ = rollout_all::<M, Testing>(&testing_config.mount_dir, program_config).await;
+        }
     }
 
     if matches!(args.phase, TestingPhase::All | TestingPhase::Judge) {
-        judge_testing_tree_artifacts::<M>(
-            &tree_artifact_output_path,
-            &tree_judgment_jsonl_path,
-            &testing_config.mount_dir,
-            M::CLI_NAME,
-            &testing_config.config_nickname,
-            testing_config.epoch,
-        )
-        .await;
+        let trial_indices: Vec<usize> = if use_explicit_trial_dirs {
+            (0..num_rollout_trials).collect()
+        } else {
+            vec![0]
+        };
+        for trial_index in trial_indices {
+            let artifact_path = if use_explicit_trial_dirs {
+                testing_trial_tree_artifact_path(&tree_artifact_output_path, trial_index)
+            } else {
+                tree_artifact_output_path.clone()
+            };
+            let judgment_path = if use_explicit_trial_dirs {
+                testing_trial_tree_judgment_path(&tree_judgment_jsonl_path, trial_index)
+            } else {
+                tree_judgment_jsonl_path.clone()
+            };
+            judge_testing_tree_artifacts::<M>(
+                &artifact_path,
+                &judgment_path,
+                &testing_config.mount_dir,
+                M::CLI_NAME,
+                &testing_config.config_nickname,
+                testing_config.epoch,
+            )
+            .await;
+        }
     }
 
     if matches!(args.phase, TestingPhase::All | TestingPhase::Score) {
-        Some(
-            get_test_accuracies_from_tree_judgments_at_path::<M, Testing>(
-                &tree_artifact_output_path,
-                &tree_judgment_jsonl_path,
-                "Test accuracy",
-                rollout_config.num_trunks,
+        if use_explicit_trial_dirs {
+            let mut results = Vec::new();
+            for trial_index in 0..num_rollout_trials {
+                results.push(
+                    get_test_accuracies_from_tree_judgments_at_path::<M, Testing>(
+                        &testing_trial_tree_artifact_path(&tree_artifact_output_path, trial_index),
+                        &testing_trial_tree_judgment_path(&tree_judgment_jsonl_path, trial_index),
+                        "Test accuracy",
+                        rollout_config.num_trunks,
+                    )
+                    .await,
+                );
+            }
+            Some(merge_test_accuracy_results(results))
+        } else {
+            Some(
+                get_test_accuracies_from_tree_judgments_at_path::<M, Testing>(
+                    &tree_artifact_output_path,
+                    &tree_judgment_jsonl_path,
+                    "Test accuracy",
+                    rollout_config.num_trunks,
+                )
+                .await,
             )
-            .await,
-        )
+        }
     } else {
         None
     }
@@ -391,10 +533,11 @@ async fn run_testing_config(
 
     let rollout_config: RolloutConfig<Testing> =
         read_json::<RolloutConfig<Testing>>(&testing_config.testing_rollout_config_path)?;
-    assert_eq!(
-        rollout_config.num_trunks, rollout_config.num_leaves,
-        "num_trunks ({}) must equal num_leaves ({}) for test evaluation (no branching)",
-        rollout_config.num_trunks, rollout_config.num_leaves,
+    assert!(
+        rollout_config.num_trunks == rollout_config.num_leaves,
+        "num_trunks ({}) must equal num_leaves ({}) within each testing rollout trial (no branching)",
+        rollout_config.num_trunks,
+        rollout_config.num_leaves,
     );
 
     ProgressTextLogger::initialize(progress_text_summary_path, progress_text_verbose_path)

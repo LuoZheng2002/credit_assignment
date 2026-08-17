@@ -573,7 +573,7 @@ impl Orchestrator {
                 .map(|handle| handle.inference_endpoint.clone())
                 .expect(
                     "Orchestrator did not launch the inference server before validation rollout",
-            ),
+                ),
             rollout_secs: self.validation_rollout_secs,
             finish_all_questions: true,
             total_epochs: self.num_total_epochs,

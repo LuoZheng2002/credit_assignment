@@ -14,13 +14,13 @@ use credit_assignment::{
     },
     launch_inference_wrapper::InferenceBackend,
     llm_model::{
-        Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, Mistral7BInstructV03, Qwen3_4B,
-        Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
+        Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, Mistral7BInstructV03, Qwen3_4B, Qwen3_06B,
+        Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
     python_training_config::TrainingHyperparameters,
     utils::configure_mount_dir,
 };
-use research_utility::progress_text_logger::{log_info, log_state, ProgressTextLogger};
+use research_utility::progress_text_logger::{ProgressTextLogger, log_info, log_state};
 
 #[derive(Parser, Debug)]
 struct CliArgs {

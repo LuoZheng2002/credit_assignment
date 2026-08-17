@@ -1,9 +1,9 @@
 model_cli_name = "qwen25"
-config_nickname_training = "tree_notool_10chunk_lora_r32_lr1e6_adam_10ep_training"
-config_nickname_generation = "tree_notool_generation_10chunk"
+config_nickname_training = "treerl_branching_notool_lora_r32_lr1e6_5ep_adam_training"
+config_nickname_generation = "treerl_branching_notool_generation_5chunk"
 use_tool = false
-num_oneshot_epochs = 70
-validation_total_epochs = 70
+num_oneshot_epochs = 30
+validation_total_epochs = 30
 validation_rollout_secs = 600
 oneshot_per_epoch_training_time = 900.0
 num_iterations_limit = 3

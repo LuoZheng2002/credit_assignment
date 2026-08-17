@@ -3,13 +3,17 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use futures::{StreamExt, stream};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tokio::{sync::Semaphore, time::sleep};
+use tokio::{sync::Semaphore, task::JoinHandle, time::sleep};
 
 use crate::judge_correctness::{extract_boxed_verdict, fetch_judge_evaluation_for_model};
 
@@ -26,6 +30,9 @@ const PHASE_2_MODELS: [&str; 2] = ["deepseek/deepseek-v4-pro", "openai/gpt-4.1-m
 const PHASE_3_MODEL: &str = "openai/gpt-5-mini";
 const JUDGE_ATTEMPTS: usize = 3;
 const CACHE_FLUSH_INTERVAL: usize = 20;
+const CACHE_LOCK_WAIT_SECS: u64 = 5;
+const CACHE_LOCK_HEARTBEAT_SECS: u64 = 30;
+const CACHE_LOCK_STALE_SECS: u64 = 30 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct JudgmentCacheKey {
@@ -381,12 +388,83 @@ async fn judge_uncached_request(
 
 pub struct CacheChunkLock {
     path: PathBuf,
+    stop_heartbeat: Arc<AtomicBool>,
+    heartbeat_task: JoinHandle<()>,
 }
 
 impl Drop for CacheChunkLock {
     fn drop(&mut self) {
+        self.stop_heartbeat.store(true, Ordering::Relaxed);
+        self.heartbeat_task.abort();
         let _ = fs::remove_file(&self.path);
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CacheChunkLockMetadata {
+    pid: u32,
+    hostname: String,
+    slurm_job_id: Option<String>,
+    acquired_unix_secs: u64,
+    heartbeat_unix_secs: u64,
+}
+
+fn cache_lock_metadata() -> CacheChunkLockMetadata {
+    let now = now_unix_secs();
+    CacheChunkLockMetadata {
+        pid: std::process::id(),
+        hostname: std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string()),
+        slurm_job_id: std::env::var("SLURM_JOB_ID").ok(),
+        acquired_unix_secs: now,
+        heartbeat_unix_secs: now,
+    }
+}
+
+fn write_cache_lock_metadata(path: &Path) -> Result<(), String> {
+    let metadata = cache_lock_metadata();
+    let mut file = File::create(path)
+        .map_err(|err| format!("failed to refresh cache lock {}: {err}", path.display()))?;
+    serde_json::to_writer(&mut file, &metadata)
+        .map_err(|err| format!("failed to serialize cache lock {}: {err}", path.display()))?;
+    writeln!(file).map_err(|err| format!("failed to write cache lock {}: {err}", path.display()))
+}
+
+fn read_cache_lock_heartbeat(path: &Path) -> Option<u64> {
+    let contents = fs::read_to_string(path).ok()?;
+    if let Ok(metadata) = serde_json::from_str::<CacheChunkLockMetadata>(&contents) {
+        return Some(metadata.heartbeat_unix_secs);
+    }
+    contents
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("time="))
+        .and_then(|value| value.parse::<u64>().ok())
+}
+
+fn stale_cache_lock_path(lock_path: &Path) -> PathBuf {
+    let mut stale_path = lock_path.to_path_buf();
+    stale_path.set_extension(format!(
+        "jsonl.lock.stale.{}.{}",
+        now_unix_secs(),
+        std::process::id()
+    ));
+    stale_path
+}
+
+fn start_cache_lock_heartbeat(path: PathBuf, stop_heartbeat: Arc<AtomicBool>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        while !stop_heartbeat.load(Ordering::Relaxed) {
+            sleep(Duration::from_secs(CACHE_LOCK_HEARTBEAT_SECS)).await;
+            if stop_heartbeat.load(Ordering::Relaxed) {
+                break;
+            }
+            if let Err(err) = write_cache_lock_metadata(&path) {
+                eprintln!(
+                    "failed to refresh judgment cache lock heartbeat {}: {err}",
+                    path.display()
+                );
+            }
+        }
+    })
 }
 
 pub async fn acquire_cache_chunk_lock(
@@ -407,14 +485,47 @@ pub async fn acquire_cache_chunk_lock(
             .create_new(true)
             .open(&lock_path)
         {
-            Ok(mut file) => {
-                writeln!(file, "pid={} time={}", std::process::id(), now_unix_secs()).map_err(
-                    |err| format!("failed to write cache lock {}: {err}", lock_path.display()),
-                )?;
-                return Ok(CacheChunkLock { path: lock_path });
+            Ok(_file) => {
+                write_cache_lock_metadata(&lock_path)?;
+                let stop_heartbeat = Arc::new(AtomicBool::new(false));
+                let heartbeat_task =
+                    start_cache_lock_heartbeat(lock_path.clone(), stop_heartbeat.clone());
+                return Ok(CacheChunkLock {
+                    path: lock_path,
+                    stop_heartbeat,
+                    heartbeat_task,
+                });
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                sleep(Duration::from_secs(5)).await;
+                let now = now_unix_secs();
+                let heartbeat = read_cache_lock_heartbeat(&lock_path);
+                if heartbeat
+                    .map(|heartbeat| now.saturating_sub(heartbeat) > CACHE_LOCK_STALE_SECS)
+                    .unwrap_or(false)
+                {
+                    let stale_path = stale_cache_lock_path(&lock_path);
+                    match fs::rename(&lock_path, &stale_path) {
+                        Ok(()) => {
+                            eprintln!(
+                                "moved stale judgment cache lock {} to {} after >{}s without heartbeat",
+                                lock_path.display(),
+                                stale_path.display(),
+                                CACHE_LOCK_STALE_SECS
+                            );
+                            continue;
+                        }
+                        Err(rename_err) if rename_err.kind() == std::io::ErrorKind::NotFound => {
+                            continue;
+                        }
+                        Err(rename_err) => {
+                            eprintln!(
+                                "failed to move stale judgment cache lock {}: {rename_err}",
+                                lock_path.display()
+                            );
+                        }
+                    }
+                }
+                sleep(Duration::from_secs(CACHE_LOCK_WAIT_SECS)).await;
             }
             Err(err) => {
                 return Err(format!(

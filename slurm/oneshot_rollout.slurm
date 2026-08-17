@@ -28,11 +28,17 @@ fi
 REPO_ROOT="$SLURM_SUBMIT_DIR"
 cd "$REPO_ROOT"
 
+source "$REPO_ROOT/slurm/setup_cuda_12_8.sh"
+
 # Prefer the main project venv for experiment executables. The inference wrapper
 # resolves the vLLM runtime from VLLM_VENV when a config uses vLLM.
 export PATH="$REPO_ROOT/.venv/bin:$PATH"
 export VLLM_VENV="${VLLM_VENV:-/work/nvme/bhph/zluo8/credit_assignment/venvs/vllm-0.25.1-cu129}"
 export INFERENCE_WRAPPER_PORT="${INFERENCE_WRAPPER_PORT:-$((30000 + SLURM_JOB_ID % 1000))}"
+export XDG_CACHE_HOME="${SLURM_TMPDIR:-/tmp}/credit_assignment_cache_${SLURM_JOB_ID}"
+export TRITON_CACHE_DIR="$XDG_CACHE_HOME/triton"
+export CUDA_CACHE_PATH="$XDG_CACHE_HOME/cuda"
+mkdir -p "$TRITON_CACHE_DIR" "$CUDA_CACHE_PATH"
 
 echo "Running oneshot rollout with config: $CONFIG_PATH"
 echo "Repo root: $REPO_ROOT"

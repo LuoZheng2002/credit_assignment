@@ -12,9 +12,8 @@ use credit_assignment::{
         base_model_dir, oneshot_epochs_parent_dir, text_logger_summary_path,
         text_logger_verbose_path, training_summary_oneshot_parent_dir,
         training_trajectories_oneshot_chunk_path,
-        training_trajectories_oneshot_chunk_ref_logprobs_path,
-        training_trajectories_oneshot_path, training_trajectories_oneshot_ref_logprobs_path,
-        training_wrapper_log_path,
+        training_trajectories_oneshot_chunk_ref_logprobs_path, training_trajectories_oneshot_path,
+        training_trajectories_oneshot_ref_logprobs_path, training_wrapper_log_path,
     },
     launch_inference_wrapper::InferenceBackend,
     launch_training_wrapper::run_training_wrapper_and_wait,
@@ -155,7 +154,9 @@ async fn run_oneshot_training<M: LlmModelMarker>(
                 });
 
         match previous_num_oneshot_epochs {
-            Some(previous_num_oneshot_epochs) if previous_num_oneshot_epochs != num_oneshot_epochs => {
+            Some(previous_num_oneshot_epochs)
+                if previous_num_oneshot_epochs != num_oneshot_epochs =>
+            {
                 log_warning(format!(
                     "Detected prior oneshot artifacts with num_oneshot_epochs={} but current request uses {}; continuing so training can append additional epochs when possible.",
                     previous_num_oneshot_epochs, num_oneshot_epochs
@@ -228,10 +229,7 @@ async fn run_oneshot_training<M: LlmModelMarker>(
                         chunk_index,
                     )
                 } else {
-                    training_trajectories_oneshot_chunk_path(
-                        &oneshot_trajectories_dir,
-                        chunk_index,
-                    )
+                    training_trajectories_oneshot_chunk_path(&oneshot_trajectories_dir, chunk_index)
                 };
                 if !Path::new(&chunk_path).exists() {
                     panic!(

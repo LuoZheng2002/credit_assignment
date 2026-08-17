@@ -51,6 +51,8 @@ fi
 REPO_ROOT="$SLURM_SUBMIT_DIR"
 cd "$REPO_ROOT"
 
+source "$REPO_ROOT/slurm/setup_cuda_12_8.sh"
+
 export PATH="$REPO_ROOT/.venv/bin:$PATH"
 export VLLM_VENV="${VLLM_VENV:-/work/nvme/bhph/zluo8/credit_assignment/venvs/vllm-0.25.1-cu129}"
 export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-4096}"
@@ -58,6 +60,10 @@ export VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-32}"
 export VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-4096}"
 export VALIDATION_MAX_CONCURRENT_ROLLOUT=200
 export INFERENCE_WRAPPER_PORT="${INFERENCE_WRAPPER_PORT:-$((30000 + SLURM_JOB_ID % 1000))}"
+export XDG_CACHE_HOME="${SLURM_TMPDIR:-/tmp}/credit_assignment_cache_${SLURM_JOB_ID}"
+export TRITON_CACHE_DIR="$XDG_CACHE_HOME/triton"
+export CUDA_CACHE_PATH="$XDG_CACHE_HOME/cuda"
+mkdir -p "$TRITON_CACHE_DIR" "$CUDA_CACHE_PATH"
 
 _NVIDIA_LIBS=$(find "$REPO_ROOT/.venv/lib/python3.12/site-packages/nvidia" \
     -name "lib" -type d -print 2>/dev/null | tr '\n' ':')

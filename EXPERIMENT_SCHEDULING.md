@@ -1301,3 +1301,78 @@ Tool rollout extension:
 
 - Extend Qwen2.5 GRPO tool rollout from 30 to 50 chunks using the existing `grpo_tool_rollout_10chunk` nickname so chunk completion markers prevent rerunning finished chunks.
 - Extend Qwen2.5 Tree tool rollout from 30 to 50 chunks using the existing `tree_tool_rollout_10chunk` nickname so chunk completion markers prevent rerunning finished chunks.
+
+### Non-KL Default Scheduling Plan — 2026-08-12
+
+Current scheduling decision:
+
+- Treat non-KL training as the default experimental path. The `kl_beta = 0.04` runs underperformed matched non-KL runs, and `kl_beta = 0.001` recovered some performance but has not shown a clear advantage over non-KL.
+- Do not schedule additional KL jobs unless a specific KL hypothesis is introduced. Keep KL as a secondary ablation rather than the main paper evidence.
+- Keep the default recipe fixed for new serious non-KL training unless a change is explicitly being tested: Qwen2.5-compatible vLLM pipeline, LoRA rank `32`, learning rate `1e-6`, Adam state enabled, warmup enabled, no KL, by-question chunked generation, and held-out validation with `--epoch-interval 3`.
+
+Queue policy:
+
+- Maintain roughly `3` to `5` GPU jobs pending or running, including dependent GPU jobs, to avoid overfilling the queue while keeping throughput high.
+- Before every serious submission, run the matching launcher or binary with `--login-smoke` on the Delta login node and submit only if it passes.
+- Prefer jobs that create a direct decision point over broad exploratory sweeps. Report job id, dependency, partition, time limit, GPU count, CPU count, memory, account/QOS, and pending reason after submission.
+- Use non-KL validation first when both KL and non-KL checkpoints exist. KL validation should not block non-KL scheduling.
+
+Near-term non-KL priority order:
+
+1. **Complete matched Qwen2.5 no-tool evidence.** Keep the GRPO-vs-Tree comparison as the primary baseline pair, with matched rank `32`, learning rate `1e-6`, Adam/warmup, and 50-epoch curves where available.
+2. **Complete matched Qwen2.5 tool evidence.** Extend or validate GRPO-tool and Tree-tool under the same fixed recipe so the paper can compare no-tool and tool settings under one policy.
+3. **Run strict Tree mechanism ablation.** Schedule the uncertainty-aware plus forced-first-token Tree run as a non-KL Tree variant, because it directly addresses the difference between the paper description and the earlier disabled rollout features.
+4. **Run branching-budget ablations.** Schedule branch-budget variants such as branch `8` and branch `32` after the standard Tree result is validated, using the same training recipe.
+5. **Run related-method ablations.** Schedule TEMPO-style branching and TreeRPO/TreeRL-style advantage ablations only after the core GRPO-vs-Tree curves are available, so they explain the mechanism rather than delaying the main comparison.
+6. **Add model-family evidence selectively.** Prioritize Qwen-family extensions first; treat Gemma and Mistral as lower priority unless the paper needs cross-model coverage. Mistral remains risky because previous runs showed collapse.
+
+Decision rules:
+
+- Treat best held-out accuracy gains below roughly `0.005` absolute as likely noise unless repeated across independent runs or supported by diagnostic validation.
+- Treat gains near or above `0.010` absolute as worth replicating, especially if nearby epochs show the same trend instead of a single isolated spike.
+- If Tree and GRPO remain tied under matched settings, state the paper claim as competitive guided branching and diagnostic credit-assignment evidence rather than universal superiority.
+- If tool runs improve more than no-tool runs, emphasize that the pipeline can train tool-use trajectories, but only claim a Tree advantage if Tree is clearly better than matched GRPO under the same validation cadence.
+
+Recommended next submissions when queue capacity is available:
+
+- Submit or continue Qwen2.5 tool GRPO and Tree non-KL validation/training to complete comparable epoch-interval-3 curves.
+- Submit Qwen2.5 no-tool strict Tree with uncertainty-aware branching and forced selected first token enabled.
+- Submit Qwen2.5 no-tool branch-budget ablations after strict Tree is queued or completed.
+- Submit TEMPO-style and TreeRPO/TreeRL-style ablations only if the queue has spare capacity after the above jobs.
+
+Extension update:
+
+- Extend the matched Qwen2.5 no-tool non-KL Adam runs from `50` to `70` epochs/chunks for both GRPO and Tree.
+- Extend the matched Qwen2.5 tool non-KL Adam runs to `40` epochs for both GRPO and Tree. The tool rollout configs already target `50` chunks, so no tool rollout extension is needed for the 40-epoch training target.
+- Keep held-out validation on `--epoch-interval 3`; expected no-tool validation epochs are `0, 3, 6, ..., 69`, and expected tool validation epochs are `0, 3, 6, ..., 39`.
+
+### Ablation Extension Schedule — 2026-08-15
+
+Extend the Qwen2.5 no-tool ablations from `5` to `30` chunks/epochs under the same fixed non-KL recipe: LoRA rank `32`, learning rate `1e-6`, Adam state enabled, warmup enabled, one A100, and held-out validation with `--epoch-interval 3`.
+
+- Updated the existing ablation rollout configs to `num_chunks = 30` while keeping their existing artifact nicknames so completed chunks can be reused and the jobs append chunks `5..29`.
+- Updated the existing ablation training configs to `num_oneshot_epochs = 30`, `validation_total_epochs = 30`, and `total_time_limit_hours = 4.0`.
+- Submitted the two highest-priority ablation extensions first to keep the runnable GPU queue at five jobs:
+  - TEMPO-style branching: rollout `21178950`, judging `21178951`, generation `21178952`, training `21178953`, held-out validation rollout/judge/score `21178954`/`21178955`/`21178956`.
+  - TreeRL-style advantage: rollout `21178957`, judging `21178958`, generation `21178959`, training `21178960`, held-out validation rollout/judge/score `21178961`/`21178962`/`21178963`.
+- Remaining ablation extensions to submit when queue capacity opens:
+  - TreeRPO-style advantage.
+  - TreeRL-style branching.
+
+Testing follow-up:
+
+- The first serious tests for matched Qwen2.5 no-tool Adam used best validation epochs beyond epoch `20`: GRPO epoch `36` and Tree epoch `27`.
+- To test whether early checkpoints generalize better, submit additional 5-rollout serious tests using the best validation epochs within the first ten epochs:
+  - GRPO no-tool epoch `3`: test rollout/judge/score `21224269`/`21224270`/`21224271`.
+  - Tree no-tool epoch `2`: test rollout/judge/score `21224272`/`21224273`/`21224274`.
+- These use `config/rollout_config_testing_5rollouts.json`, so each testing sample is rolled out five times and reported test means are averages over those five trials per dataset.
+
+### Executed-Experiment Epoch Extension Policy — 2026-08-16
+
+For every experiment variant that has already produced a usable executed training run, schedule or extend the matched training run to at least `20` total epochs/chunks when prerequisites and queue capacity permit.
+
+- Apply this as a minimum floor for executed experiments, not as a replacement for stronger existing targets. Runs already scheduled beyond `20` epochs, such as the Qwen2.5 no-tool `70`-epoch runs and Qwen2.5 tool `40`-epoch runs, keep their larger targets.
+- Use the fixed non-KL default recipe unless the experiment is explicitly testing another mechanism: LoRA rank `32`, learning rate `1e-6`, Adam state enabled, warmup enabled, no KL, by-question chunked generation, and vLLM inference.
+- Keep held-out validation at `--epoch-interval 3` for long runs unless dense validation is specifically needed for a figure or debugging.
+- Reuse existing rollout, judgment, generation, and checkpoint artifacts whenever chunk completion markers and training resume metadata show that appending is safe.
+- Do not prioritize failed or scientifically deprecated settings such as SGD/no-warmup unless a new hypothesis makes them relevant again.
