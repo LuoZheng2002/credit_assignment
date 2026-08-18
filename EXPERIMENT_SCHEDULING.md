@@ -1367,6 +1367,13 @@ Testing follow-up:
   - Tree no-tool epoch `2`: test rollout/judge/score `21224272`/`21224273`/`21224274`.
 - These use `config/rollout_config_testing_5rollouts.json`, so each testing sample is rolled out five times and reported test means are averages over those five trials per dataset.
 
+vLLM batching follow-up:
+
+- The CUDA 13 / vLLM `0.27.1` retry showed unusually long cold-start time and the fixed `VLLM_MAX_NUM_SEQS=32` may also cap rollout throughput after startup.
+- Run one controlled serious test-rollout retry with `VLLM_MAX_NUM_SEQS=unset`, while keeping `VLLM_MAX_MODEL_LEN=4096`, `VLLM_MAX_NUM_BATCHED_TOKENS=4096`, and `VLLM_ENFORCE_EAGER=1`.
+- If the uncapped vLLM scheduler run completes successfully and improves throughput without OOM, update the global SLURM defaults to omit `--max-num-seqs`; otherwise keep the explicit conservative cap.
+- Follow-up controlled tests with `VLLM_MAX_NUM_SEQS=128` completed successfully for matched Qwen2.5 no-tool GRPO and Tree test rollouts. Use `128` as the default future SLURM value rather than omitting `--max-num-seqs`, because the uncapped run was less stable while `128` kept startup bounded and improved usable test-rollout coverage.
+
 ### Executed-Experiment Epoch Extension Policy — 2026-08-16
 
 For every experiment variant that has already produced a usable executed training run, schedule or extend the matched training run to at least `20` total epochs/chunks when prerequisites and queue capacity permit.
@@ -1376,3 +1383,12 @@ For every experiment variant that has already produced a usable executed trainin
 - Keep held-out validation at `--epoch-interval 3` for long runs unless dense validation is specifically needed for a figure or debugging.
 - Reuse existing rollout, judgment, generation, and checkpoint artifacts whenever chunk completion markers and training resume metadata show that appending is safe.
 - Do not prioritize failed or scientifically deprecated settings such as SGD/no-warmup unless a new hypothesis makes them relevant again.
+
+Submission update — 2026-08-18:
+
+- Updated future SLURM vLLM defaults to `VLLM_MAX_NUM_SEQS=128` after controlled Qwen2.5 no-tool test rollouts completed successfully.
+- Submitted four additional planned non-KL pipelines after login-smoke checks passed:
+  - Qwen2.5 GRPO tool 40-epoch pipeline: rollout/judge/generation/training/chunk-validation/held-out validation jobs `21268041`-`21268050`.
+  - Qwen2.5 Tree tool 40-epoch pipeline: rollout/judge/generation/training/chunk-validation/held-out validation jobs `21268051`-`21268060`.
+  - Qwen2.5 TreeRPO-style advantage 30-epoch ablation: rollout/judge/generation/training/chunk-validation/held-out validation jobs `21268061`-`21268070`.
+  - Qwen2.5 TreeRL-style branching 30-epoch ablation: rollout/judge/generation/training/chunk-validation/held-out validation jobs `21268071`-`21268080`.

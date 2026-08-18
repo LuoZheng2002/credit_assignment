@@ -337,7 +337,7 @@ def _vllm_supported_max_lora_rank(adapter_rank: int) -> int:
 
 def _optional_positive_int_env(name: str) -> str | None:
     raw_value = os.environ.get(name, "").strip()
-    if not raw_value:
+    if not raw_value or raw_value.lower() in {"unset", "none", "auto"}:
         return None
     value = int(raw_value)
     if value <= 0:
@@ -821,6 +821,9 @@ class VllmBackend:
         self._model_update_health_timeout_secs = _positive_int_env_or_default(
             "VLLM_MODEL_UPDATE_HEALTH_TIMEOUT_SECS", 600
         )
+        self._initial_health_timeout_secs = _positive_int_env_or_default(
+            "VLLM_INITIAL_HEALTH_TIMEOUT_SECS", 1800
+        )
 
         if not model_path_obj.exists() and epoch == 0:
             _emit_status(
@@ -834,7 +837,9 @@ class VllmBackend:
         if not model_path_obj.exists():
             raise FileNotFoundError(f"model path does not exist: {model_path}")
 
-        self._launch_model(model_path, health_timeout_secs=900)
+        self._launch_model(
+            model_path, health_timeout_secs=self._initial_health_timeout_secs
+        )
 
     def _launch_model(self, model_path: str, *, health_timeout_secs: int) -> None:
         vllm_python = _resolve_vllm_python_executable()
