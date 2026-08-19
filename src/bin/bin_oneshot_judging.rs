@@ -254,7 +254,10 @@ async fn main() {
         args.request_concurrency_per_model,
     )
     .await
-    .unwrap_or_else(|err| panic!("{err}"));
+    .unwrap_or_else(|err| {
+        eprintln!("judging_failed=1 reason={err}");
+        panic!("{err}")
+    });
 
     if let Some(output_tree_judgment_jsonl) = &args.output_tree_judgment_jsonl {
         let input_tree_msgpack = args

@@ -55,6 +55,8 @@ struct Args {
     training_set_sort_mode: TrainingSetSortMode,
     #[serde(default)]
     num_questions_per_chunk: Option<usize>,
+    #[serde(default)]
+    num_chunks: Option<usize>,
 }
 
 macro_rules! generate_trajectories {
@@ -72,7 +74,8 @@ macro_rules! generate_trajectories {
         $positive_advantage_only:expr,
         $use_tool:expr,
         $training_set_sort_mode:expr,
-        $num_questions_per_chunk:expr;
+        $num_questions_per_chunk:expr,
+        $num_chunks:expr;
         $( $model_enum:path, $model_ty:ty ),+ $(,)?
     ) => {
         match $model_name {
@@ -122,6 +125,7 @@ macro_rules! generate_trajectories {
                         $use_tool,
                         $training_set_sort_mode,
                         $num_questions_per_chunk,
+                        $num_chunks,
                     )
                     .await
                 }
@@ -241,7 +245,8 @@ async fn main() {
         args.positive_advantage_only,
         args.use_tool,
         args.training_set_sort_mode,
-        args.num_questions_per_chunk;
+        args.num_questions_per_chunk,
+        args.num_chunks;
         LlmModelName::Qwen25_7b, Qwen25_7B,
         LlmModelName::Qwen3_06b, Qwen3_06B,
         LlmModelName::Qwen3_4b, Qwen3_4B,

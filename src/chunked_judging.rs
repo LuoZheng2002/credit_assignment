@@ -117,6 +117,7 @@ pub struct JudgingSummary {
     pub phase1_unanimous: usize,
     pub phase2_agreement: usize,
     pub phase3_escalations: usize,
+    pub exact_matches: usize,
     pub failures_marked_incorrect: usize,
 }
 
@@ -253,21 +254,38 @@ async fn judge_with_model(
                     last_error = Some(format!("missing boxed verdict in response: {raw_output}"));
                 }
             }
-            Err(error) => last_error = Some(error),
+            Err(error) => {
+                if is_fatal_judging_error(&error) {
+                    return Err(format!(
+                        "fatal judging API error from model {model}; aborting without caching a verdict: {error}"
+                    ));
+                }
+                last_error = Some(error);
+            }
         }
         if attempt + 1 < JUDGE_ATTEMPTS {
             sleep(Duration::from_secs(1)).await;
         }
     }
     let error = last_error.unwrap_or_else(|| "unknown error".to_string());
-    Ok(JudgeModelOutput {
-        model: model.to_string(),
-        verdict: false,
-        raw_output: format!(
-            "JUDGE_FAILURE_MARKED_INCORRECT: judge model {model} failed after {JUDGE_ATTEMPTS} attempts: {error}"
-        ),
-        reasoning: None,
-    })
+    Err(format!(
+        "judge model {model} failed after {JUDGE_ATTEMPTS} attempts; aborting without caching a verdict: {error}"
+    ))
+}
+
+fn is_fatal_judging_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("insufficient credit")
+        || lower.contains("insufficient credits")
+        || lower.contains("insufficient balance")
+        || lower.contains("not enough credit")
+        || lower.contains("not enough credits")
+        || lower.contains("not enough balance")
+        || lower.contains("402")
+        || lower.contains("payment required")
+        || lower.contains("quota")
+        || lower.contains("rate limit")
+        || lower.contains("rate_limit")
 }
 
 async fn judge_with_model_timed(
@@ -286,10 +304,46 @@ async fn judge_with_model_timed(
     Ok((output, timing))
 }
 
+async fn judge_with_models_timed(
+    client: &Client,
+    models: &[&str],
+    question: &str,
+    model_answer: &str,
+    correct_answer: &str,
+) -> Result<(Vec<JudgeModelOutput>, Vec<JudgeModelTiming>), String> {
+    let results = futures::future::try_join_all(models.iter().map(|model| {
+        judge_with_model_timed(client, model, question, model_answer, correct_answer)
+    }))
+    .await?;
+    let mut outputs = Vec::with_capacity(results.len());
+    let mut timings = Vec::with_capacity(results.len());
+    for (output, timing) in results {
+        outputs.push(output);
+        timings.push(timing);
+    }
+    Ok((outputs, timings))
+}
+
 async fn judge_uncached_request(
     client: &Client,
     request: &JudgingRequestRecord,
 ) -> Result<UncachedJudgmentResult, String> {
+    if !request.model_answer.trim().is_empty()
+        && request.model_answer.trim() == request.correct_answer.trim()
+    {
+        return Ok(UncachedJudgmentResult {
+            record: JudgmentCacheRecord {
+                key: judgment_cache_key("", &request.split, request.flat_id, &request.model_answer),
+                correct_answer: request.correct_answer.clone(),
+                is_correct: true,
+                decision_phase: "exact_match".to_string(),
+                judge_outputs: Vec::new(),
+                updated_unix_secs: now_unix_secs(),
+            },
+            model_timings: Vec::new(),
+        });
+    }
+
     if request.model_answer.trim().is_empty() {
         return Ok(UncachedJudgmentResult {
             record: JudgmentCacheRecord {
@@ -306,18 +360,16 @@ async fn judge_uncached_request(
 
     let mut outputs = Vec::new();
     let mut model_timings = Vec::new();
-    for model in PHASE_1_MODELS {
-        let (output, timing) = judge_with_model_timed(
-            client,
-            model,
-            &request.question,
-            &request.model_answer,
-            &request.correct_answer,
-        )
-        .await?;
-        outputs.push(output);
-        model_timings.push(timing);
-    }
+    let (phase1_outputs, phase1_timings) = judge_with_models_timed(
+        client,
+        &PHASE_1_MODELS,
+        &request.question,
+        &request.model_answer,
+        &request.correct_answer,
+    )
+    .await?;
+    outputs.extend(phase1_outputs);
+    model_timings.extend(phase1_timings);
     if outputs
         .iter()
         .all(|output| output.verdict == outputs[0].verdict)
@@ -335,18 +387,16 @@ async fn judge_uncached_request(
         });
     }
 
-    for model in PHASE_2_MODELS {
-        let (output, timing) = judge_with_model_timed(
-            client,
-            model,
-            &request.question,
-            &request.model_answer,
-            &request.correct_answer,
-        )
-        .await?;
-        outputs.push(output);
-        model_timings.push(timing);
-    }
+    let (phase2_outputs, phase2_timings) = judge_with_models_timed(
+        client,
+        &PHASE_2_MODELS,
+        &request.question,
+        &request.model_answer,
+        &request.correct_answer,
+    )
+    .await?;
+    outputs.extend(phase2_outputs);
+    model_timings.extend(phase2_timings);
     let phase2 = &outputs[PHASE_1_MODELS.len()..];
     if phase2[0].verdict == phase2[1].verdict {
         return Ok(UncachedJudgmentResult {
@@ -823,6 +873,11 @@ pub async fn judge_requests(
                     if successful_judgments_since_flush > 0 {
                         rewrite_cache_chunk(&cache_path, &cache_records)?;
                     }
+                    eprintln!(
+                        "judging_failed=1 cache_path={} reason={}",
+                        cache_path.display(),
+                        error
+                    );
                     return Err(error);
                 }
             };
@@ -835,6 +890,7 @@ pub async fn judge_requests(
                 "phase1_unanimous" => summary.phase1_unanimous += 1,
                 "phase2_agreement" => summary.phase2_agreement += 1,
                 "phase3_final" => summary.phase3_escalations += 1,
+                "exact_match" => summary.exact_matches += 1,
                 "empty_answer" => summary.failures_marked_incorrect += 1,
                 _ => {}
             }

@@ -237,11 +237,20 @@ async fn run_oneshot_training<M: LlmModelMarker>(
                         epoch, chunk_path
                     );
                 }
+                let chunk_is_empty = std::fs::metadata(&chunk_path)
+                    .map(|metadata| metadata.len() == 0)
+                    .unwrap_or(false);
                 let chunk_base_model_parent_dir = if epoch == 1 {
                     base_model_parent_dir.clone()
                 } else {
                     format!("{}/oneshot_epoch_{}", oneshot_model_output_root, epoch - 1)
                 };
+                if chunk_is_empty {
+                    panic!(
+                        "Trajectory chunk for epoch {} is empty at {}; no training trajectories survived generation for this epoch. This is abnormal and training must stop instead of silently carrying the model forward.",
+                        epoch, chunk_path
+                    );
+                }
                 let training_config = PythonTrainingConfig {
                     hyperparameters: training_hyperparameters.clone(),
                     num_iterations_limit,

@@ -99,7 +99,7 @@ pub async fn update_inference_model(
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(1800);
+        .unwrap_or(2700);
     let response = timeout(
         Duration::from_secs(timeout_secs),
         client.post(&url).json(&payload).send(),
@@ -270,7 +270,7 @@ async fn wait_for_wrapper_health(
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(1800);
+        .unwrap_or(2700);
     let timeout_duration = Duration::from_secs(timeout_secs);
     let sleep_interval = Duration::from_millis(500);
     let start = Instant::now();

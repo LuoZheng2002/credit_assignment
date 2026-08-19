@@ -1134,6 +1134,7 @@ Current implementation status and remaining verification:
    - It supports explicit `--phase rollout`, `--phase judge`, and `--phase score`; `all` remains available as a compatibility/debug path.
    - The pipeline launcher schedules one all-chunk rollout job, one all-chunk judging job, and one all-chunk diagnostic scoring job for the whole experiment, rather than three jobs per chunk.
    - It must not affect model pruning, best-epoch selection, checkpoint cleanup, or the success criteria of held-out validation.
+   - Scheduling update 2026-08-18: do not include diagnostic training-chunk validation in future experiment plans by default. Future runs should use held-out validation and final testing only, unless a specific debugging hypothesis explicitly requires diagnostic rollout.
 
 2. **Standalone validation/testing judging jobs.**
    - Training rollout judging is now wired as a standalone CPU pass in the one-shot pipeline launcher.
@@ -1163,7 +1164,7 @@ Setup:
 - Training: single-GPU LoRA, rank `32`, learning rate `1e-6`.
 - Chunking: `2` epochs/chunks, `100` raw questions per chunk.
 - Training time: `300` seconds per epoch.
-- Validation: held-out validation total epochs `2`, plus diagnostic training-chunk validation over all chunks.
+- Validation: held-out validation total epochs `2`, plus diagnostic training-chunk validation over all chunks. This was a smoke-test/debugging choice; it is not the future default.
 - Optimizer switches: `use_adam_state = true`, `use_lr_warmup = true`.
 - Configs:
   - `config/oneshot_rollout/qwen25_rollout_grpo_notool_chunk_smoke.toml`
@@ -1268,8 +1269,8 @@ Adaptive batching follow-up:
 
 Held-out validation cadence:
 
-- Future held-out validation jobs should use `--epoch-interval 3`.
-- This validates epoch `0` plus trained epochs divisible by `3`, reducing validation GPU cost while preserving coarse accuracy trends over long runs.
+- Future held-out validation jobs should use `--epoch-interval 10`.
+- This validates epoch `0` plus trained epochs divisible by `10`, reducing validation GPU cost while preserving coarse long-run accuracy trends.
 - The one-shot pipeline launcher defaults to this policy; override it only when a dense per-epoch curve is explicitly needed for a figure or debugging.
 
 ### SGD / No-Warmup Queue Policy — 2026-08-07
@@ -1308,7 +1309,7 @@ Current scheduling decision:
 
 - Treat non-KL training as the default experimental path. The `kl_beta = 0.04` runs underperformed matched non-KL runs, and `kl_beta = 0.001` recovered some performance but has not shown a clear advantage over non-KL.
 - Do not schedule additional KL jobs unless a specific KL hypothesis is introduced. Keep KL as a secondary ablation rather than the main paper evidence.
-- Keep the default recipe fixed for new serious non-KL training unless a change is explicitly being tested: Qwen2.5-compatible vLLM pipeline, LoRA rank `32`, learning rate `1e-6`, Adam state enabled, warmup enabled, no KL, by-question chunked generation, and held-out validation with `--epoch-interval 3`.
+- Keep the default recipe fixed for new serious non-KL training unless a change is explicitly being tested: Qwen2.5-compatible vLLM pipeline, LoRA rank `32`, learning rate `1e-6`, Adam state enabled, warmup enabled, no KL, by-question chunked generation, held-out validation with `--epoch-interval 10`, and no diagnostic training-chunk validation.
 
 Queue policy:
 
@@ -1328,14 +1329,14 @@ Near-term non-KL priority order:
 
 Decision rules:
 
-- Treat best held-out accuracy gains below roughly `0.005` absolute as likely noise unless repeated across independent runs or supported by diagnostic validation.
+- Treat best held-out accuracy gains below roughly `0.005` absolute as likely noise unless repeated across independent runs or supported by a targeted diagnostic/debugging run.
 - Treat gains near or above `0.010` absolute as worth replicating, especially if nearby epochs show the same trend instead of a single isolated spike.
 - If Tree and GRPO remain tied under matched settings, state the paper claim as competitive guided branching and diagnostic credit-assignment evidence rather than universal superiority.
 - If tool runs improve more than no-tool runs, emphasize that the pipeline can train tool-use trajectories, but only claim a Tree advantage if Tree is clearly better than matched GRPO under the same validation cadence.
 
 Recommended next submissions when queue capacity is available:
 
-- Submit or continue Qwen2.5 tool GRPO and Tree non-KL validation/training to complete comparable epoch-interval-3 curves.
+- Submit or continue Qwen2.5 tool GRPO and Tree non-KL validation/training to complete comparable epoch-interval-10 curves.
 - Submit Qwen2.5 no-tool strict Tree with forced selected first token enabled.
 - Submit Qwen2.5 no-tool branch-budget ablations after strict Tree is queued or completed.
 - Submit TEMPO-style and TreeRPO/TreeRL-style ablations only if the queue has spare capacity after the above jobs.
@@ -1344,11 +1345,11 @@ Extension update:
 
 - Extend the matched Qwen2.5 no-tool non-KL Adam runs from `50` to `70` epochs/chunks for both GRPO and Tree.
 - Extend the matched Qwen2.5 tool non-KL Adam runs to `40` epochs for both GRPO and Tree. The tool rollout configs already target `50` chunks, so no tool rollout extension is needed for the 40-epoch training target.
-- Keep held-out validation on `--epoch-interval 3`; expected no-tool validation epochs are `0, 3, 6, ..., 69`, and expected tool validation epochs are `0, 3, 6, ..., 39`.
+- Keep held-out validation on `--epoch-interval 10`; expected no-tool validation epochs are `0, 10, 20, ..., 70`, and expected tool validation epochs are `0, 10, 20, 30, 40`.
 
 ### Ablation Extension Schedule — 2026-08-15
 
-Extend the Qwen2.5 no-tool ablations from `5` to `30` chunks/epochs under the same fixed non-KL recipe: LoRA rank `32`, learning rate `1e-6`, Adam state enabled, warmup enabled, one A100, and held-out validation with `--epoch-interval 3`.
+Extend the Qwen2.5 no-tool ablations from `5` to `30` chunks/epochs under the same fixed non-KL recipe: LoRA rank `32`, learning rate `1e-6`, Adam state enabled, warmup enabled, one A100, held-out validation with `--epoch-interval 10`, and no diagnostic training-chunk validation.
 
 - Updated the existing ablation rollout configs to `num_chunks = 30` while keeping their existing artifact nicknames so completed chunks can be reused and the jobs append chunks `5..29`.
 - Updated the existing ablation training configs to `num_oneshot_epochs = 30`, `validation_total_epochs = 30`, and `total_time_limit_hours = 4.0`.
@@ -1374,13 +1375,21 @@ vLLM batching follow-up:
 - If the uncapped vLLM scheduler run completes successfully and improves throughput without OOM, update the global SLURM defaults to omit `--max-num-seqs`; otherwise keep the explicit conservative cap.
 - Follow-up controlled tests with `VLLM_MAX_NUM_SEQS=128` completed successfully for matched Qwen2.5 no-tool GRPO and Tree test rollouts. Use `128` as the default future SLURM value rather than omitting `--max-num-seqs`, because the uncapped run was less stable while `128` kept startup bounded and improved usable test-rollout coverage.
 
+vLLM startup latency investigation:
+
+- Some CUDA 13 / vLLM `0.27.1` jobs spent more than `1800` seconds before the wrapper health endpoint became ready.
+- Initial controlled Qwen3-4B startup smokes compare minimal vLLM flags with and without `--max-num-seqs 128`, while omitting forced eager mode and per-job cold cache directories.
+- Add startup timing instrumentation to future vLLM launches so logs include timestamps before entering the vLLM module, before vLLM emits its own first log line, and before the health check succeeds.
+- Pending diagnosis: determine whether the dominant delay is Python import/package metadata access, vLLM initialization, model file access, CUDA/NCCL initialization, or cache compilation.
+- Do not globally change cache or eager-mode policy based only on speculation; use the startup-smoke measurements to decide whether persistent cache directories, default cache behavior, or longer health timeouts are justified.
+
 ### Executed-Experiment Epoch Extension Policy — 2026-08-16
 
 For every experiment variant that has already produced a usable executed training run, schedule or extend the matched training run to at least `20` total epochs/chunks when prerequisites and queue capacity permit.
 
 - Apply this as a minimum floor for executed experiments, not as a replacement for stronger existing targets. Runs already scheduled beyond `20` epochs, such as the Qwen2.5 no-tool `70`-epoch runs and Qwen2.5 tool `40`-epoch runs, keep their larger targets.
 - Use the fixed non-KL default recipe unless the experiment is explicitly testing another mechanism: LoRA rank `32`, learning rate `1e-6`, Adam state enabled, warmup enabled, no KL, by-question chunked generation, and vLLM inference.
-- Keep held-out validation at `--epoch-interval 3` for long runs unless dense validation is specifically needed for a figure or debugging.
+- Keep held-out validation at `--epoch-interval 10` for long runs unless dense validation is specifically needed for a figure or debugging.
 - Reuse existing rollout, judgment, generation, and checkpoint artifacts whenever chunk completion markers and training resume metadata show that appending is safe.
 - Do not prioritize failed or scientifically deprecated settings such as SGD/no-warmup unless a new hypothesis makes them relevant again.
 
@@ -1392,3 +1401,39 @@ Submission update — 2026-08-18:
   - Qwen2.5 Tree tool 40-epoch pipeline: rollout/judge/generation/training/chunk-validation/held-out validation jobs `21268051`-`21268060`.
   - Qwen2.5 TreeRPO-style advantage 30-epoch ablation: rollout/judge/generation/training/chunk-validation/held-out validation jobs `21268061`-`21268070`.
   - Qwen2.5 TreeRL-style branching 30-epoch ablation: rollout/judge/generation/training/chunk-validation/held-out validation jobs `21268071`-`21268080`.
+
+### Empty Training-Chunk Policy — 2026-08-19
+
+Chunk-backed one-shot training must fail fast if any epoch's trajectory chunk contains zero training trajectories.
+
+- An empty training chunk means every question in that chunk was filtered out, typically because the rollout/judgment outcomes were all correct or all incorrect with no mixed correctness signal.
+- Do not silently carry the previous model forward or count the epoch as trained; this is misleading for validation curves and downstream model selection.
+- Treat an empty chunk as an investigation blocker: inspect per-chunk correctness, judgment cache behavior, and rollout answer diversity before resubmitting training.
+- Generation may still emit explicit empty chunk files so the failure identifies the exact epoch/chunk rather than appearing as a missing-artifact bug.
+
+### Judgment API Failure Policy — 2026-08-19
+
+OpenRouter/API failures during judging must be fatal and must not be converted into incorrect verdicts.
+
+- Previous chunked judging behavior returned a synthetic `false` verdict after repeated judge-model failures, which could poison the cache as `phase1_unanimous` incorrect records.
+- This is especially dangerous because phase-1 unanimous records intentionally omit raw judge outputs, so later cache hits cannot distinguish real unanimous incorrect judgments from fallback failures.
+- If insufficient credit, quota exhaustion, rate limiting, payment-required errors, or repeated invalid judge responses occur, the judging job should exit nonzero after flushing already completed cache writes.
+- Cache recovery should be selective: rewrite or delete affected JSONL records in the relevant cache chunks rather than deleting the entire cache directory.
+
+Update — 2026-08-19:
+
+- Exact string matches between the model answer and reference answer are now judged locally as `exact_match` correct before any API judge is called.
+- Judge-model outputs that do not provide an explicit boxed `correct` or `incorrect` verdict are treated as invalid attempts. After three invalid/error attempts for a model, the judging job exits immediately with a logged reason and no cached verdict for that request.
+- Because earlier fallback behavior may have cached unreliable incorrect and correct verdicts, the current experiment judgment caches should be backed up and cleared before rerunning affected judging jobs.
+
+### Testing Rejudge Focus — 2026-08-19
+
+Current priority is to rejudge preserved testing rollouts using the corrected judging semantics and per-phase judge-model parallelism.
+
+- Canceled the active Qwen2.5 forced-token rollout/training pipeline jobs `21292741`-`21292747` to avoid competing for attention while testing judgments are being repaired.
+- Only three configured testing rollouts currently have reusable tree artifacts without rerunning rollout:
+  - Qwen2.5 GRPO no-tool early best, epoch `3`, five explicit rollout trials: judge/score jobs `21294020`/`21294021`.
+  - Qwen2.5 GRPO no-tool long-run best, epoch `36`, legacy single artifact with five trunks: judge/score jobs `21294022`/`21294023`.
+  - Qwen2.5 Tree no-tool long-run best, epoch `27`, legacy single artifact with five trunks: judge/score jobs `21294024`/`21294025`.
+- Before resubmission, backed up and cleared the selected testing judgment outputs, test-accuracy JSON files, and the affected experiment judgment-cache directories under `/work/hdd/bhph/zluo8/credit_assignment/results/cache_backups/testing_rejudge_parallel_backup_20260819_120043`.
+- Rejudge configs are stored under `config/testing_rejudge/`; `rollout_config_testing_legacy5.json` is only for scoring older single-artifact test rollouts that contain five trunks per tree.

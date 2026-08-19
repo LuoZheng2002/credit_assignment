@@ -306,14 +306,14 @@ def main() -> int:
     )
     parser.add_argument("--judging-time", default=CPU_TIME_LIMIT)
     parser.add_argument(
-        "--skip-training-chunk-validation",
+        "--include-training-chunk-validation",
         action="store_true",
-        help="Do not schedule diagnostic training-chunk validation jobs.",
+        help="Schedule diagnostic training-chunk validation jobs. Future serious runs leave this off by default.",
     )
     parser.add_argument(
         "--validation-epoch-interval",
         type=int,
-        default=3,
+        default=10,
         help="Validate held-out epoch 0 and trained epochs divisible by this interval.",
     )
     parser.add_argument(
@@ -386,7 +386,7 @@ def main() -> int:
                 _cargo_smoke("bin_oneshot_ref_logprobs", "--config-path", str(training_path))
             )
         _run_login_smoke(_cargo_smoke("bin_oneshot_training", "--config-path", str(training_path)))
-        if not args.skip_training_chunk_validation:
+        if args.include_training_chunk_validation:
             _run_login_smoke(
                 _cargo_smoke(
                     "bin_oneshot_training_chunk_validation",
@@ -478,7 +478,7 @@ def main() -> int:
     )
     jobs.append(training)
     training_chunk_score_job_ids: list[str] = []
-    if not args.skip_training_chunk_validation:
+    if args.include_training_chunk_validation:
         _require_positive_int(training_config, "num_oneshot_epochs")
         chunk_rollout = _submit_config_job(
             phase="training_chunk_rollout",

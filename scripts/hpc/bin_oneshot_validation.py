@@ -56,7 +56,7 @@ def main() -> int:
     parser.add_argument("-j", "--job-name", default=None)
     parser.add_argument("--dependency", default=None)
     parser.add_argument("--phase", default="all", choices=["all", "rollout", "judge", "score"])
-    parser.add_argument("--epoch-interval", type=int, default=3)
+    parser.add_argument("--epoch-interval", type=int, default=10)
     args = parser.parse_args()
 
     if args.epoch_interval <= 0:

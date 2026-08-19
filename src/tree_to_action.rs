@@ -729,10 +729,7 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
     llm_callable: &M::Callable,
 ) -> Result<SegmentContent<M>, StopRequestedError> {
     let rollout_stats = RolloutStats::global();
-    let mut prompt_tokens = trajectory.to_prompt_tokens();
-    if let Some(start_token) = new_branch_start_token {
-        prompt_tokens.push(start_token.token_id);
-    }
+    let prompt_tokens = trajectory.to_prompt_tokens();
     let mut response = None;
     let mut last_error: Option<String> = None;
     for trial in 1..=3 {

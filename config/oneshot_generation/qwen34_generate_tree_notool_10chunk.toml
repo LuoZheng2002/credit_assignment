@@ -12,3 +12,4 @@ num_gpus = 1
 total_time_limit_hours = 1.0
 training_set_sort_mode = "ByQuestion"
 num_questions_per_chunk = 125
+num_chunks = 20

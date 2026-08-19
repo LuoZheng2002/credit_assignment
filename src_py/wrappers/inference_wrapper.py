@@ -819,10 +819,10 @@ class VllmBackend:
         self._restart_lock = threading.Lock()
         self._restart_in_progress = False
         self._model_update_health_timeout_secs = _positive_int_env_or_default(
-            "VLLM_MODEL_UPDATE_HEALTH_TIMEOUT_SECS", 600
+            "VLLM_MODEL_UPDATE_HEALTH_TIMEOUT_SECS", 2700
         )
         self._initial_health_timeout_secs = _positive_int_env_or_default(
-            "VLLM_INITIAL_HEALTH_TIMEOUT_SECS", 1800
+            "VLLM_INITIAL_HEALTH_TIMEOUT_SECS", 2700
         )
 
         if not model_path_obj.exists() and epoch == 0:
@@ -866,6 +866,12 @@ class VllmBackend:
             "True",
         ):
             child_env.pop("LD_LIBRARY_PATH", None)
+        repo_root = str(Path(__file__).resolve().parents[2])
+        child_env["PYTHONPATH"] = (
+            repo_root
+            if not child_env.get("PYTHONPATH")
+            else f"{repo_root}:{child_env['PYTHONPATH']}"
+        )
 
         if _CONN is not None:
             _CONN.send_info(
@@ -877,6 +883,7 @@ class VllmBackend:
             launch_command = [
                 vllm_python,
                 "-m",
+                "src_py.wrappers.vllm_startup_debug",
                 "vllm.entrypoints.openai.api_server",
                 "--model",
                 vllm_model_path,

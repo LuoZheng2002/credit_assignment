@@ -427,6 +427,7 @@ pub async fn rollout_logs_to_training_trajectories<M: LlmModelMarker>(
         statistics_file_path,
         positive_advantage_only,
         None,
+        None,
         0,
         0,
         0,
@@ -443,6 +444,7 @@ fn finalize_training_trajectories_generation<M: LlmModelMarker>(
     statistics_file_path: String,
     positive_advantage_only: bool,
     num_questions_per_chunk: Option<usize>,
+    num_chunks: Option<usize>,
     num_observed_questions: usize,
     num_all_correct_questions: usize,
     num_all_incorrect_questions: usize,
@@ -482,6 +484,11 @@ fn finalize_training_trajectories_generation<M: LlmModelMarker>(
                 .entry(chunk_index)
                 .or_default()
                 .push(trajectory.clone());
+        }
+        if let Some(num_chunks) = num_chunks {
+            for chunk_index in 0..num_chunks {
+                by_chunk.entry(chunk_index).or_default();
+            }
         }
         for (chunk_index, chunk_trajectories) in by_chunk {
             let chunk_path =
@@ -624,6 +631,7 @@ pub async fn tree_judgments_to_training_trajectories<M: LlmModelMarker>(
     use_tool: bool,
     training_set_sort_mode: TrainingSetSortMode,
     num_questions_per_chunk: Option<usize>,
+    num_chunks: Option<usize>,
 ) {
     let tree_judged_artifacts = load_tree_judged_artifacts::<M, Training>(
         tree_artifacts_msgpack_path,
@@ -829,6 +837,7 @@ pub async fn tree_judgments_to_training_trajectories<M: LlmModelMarker>(
         statistics_file_path,
         positive_advantage_only,
         num_questions_per_chunk,
+        num_chunks,
         correctness_counts.observed,
         correctness_counts.all_correct,
         correctness_counts.all_incorrect,
