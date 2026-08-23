@@ -748,6 +748,17 @@ Current interpretation:
 1. Qwen2.5 no-tool remains the cleanest paper path because both GRPO and TreeMAPPO show modest positive validation signals under matched rank-32, learning-rate `1e-6` settings.
 2. Qwen34 tool is a mixed/negative comparison for TreeMAPPO: the Tree checkpoint is below the matched GRPO checkpoint on aggregate held-out accuracy, although it improves on a subset of datasets.
 3. Positive-advantage-only TreeMAPPO should be treated as an ablation. It is not currently stronger than the standard TreeMAPPO story, especially in the tool setting.
+
+## 50-Epoch Extension Policy — 2026-08-23
+
+All paper-facing experiments should be extended to 50 epochs when the required rollout chunks exist or can be resumed safely. Submission priority:
+
+1. Extend already-rollout-complete core comparisons first, because they only require training resume plus held-out validation.
+   - Qwen2.5 tool GRPO: extend `grpo_tool_10chunk_lora_r32_lr1e6_adam_50ep_training` from 40 to 50 epochs.
+   - Qwen2.5 tool TreeMAPPO: extend `tree_tool_10chunk_lora_r32_lr1e6_adam_50ep_training` from 40 to 50 epochs.
+2. Extend strict forced-token TreeMAPPO variants next, because forced selected branch token is now the default mechanism.
+3. Extend ablation runs after the core comparisons, prioritizing TEMPO-style branching, TreeRPO-style credit, TreeRL-style branching, TreeRL-style credit, and TreeRL combined.
+4. Treat branch-budget runs as secondary until their forced-token 5-epoch pipelines finish and metadata confirms the generated trajectories look normal.
 4. The next scientific decision should be whether to replicate the Qwen2.5 no-tool GRPO-vs-Tree comparison for robustness or spend the next queue slots on planned ablations such as branch budget, TEMPO-style branching, and forced-token guided branching.
 
 
