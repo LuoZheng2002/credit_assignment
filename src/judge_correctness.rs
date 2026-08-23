@@ -246,18 +246,22 @@ pub async fn fetch_judge_evaluation_for_model(
 ) -> Result<(String, Option<String>), String> {
     let api_key = std::env::var("OPENROUTER_API_KEY")
         .map_err(|_| "OPENROUTER_API_KEY environment variable not set".to_string())?;
-    let mut body_map = serde_json::json!({
+    let reasoning_effort = if model_name == "openai/gpt-5-nano" {
+        "minimal"
+    } else if thinking_enabled {
+        "low"
+    } else {
+        "none"
+    };
+    let body_map = serde_json::json!({
         "model": model_name,
         "messages": [{"role": "user", "content": prompt}],
         "max_completion_tokens": 1024,
         "temperature": temperature,
         "reasoning": {
-            "effort": if thinking_enabled { "low" } else { "none" }
+            "effort": reasoning_effort
         }
     });
-    if !thinking_enabled {
-        body_map["reasoning"] = serde_json::json!({"effort": "none"});
-    }
 
     let response = client
         .post(OPENROUTER_CHAT_COMPLETIONS_URL)

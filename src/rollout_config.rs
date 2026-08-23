@@ -2,11 +2,29 @@ use serde::{Deserialize, Serialize};
 
 use crate::hybrid_dataset::Training;
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, clap::ValueEnum)]
 pub enum BranchingPolicy {
     TreeMappoGuided, // our method with guided branching point determination that considers distance to center, target segment length, branching factor, target token logprob distribution, etc.
     TempoSpontaneous, // we make the model to always rollout from scratch, and derive the branching point from the divergence point
     TreeRlEntropyGuided, // TreeRL-style ablation: choose guided branch points by token-distribution entropy while keeping the same tree infrastructure
+}
+
+impl BranchingPolicy {
+    pub fn abbreviation(&self) -> &'static str {
+        match self {
+            BranchingPolicy::TreeMappoGuided => "TMB",
+            BranchingPolicy::TempoSpontaneous => "TPB",
+            BranchingPolicy::TreeRlEntropyGuided => "TRLEB",
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            BranchingPolicy::TreeMappoGuided => "TreeMAPPO guided branching",
+            BranchingPolicy::TempoSpontaneous => "TEMPO-style prefix-tree branching",
+            BranchingPolicy::TreeRlEntropyGuided => "TreeRL-style entropy-guided branching",
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Copy, clap::ValueEnum)]
@@ -15,6 +33,32 @@ pub enum TrainingAdvantagePolicy {
     TreeRpoWinRate, // TreeRPO-style child-group win-rate advantage with bottom-up outcome backup
     TreeRlLocalGlobal, // TreeRL-style ablation: combine local parent-child and global root-child value deltas
     GrpoTerminalReward, // flat GRPO baseline: group-normalized terminal correctness assigned to each response's supervised tokens
+}
+
+impl TrainingAdvantagePolicy {
+    pub fn abbreviation(&self) -> &'static str {
+        match self {
+            TrainingAdvantagePolicy::TreeMappoPosterior => "TMA",
+            TrainingAdvantagePolicy::TreeRpoWinRate => "TRPOA",
+            TrainingAdvantagePolicy::TreeRlLocalGlobal => "TRLA",
+            TrainingAdvantagePolicy::GrpoTerminalReward => "GRPOA",
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            TrainingAdvantagePolicy::TreeMappoPosterior => "TreeMAPPO posterior segment advantage",
+            TrainingAdvantagePolicy::TreeRpoWinRate => {
+                "TreeRPO-style child-group outcome advantage"
+            }
+            TrainingAdvantagePolicy::TreeRlLocalGlobal => {
+                "TreeRL-style local-global value advantage"
+            }
+            TrainingAdvantagePolicy::GrpoTerminalReward => {
+                "GRPO-style group-normalized terminal reward advantage"
+            }
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]

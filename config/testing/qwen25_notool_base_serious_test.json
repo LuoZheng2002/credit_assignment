@@ -1,0 +1,12 @@
+[
+  {
+    "model_cli_name": "qwen25",
+    "config_nickname": "notool_base_serious_test",
+    "testing_rollout_config_path": "config/rollout_config_testing.json",
+    "num_rollout_trials": 5,
+    "epoch": 0,
+    "total_epochs": 1,
+    "mount_dir": "/work/hdd/bhph/zluo8/credit_assignment/results",
+    "use_tool": false
+  }
+]

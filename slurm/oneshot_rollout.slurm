@@ -19,6 +19,7 @@ fi
 CONFIG_PATH="$1"
 NOTIFY_START_MSG="${2:-}"
 NOTIFY_END_MSG="${3:-}"
+EXTRA_ARGS=("${@:4}")
 
 if [[ -n "$NOTIFY_END_MSG" ]]; then
     trap 'python research-utility/scripts/pushover_notify.py "$NOTIFY_END_MSG"' EXIT
@@ -33,8 +34,14 @@ source "$REPO_ROOT/slurm/setup_cuda_12_8.sh"
 # Prefer the main project venv for experiment executables. The inference wrapper
 # resolves the vLLM runtime from VLLM_VENV when a config uses vLLM.
 export PATH="$REPO_ROOT/.venv/bin:$PATH"
-export VLLM_VENV="${VLLM_VENV:-/work/hdd/bhph/zluo8/credit_assignment/venvs/vllm-latest-cu130}"
+export VLLM_VENV="${VLLM_VENV:-/u/zluo8/credit_assignment/venvs/vllm-latest-cu130}"
 export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-4096}"
+export VLLM_CACHE_HOME="${VLLM_CACHE_HOME:-/u/${USER:-zluo8}/.cache/credit_assignment_vllm}"
+mkdir -p "$VLLM_CACHE_HOME/xdg" "$VLLM_CACHE_HOME/triton" "$VLLM_CACHE_HOME/torchinductor" "$VLLM_CACHE_HOME/cuda"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$VLLM_CACHE_HOME/xdg}"
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$VLLM_CACHE_HOME/triton}"
+export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$VLLM_CACHE_HOME/torchinductor}"
+export CUDA_CACHE_PATH="${CUDA_CACHE_PATH:-$VLLM_CACHE_HOME/cuda}"
 unset VLLM_MAX_NUM_SEQS VLLM_MAX_NUM_BATCHED_TOKENS VLLM_ENFORCE_EAGER
 export VLLM_INITIAL_HEALTH_TIMEOUT_SECS="${VLLM_INITIAL_HEALTH_TIMEOUT_SECS:-2700}"
 export VLLM_MODEL_UPDATE_HEALTH_TIMEOUT_SECS="${VLLM_MODEL_UPDATE_HEALTH_TIMEOUT_SECS:-2700}"
@@ -42,7 +49,7 @@ export INFERENCE_WRAPPER_HEALTH_TIMEOUT_SECS="${INFERENCE_WRAPPER_HEALTH_TIMEOUT
 export INFERENCE_UPDATE_MODEL_TIMEOUT_SECS="${INFERENCE_UPDATE_MODEL_TIMEOUT_SECS:-2700}"
 export INFERENCE_WRAPPER_PORT="${INFERENCE_WRAPPER_PORT:-$((30000 + SLURM_JOB_ID % 1000))}"
 
-echo "Running oneshot rollout with config: $CONFIG_PATH"
+echo "Running oneshot rollout with config: $CONFIG_PATH extra_args=${EXTRA_ARGS[*]:-}"
 echo "Repo root: $REPO_ROOT"
 echo "Inference wrapper port: $INFERENCE_WRAPPER_PORT"
 
@@ -50,4 +57,4 @@ if [[ -n "$NOTIFY_START_MSG" ]]; then
     python research-utility/scripts/pushover_notify.py "$NOTIFY_START_MSG"
 fi
 
-scripts/hpc/cargo_run_with_rebuild.sh bin_oneshot_rollout --config-path "$CONFIG_PATH"
+scripts/hpc/cargo_run_with_rebuild.sh bin_oneshot_rollout --config-path "$CONFIG_PATH" "${EXTRA_ARGS[@]}"

@@ -273,7 +273,7 @@ def _resolve_vllm_python_executable() -> str:
     default = Path(
         os.environ.get(
             "VLLM_VENV",
-            "/work/hdd/bhph/zluo8/credit_assignment/venvs/vllm-latest-cu130",
+            "/u/zluo8/credit_assignment/venvs/vllm-latest-cu130",
         )
     )
     python_bin = default / "bin" / "python"
@@ -858,6 +858,12 @@ class VllmBackend:
         child_env = os.environ.copy()
         child_env.setdefault("PYTHONUNBUFFERED", "1")
         child_env.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+        vllm_bin_dir = str(Path(vllm_python).resolve().parent)
+        child_env["PATH"] = (
+            vllm_bin_dir
+            if not child_env.get("PATH")
+            else f"{vllm_bin_dir}:{child_env['PATH']}"
+        )
         if lora_enabled:
             child_env["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
         if os.environ.get("VLLM_INHERIT_LD_LIBRARY_PATH", "").strip() not in (

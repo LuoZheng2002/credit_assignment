@@ -26,6 +26,7 @@ use credit_assignment::{
     rollout::{RolloutProgramConfig, rollout_all},
     rollout_config::{BranchingPolicy, RolloutConfig},
     tree_action_log::ActionLogStore,
+    tree_artifact::read_marked_tree_artifact_chunks,
     tree_to_action::BranchingRuntimeOptions,
     utils::configure_mount_dir,
 };
@@ -39,6 +40,8 @@ use std::time::Instant;
 struct CliArgs {
     #[arg(short = 'c', long)]
     config_path: String,
+    #[arg(long, value_enum)]
+    branching_policy: Option<BranchingPolicy>,
     #[arg(long, default_value_t = false)]
     force_selected_branch_token: bool,
     #[arg(long)]
@@ -56,6 +59,8 @@ struct Args {
     model_cli_name: String,
     config_nickname_rollout: String,
     rollout_config_path: String,
+    #[serde(default)]
+    branching_policy: Option<BranchingPolicy>,
     use_tool: bool,
     dataset_split: DatasetSplitEnum,
     #[serde(default)]
@@ -68,7 +73,7 @@ struct Args {
     inference_backend: InferenceBackend,
     #[serde(default)]
     total_time_limit_hours: f32,
-    #[serde(default)]
+    #[serde(default = "default_force_selected_branch_token")]
     force_selected_branch_token: bool,
     #[serde(default)]
     num_questions_per_chunk: Option<usize>,
@@ -90,8 +95,33 @@ struct RolloutChunkTimingFirstRun {
     average_elapsed_secs_per_chunk: f64,
 }
 
+#[derive(Serialize)]
+struct RolloutMetadata {
+    schema_version: u32,
+    stage: String,
+    model_cli_name: String,
+    config_nickname_rollout: String,
+    dataset_split: String,
+    epoch: usize,
+    rollout_config_path: String,
+    tree_artifacts_path: String,
+    rollout_summary_path: String,
+    rollout_chunk_timing_path: String,
+    branching_policy: String,
+    branching_policy_abbreviation: String,
+    force_selected_branch_token: bool,
+    num_questions_per_chunk: Option<usize>,
+    num_chunks: Option<usize>,
+    num_tree_examples: usize,
+    tree_examples: Vec<String>,
+}
+
 fn default_total_epochs() -> usize {
     1
+}
+
+fn default_force_selected_branch_token() -> bool {
+    true
 }
 
 fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
@@ -128,6 +158,73 @@ fn remove_stale_action_log_store(action_log_store_path: &str) -> Result<(), Stri
     remove_path_if_exists(&base_path.with_extension("config_bundle.json"))?;
     remove_path_if_exists(&base_path.with_extension("elapsed_time.txt"))?;
     Ok(())
+}
+
+fn write_rollout_metadata<M: LlmModelMarker, S: DatasetSplit>(
+    args: &Args,
+    tree_artifact_output_path: &str,
+    summary_path: &str,
+    timing_path: &str,
+    branching_policy: &BranchingPolicy,
+    branching_options: BranchingRuntimeOptions,
+) {
+    let tree_examples = if Path::new(tree_artifact_output_path).exists() {
+        match read_marked_tree_artifact_chunks::<M, S>(tree_artifact_output_path) {
+            Ok(artifacts) => artifacts
+                .into_iter()
+                .take(10)
+                .map(|artifact| artifact.to_metadata_string(12_000))
+                .collect::<Vec<_>>(),
+            Err(err) => {
+                eprintln!(
+                    "failed to read tree examples for rollout metadata from {}: {}",
+                    tree_artifact_output_path, err
+                );
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let metadata = RolloutMetadata {
+        schema_version: 1,
+        stage: "oneshot_rollout".to_string(),
+        model_cli_name: args.model_cli_name.clone(),
+        config_nickname_rollout: args.config_nickname_rollout.clone(),
+        dataset_split: S::dataset_file_postfix().to_string(),
+        epoch: args.epoch,
+        rollout_config_path: args.rollout_config_path.clone(),
+        tree_artifacts_path: tree_artifact_output_path.to_string(),
+        rollout_summary_path: summary_path.to_string(),
+        rollout_chunk_timing_path: timing_path.to_string(),
+        branching_policy: branching_policy.display_name().to_string(),
+        branching_policy_abbreviation: branching_policy.abbreviation().to_string(),
+        force_selected_branch_token: branching_options.force_selected_branch_token,
+        num_questions_per_chunk: args.num_questions_per_chunk,
+        num_chunks: args.num_chunks,
+        num_tree_examples: tree_examples.len(),
+        tree_examples,
+    };
+    let metadata_path = Path::new(summary_path).with_file_name("oneshot_rollout_metadata.json");
+    if let Some(parent) = metadata_path.parent() {
+        std::fs::create_dir_all(parent).unwrap_or_else(|err| {
+            panic!(
+                "failed to create rollout metadata directory {}: {}",
+                parent.display(),
+                err
+            )
+        });
+    }
+    let json = serde_json::to_string_pretty(&metadata)
+        .unwrap_or_else(|err| panic!("failed to serialize rollout metadata: {}", err));
+    std::fs::write(&metadata_path, json).unwrap_or_else(|err| {
+        panic!(
+            "failed to write rollout metadata to {}: {}",
+            metadata_path.display(),
+            err
+        )
+    });
+    println!("Rollout metadata written to {}", metadata_path.display());
 }
 
 async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
@@ -246,6 +343,7 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
     .unwrap_or_else(|err| panic!("failed to launch inference server: {}", err));
 
     let rollout_num_leaves = rollout_config.num_leaves;
+    let resolved_branching_policy = rollout_config.branching_policy.clone();
     let program_config = RolloutProgramConfig {
         config_nickname: args.config_nickname_rollout.clone(),
         rollout_config,
@@ -351,6 +449,14 @@ async fn run_rollout_for_split<M: LlmModelMarker, S: DatasetSplit>(
         )
     });
     println!("Rollout summary written to {}", summary_path);
+    write_rollout_metadata::<M, S>(
+        args,
+        &tree_artifact_output_path,
+        &summary_path,
+        &timing_path,
+        &resolved_branching_policy,
+        branching_options,
+    );
 }
 
 macro_rules! run_rollout {
@@ -402,8 +508,11 @@ macro_rules! run_rollout {
         match dataset_split {
             $(
                 $split_enum => {
-                    let rollout_config: RolloutConfig<$split_ty> =
+                    let mut rollout_config: RolloutConfig<$split_ty> =
                         read_json(&args.rollout_config_path).unwrap();
+                    if let Some(branching_policy) = &args.branching_policy {
+                        rollout_config.branching_policy = branching_policy.clone();
+                    }
                     run_model_for_split!(rollout_config, $split_ty)
                 }
             ),+
@@ -425,6 +534,7 @@ async fn main() {
     dotenvy::dotenv().ok();
     let CliArgs {
         config_path,
+        branching_policy,
         force_selected_branch_token,
         num_questions_per_chunk,
         num_chunks,
@@ -440,6 +550,7 @@ async fn main() {
     if num_chunks.is_some() {
         args.num_chunks = num_chunks;
     }
+    args.branching_policy = branching_policy;
     check_sympy_availability().unwrap();
     assert!(args.total_epochs > 0, "total_epochs must be positive");
     assert!(args.num_gpus > 0, "--num-gpus must be positive");
@@ -485,7 +596,8 @@ async fn main() {
     println!("Starting one-shot rollout pipeline...");
     let client = Client::new();
     log_info(format!(
-        "branching_options force_selected_branch_token={} tree_rl_entropy_guided_branching={}",
+        "branching_policy_override={:?} branching_options force_selected_branch_token={} tree_rl_entropy_guided_branching={}",
+        args.branching_policy,
         branching_options.force_selected_branch_token,
         branching_options.tree_rl_entropy_guided_branching
     ));

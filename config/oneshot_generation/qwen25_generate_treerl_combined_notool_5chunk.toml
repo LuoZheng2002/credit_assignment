@@ -1,0 +1,14 @@
+model_cli_name = "qwen25"
+config_nickname_rollout = "treerl_branching_notool_rollout_5chunk"
+config_nickname_generation = "treerl_combined_notool_generation_5chunk"
+rollout_config_path = "config/rollout_config_training_treerl_branching.json"
+use_tool = false
+epoch = 0
+training_advantage_policy = "TreeRlLocalGlobal"
+positive_advantage_only = false
+rollout_mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
+generation_mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
+num_gpus = 1
+total_time_limit_hours = 0.5
+training_set_sort_mode = "ByQuestion"
+num_questions_per_chunk = 125

@@ -730,6 +730,13 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
 ) -> Result<SegmentContent<M>, StopRequestedError> {
     let rollout_stats = RolloutStats::global();
     let prompt_tokens = trajectory.to_prompt_tokens();
+    let generation_prompt_tokens = if let Some(start_token) = new_branch_start_token {
+        let mut prompt_tokens_with_forced_start = prompt_tokens.clone();
+        prompt_tokens_with_forced_start.push(start_token.token_id);
+        prompt_tokens_with_forced_start
+    } else {
+        prompt_tokens.clone()
+    };
     let mut response = None;
     let mut last_error: Option<String> = None;
     for trial in 1..=3 {
@@ -742,7 +749,12 @@ async fn generate_reasoning_or_tool_call_content<M: LlmModelMarker, S: DatasetSp
                 "sglang_waiting_workers".to_string(),
             );
             llm_callable
-                .generate_tokens_with_logprobs(prompt_tokens.clone(), use_tool, temperature, true)
+                .generate_tokens_with_logprobs(
+                    generation_prompt_tokens.clone(),
+                    use_tool,
+                    temperature,
+                    true,
+                )
                 .await
         };
         match generation_result {

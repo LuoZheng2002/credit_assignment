@@ -296,7 +296,11 @@ pub fn read_existing_validation_summary(
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0) as f32;
             let math = value.get("math").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-            validation_accuracies.insert(epoch, (avg, deepmath, math, 0.0));
+            let numinamath = value
+                .get("numinamath")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32;
+            validation_accuracies.insert(epoch, (avg, deepmath, math, numinamath));
         }
     }
 

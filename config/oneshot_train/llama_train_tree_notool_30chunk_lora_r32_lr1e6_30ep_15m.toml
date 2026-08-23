@@ -4,6 +4,7 @@ config_nickname_generation = "tree_notool_generation_30chunk"
 use_tool = false
 num_oneshot_epochs = 20
 validation_total_epochs = 20
+validation_num_rollout_trials = 3
 validation_rollout_secs = 600
 oneshot_per_epoch_training_time = 900.0
 num_iterations_limit = 3

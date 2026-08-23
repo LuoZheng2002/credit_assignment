@@ -668,6 +668,7 @@ pub struct MultiTrialRolloutProgramConfig<S: DatasetSplit> {
     pub client: Client,
     pub inference_endpoint: InferenceEndpoint,
     pub rollout_secs: usize,
+    pub finish_all_questions: bool,
     pub total_epochs: usize,
     pub action_log_store_paths: Vec<String>,
     pub tree_artifact_output_paths: Vec<String>,
@@ -1276,6 +1277,7 @@ pub async fn rollout_testing_trials<M: LlmModelMarker, S: DatasetSplit>(
         client,
         inference_endpoint,
         rollout_secs,
+        finish_all_questions,
         total_epochs,
         action_log_store_paths,
         tree_artifact_output_paths,
@@ -1371,7 +1373,11 @@ pub async fn rollout_testing_trials<M: LlmModelMarker, S: DatasetSplit>(
     let _rollout_all_guard = RolloutAllGuard::new(rollout_config.num_leaves, work_items.len());
     let rollout_stats = RolloutStats::global();
     rollout_stats.reset_model_answer_judgment_cache_hit_rate();
-    let deadline = start_time + Duration::from_secs(rollout_secs as u64);
+    let deadline = if finish_all_questions {
+        start_time + Duration::from_secs(365 * 24 * 60 * 60)
+    } else {
+        start_time + Duration::from_secs(rollout_secs as u64)
+    };
     let _progress_timer_handle = tokio::spawn(run_progress_timer(
         start_time,
         deadline,

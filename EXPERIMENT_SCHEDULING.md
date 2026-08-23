@@ -718,11 +718,11 @@ These are project-level setbacks that explain why the schedule remains adaptive 
 
 These notes record known implementation-paper mismatches that should not block the immediate abstract-oriented experiment schedule, but should be resolved or explicitly scoped before a final paper submission.
 
-1. **Guided branching forced-token feature is runtime-controlled but not yet rerun.**
-   - One-shot rollout supports `force_selected_branch_token` via TOML fields or CLI flags.
+1. **Guided branching uses forced selected branch tokens by default.**
+   - One-shot rollout now defaults `force_selected_branch_token = true`; TOML fields or CLI flags can still make this explicit for auditability.
    - The forced-token path now preserves the selected token's old rollout log-probability instead of inserting it with synthetic logprob `0.0`, which is important under the clipped policy-ratio training objective.
-   - Deferred qwen25 no-tool TreeMAPPO configs are prepared for a serious forced-token run: `config/oneshot_rollout/qwen25_rollout_tree_notool_forced_30chunk.toml`, `config/oneshot_generation/qwen25_generate_tree_notool_forced_30chunk.toml`, and `config/oneshot_train/qwen25_train_tree_notool_forced_lora_r32_lr1e6_30ep_adam.toml`.
-   - Do not submit this run while the queue is heavily contended; submit it later as the next strict test of the full guided-branching mechanism.
+   - The recovered qwen25 no-tool validation comparison is mixed but slightly favors the patched forced-token setup at later checkpoints, so future TreeMAPPO-style rollouts should use the strict forced-token path unless the experiment is explicitly a non-forced ablation.
+   - Branch-budget ablations (`branch8` and `branch32`) should be rerun with forced-token branching and chunked rollout artifacts; older non-forced/legacy time-based branch-budget artifacts should not be reused.
 
 3. **GRPO configs now use explicit group-normalized terminal reward credit.**
    - `GrpoTerminalReward` was added as a separate advantage policy in parallel with `TreeRpoWinRate`.
@@ -1409,6 +1409,7 @@ Chunk-backed one-shot training must fail fast if any epoch's trajectory chunk co
 - An empty training chunk means every question in that chunk was filtered out, typically because the rollout/judgment outcomes were all correct or all incorrect with no mixed correctness signal.
 - Do not silently carry the previous model forward or count the epoch as trained; this is misleading for validation curves and downstream model selection.
 - Treat an empty chunk as an investigation blocker: inspect per-chunk correctness, judgment cache behavior, and rollout answer diversity before resubmitting training.
+- If empty trajectory chunks are plausibly caused by corrupted or legacy judgment-cache behavior, do not rerun the expensive initial training rollout. Preserve completed rollout tree chunks, back up and clear stale judgment and trajectory-generation artifacts for the affected experiment, rerun judging for the entire experiment, rerun trajectory generation from scratch, then continue with training and validation.
 - Generation may still emit explicit empty chunk files so the failure identifies the exact epoch/chunk rather than appearing as a missing-artifact bug.
 
 ### Judgment API Failure Policy — 2026-08-19
@@ -1437,3 +1438,157 @@ Current priority is to rejudge preserved testing rollouts using the corrected ju
   - Qwen2.5 Tree no-tool long-run best, epoch `27`, legacy single artifact with five trunks: judge/score jobs `21294024`/`21294025`.
 - Before resubmission, backed up and cleared the selected testing judgment outputs, test-accuracy JSON files, and the affected experiment judgment-cache directories under `/work/hdd/bhph/zluo8/credit_assignment/results/cache_backups/testing_rejudge_parallel_backup_20260819_120043`.
 - Rejudge configs are stored under `config/testing_rejudge/`; `rollout_config_testing_legacy5.json` is only for scoring older single-artifact test rollouts that contain five trunks per tree.
+
+### Independent Tree Judge/Score Program — 2026-08-19
+
+Judging and scoring should no longer be implemented separately inside rollout binaries.
+
+- Use `bin_tree_judge_score` for CPU-only tree judging and scoring across training-chunk diagnostics, held-out validation, and testing.
+- The shared implementation lives in `src/tree_judge_score.rs` and handles the common tree-artifact to judgment-output path.
+- Testing remains explicitly distinct because modern testing can use multiple rollout trials. Use `--num-rollout-trials N` for per-trial directories and omit it for legacy single-artifact testing rollouts.
+- For legacy single-artifact testing rollouts that contain multiple trunks per tree, pass the matching `--num-trunks` value when scoring.
+- Use `--phase judge-score` for a single CPU task that judges and immediately scores; use `--phase judge` or `--phase score` only for recovery/debugging.
+- Delta SLURM wrapper: `slurm/tree_judge_score.slurm` requests `16` CPUs, `16G` memory, and CPU partition by default.
+- `bin_run_test` is now rollout-only at the CLI level (`all` and `rollout` only). Validation and diagnostic rollout launchers should be migrated next to submit `bin_tree_judge_score` jobs for judge/score rather than using their embedded legacy phases.
+
+### Training Rollout Rejudge and Regeneration — 2026-08-19
+
+To recover from unreliable legacy judgment-cache behavior, preserve completed training rollout tree artifacts but discard downstream judgments and generated trajectories before reuse.
+
+- Remove trained checkpoint/model artifacts under `large_files/*/*/oneshot_epoch_*` to free disk space. Preserve rollout trees, judgment caches/backups, training trajectory configs/stats, validation/test scores, logs, and base model snapshots.
+- Rejudge completed training rollout tree artifacts with the corrected chunked judging semantics, then regenerate training trajectories from those fresh `TreeJudgment` JSONL files.
+- Run these as CPU-only two-stage pipelines: `bin_oneshot_judging` over `trees_training_oneshot`, followed by `bin_oneshot_generation` for the matching generation config.
+- Maintain up to six active/pending rejudge-regeneration pipelines at a time. Generation jobs should depend on their corresponding judging jobs with `afterok`.
+- If a generation config points at stale or missing rollout artifacts, skip it and record the missing prerequisite rather than fabricating a replacement mapping.
+- Update: replace the phase-1 judge model `qwen/qwen3-32b`, which repeatedly returned answer-like text instead of boxed correctness verdicts, with `openai/gpt-5-nano`. GPT-5 Nano judging requests use OpenRouter `reasoning.effort = "minimal"`.
+
+Update — 2026-08-19 later:
+
+- Judging failure diagnostics now include the full question, model answer, reference answer, base prompt, and per-attempt raw judge outputs when a judge model fails after all retries. This is specifically to diagnose `openai/gpt-5-nano` cases that return a boxed answer such as `\text{None of these}` instead of `correct` or `incorrect`.
+- Submitted five Qwen2.5 20-epoch non-KL pipelines after login-smoke checks passed. All use LoRA rank `32`, learning rate `1e-6`, Adam state enabled, warmup enabled, vLLM inference, and held-out validation with `--epoch-interval 10` for epochs `0`, `10`, and `20`:
+  - GRPO no-tool: jobs `21300818`-`21300824`.
+  - TreeMAPPO no-tool: jobs `21300825`-`21300831`.
+  - GRPO tool: jobs `21300832`-`21300838`.
+  - TreeMAPPO tool: jobs `21300839`-`21300845`.
+  - TreeMAPPO no-tool with forced first branch token: jobs `21300846`-`21300852`.
+
+### Stage Log and Metadata Separation — 2026-08-19
+
+Pipeline stages should keep procedural logs and statistical metadata separate.
+
+- Logs are for verbose procedural events and failure diagnostics. They should live under the experiment/stage path in `small_files/<model>/<config>/...` or as SLURM stdout/stderr for the corresponding job, not in shared `/tmp` locations.
+- Metadata is JSON and is for concise stage statistics and representative examples. It must be keyed by experiment configuration and stage so a job from another experiment or phase cannot overwrite it.
+- Judging metadata is written next to the judging output JSONL by default as `*.metadata.json`. It includes total judged answers, exact matches, cache hits/misses, cache-hit and cache-miss correctness counts/ratios, overall correctness counts/ratio, model throughput summary, and 10 deterministic pseudo-random question-answer samples with raw judge outputs, parsed outputs, and final verdicts.
+- Scoring metadata is written next to the score JSON by default as `*.metadata.json` and includes the score object plus the tree artifact and judgment paths used to produce it.
+- One-shot training-set generation metadata is written as `oneshot_generation_metadata.json` next to `training_trajectories_stats.json`. It includes stage/config paths plus up to 10 decoded tree examples and up to 10 decoded trajectory examples for quick agent inspection.
+- Rollout metadata is written as `oneshot_rollout_metadata.json` next to the rollout summary. It includes rollout config paths, chunking settings, forced-token setting, summary/timing paths, and up to 10 decoded tree examples.
+- Training metadata is written as `oneshot_training_metadata.json` under the one-shot training summary directory. It preserves per-epoch sample counts, cumulative iterations, throughput, longest accepted trajectory length, optimizer choices, training limits, checkpoint root paths, and resume start epoch. Validation/testing metadata should use the same judge/score metadata schema as the independent tree judge-score program.
+- After each experiment stage finishes, inspect the corresponding metadata JSON before treating the result as usable. Check that counts, cache hit rates, correctness ratios, throughput, trajectory/tree examples, and sampled judge outputs have no visible anomaly.
+
+### Held-Out Validation Trials — 2026-08-19
+
+Held-out validation should support stacked rollout trials, matching the testing pipeline's retry/extension pattern.
+
+- Set `validation_num_rollout_trials = 3` in one-shot training configs by default and keep validation epoch interval at `10` unless a run has a specific reason to deviate.
+- Multi-trial validation stores artifacts under per-epoch trial directories, for example `epoch_10/trees_validation_oneshot/trial_0`, `trial_1`, and `trial_2`.
+- Increasing `validation_num_rollout_trials` later appends new trial directories without redoing completed lower-index trials whose chunk done markers are present.
+- Validation scoring aggregates weighted counts across all available completed trials for each requested epoch before writing the ordinary one-shot training validation summary.
+- Multi-trial held-out validation must be completion-based, not time-limited: each requested trial should finish all held-out questions before the rollout phase exits. Judge/score phases should only accept a trial when every expected validation chunk has a done marker; a single partial marker is not sufficient.
+
+### Scheduling Override — Tree Scope and Forced-Token Gate — 2026-08-19
+
+Near-term scheduling should reduce tree-method breadth until the forced-first-token question is resolved.
+
+- Put off new TreeMAPPO/tree-method experiments outside the Qwen2.5 no-tool setting. For Qwen34, Gemma, Mistral, Llama, and other non-Qwen2.5 or tool settings, schedule GRPO-only runs unless a specific result creates a new reason to revisit tree methods.
+- Keep Qwen2.5 no-tool as the primary tree comparison setting because it is the cleanest matched GRPO-vs-Tree evidence currently available.
+- Highest tree priority: finish the Qwen2.5 no-tool forced-selected-first-token pipeline and compare it against the matched non-forced Qwen2.5 no-tool Tree run under the same LoRA rank `32`, learning rate `1e-6`, Adam/warmup recipe, validation interval `10`, and three held-out validation trials.
+- Decision gate: if forced first token improves Tree validation/testing accuracy or stability without clear metadata anomalies, make it the default for future TreeMAPPO experiments. If it is neutral or worse, keep it disabled and treat it as an ablation result.
+- Do not queue branch-budget, TEMPO, TreeRPO, TreeRL, or non-Qwen tree extensions ahead of the forced-token decision unless the queue would otherwise sit idle and GRPO-only work is already covered.
+
+Update — 2026-08-20:
+
+- The previous forced-token ablation is treated as invalid because the forced token was inserted after generation rather than included in the prompt before generating the continuation.
+- A patched fresh Qwen2.5 no-tool forced-token pipeline was submitted from training rollout with new artifact nicknames:
+  - Rollout/generation/training configs: `qwen25_rollout_tree_notool_forced_patched_30chunk.toml`, `qwen25_generate_tree_notool_forced_patched_30chunk.toml`, and `qwen25_train_tree_notool_forced_patched_lora_r32_lr1e6_30ep_adam.toml`.
+  - Jobs: rollout `21329601`, training-rollout judging `21329602`, generation `21329603`, training `21329604`, held-out validation rollout/judge/score `21329605`/`21329606`/`21329607`.
+- After the patched forced-token generation finishes, inspect `oneshot_rollout_metadata.json` and `oneshot_generation_metadata.json` tree/trajectory examples before treating the result as usable. Specifically check that forced-branch starts no longer show obvious inserted-token artifacts such as duplicated words (`can can`, `into into`, `expression expression`), malformed prefixes (`SubSub...`), or stray LaTeX fragments introduced at branch boundaries.
+- Until this patched forced-token decision is resolved, postpone other tree-related experiments. Available queue capacity should go to GRPO-only recovery or extension jobs, especially non-Qwen2.5 model validation/retry work.
+
+### GRPO 40-Epoch Extension — 2026-08-20
+
+Extend the GRPO-only pipelines to `40` epochs/chunks under the fixed recipe: LoRA rank `32`, learning rate `1e-6`, Adam state enabled, warmup enabled, vLLM inference, held-out validation with `--epoch-interval 10`, and three validation rollout trials.
+
+- Qwen2.5 GRPO no-tool: append existing `grpo_notool_10chunk_lora_r32_lr1e6_adam_20ep_training` from epoch `20` to `40`; rollout config already has at least `40` chunks.
+- Qwen2.5 GRPO tool: append existing `grpo_tool_10chunk_lora_r32_lr1e6_adam_20ep_training` from epoch `20` to `40`; rollout config already has at least `40` chunks.
+- Qwen3-4B GRPO no-tool: extend `grpo_notool_rollout_10chunk` and `grpo_notool_generation_10chunk` to `40` chunks, then append `grpo_notool_10chunk_lora_r32_lr1e6_10ep_training` to epoch `40`.
+- Qwen3-4B GRPO tool: start a fresh chunked `40`-chunk pipeline with `grpo_tool_rollout_40chunk`, `grpo_tool_generation_40chunk`, and `grpo_tool_40chunk_lora_r32_lr1e6_40ep_training`.
+
+### Orthogonal Tree Ablation Matrix — 2026-08-22
+
+Future tree-method ablations should be named and scheduled by two independent axes: the branching algorithm used during rollout and the advantage algorithm used during trajectory generation. Do not encode a paper name as a monolithic condition unless both axes are intentionally set to that paper-style combination.
+
+Branching algorithm abbreviations:
+
+| Abbrev. | Code policy / switch | Meaning | Implementation status |
+| --- | --- | --- | --- |
+| `FLAT` | `TreeMappoGuided` with `num_trunks == num_leaves` | Flat independent rollouts; no tree branching is exercised. | Existing GRPO rollout pattern. |
+| `TMB` | `TreeMappoGuided` | TreeMAPPO guided branch-point selection using structural penalties and alternate-token probability. | Existing. |
+| `TMBF` | `TreeMappoGuided` plus `--force-selected-branch-token` | TreeMAPPO guided branching that forces the selected alternate first token in the new branch. | Existing patched path; decision pending from Qwen2.5 no-tool result. |
+| `TPB` | `TempoSpontaneous` | TEMPO-style prefix-tree branching from spontaneous divergence among sampled rollouts. | Existing approximation. |
+| `TRLEB` | `TreeRlEntropyGuided` | TreeRL-style entropy-guided branch-point selection using top-k entropy as branch score. | Existing approximation. |
+| `TRPOB` | not implemented | TreeRPO fixed-step tree sampler with branches after fixed segment lengths. | New feature if needed for faithful TreeRPO sampler ablation. |
+| `TPOB` | not implemented | TreePO-style segment-budget tree sampler with dynamic branch allocation / fallback. | Future-only unless TreePO becomes a primary comparison. |
+
+Advantage algorithm abbreviations:
+
+| Abbrev. | Code policy | Meaning | Implementation status |
+| --- | --- | --- | --- |
+| `GRPOA` | `GrpoTerminalReward` | GRPO-style group-normalized terminal reward assigned to flat response trajectories. | Existing; requires `num_trunks == num_leaves`. |
+| `TMA` | `TreeMappoPosterior` | TreeMAPPO posterior segment advantage from probabilistic MAP credit assignment. | Existing. |
+| `TRPOA` | `TreeRpoWinRate` | TreeRPO-style child-group outcome comparison after backing terminal correctness into subtree values. | Existing approximation; use as TreeRPO advantage-only ablation. |
+| `TRLA` | `TreeRlLocalGlobal` | TreeRL-style local-global subtree value difference advantage. | Existing approximation. |
+| `TPA` | not implemented | TEMPO-style prefix TD / branch-gated advantage correction. | New feature if a faithful TEMPO credit ablation is needed. |
+| `TPOA` | not implemented | TreePO-style ancestor/subgroup relative segment advantage with global normalization. | Future-only unless TreePO becomes a primary comparison. |
+
+Recommended matrix for paper-relevant experiments:
+
+| Branching | Advantage | Experiment meaning |
+| --- | --- | --- |
+| `FLAT` | `GRPOA` | GRPO baseline. |
+| `TMB` | `TMA` | Main TreeMAPPO method. |
+| `TMBF` | `TMA` | Forced-token TreeMAPPO mechanism ablation. |
+| `TPB` | `TMA` | Branching-only TEMPO-style ablation against TreeMAPPO credit. |
+| `TMB` | `TRPOA` | TreeRPO advantage-only ablation under the same guided tree. |
+| `TMB` | `TRLA` | TreeRL advantage-only ablation under the same guided tree. |
+| `TRLEB` | `TMA` | TreeRL branching-only ablation under TreeMAPPO credit. |
+| `TRLEB` | `TRLA` | TreeRL-style combined branching/advantage ablation. |
+
+Implementation note:
+
+- `bin_oneshot_rollout` now accepts `--branching-policy` as an explicit rollout-time override, separate from the rollout JSON file.
+- `bin_oneshot_generation` now accepts `--training-advantage-policy` as an explicit generation-time override, separate from the TOML file.
+- `scripts/hpc/bin_oneshot_pipeline.py` passes these as `--branching-policy` and `--training-advantage-policy`, and the rollout/generation SLURM scripts forward extra arguments to the Rust binaries.
+- Rollout and generation metadata now record the resolved algorithm names and abbreviations so completed artifacts can be audited without reconstructing CLI flags.
+- Branching and advantage are decoupled for all currently implemented algorithms except where the algorithm itself imposes structural constraints, such as `GRPOA` requiring flat rollout (`num_trunks == num_leaves`).
+- The only new algorithmic features required for the full literature-faithful matrix are `TRPOB`, `TPA`, and optionally `TPOB`/`TPOA`. These should not block the immediate orthogonal ablation matrix above because the currently needed paper controls can be expressed by rearranging existing `TMB`, `TMBF`, `TPB`, `TRLEB`, `TMA`, `TRPOA`, `TRLA`, and `GRPOA` logic.
+
+### Ablation Submission Priority — 2026-08-22
+
+Submit orthogonal ablation combinations in this order, skipping combinations that are already completed or active in SLURM/artifacts:
+
+1. `TMBF` + `TMA`: forced-token TreeMAPPO mechanism ablation. Highest priority because it tests whether the branch token selected by the guided score should be enforced during generation.
+2. `TPB` + `TMA`: TEMPO-style branching-only control. This isolates spontaneous prefix-tree exploration while keeping TreeMAPPO credit assignment.
+3. `TMB` + `TRPOA`: TreeRPO advantage-only control. This isolates child-group outcome comparison under the same guided tree.
+4. `TMB` + `TRLA`: TreeRL advantage-only control. This isolates local-global subtree value credit under the same guided tree.
+5. `TRLEB` + `TMA`: TreeRL entropy-branching-only control. This isolates entropy-guided branching under TreeMAPPO credit.
+6. `TRLEB` + `TRLA`: combined TreeRL-style control. This tests the currently implemented TreeRL-style branching and advantage pair.
+7. `FLAT` + `GRPOA`: GRPO baseline. Keep as a matched baseline rather than a tree-method ablation; skip when matched GRPO already exists.
+8. `TMB` + `TMA`: main TreeMAPPO method. Skip as an ablation when the main method already exists.
+9. Branch-budget and positive-only variants are secondary mechanism checks and should run after the above matrix unless a specific paper claim depends on them.
+
+Current implementation status:
+
+- `TMBF` + `TMA` is already active for Qwen2.5 no-tool and Qwen2.5 tool patched forced-token pipelines.
+- `TMB` + `TRPOA` and `TRLEB` + `TMA` have completed 30-epoch Qwen2.5 no-tool jobs in recent SLURM history; do not resubmit unless metadata later shows a correctness anomaly.
+- `TPB` + `TMA`, `TMB` + `TRLA`, and `TRLEB` + `TRLA` are the next missing Qwen2.5 no-tool ablations to schedule.
+- `TRLEB` + `TRLA` uses the existing TreeRL entropy rollout and a separate generation/training nickname so it does not overwrite the branching-only trajectory artifacts.

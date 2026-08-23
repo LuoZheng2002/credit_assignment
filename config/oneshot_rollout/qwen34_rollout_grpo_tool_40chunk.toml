@@ -1,0 +1,14 @@
+model_cli_name = "qwen34"
+config_nickname_rollout = "grpo_tool_rollout_40chunk"
+rollout_config_path = "config/rollout_config_training_grpo.json"
+use_tool = true
+dataset_split = "Training"
+epoch = 0
+total_epochs = 1
+rollout_secs = 14400
+mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
+num_gpus = 1
+inference_backend = "vllm"
+total_time_limit_hours = 8.0
+num_questions_per_chunk = 250
+num_chunks = 40

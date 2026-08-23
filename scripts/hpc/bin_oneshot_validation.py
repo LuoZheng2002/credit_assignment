@@ -57,10 +57,13 @@ def main() -> int:
     parser.add_argument("--dependency", default=None)
     parser.add_argument("--phase", default="all", choices=["all", "rollout", "judge", "score"])
     parser.add_argument("--epoch-interval", type=int, default=10)
+    parser.add_argument("--num-rollout-trials", type=int, default=None)
     args = parser.parse_args()
 
     if args.epoch_interval <= 0:
         parser.error("--epoch-interval must be positive")
+    if args.num_rollout_trials is not None and args.num_rollout_trials <= 0:
+        parser.error("--num-rollout-trials must be positive")
 
     config_path = Path(args.config_path)
     if not config_path.is_absolute():
@@ -88,6 +91,8 @@ def main() -> int:
     print(f"  Time limit:     {slurm_time} (raw: {total_time_limit_hours}h + 10% buffer)")
     print(f"  Phase:          {args.phase}")
     print(f"  Epoch interval: {args.epoch_interval}")
+    if args.num_rollout_trials is not None:
+        print(f"  Rollout trials: {args.num_rollout_trials}")
     if args.dependency:
         print(f"  Dependency:     {args.dependency}")
     print(f"  Slurm script:   {slurm_script}")
@@ -121,6 +126,11 @@ def main() -> int:
             args.phase,
             "--epoch-interval",
             str(args.epoch_interval),
+            *(
+                ["--num-rollout-trials", str(args.num_rollout_trials)]
+                if args.num_rollout_trials is not None
+                else []
+            ),
         ]
     )
     result = subprocess.run(cmd, cwd=str(_REPO_ROOT), check=False)

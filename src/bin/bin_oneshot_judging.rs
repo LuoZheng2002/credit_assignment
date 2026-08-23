@@ -4,8 +4,8 @@ use clap::{Parser, ValueEnum};
 use credit_assignment::{
     chunked_judging::{
         DEFAULT_CACHE_CHUNK_QUESTION_COUNT, DEFAULT_CACHE_VERSION,
-        DEFAULT_REQUEST_CONCURRENCY_PER_MODEL, JudgingRequestRecord, judge_requests,
-        read_judging_outputs, read_judging_requests,
+        DEFAULT_REQUEST_CONCURRENCY_PER_MODEL, JudgingRequestRecord, build_judging_metadata,
+        judge_requests, read_judging_outputs, read_judging_requests,
     },
     hybrid_dataset::{DatasetSplitEnum, Testing, Training, Validation},
     llm_model::{
@@ -38,6 +38,8 @@ struct CliArgs {
     request_concurrency_per_model: usize,
     #[arg(long)]
     summary_json: Option<PathBuf>,
+    #[arg(long)]
+    metadata_json: Option<PathBuf>,
     #[arg(long, requires = "input_tree_msgpack")]
     output_tree_judgment_jsonl: Option<PathBuf>,
     #[arg(long, requires = "input_tree_msgpack")]
@@ -292,4 +294,12 @@ async fn main() {
     write_json(summary_path.to_string_lossy().as_ref(), &summary)
         .unwrap_or_else(|err| panic!("failed to write summary: {err}"));
     println!("Judging summary written to {}", summary_path.display());
+    let metadata_path = args
+        .metadata_json
+        .unwrap_or_else(|| args.output_jsonl.with_extension("metadata.json"));
+    let metadata = build_judging_metadata("oneshot_judging", &args.output_jsonl, summary)
+        .unwrap_or_else(|err| panic!("failed to build judging metadata: {err}"));
+    write_json(metadata_path.to_string_lossy().as_ref(), &metadata)
+        .unwrap_or_else(|err| panic!("failed to write judging metadata: {err}"));
+    println!("Judging metadata written to {}", metadata_path.display());
 }

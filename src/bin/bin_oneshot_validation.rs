@@ -38,9 +38,11 @@ use credit_assignment::{
     oneshot_utils::oneshot_epoch_model_ready,
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     python_training_config::TrainingHyperparameters,
+    rollout::{MultiTrialRolloutProgramConfig, rollout_testing_trials},
     rollout::{RolloutProgramConfig, rollout_all},
     rollout_config::RolloutConfig,
     tree_artifact::{TreeJudgment, read_available_tree_artifact_chunks},
+    tree_judge_score::{trial_tree_artifact_path, trial_tree_judgment_path},
     tree_to_action::BranchingRuntimeOptions,
     utils::configure_mount_dir,
 };
@@ -70,11 +72,49 @@ fn tree_artifact_has_done_marker(tree_artifact_path: &str) -> bool {
     })
 }
 
+fn tree_artifact_has_all_expected_done_markers(
+    tree_artifact_path: &str,
+    expected_num_chunks: usize,
+) -> bool {
+    let path = Path::new(tree_artifact_path);
+    if path.is_file() {
+        return true;
+    }
+    if expected_num_chunks == 0 {
+        return false;
+    }
+    (0..expected_num_chunks)
+        .all(|chunk_index| path.join(format!("chunk_{chunk_index}_done")).exists())
+}
+
+fn validation_trial_action_log_path(tree_artifact_base_path: &str, trial_index: usize) -> String {
+    format!(
+        "{}/action_logs_validation_oneshot.extsort",
+        trial_tree_artifact_path(tree_artifact_base_path, trial_index)
+    )
+}
+
 fn requested_validation_epochs(num_oneshot_epochs: usize, epoch_interval: usize) -> Vec<usize> {
     assert!(epoch_interval > 0, "--epoch-interval must be positive");
     (0..=num_oneshot_epochs)
         .filter(|epoch| *epoch == 0 || *epoch % epoch_interval == 0)
         .collect()
+}
+
+fn add_accuracy_stats(
+    accumulator: &mut credit_assignment::get_accuracy::AccuracyStats,
+    value: &credit_assignment::get_accuracy::AccuracyStats,
+) {
+    accumulator.weighted_num_wins += value.weighted_num_wins;
+    accumulator.weighted_total_plays += value.weighted_total_plays;
+    accumulator.num_trees_with_judgments += value.num_trees_with_judgments;
+    accumulator.num_trajectories_judged += value.num_trajectories_judged;
+    accumulator.deepmath_weighted_num_wins += value.deepmath_weighted_num_wins;
+    accumulator.deepmath_weighted_total_plays += value.deepmath_weighted_total_plays;
+    accumulator.math_weighted_num_wins += value.math_weighted_num_wins;
+    accumulator.math_weighted_total_plays += value.math_weighted_total_plays;
+    accumulator.numinamath_weighted_num_wins += value.numinamath_weighted_num_wins;
+    accumulator.numinamath_weighted_total_plays += value.numinamath_weighted_total_plays;
 }
 
 async fn judge_validation_tree_artifacts<M: LlmModelMarker>(
@@ -84,6 +124,7 @@ async fn judge_validation_tree_artifacts<M: LlmModelMarker>(
     model_cli_name: &str,
     config_nickname: &str,
     epoch: usize,
+    trial_index: usize,
 ) {
     let artifacts = read_available_tree_artifact_chunks::<M, Validation>(tree_artifact_path)
         .unwrap_or_else(|err| panic!("failed to read marked validation tree chunks: {}", err));
@@ -92,7 +133,7 @@ async fn judge_validation_tree_artifacts<M: LlmModelMarker>(
         .flat_map(|artifact| artifact.to_judging_requests(DEFAULT_CACHE_VERSION))
         .collect::<Vec<_>>();
     let judging_output_jsonl_path = format!(
-        "{mount_dir}/medium_files/{model_cli_name}/{config_nickname}/epoch_{epoch}/validation_judging_outputs.jsonl"
+        "{mount_dir}/medium_files/{model_cli_name}/{config_nickname}/epoch_{epoch}/validation_judging_outputs_trial_{trial_index}.jsonl"
     );
     let cache_dir =
         format!("{mount_dir}/medium_files/{model_cli_name}/{config_nickname}/judgment_cache");
@@ -167,6 +208,8 @@ struct CliArgs {
     phase: ValidationPhase,
     #[arg(long, default_value_t = 1)]
     epoch_interval: usize,
+    #[arg(long)]
+    num_rollout_trials: Option<usize>,
     #[arg(long, default_value_t = false)]
     login_smoke: bool,
 }
@@ -190,6 +233,8 @@ struct Args {
     num_oneshot_epochs: usize,
     #[serde(default)]
     validation_total_epochs: Option<usize>,
+    #[serde(default)]
+    validation_num_rollout_trials: Option<usize>,
     validation_rollout_secs: usize,
     training_hyperparameters: TrainingHyperparameters,
     oneshot_per_epoch_training_time: f32,
@@ -220,6 +265,7 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
     use_tool: bool,
     phase: ValidationPhase,
     epoch_interval: usize,
+    num_rollout_trials: usize,
 ) {
     let client = Client::new();
     let oneshot_training_summary_parent_dir =
@@ -229,8 +275,12 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
     let (already_validated_epochs, mut validation_accuracies) =
         read_existing_validation_summary(&oneshot_training_summary_parent_dir);
     let requested_epochs = requested_validation_epochs(num_oneshot_epochs, epoch_interval);
+    let validation_num_questions =
+        credit_assignment::hybrid_dataset::open_hybrid_dataset::<Validation>().len();
+    let expected_validation_tree_chunks =
+        validation_num_questions.div_ceil(DEFAULT_CACHE_CHUNK_QUESTION_COUNT);
 
-    if matches!(phase, ValidationPhase::All | ValidationPhase::Score)
+    if matches!(phase, ValidationPhase::All)
         && requested_epochs
             .iter()
             .all(|epoch| already_validated_epochs.contains(epoch))
@@ -240,8 +290,12 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
     }
 
     log_info(format!(
-        "Will validate epochs {:?} from base epoch plus trained epochs 1..={} with epoch interval {} (already validated: {:?})",
-        requested_epochs, num_oneshot_epochs, epoch_interval, already_validated_epochs
+        "Will validate epochs {:?} from base epoch plus trained epochs 1..={} with epoch interval {} and {} rollout trial(s) (already validated: {:?})",
+        requested_epochs,
+        num_oneshot_epochs,
+        epoch_interval,
+        num_rollout_trials,
+        already_validated_epochs
     ));
     let mut launched_inference = None;
     if matches!(phase, ValidationPhase::All | ValidationPhase::Rollout) {
@@ -269,9 +323,7 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
     }
 
     for epoch in requested_epochs {
-        if matches!(phase, ValidationPhase::All | ValidationPhase::Score)
-            && already_validated_epochs.contains(&epoch)
-        {
+        if matches!(phase, ValidationPhase::All) && already_validated_epochs.contains(&epoch) {
             log_info(format!("Epoch {}: already validated; skipping", epoch));
             continue;
         }
@@ -332,7 +384,7 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
                 });
         }
 
-        let validation_action_log_path = action_logs_oneshot_path::<Validation>(
+        let legacy_validation_action_log_path = action_logs_oneshot_path::<Validation>(
             generation_mount_dir,
             model_cli_name,
             config_nickname_training,
@@ -372,29 +424,63 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
             let (sglang_port, _) = launched_inference
                 .as_ref()
                 .expect("validation rollout phase must have inference server");
-            let validation_program_config = RolloutProgramConfig {
-                config_nickname: config_nickname_training.to_string(),
-                rollout_config: validation_rollout_config.clone(),
-                posterior_calculation_config: posterior_calculation_config.clone(),
-                epoch,
-                client: client.clone(),
-                inference_endpoint: InferenceEndpoint::SglangPort(*sglang_port),
-                rollout_secs: validation_rollout_secs,
-                finish_all_questions: true,
-                total_epochs: num_oneshot_epochs,
-                action_log_store_override_path: Some(validation_action_log_path.clone()),
-                use_tool,
-                fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
-                max_concurrent_rollout: validation_max_concurrent_rollout(num_gpus),
-                branching_options: BranchingRuntimeOptions::default(),
-                tree_artifact_output_path: Some(validation_tree_artifact_path.clone()),
-                tree_artifact_chunk_question_count: None,
-                question_flat_id_start: None,
-                question_flat_id_end: None,
-                question_flat_ids: None,
+            let validation_summary = if num_rollout_trials > 1 {
+                let action_log_store_paths = (0..num_rollout_trials)
+                    .map(|trial_index| {
+                        validation_trial_action_log_path(
+                            &validation_tree_artifact_path,
+                            trial_index,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let tree_artifact_output_paths = (0..num_rollout_trials)
+                    .map(|trial_index| {
+                        trial_tree_artifact_path(&validation_tree_artifact_path, trial_index)
+                    })
+                    .collect::<Vec<_>>();
+                let validation_program_config = MultiTrialRolloutProgramConfig {
+                    config_nickname: config_nickname_training.to_string(),
+                    rollout_config: validation_rollout_config.clone(),
+                    posterior_calculation_config: posterior_calculation_config.clone(),
+                    epoch,
+                    client: client.clone(),
+                    inference_endpoint: InferenceEndpoint::SglangPort(*sglang_port),
+                    rollout_secs: validation_rollout_secs,
+                    finish_all_questions: true,
+                    total_epochs: num_oneshot_epochs,
+                    action_log_store_paths,
+                    tree_artifact_output_paths,
+                    use_tool,
+                    fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
+                    max_concurrent_rollout: validation_max_concurrent_rollout(num_gpus),
+                    branching_options: BranchingRuntimeOptions::default(),
+                    tree_artifact_chunk_question_count: Some(DEFAULT_CACHE_CHUNK_QUESTION_COUNT),
+                };
+                rollout_testing_trials::<M, Validation>(mount_dir, validation_program_config).await
+            } else {
+                let validation_program_config = RolloutProgramConfig {
+                    config_nickname: config_nickname_training.to_string(),
+                    rollout_config: validation_rollout_config.clone(),
+                    posterior_calculation_config: posterior_calculation_config.clone(),
+                    epoch,
+                    client: client.clone(),
+                    inference_endpoint: InferenceEndpoint::SglangPort(*sglang_port),
+                    rollout_secs: validation_rollout_secs,
+                    finish_all_questions: true,
+                    total_epochs: num_oneshot_epochs,
+                    action_log_store_override_path: Some(legacy_validation_action_log_path.clone()),
+                    use_tool,
+                    fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
+                    max_concurrent_rollout: validation_max_concurrent_rollout(num_gpus),
+                    branching_options: BranchingRuntimeOptions::default(),
+                    tree_artifact_output_path: Some(validation_tree_artifact_path.clone()),
+                    tree_artifact_chunk_question_count: None,
+                    question_flat_id_start: None,
+                    question_flat_id_end: None,
+                    question_flat_ids: None,
+                };
+                rollout_all::<M, Validation>(mount_dir, validation_program_config).await
             };
-            let validation_summary =
-                rollout_all::<M, Validation>(mount_dir, validation_program_config).await;
             log_info(format!(
                 "Epoch {}: Validation rollout finished ({:.3}s, {} LLM calls)",
                 epoch, validation_summary.elapsed_secs, validation_summary.total_llm_calls,
@@ -402,45 +488,111 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
         }
 
         if matches!(phase, ValidationPhase::All | ValidationPhase::Judge) {
-            if !tree_artifact_has_done_marker(&validation_tree_artifact_path) {
-                log_warning(format!(
-                    "Epoch {}: validation tree artifacts are incomplete or missing at {}; skipping judge phase for this epoch",
-                    epoch, validation_tree_artifact_path
-                ));
-                continue;
+            for trial_index in 0..num_rollout_trials {
+                let trial_tree_artifact_path = if num_rollout_trials > 1 {
+                    trial_tree_artifact_path(&validation_tree_artifact_path, trial_index)
+                } else {
+                    validation_tree_artifact_path.clone()
+                };
+                let trial_complete = if num_rollout_trials > 1 {
+                    tree_artifact_has_all_expected_done_markers(
+                        &trial_tree_artifact_path,
+                        expected_validation_tree_chunks,
+                    )
+                } else {
+                    tree_artifact_has_done_marker(&trial_tree_artifact_path)
+                };
+                if !trial_complete {
+                    log_warning(format!(
+                        "Epoch {} trial {}: validation tree artifacts are incomplete or missing at {}; skipping judge phase for this trial",
+                        epoch, trial_index, trial_tree_artifact_path
+                    ));
+                    continue;
+                }
+                let trial_tree_judgment_path = if num_rollout_trials > 1 {
+                    trial_tree_judgment_path(&validation_tree_judgment_path, trial_index)
+                } else {
+                    validation_tree_judgment_path.clone()
+                };
+                judge_validation_tree_artifacts::<M>(
+                    &trial_tree_artifact_path,
+                    &trial_tree_judgment_path,
+                    mount_dir,
+                    model_cli_name,
+                    config_nickname_training,
+                    epoch,
+                    trial_index,
+                )
+                .await;
             }
-            judge_validation_tree_artifacts::<M>(
-                &validation_tree_artifact_path,
-                &validation_tree_judgment_path,
-                mount_dir,
-                model_cli_name,
-                config_nickname_training,
-                epoch,
-            )
-            .await;
         }
 
         if matches!(phase, ValidationPhase::All | ValidationPhase::Score) {
-            if !tree_artifact_has_done_marker(&validation_tree_artifact_path) {
+            let mut accuracy_stats = credit_assignment::get_accuracy::AccuracyStats {
+                weighted_num_wins: 0.0,
+                weighted_total_plays: 0.0,
+                num_trees_with_judgments: 0,
+                num_trajectories_judged: 0,
+                deepmath_weighted_num_wins: 0.0,
+                deepmath_weighted_total_plays: 0.0,
+                math_weighted_num_wins: 0.0,
+                math_weighted_total_plays: 0.0,
+                numinamath_weighted_num_wins: 0.0,
+                numinamath_weighted_total_plays: 0.0,
+            };
+            let mut scored_trials = 0usize;
+            for trial_index in 0..num_rollout_trials {
+                let trial_tree_artifact_path = if num_rollout_trials > 1 {
+                    trial_tree_artifact_path(&validation_tree_artifact_path, trial_index)
+                } else {
+                    validation_tree_artifact_path.clone()
+                };
+                let trial_complete = if num_rollout_trials > 1 {
+                    tree_artifact_has_all_expected_done_markers(
+                        &trial_tree_artifact_path,
+                        expected_validation_tree_chunks,
+                    )
+                } else {
+                    tree_artifact_has_done_marker(&trial_tree_artifact_path)
+                };
+                if !trial_complete {
+                    log_warning(format!(
+                        "Epoch {} trial {}: validation tree artifacts are incomplete or missing at {}; skipping score phase for this trial",
+                        epoch, trial_index, trial_tree_artifact_path
+                    ));
+                    continue;
+                }
+                let trial_tree_judgment_path = if num_rollout_trials > 1 {
+                    trial_tree_judgment_path(&validation_tree_judgment_path, trial_index)
+                } else {
+                    validation_tree_judgment_path.clone()
+                };
+                if !Path::new(&trial_tree_judgment_path).exists() {
+                    log_warning(format!(
+                        "Epoch {} trial {}: validation tree judgments are missing at {}; skipping score phase for this trial",
+                        epoch, trial_index, trial_tree_judgment_path
+                    ));
+                    continue;
+                }
+                let trial_accuracy_stats =
+                    get_accuracy_from_tree_judgments_at_path::<M, Validation>(
+                        &trial_tree_artifact_path,
+                        &trial_tree_judgment_path,
+                        &format!(
+                            "Validation accuracy (one-shot epoch {epoch} trial {trial_index})"
+                        ),
+                    )
+                    .await;
+                add_accuracy_stats(&mut accuracy_stats, &trial_accuracy_stats);
+                scored_trials += 1;
+            }
+            if scored_trials == 0 {
                 log_warning(format!(
-                    "Epoch {}: validation tree artifacts are incomplete or missing at {}; skipping score phase for this epoch",
-                    epoch, validation_tree_artifact_path
+                    "Epoch {}: no validation trials were available for scoring",
+                    epoch
                 ));
                 continue;
             }
-            if !Path::new(&validation_tree_judgment_path).exists() {
-                log_warning(format!(
-                    "Epoch {}: validation tree judgments are missing at {}; skipping score phase for this epoch",
-                    epoch, validation_tree_judgment_path
-                ));
-                continue;
-            }
-            let accuracy_stats = get_accuracy_from_tree_judgments_at_path::<M, Validation>(
-                &validation_tree_artifact_path,
-                &validation_tree_judgment_path,
-                "Validation accuracy (one-shot)",
-            )
-            .await;
             if let Some(accuracies) = accuracy_stats.accuracy_tuple() {
                 validation_accuracies.insert(epoch, accuracies);
                 log_key_value_pair(
@@ -452,8 +604,8 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
                     accuracies.2.to_string(),
                 );
                 log_info(format!(
-                    "Epoch {}: Validation accuracy (avg={:.6}, deepmath={:.6}, math={:.6}, numinamath={:.6})",
-                    epoch, accuracies.0, accuracies.1, accuracies.2, accuracies.3,
+                    "Epoch {}: Validation accuracy across {} trial(s) (avg={:.6}, deepmath={:.6}, math={:.6}, numinamath={:.6})",
+                    epoch, scored_trials, accuracies.0, accuracies.1, accuracies.2, accuracies.3,
                 ));
             } else {
                 log_warning(format!(
@@ -463,16 +615,32 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
             }
         }
 
-        if Path::new(&validation_action_log_path).exists() {
-            match std::fs::remove_dir_all(&validation_action_log_path) {
+        if Path::new(&legacy_validation_action_log_path).exists() {
+            match std::fs::remove_dir_all(&legacy_validation_action_log_path) {
                 Ok(()) => log_info(format!(
                     "Epoch {}: Cleaned up validation action logs at {}",
-                    epoch, validation_action_log_path
+                    epoch, legacy_validation_action_log_path
                 )),
                 Err(err) => log_warning(format!(
                     "Epoch {}: Failed to clean up validation action logs at {}: {}",
-                    epoch, validation_action_log_path, err
+                    epoch, legacy_validation_action_log_path, err
                 )),
+            }
+        }
+        for trial_index in 0..num_rollout_trials {
+            let trial_action_log_path =
+                validation_trial_action_log_path(&validation_tree_artifact_path, trial_index);
+            if Path::new(&trial_action_log_path).exists() {
+                match std::fs::remove_dir_all(&trial_action_log_path) {
+                    Ok(()) => log_info(format!(
+                        "Epoch {} trial {}: Cleaned up validation action logs at {}",
+                        epoch, trial_index, trial_action_log_path
+                    )),
+                    Err(err) => log_warning(format!(
+                        "Epoch {} trial {}: Failed to clean up validation action logs at {}: {}",
+                        epoch, trial_index, trial_action_log_path, err
+                    )),
+                }
             }
         }
 
@@ -517,6 +685,7 @@ async fn main() {
         config_path,
         phase,
         epoch_interval,
+        num_rollout_trials,
         login_smoke,
     } = CliArgs::parse();
     let config_contents = std::fs::read_to_string(&config_path)
@@ -527,6 +696,7 @@ async fn main() {
         use_tool,
         num_oneshot_epochs,
         validation_total_epochs,
+        validation_num_rollout_trials,
         validation_rollout_secs,
         num_gpus,
         inference_backend,
@@ -536,6 +706,9 @@ async fn main() {
     } = toml::from_str(&config_contents)
         .unwrap_or_else(|err| panic!("failed to parse config file '{}': {}", config_path, err));
     let validation_total_epochs = validation_total_epochs.unwrap_or(num_oneshot_epochs);
+    let validation_num_rollout_trials = num_rollout_trials
+        .or(validation_num_rollout_trials)
+        .unwrap_or(1);
 
     let process_title = format!(
         "oneshot_validation_{}_{}",
@@ -549,6 +722,10 @@ async fn main() {
         "validation_total_epochs/num_oneshot_epochs must be positive"
     );
     assert!(epoch_interval > 0, "--epoch-interval must be positive");
+    assert!(
+        validation_num_rollout_trials > 0,
+        "validation_num_rollout_trials must be positive"
+    );
     let validation_rollout_config: RolloutConfig<Validation> =
         read_json(credit_assignment::directories::VALIDATION_ROLLOUT_CONFIG_PATH).unwrap();
     let posterior_hyperparameters = read_json::<PosteriorHyperparameters>(
@@ -561,12 +738,13 @@ async fn main() {
     let model_name = LlmModelName::from_str(&model_cli_name, true).unwrap();
     if login_smoke {
         println!(
-            "login-smoke passed for bin_oneshot_validation: model={}, training_config={}, phase={:?}, validation_epochs={}, epoch_interval={}, requested_epochs={:?}, backend={:?}, num_gpus={}",
+            "login-smoke passed for bin_oneshot_validation: model={}, training_config={}, phase={:?}, validation_epochs={}, epoch_interval={}, num_rollout_trials={}, requested_epochs={:?}, backend={:?}, num_gpus={}",
             model_cli_name,
             config_nickname_training,
             phase,
             validation_total_epochs,
             epoch_interval,
+            validation_num_rollout_trials,
             requested_validation_epochs(validation_total_epochs, epoch_interval),
             inference_backend,
             num_gpus
@@ -624,6 +802,7 @@ async fn main() {
                 use_tool,
                 phase,
                 epoch_interval,
+                validation_num_rollout_trials,
             )
             .await
         }
@@ -643,6 +822,7 @@ async fn main() {
                 use_tool,
                 phase,
                 epoch_interval,
+                validation_num_rollout_trials,
             )
             .await
         }
@@ -662,6 +842,7 @@ async fn main() {
                 use_tool,
                 phase,
                 epoch_interval,
+                validation_num_rollout_trials,
             )
             .await
         }
@@ -681,6 +862,7 @@ async fn main() {
                 use_tool,
                 phase,
                 epoch_interval,
+                validation_num_rollout_trials,
             )
             .await
         }
@@ -700,6 +882,7 @@ async fn main() {
                 use_tool,
                 phase,
                 epoch_interval,
+                validation_num_rollout_trials,
             )
             .await
         }
@@ -719,6 +902,7 @@ async fn main() {
                 use_tool,
                 phase,
                 epoch_interval,
+                validation_num_rollout_trials,
             )
             .await
         }
@@ -738,6 +922,7 @@ async fn main() {
                 use_tool,
                 phase,
                 epoch_interval,
+                validation_num_rollout_trials,
             )
             .await
         }
@@ -757,6 +942,7 @@ async fn main() {
                 use_tool,
                 phase,
                 epoch_interval,
+                validation_num_rollout_trials,
             )
             .await
         }

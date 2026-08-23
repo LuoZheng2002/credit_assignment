@@ -72,6 +72,8 @@ struct Args {
     num_oneshot_epochs: usize,
     #[serde(default)]
     validation_total_epochs: Option<usize>,
+    #[serde(default)]
+    validation_num_rollout_trials: Option<usize>,
     validation_rollout_secs: usize,
     training_hyperparameters: TrainingHyperparameters,
     oneshot_per_epoch_training_time: f32,

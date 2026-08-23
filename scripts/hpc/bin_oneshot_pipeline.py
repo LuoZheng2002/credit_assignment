@@ -306,6 +306,16 @@ def main() -> int:
     )
     parser.add_argument("--judging-time", default=CPU_TIME_LIMIT)
     parser.add_argument(
+        "--branching-policy",
+        default=None,
+        help="Optional bin_oneshot_rollout --branching-policy override.",
+    )
+    parser.add_argument(
+        "--training-advantage-policy",
+        default=None,
+        help="Optional bin_oneshot_generation --training-advantage-policy override.",
+    )
+    parser.add_argument(
         "--include-training-chunk-validation",
         action="store_true",
         help="Schedule diagnostic training-chunk validation jobs. Future serious runs leave this off by default.",
@@ -317,6 +327,12 @@ def main() -> int:
         help="Validate held-out epoch 0 and trained epochs divisible by this interval.",
     )
     parser.add_argument(
+        "--validation-num-rollout-trials",
+        type=int,
+        default=None,
+        help="Override validation_num_rollout_trials from the validation config.",
+    )
+    parser.add_argument(
         "--login-smoke",
         action="store_true",
         help="Run login-node smoke checks for all composed binaries and submit nothing.",
@@ -324,6 +340,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.validation_epoch_interval <= 0:
         parser.error("--validation-epoch-interval must be positive")
+    if args.validation_num_rollout_trials is not None and args.validation_num_rollout_trials <= 0:
+        parser.error("--validation-num-rollout-trials must be positive")
 
     rollout_path = _resolve_config(args.rollout_config)
     generation_path = _resolve_config(args.generation_config)
@@ -333,9 +351,24 @@ def main() -> int:
     generation_config = _read_toml(generation_path)
     training_config = _read_toml(training_path)
     validation_config = _read_toml(validation_path)
+    rollout_extra_args = (
+        ["--branching-policy", args.branching_policy] if args.branching_policy else []
+    )
+    generation_extra_args = (
+        ["--training-advantage-policy", args.training_advantage_policy]
+        if args.training_advantage_policy
+        else []
+    )
 
     if args.login_smoke:
-        _run_login_smoke(_cargo_smoke("bin_oneshot_rollout", "--config-path", str(rollout_path)))
+        _run_login_smoke(
+            _cargo_smoke(
+                "bin_oneshot_rollout",
+                "--config-path",
+                str(rollout_path),
+                *rollout_extra_args,
+            )
+        )
         model_cli_name = _require_str(rollout_config, "model_cli_name")
         config_nickname_rollout = _require_str(rollout_config, "config_nickname_rollout")
         mount_dir = _require_str(rollout_config, "mount_dir")
@@ -379,7 +412,12 @@ def main() -> int:
             )
         )
         _run_login_smoke(
-            _cargo_smoke("bin_oneshot_generation", "--config-path", str(generation_path))
+            _cargo_smoke(
+                "bin_oneshot_generation",
+                "--config-path",
+                str(generation_path),
+                *generation_extra_args,
+            )
         )
         if _kl_beta(training_config) > 0.0:
             _run_login_smoke(
@@ -406,6 +444,11 @@ def main() -> int:
                 "rollout",
                 "--epoch-interval",
                 str(args.validation_epoch_interval),
+                *(
+                    ["--num-rollout-trials", str(args.validation_num_rollout_trials)]
+                    if args.validation_num_rollout_trials is not None
+                    else []
+                ),
             )
         )
         print("All login-smoke checks passed; no jobs submitted.")
@@ -423,7 +466,7 @@ def main() -> int:
         partition=None,
         request_gpu=True,
         dependency=None,
-        extra_script_args=None,
+        extra_script_args=rollout_extra_args,
     )
     jobs.append(rollout)
     judging = _submit_training_judging_job(
@@ -443,7 +486,7 @@ def main() -> int:
         partition="cpu",
         request_gpu=False,
         dependency=f"afterok:{judging.job_id}",
-        extra_script_args=None,
+        extra_script_args=generation_extra_args,
     )
     jobs.append(generation)
     training_dependency_job_id = generation.job_id
@@ -539,6 +582,11 @@ def main() -> int:
             "rollout",
             "--epoch-interval",
             str(args.validation_epoch_interval),
+            *(
+                ["--num-rollout-trials", str(args.validation_num_rollout_trials)]
+                if args.validation_num_rollout_trials is not None
+                else []
+            ),
         ],
     )
     jobs.append(validation_rollout)
@@ -558,6 +606,11 @@ def main() -> int:
             "judge",
             "--epoch-interval",
             str(args.validation_epoch_interval),
+            *(
+                ["--num-rollout-trials", str(args.validation_num_rollout_trials)]
+                if args.validation_num_rollout_trials is not None
+                else []
+            ),
         ],
     )
     jobs.append(validation_judge)
@@ -577,6 +630,11 @@ def main() -> int:
             "score",
             "--epoch-interval",
             str(args.validation_epoch_interval),
+            *(
+                ["--num-rollout-trials", str(args.validation_num_rollout_trials)]
+                if args.validation_num_rollout_trials is not None
+                else []
+            ),
         ],
     )
     jobs.append(validation_score)

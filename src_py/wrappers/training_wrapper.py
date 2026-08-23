@@ -252,6 +252,16 @@ def _training_request_json_path(checkpoints_parent_dir: str) -> Path:
     return checkpoints_root / "training_request.json"
 
 
+def _torchrun_master_port() -> str:
+    explicit_port = os.environ.get("TORCHRUN_MASTER_PORT")
+    if explicit_port:
+        return explicit_port
+    slurm_job_id = os.environ.get("SLURM_JOB_ID")
+    if slurm_job_id is not None and slurm_job_id.isdigit():
+        return str(20000 + int(slurm_job_id) % 20000)
+    return "29500"
+
+
 _TEXT_MESSAGE_KEYS = {"Line", "State", "WindowName", "KeyValuePair", "WorkerProgress",
                      "MasterProgress", "DeleteWorkerBar", "ExitHint"}
 
@@ -347,6 +357,8 @@ def _run_hpc_training(
             "torchrun",
             "--nproc_per_node",
             str(stdin_data.num_gpus),
+            "--master-port",
+            _torchrun_master_port(),
             "-m",
             "src_py.train.main",
             *model_to_cli_args(train_process_launch_args),

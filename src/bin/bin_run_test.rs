@@ -13,7 +13,7 @@ use credit_assignment::{
         text_logger_summary_path, text_logger_verbose_path, tree_artifacts_oneshot_path,
         tree_judgments_oneshot_path,
     },
-    get_accuracy::{TestAccuracyResult, get_test_accuracies_from_tree_judgments_at_path},
+    get_accuracy::TestAccuracyResult,
     hybrid_dataset::{DatasetSplit, Testing},
     json_toml_utils::{read_json, write_json},
     launch_inference_wrapper::{
@@ -64,8 +64,6 @@ struct Args {
 enum TestingPhase {
     All,
     Rollout,
-    Judge,
-    Score,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -323,6 +321,7 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
                 client,
                 inference_endpoint,
                 rollout_secs: args.rollout_secs,
+                finish_all_questions: false,
                 total_epochs: testing_config.total_epochs,
                 action_log_store_paths,
                 tree_artifact_output_paths,
@@ -360,64 +359,7 @@ async fn run_rollout_and_compute_accuracy<M: LlmModelMarker>(
         }
     }
 
-    if matches!(args.phase, TestingPhase::All | TestingPhase::Judge) {
-        let trial_indices: Vec<usize> = if use_explicit_trial_dirs {
-            (0..num_rollout_trials).collect()
-        } else {
-            vec![0]
-        };
-        for trial_index in trial_indices {
-            let artifact_path = if use_explicit_trial_dirs {
-                testing_trial_tree_artifact_path(&tree_artifact_output_path, trial_index)
-            } else {
-                tree_artifact_output_path.clone()
-            };
-            let judgment_path = if use_explicit_trial_dirs {
-                testing_trial_tree_judgment_path(&tree_judgment_jsonl_path, trial_index)
-            } else {
-                tree_judgment_jsonl_path.clone()
-            };
-            judge_testing_tree_artifacts::<M>(
-                &artifact_path,
-                &judgment_path,
-                &testing_config.mount_dir,
-                M::CLI_NAME,
-                &testing_config.config_nickname,
-                testing_config.epoch,
-            )
-            .await;
-        }
-    }
-
-    if matches!(args.phase, TestingPhase::All | TestingPhase::Score) {
-        if use_explicit_trial_dirs {
-            let mut results = Vec::new();
-            for trial_index in 0..num_rollout_trials {
-                results.push(
-                    get_test_accuracies_from_tree_judgments_at_path::<M, Testing>(
-                        &testing_trial_tree_artifact_path(&tree_artifact_output_path, trial_index),
-                        &testing_trial_tree_judgment_path(&tree_judgment_jsonl_path, trial_index),
-                        "Test accuracy",
-                        rollout_config.num_trunks,
-                    )
-                    .await,
-                );
-            }
-            Some(merge_test_accuracy_results(results))
-        } else {
-            Some(
-                get_test_accuracies_from_tree_judgments_at_path::<M, Testing>(
-                    &tree_artifact_output_path,
-                    &tree_judgment_jsonl_path,
-                    "Test accuracy",
-                    rollout_config.num_trunks,
-                )
-                .await,
-            )
-        }
-    } else {
-        None
-    }
+    None
 }
 
 async fn run_rollout_and_compute_accuracy_with_server<M: LlmModelMarker>(

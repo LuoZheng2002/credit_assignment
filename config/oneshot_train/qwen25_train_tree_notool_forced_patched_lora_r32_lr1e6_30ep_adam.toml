@@ -1,0 +1,36 @@
+model_cli_name = "qwen25"
+config_nickname_training = "tree_notool_forced_patched_lora_r32_lr1e6_30ep_adam_training"
+config_nickname_generation = "tree_notool_forced_patched_generation_30chunk"
+use_tool = false
+num_oneshot_epochs = 50
+validation_total_epochs = 50
+validation_num_rollout_trials = 6
+validation_rollout_secs = 600
+oneshot_per_epoch_training_time = 900.0
+num_iterations_limit = 3
+num_gpus = 1
+inference_backend = "vllm"
+training_trajectory_len_cutoff = 4096
+training_set_sort_mode = "ByQuestion"
+total_time_limit_hours = 6.0
+mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
+generation_mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
+
+[training_hyperparameters]
+lora_or_full = "lora"
+distributed_strategy = "single_gpu"
+advantage_clip = 3.0
+learning_rate = 1e-06
+weight_decay = 0.01
+use_adam_state = true
+use_lr_warmup = true
+grad_accum_steps = 16
+log_time_interval = 30
+seed = 42
+adam_beta1 = 0.9
+adam_beta2 = 0.95
+lr_warmup_steps = 100
+lora_rank = 32
+lora_alpha = 64
+lora_dropout = 0.05
+lora_save_mode = "adapter"

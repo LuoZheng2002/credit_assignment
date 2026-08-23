@@ -31,6 +31,7 @@ pub mod tree_action_log;
 pub mod tree_advantage;
 pub mod tree_artifact;
 pub mod tree_from_action;
+pub mod tree_judge_score;
 pub mod tree_posterior;
 pub mod tree_spontaneous_branching;
 pub mod tree_status;

@@ -10,3 +10,6 @@ mount_dir = "/work/hdd/bhph/zluo8/credit_assignment/results"
 num_gpus = 1
 inference_backend = "vllm"
 total_time_limit_hours = 2.5
+force_selected_branch_token = true
+num_questions_per_chunk = 63
+num_chunks = 5

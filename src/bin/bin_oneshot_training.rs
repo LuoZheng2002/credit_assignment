@@ -3,7 +3,7 @@ use std::path::Path;
 
 use clap::{Parser, ValueEnum};
 use proctitle::set_title;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
 use credit_assignment::{
@@ -54,6 +54,8 @@ struct Args {
     num_oneshot_epochs: usize,
     #[serde(default)]
     validation_total_epochs: Option<usize>,
+    #[serde(default)]
+    validation_num_rollout_trials: Option<usize>,
     validation_rollout_secs: usize,
     training_hyperparameters: TrainingHyperparameters,
     oneshot_per_epoch_training_time: f32,
@@ -69,8 +71,102 @@ struct Args {
     generation_mount_dir: String,
 }
 
+#[derive(Serialize)]
+struct TrainingMetadata {
+    schema_version: u32,
+    stage: String,
+    model_cli_name: String,
+    config_nickname_training: String,
+    config_nickname_generation: String,
+    generation_mount_dir: String,
+    mount_dir: String,
+    num_oneshot_epochs: usize,
+    start_epoch_attempted: usize,
+    trajectories_dir: String,
+    model_output_root: String,
+    training_summary_parent_dir: String,
+    training_wrapper_log_path: String,
+    training_hyperparameters: TrainingHyperparameters,
+    num_iterations_limit: usize,
+    training_trajectory_len_cutoff: usize,
+    training_set_sort_mode: String,
+    per_epoch_training_time: f32,
+    training_throughputs: std::collections::BTreeMap<usize, f32>,
+    training_samples_trained: std::collections::BTreeMap<usize, usize>,
+    training_iterations_trained_cumulative: std::collections::BTreeMap<usize, f32>,
+    training_longest_non_oom_trajectory_lengths: std::collections::BTreeMap<usize, usize>,
+}
+
 fn default_training_set_sort_mode() -> TrainingSetSortMode {
     TrainingSetSortMode::ByQuestion
+}
+
+fn write_training_metadata(
+    model_cli_name: &str,
+    config_nickname_training: &str,
+    config_nickname_generation: &str,
+    generation_mount_dir: &str,
+    mount_dir: &str,
+    num_oneshot_epochs: usize,
+    start_epoch_attempted: usize,
+    trajectories_dir: &str,
+    model_output_root: &str,
+    training_summary_parent_dir: &str,
+    training_wrapper_log_path: &str,
+    training_hyperparameters: &TrainingHyperparameters,
+    num_iterations_limit: usize,
+    training_trajectory_len_cutoff: usize,
+    training_set_sort_mode: TrainingSetSortMode,
+    per_epoch_training_time: f32,
+) {
+    let training_epoch_stats =
+        read_oneshot_training_epoch_stats(model_output_root, num_oneshot_epochs);
+    let metadata = TrainingMetadata {
+        schema_version: 1,
+        stage: "oneshot_training".to_string(),
+        model_cli_name: model_cli_name.to_string(),
+        config_nickname_training: config_nickname_training.to_string(),
+        config_nickname_generation: config_nickname_generation.to_string(),
+        generation_mount_dir: generation_mount_dir.to_string(),
+        mount_dir: mount_dir.to_string(),
+        num_oneshot_epochs,
+        start_epoch_attempted,
+        trajectories_dir: trajectories_dir.to_string(),
+        model_output_root: model_output_root.to_string(),
+        training_summary_parent_dir: training_summary_parent_dir.to_string(),
+        training_wrapper_log_path: training_wrapper_log_path.to_string(),
+        training_hyperparameters: training_hyperparameters.clone(),
+        num_iterations_limit,
+        training_trajectory_len_cutoff,
+        training_set_sort_mode: format!("{:?}", training_set_sort_mode),
+        per_epoch_training_time,
+        training_throughputs: training_epoch_stats.throughputs,
+        training_samples_trained: training_epoch_stats.samples_trained,
+        training_iterations_trained_cumulative: training_epoch_stats.iterations_trained_cumulative,
+        training_longest_non_oom_trajectory_lengths: training_epoch_stats
+            .longest_non_oom_trajectory_lengths,
+    };
+    let metadata_path =
+        Path::new(training_summary_parent_dir).join("oneshot_training_metadata.json");
+    std::fs::create_dir_all(training_summary_parent_dir).unwrap_or_else(|err| {
+        panic!(
+            "failed to create training metadata directory {}: {}",
+            training_summary_parent_dir, err
+        )
+    });
+    let json = serde_json::to_string_pretty(&metadata)
+        .unwrap_or_else(|err| panic!("failed to serialize training metadata: {}", err));
+    std::fs::write(&metadata_path, json).unwrap_or_else(|err| {
+        panic!(
+            "failed to write training metadata to {}: {}",
+            metadata_path.display(),
+            err
+        )
+    });
+    log_info(format!(
+        "Wrote one-shot training metadata to {}",
+        metadata_path.display()
+    ));
 }
 
 async fn run_oneshot_training<M: LlmModelMarker>(
@@ -190,6 +286,24 @@ async fn run_oneshot_training<M: LlmModelMarker>(
                 "Recorded per-epoch training stats for {} oneshot epoch(s)",
                 training_epoch_stats.throughputs.len()
             ));
+            write_training_metadata(
+                model_cli_name,
+                config_nickname_training,
+                config_nickname_generation,
+                generation_mount_dir,
+                mount_dir,
+                num_oneshot_epochs,
+                start_epoch,
+                &oneshot_trajectories_dir,
+                &oneshot_model_output_root,
+                &oneshot_training_summary_parent_dir,
+                training_wrapper_log_path,
+                &training_hyperparameters,
+                num_iterations_limit,
+                training_trajectory_len_cutoff,
+                training_set_sort_mode,
+                oneshot_per_epoch_training_time,
+            );
             log_state("One-shot training completed");
             return;
         }
@@ -321,6 +435,24 @@ async fn run_oneshot_training<M: LlmModelMarker>(
         "Recorded per-epoch training stats for {} oneshot epoch(s)",
         training_epoch_stats.throughputs.len()
     ));
+    write_training_metadata(
+        model_cli_name,
+        config_nickname_training,
+        config_nickname_generation,
+        generation_mount_dir,
+        mount_dir,
+        num_oneshot_epochs,
+        start_epoch,
+        &oneshot_trajectories_dir,
+        &oneshot_model_output_root,
+        &oneshot_training_summary_parent_dir,
+        training_wrapper_log_path,
+        &training_hyperparameters,
+        num_iterations_limit,
+        training_trajectory_len_cutoff,
+        training_set_sort_mode,
+        oneshot_per_epoch_training_time,
+    );
     log_state("One-shot training completed");
 }
 

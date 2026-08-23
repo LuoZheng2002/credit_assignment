@@ -23,7 +23,7 @@ pub const DEFAULT_CACHE_VERSION: &str = "judgment-cache-v1";
 
 const PHASE_1_MODELS: [&str; 3] = [
     "deepseek/deepseek-v4-flash",
-    "qwen/qwen3-32b",
+    "openai/gpt-5-nano",
     "google/gemini-2.5-flash-lite",
 ];
 const PHASE_2_MODELS: [&str; 2] = ["deepseek/deepseek-v4-pro", "openai/gpt-4.1-mini"];
@@ -81,6 +81,62 @@ pub struct JudgingOutputRecord {
     pub is_correct: bool,
     pub decision_phase: String,
     pub cache_hit: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub judge_outputs: Vec<JudgeModelOutput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CorrectnessBreakdown {
+    pub total: usize,
+    pub correct: usize,
+    pub incorrect: usize,
+    pub correct_ratio: f64,
+}
+
+impl CorrectnessBreakdown {
+    fn record(&mut self, is_correct: bool) {
+        self.total += 1;
+        if is_correct {
+            self.correct += 1;
+        } else {
+            self.incorrect += 1;
+        }
+        self.correct_ratio = if self.total == 0 {
+            0.0
+        } else {
+            self.correct as f64 / self.total as f64
+        };
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JudgingMetadataSample {
+    pub split: String,
+    pub flat_id: usize,
+    pub artifact_id: Option<String>,
+    pub question: String,
+    pub model_answer: String,
+    pub correct_answer: String,
+    pub cache_hit: bool,
+    pub decision_phase: String,
+    pub final_verdict: bool,
+    pub judge_outputs: Vec<JudgeModelOutput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JudgingMetadata {
+    pub schema_version: u32,
+    pub stage: String,
+    pub judging_output_jsonl_path: String,
+    pub summary: JudgingSummary,
+    pub total_answers_judged: usize,
+    pub exact_match_answers: usize,
+    pub cache_hits: usize,
+    pub cache_misses: usize,
+    pub cache_hit_correctness: CorrectnessBreakdown,
+    pub cache_miss_correctness: CorrectnessBreakdown,
+    pub overall_correctness: CorrectnessBreakdown,
+    pub samples: Vec<JudgingMetadataSample>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -204,6 +260,33 @@ Do not solve the original problem from scratch. Compare only the model answer ag
     )
 }
 
+fn extract_first_line_boxed_verdict(response: &str) -> Result<bool, String> {
+    let first_line = response
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .ok_or_else(|| "empty judge response".to_string())?;
+    match first_line {
+        "\\boxed{correct}" => Ok(true),
+        "\\boxed{incorrect}" => Ok(false),
+        _ => {
+            let Some(verdict) = extract_boxed_verdict(response) else {
+                return Err(format!(
+                    "first non-empty line was not exactly \\boxed{{correct}} or \\boxed{{incorrect}} and no boxed fallback was found: {first_line}"
+                ));
+            };
+            let verdict_lower = verdict.to_ascii_lowercase();
+            match verdict_lower.trim() {
+                "correct" => Ok(true),
+                "incorrect" => Ok(false),
+                _ => Err(format!(
+                    "first non-empty line was not exactly \\boxed{{correct}} or \\boxed{{incorrect}}, and boxed fallback was not a verdict: first_line={first_line}; boxed_fallback={verdict}"
+                )),
+            }
+        }
+    }
+}
+
 async fn judge_with_model(
     client: &Client,
     model: &str,
@@ -216,50 +299,68 @@ async fn judge_with_model(
         prompt.push_str("\n/no_think");
     }
     let mut last_error = None;
+    let mut attempt_debug = Vec::new();
     for attempt in 0..JUDGE_ATTEMPTS {
         let temperature = if attempt == 0 { 0.0 } else { 0.7 };
         let thinking_enabled = model == PHASE_3_MODEL;
+        let prompt_for_attempt = if attempt == 0 {
+            prompt.clone()
+        } else {
+            format!(
+                "{prompt}\n\nYour previous response was invalid because it did not start with the required boxed verdict. \
+Return only a valid judgment. The first line must be exactly \\boxed{{correct}} or \\boxed{{incorrect}}."
+            )
+        };
         match fetch_judge_evaluation_for_model(
             client,
             model,
-            &prompt,
+            &prompt_for_attempt,
             temperature,
             thinking_enabled,
         )
         .await
         {
-            Ok((raw_output, reasoning)) => {
-                if let Some(verdict) = extract_boxed_verdict(&raw_output) {
-                    let verdict_lower = verdict.to_lowercase();
-                    if verdict_lower.contains("incorrect") {
-                        return Ok(JudgeModelOutput {
-                            model: model.to_string(),
-                            verdict: false,
-                            raw_output,
-                            reasoning,
-                        });
-                    }
-                    if verdict_lower.contains("correct") {
-                        return Ok(JudgeModelOutput {
-                            model: model.to_string(),
-                            verdict: true,
-                            raw_output,
-                            reasoning,
-                        });
-                    }
-                    last_error = Some(format!(
-                        "boxed verdict was neither correct nor incorrect: {verdict}"
-                    ));
-                } else {
-                    last_error = Some(format!("missing boxed verdict in response: {raw_output}"));
+            Ok((raw_output, reasoning)) => match extract_first_line_boxed_verdict(&raw_output) {
+                Ok(false) => {
+                    return Ok(JudgeModelOutput {
+                        model: model.to_string(),
+                        verdict: false,
+                        raw_output,
+                        reasoning,
+                    });
                 }
-            }
+                Ok(true) => {
+                    return Ok(JudgeModelOutput {
+                        model: model.to_string(),
+                        verdict: true,
+                        raw_output,
+                        reasoning,
+                    });
+                }
+                Err(error) => {
+                    last_error = Some(error.clone());
+                    attempt_debug.push(format!(
+                        "attempt={} temperature={} verdict_error={} raw_output={:?} reasoning={:?}",
+                        attempt + 1,
+                        temperature,
+                        error,
+                        raw_output,
+                        reasoning
+                    ));
+                }
+            },
             Err(error) => {
                 if is_fatal_judging_error(&error) {
                     return Err(format!(
                         "fatal judging API error from model {model}; aborting without caching a verdict: {error}"
                     ));
                 }
+                attempt_debug.push(format!(
+                    "attempt={} temperature={} api_error={:?}",
+                    attempt + 1,
+                    temperature,
+                    error
+                ));
                 last_error = Some(error);
             }
         }
@@ -269,7 +370,8 @@ async fn judge_with_model(
     }
     let error = last_error.unwrap_or_else(|| "unknown error".to_string());
     Err(format!(
-        "judge model {model} failed after {JUDGE_ATTEMPTS} attempts; aborting without caching a verdict: {error}"
+        "judge model {model} failed after {JUDGE_ATTEMPTS} attempts; aborting without caching a verdict: {error}\nquestion={question:?}\nmodel_answer={model_answer:?}\ncorrect_answer={correct_answer:?}\nbase_prompt={prompt:?}\nattempt_debug=[\n{}\n]",
+        attempt_debug.join("\n")
     ))
 }
 
@@ -721,6 +823,71 @@ pub fn read_judging_outputs(path: &Path) -> Result<Vec<JudgingOutputRecord>, Str
     Ok(outputs)
 }
 
+fn deterministic_sample_score(output: &JudgingOutputRecord) -> u64 {
+    let mut hash = 1469598103934665603_u64;
+    for byte in format!(
+        "{}:{}:{}",
+        output.request.split, output.request.flat_id, output.request.model_answer
+    )
+    .bytes()
+    {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    hash
+}
+
+pub fn build_judging_metadata(
+    stage: impl Into<String>,
+    judging_output_jsonl_path: &Path,
+    summary: JudgingSummary,
+) -> Result<JudgingMetadata, String> {
+    let outputs = read_judging_outputs(judging_output_jsonl_path)?;
+    let mut cache_hit_correctness = CorrectnessBreakdown::default();
+    let mut cache_miss_correctness = CorrectnessBreakdown::default();
+    let mut overall_correctness = CorrectnessBreakdown::default();
+    for output in &outputs {
+        overall_correctness.record(output.is_correct);
+        if output.cache_hit {
+            cache_hit_correctness.record(output.is_correct);
+        } else {
+            cache_miss_correctness.record(output.is_correct);
+        }
+    }
+    let mut sampled = outputs;
+    sampled.sort_by_key(deterministic_sample_score);
+    let samples = sampled
+        .into_iter()
+        .take(10)
+        .map(|output| JudgingMetadataSample {
+            split: output.request.split,
+            flat_id: output.request.flat_id,
+            artifact_id: output.request.artifact_id,
+            question: output.request.question,
+            model_answer: output.request.model_answer,
+            correct_answer: output.request.correct_answer,
+            cache_hit: output.cache_hit,
+            decision_phase: output.decision_phase,
+            final_verdict: output.is_correct,
+            judge_outputs: output.judge_outputs,
+        })
+        .collect();
+    Ok(JudgingMetadata {
+        schema_version: 1,
+        stage: stage.into(),
+        judging_output_jsonl_path: judging_output_jsonl_path.display().to_string(),
+        total_answers_judged: summary.total_requests,
+        exact_match_answers: summary.exact_matches,
+        cache_hits: summary.cache_hits,
+        cache_misses: summary.newly_judged,
+        summary,
+        cache_hit_correctness,
+        cache_miss_correctness,
+        overall_correctness,
+        samples,
+    })
+}
+
 fn append_escalation_record(
     escalation_jsonl_path: &Path,
     request: &JudgingRequestRecord,
@@ -833,6 +1000,7 @@ pub async fn judge_requests(
                         is_correct: record.is_correct,
                         decision_phase: record.decision_phase.clone(),
                         cache_hit: true,
+                        judge_outputs: record.judge_outputs.clone(),
                     },
                 );
             } else {
@@ -903,6 +1071,7 @@ pub async fn judge_requests(
                         is_correct: record.is_correct,
                         decision_phase: record.decision_phase.clone(),
                         cache_hit: false,
+                        judge_outputs: record.judge_outputs.clone(),
                     },
                 );
             }

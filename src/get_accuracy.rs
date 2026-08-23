@@ -39,7 +39,7 @@ impl DatasetBucketStats {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccuracyStats {
     pub weighted_num_wins: f32,
     pub weighted_total_plays: f32,

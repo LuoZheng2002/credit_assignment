@@ -4,6 +4,7 @@ config_nickname_generation = "grpo_notool_generation"
 use_tool = false
 num_oneshot_epochs = 1
 validation_total_epochs = 1
+validation_num_rollout_trials = 3
 validation_rollout_secs = 60
 oneshot_per_epoch_training_time = 60.0
 num_iterations_limit = 1

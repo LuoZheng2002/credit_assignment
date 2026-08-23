@@ -8,8 +8,9 @@ use crate::{
     hybrid_dataset::{DatasetSplit, HybridDatasetQuestion},
     judge_correctness::CorrectnessJudgment,
     llm_model::LlmModelMarker,
+    llm_model::MyTokenizer,
     trajectory::FinalAnswer,
-    tree::{DirectTree, Segment, SegmentId},
+    tree::{DirectTree, Segment, SegmentContent, SegmentId},
 };
 
 pub const DIRECT_TREE_ARTIFACT_SCHEMA_VERSION: u32 = 1;
@@ -111,6 +112,71 @@ impl<M: LlmModelMarker, S: DatasetSplit> TreeArtifact<M, S> {
                 }),
             })
             .collect()
+    }
+
+    pub fn to_metadata_string(&self, max_chars: usize) -> String {
+        let mut output = String::new();
+        output.push_str(&format!(
+            "artifact_id={} split={} flat_id={} dataset={} question_id={} epoch={} use_tool={} segments={} leaves={}\n",
+            self.artifact_id,
+            S::dataset_file_postfix(),
+            self.question.flat_id.0,
+            self.question.dataset_name,
+            self.question.question_id,
+            self.epoch,
+            self.use_tool,
+            self.segments.len(),
+            self.leaf_answers.len()
+        ));
+        output.push_str("QUESTION:\n");
+        output.push_str(&self.question.question);
+        output.push_str("\nREFERENCE_ANSWER:\n");
+        output.push_str(&self.question.correct_answer);
+        output.push_str("\nLEAF_ANSWERS:\n");
+        for leaf in self.leaf_answers.iter().take(16) {
+            output.push_str(&format!(
+                "- segment={:?} answer={:?}\n",
+                leaf.leaf_segment_id, leaf.model_answer_string
+            ));
+        }
+        output.push_str("SEGMENTS:\n");
+        for segment in &self.segments {
+            output.push_str(&format!(
+                "- segment={:?} parent={:?} children={:?} token_length={}\n",
+                segment.segment_id,
+                segment.parent_id,
+                segment.child_ids,
+                segment.token_length()
+            ));
+            for (content_index, content) in segment.content.iter().enumerate() {
+                let label = match content {
+                    SegmentContent::Prompt(_) => "prompt",
+                    SegmentContent::ReasoningOrToolCall { complete, .. } => {
+                        if *complete {
+                            "reasoning_complete"
+                        } else {
+                            "reasoning_partial"
+                        }
+                    }
+                    SegmentContent::ToolResponse(_) => "tool_response",
+                };
+                let token_ids = content.tokens();
+                let text = M::Tokenizer::decode_i32_ids(&token_ids);
+                let snippet = text.chars().take(400).collect::<String>();
+                output.push_str(&format!(
+                    "  content={} kind={} tokens={} text={:?}\n",
+                    content_index,
+                    label,
+                    token_ids.len(),
+                    snippet
+                ));
+            }
+            if output.chars().count() >= max_chars {
+                output.push_str("...truncated...\n");
+                return output.chars().take(max_chars).collect();
+            }
+        }
+        output.chars().take(max_chars).collect()
     }
 }
 

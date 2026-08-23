@@ -1,8 +1,8 @@
-use std::backtrace::Backtrace;
+use std::{backtrace::Backtrace, path::Path};
 
 use clap::{Parser, ValueEnum};
 use proctitle::set_title;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use credit_assignment::{
     check_python_env::check_sympy_availability,
@@ -14,12 +14,16 @@ use credit_assignment::{
     hybrid_dataset::Training,
     json_toml_utils::read_json,
     llm_model::{
-        Gemma3_4BIt, Llama31_8BInstruct, LlmModelName, Mistral7BInstructV03, Qwen3_4B, Qwen3_06B,
-        Qwen25_7B, Qwen35_4B, Qwen35_08B,
+        Gemma3_4BIt, Llama31_8BInstruct, LlmModelMarker, LlmModelName, Mistral7BInstructV03,
+        MyTokenizer, Qwen3_4B, Qwen3_06B, Qwen25_7B, Qwen35_4B, Qwen35_08B,
     },
     posterior_calculation_config::{PosteriorCalculationConfig, PosteriorHyperparameters},
     rollout_config::{RolloutConfig, TrainingAdvantagePolicy},
-    training_set::{TrainingSetSortMode, tree_judgments_to_training_trajectories},
+    training_set::{
+        TrainingSetSortMode, open_training_trajectories_file,
+        tree_judgments_to_training_trajectories,
+    },
+    tree_artifact::read_marked_tree_artifact_chunks,
     utils::configure_mount_dir,
 };
 use research_utility::progress_text_logger::ProgressTextLogger;
@@ -28,6 +32,8 @@ use research_utility::progress_text_logger::ProgressTextLogger;
 struct CliArgs {
     #[arg(short = 'c', long)]
     config_path: String,
+    #[arg(long, value_enum)]
+    training_advantage_policy: Option<TrainingAdvantagePolicy>,
     #[arg(long)]
     positive_advantage_only: Option<bool>,
     #[arg(long, default_value_t = false)]
@@ -57,6 +63,115 @@ struct Args {
     num_questions_per_chunk: Option<usize>,
     #[serde(default)]
     num_chunks: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct GenerationMetadata {
+    schema_version: u32,
+    stage: String,
+    model_cli_name: String,
+    config_nickname_rollout: String,
+    config_nickname_generation: String,
+    tree_artifacts_path: String,
+    tree_judgment_jsonl_path: String,
+    trajectories_msgpack_path: String,
+    stats_path: String,
+    training_advantage_policy: String,
+    training_advantage_policy_abbreviation: String,
+    num_tree_examples: usize,
+    tree_examples: Vec<String>,
+    num_trajectory_examples: usize,
+    trajectory_examples: Vec<String>,
+}
+
+fn training_trajectory_to_metadata_string<M: LlmModelMarker>(
+    trajectory: &credit_assignment::training_set::DirectTrainingTrajectory<M>,
+    max_chars: usize,
+) -> String {
+    let supervised_tokens = trajectory
+        .labels
+        .iter()
+        .filter(|label| **label != -100)
+        .count();
+    let mut output = format!(
+        "flat_id={} dataset={} question_id={} leaf_segment={:?} tokens={} supervised_tokens={} avg_abs_advantage={}\nQUESTION:\n{}\nDECODED_TRAJECTORY:\n",
+        trajectory.question.flat_id.0,
+        trajectory.question.dataset_name,
+        trajectory.question.question_id,
+        trajectory.leaf_segment_id,
+        trajectory.input_ids.len(),
+        supervised_tokens,
+        trajectory.average_absolute_segment_advantage,
+        trajectory.question.question
+    );
+    let decoded = M::Tokenizer::decode_i32_ids(&trajectory.input_ids);
+    output.push_str(&decoded);
+    output.chars().take(max_chars).collect()
+}
+
+fn write_generation_metadata<M: LlmModelMarker>(
+    args: &Args,
+    tree_artifacts_msgpack_path: &str,
+    tree_judgment_jsonl_path: &str,
+    trajectories_msgpack_path: &str,
+    stats_path: &str,
+) {
+    let tree_examples =
+        read_marked_tree_artifact_chunks::<M, Training>(tree_artifacts_msgpack_path)
+            .unwrap_or_else(|err| {
+                panic!("failed to read tree examples for generation metadata: {err}")
+            })
+            .into_iter()
+            .take(10)
+            .map(|artifact| artifact.to_metadata_string(12_000))
+            .collect::<Vec<_>>();
+    let trajectory_examples = if Path::new(trajectories_msgpack_path).exists() {
+        open_training_trajectories_file::<M>(trajectories_msgpack_path)
+            .into_iter()
+            .take(10)
+            .map(|trajectory| training_trajectory_to_metadata_string::<M>(&trajectory, 12_000))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let metadata = GenerationMetadata {
+        schema_version: 1,
+        stage: "oneshot_generation".to_string(),
+        model_cli_name: args.model_cli_name.clone(),
+        config_nickname_rollout: args.config_nickname_rollout.clone(),
+        config_nickname_generation: args.config_nickname_generation.clone(),
+        tree_artifacts_path: tree_artifacts_msgpack_path.to_string(),
+        tree_judgment_jsonl_path: tree_judgment_jsonl_path.to_string(),
+        trajectories_msgpack_path: trajectories_msgpack_path.to_string(),
+        stats_path: stats_path.to_string(),
+        training_advantage_policy: args.training_advantage_policy.display_name().to_string(),
+        training_advantage_policy_abbreviation: args
+            .training_advantage_policy
+            .abbreviation()
+            .to_string(),
+        num_tree_examples: tree_examples.len(),
+        num_trajectory_examples: trajectory_examples.len(),
+        tree_examples,
+        trajectory_examples,
+    };
+    let metadata_path = Path::new(stats_path).with_file_name("oneshot_generation_metadata.json");
+    if let Some(parent) = metadata_path.parent() {
+        std::fs::create_dir_all(parent).unwrap_or_else(|err| {
+            panic!(
+                "failed to create generation metadata directory {}: {err}",
+                parent.display()
+            )
+        });
+    }
+    let json = serde_json::to_string_pretty(&metadata)
+        .unwrap_or_else(|err| panic!("failed to serialize generation metadata: {err}"));
+    std::fs::write(&metadata_path, json).unwrap_or_else(|err| {
+        panic!(
+            "failed to write generation metadata {}: {err}",
+            metadata_path.display()
+        )
+    });
+    println!("Generation metadata written to {}", metadata_path.display());
 }
 
 macro_rules! generate_trajectories {
@@ -148,6 +263,7 @@ async fn main() {
     dotenvy::dotenv().ok();
     let CliArgs {
         config_path,
+        training_advantage_policy,
         positive_advantage_only,
         login_smoke,
     } = CliArgs::parse();
@@ -155,6 +271,9 @@ async fn main() {
         .unwrap_or_else(|err| panic!("failed to read config file '{}': {}", config_path, err));
     let mut args: Args = toml::from_str(&config_contents)
         .unwrap_or_else(|err| panic!("failed to parse config file '{}': {}", config_path, err));
+    if let Some(training_advantage_policy) = training_advantage_policy {
+        args.training_advantage_policy = training_advantage_policy;
+    }
     if let Some(positive_advantage_only) = positive_advantage_only {
         args.positive_advantage_only = positive_advantage_only;
     }
@@ -260,6 +379,64 @@ async fn main() {
         "Training trajectories generated at {}",
         trajectories_msgpack_path
     );
+    match model_name {
+        LlmModelName::Qwen25_7b => write_generation_metadata::<Qwen25_7B>(
+            &args,
+            &tree_artifacts_msgpack_path,
+            &tree_judgment_jsonl_path,
+            &trajectories_msgpack_path,
+            &stats_path,
+        ),
+        LlmModelName::Qwen3_06b => write_generation_metadata::<Qwen3_06B>(
+            &args,
+            &tree_artifacts_msgpack_path,
+            &tree_judgment_jsonl_path,
+            &trajectories_msgpack_path,
+            &stats_path,
+        ),
+        LlmModelName::Qwen3_4b => write_generation_metadata::<Qwen3_4B>(
+            &args,
+            &tree_artifacts_msgpack_path,
+            &tree_judgment_jsonl_path,
+            &trajectories_msgpack_path,
+            &stats_path,
+        ),
+        LlmModelName::Qwen35_4b => write_generation_metadata::<Qwen35_4B>(
+            &args,
+            &tree_artifacts_msgpack_path,
+            &tree_judgment_jsonl_path,
+            &trajectories_msgpack_path,
+            &stats_path,
+        ),
+        LlmModelName::Qwen35_08b => write_generation_metadata::<Qwen35_08B>(
+            &args,
+            &tree_artifacts_msgpack_path,
+            &tree_judgment_jsonl_path,
+            &trajectories_msgpack_path,
+            &stats_path,
+        ),
+        LlmModelName::Gemma3_4b => write_generation_metadata::<Gemma3_4BIt>(
+            &args,
+            &tree_artifacts_msgpack_path,
+            &tree_judgment_jsonl_path,
+            &trajectories_msgpack_path,
+            &stats_path,
+        ),
+        LlmModelName::Llama31_8b => write_generation_metadata::<Llama31_8BInstruct>(
+            &args,
+            &tree_artifacts_msgpack_path,
+            &tree_judgment_jsonl_path,
+            &trajectories_msgpack_path,
+            &stats_path,
+        ),
+        LlmModelName::Mistral7bInstructV03 => write_generation_metadata::<Mistral7BInstructV03>(
+            &args,
+            &tree_artifacts_msgpack_path,
+            &tree_judgment_jsonl_path,
+            &trajectories_msgpack_path,
+            &stats_path,
+        ),
+    }
 
     ProgressTextLogger::shutdown().await.unwrap();
 }
