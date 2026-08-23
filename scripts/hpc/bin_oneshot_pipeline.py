@@ -311,6 +311,11 @@ def main() -> int:
         help="Optional bin_oneshot_rollout --branching-policy override.",
     )
     parser.add_argument(
+        "--force-selected-branch-token",
+        action="store_true",
+        help="Pass bin_oneshot_rollout --force-selected-branch-token explicitly.",
+    )
+    parser.add_argument(
         "--training-advantage-policy",
         default=None,
         help="Optional bin_oneshot_generation --training-advantage-policy override.",
@@ -351,9 +356,11 @@ def main() -> int:
     generation_config = _read_toml(generation_path)
     training_config = _read_toml(training_path)
     validation_config = _read_toml(validation_path)
-    rollout_extra_args = (
-        ["--branching-policy", args.branching_policy] if args.branching_policy else []
-    )
+    rollout_extra_args = []
+    if args.branching_policy:
+        rollout_extra_args.extend(["--branching-policy", args.branching_policy])
+    if args.force_selected_branch_token:
+        rollout_extra_args.append("--force-selected-branch-token")
     generation_extra_args = (
         ["--training-advantage-policy", args.training_advantage_policy]
         if args.training_advantage_policy

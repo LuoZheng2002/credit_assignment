@@ -755,7 +755,7 @@ All paper-facing experiments should be extended to 50 epochs when the required r
 
 1. Extend already-rollout-complete core comparisons first, because they only require training resume plus held-out validation.
    - Qwen2.5 tool GRPO: extend `grpo_tool_10chunk_lora_r32_lr1e6_adam_50ep_training` from 40 to 50 epochs.
-   - Qwen2.5 tool TreeMAPPO: extend `tree_tool_10chunk_lora_r32_lr1e6_adam_50ep_training` from 40 to 50 epochs.
+   - Qwen2.5 tool TreeMAPPO: rerun `tree_tool_10chunk_lora_r32_lr1e6_adam_50ep_training` from rollout with forced selected branch tokens explicitly enabled, because the previous 40-epoch artifacts predate the forced-token default and should not be extended as if they used the new mechanism.
 2. Extend strict forced-token TreeMAPPO variants next, because forced selected branch token is now the default mechanism.
 3. Extend ablation runs after the core comparisons, prioritizing TEMPO-style branching, TreeRPO-style credit, TreeRL-style branching, TreeRL-style credit, and TreeRL combined.
 4. Treat branch-budget runs as secondary until their forced-token 5-epoch pipelines finish and metadata confirms the generated trajectories look normal.
