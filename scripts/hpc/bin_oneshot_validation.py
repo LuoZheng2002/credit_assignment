@@ -77,7 +77,11 @@ def main() -> int:
     config_nickname = _require_str(config, "config_nickname_training")
     num_gpus = _require_positive_int(config, "num_gpus")
     total_time_limit_hours = _require_positive_number(config, "total_time_limit_hours")
-    slurm_time = _hours_to_slurm_time(total_time_limit_hours)
+    is_cpu_only_phase = args.phase in {"judge", "score"}
+    account = "bfsl-delta-cpu" if is_cpu_only_phase else "bfsl-delta-gpu"
+    cpus = 16 if is_cpu_only_phase else 32
+    memory = "16G" if is_cpu_only_phase else "32G"
+    slurm_time = "00:30:00" if is_cpu_only_phase else _hours_to_slurm_time(total_time_limit_hours)
     job_name = args.job_name or f"validation_{model_cli_name}_{config_nickname}"
 
     (_REPO_ROOT / "slurm" / "logs").mkdir(parents=True, exist_ok=True)
@@ -86,9 +90,14 @@ def main() -> int:
     print("Submitting SLURM job:")
     print(f"  Config:         {config_path}")
     print(f"  Job name:       {job_name}")
-    print(f"  Account/QOS:    bfsl-delta-gpu")
-    print(f"  GPUs:           {num_gpus}")
-    print(f"  Time limit:     {slurm_time} (raw: {total_time_limit_hours}h + 10% buffer)")
+    print(f"  Account/QOS:    {account}")
+    print(f"  GPUs:           {0 if is_cpu_only_phase else num_gpus}")
+    print(f"  CPUs:           {cpus}")
+    print(f"  Memory:         {memory}")
+    if is_cpu_only_phase:
+        print(f"  Time limit:     {slurm_time}")
+    else:
+        print(f"  Time limit:     {slurm_time} (raw: {total_time_limit_hours}h + 10% buffer)")
     print(f"  Phase:          {args.phase}")
     print(f"  Epoch interval: {args.epoch_interval}")
     if args.num_rollout_trials is not None:
@@ -104,16 +113,22 @@ def main() -> int:
         "--job-name",
         job_name,
         "--account",
-        "bfsl-delta-gpu",
+        account,
         "--output",
         "slurm/logs/validation_%j.out",
         "--error",
         "slurm/logs/validation_%j.err",
-        "--gres",
-        f"gpu:nvidia_a100:{num_gpus}",
+        "--cpus-per-task",
+        str(cpus),
+        "--mem",
+        memory,
         "--time",
         slurm_time,
     ]
+    if is_cpu_only_phase:
+        cmd.extend(["--partition", "cpu"])
+    else:
+        cmd.extend(["--gres", f"gpu:nvidia_a100:{num_gpus}"])
     if args.dependency:
         cmd.extend(["--dependency", args.dependency])
     cmd.extend(
