@@ -148,6 +148,12 @@ pub async fn get_accuracy_from_tree_judgments_at_path<M: LlmModelMarker, S: Data
         load_available_tree_judged_artifacts::<M, S>(tree_artifacts_path, tree_judgment_jsonl_path)
             .unwrap_or_else(|err| panic!("failed to load judged tree artifacts: {}", err));
     let num_keys = tree_judged_artifacts.len();
+    assert!(
+        num_keys > 0,
+        "No judged tree artifacts loaded from tree_artifacts_path={} tree_judgment_jsonl_path={}; refusing to report a zero accuracy for missing artifacts",
+        tree_artifacts_path,
+        tree_judgment_jsonl_path
+    );
     let mut weighted_num_wins = 0.0f32;
     let mut weighted_total_plays = 0.0f32;
     let mut num_trees_with_judgments = 0usize;
@@ -187,6 +193,12 @@ pub async fn get_accuracy_from_tree_judgments_at_path<M: LlmModelMarker, S: Data
         log_master_progress(progress, format!("{}: Calculating", progress_bar_label));
     }
     log_master_progress(1.0, format!("{}: Done", progress_bar_label));
+    assert!(
+        num_trees_with_judgments > 0,
+        "No trees with judgments were scored from tree_artifacts_path={} tree_judgment_jsonl_path={}; refusing to report a zero accuracy for missing judgments",
+        tree_artifacts_path,
+        tree_judgment_jsonl_path
+    );
 
     AccuracyStats {
         weighted_num_wins,

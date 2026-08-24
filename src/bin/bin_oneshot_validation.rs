@@ -488,6 +488,7 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
         }
 
         if matches!(phase, ValidationPhase::All | ValidationPhase::Judge) {
+            let mut judged_trials = 0usize;
             for trial_index in 0..num_rollout_trials {
                 let trial_tree_artifact_path = if num_rollout_trials > 1 {
                     trial_tree_artifact_path(&validation_tree_artifact_path, trial_index)
@@ -524,6 +525,13 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
                     trial_index,
                 )
                 .await;
+                judged_trials += 1;
+            }
+            if judged_trials == 0 {
+                panic!(
+                    "Epoch {}: no complete validation tree artifact trials were available for judging; refusing to continue with missing judgments",
+                    epoch
+                );
             }
         }
 
@@ -587,11 +595,10 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
                 scored_trials += 1;
             }
             if scored_trials == 0 {
-                log_warning(format!(
-                    "Epoch {}: no validation trials were available for scoring",
+                panic!(
+                    "Epoch {}: no validation trials were available for scoring; refusing to report a zero accuracy for missing artifacts or judgments",
                     epoch
-                ));
-                continue;
+                );
             }
             if let Some(accuracies) = accuracy_stats.accuracy_tuple() {
                 validation_accuracies.insert(epoch, accuracies);
