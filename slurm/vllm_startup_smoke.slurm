@@ -28,7 +28,7 @@ cd "$REPO_ROOT"
 
 source "$REPO_ROOT/slurm/setup_cuda_12_8.sh"
 
-VLLM_PYTHON="${VLLM_PYTHON:-/u/zluo8/credit_assignment/venvs/vllm-latest-cu130/bin/python}"
+VLLM_PYTHON="/u/zluo8/credit_assignment/venvs/vllm-latest-cu130/bin/python"
 LOG_PATH="slurm/logs/vllm_startup_smoke_${SLURM_JOB_ID}_${VARIANT_LABEL}.vllm.log"
 START_TS="$(date +%s)"
 export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"

@@ -73,6 +73,20 @@ ssh delta 'cd /u/zluo8/credit_assignment && sacct -j <jobid> -n -o State,Elapsed
 - If a problem is obviously solvable without potential controversy, solve it,
   push a concise notification, and continue monitoring.
 
+## Delta user-local utilities
+
+The Delta account has user-local command-line utilities available through the
+default `PATH`:
+
+- `/u/zluo8/.local/bin/rg`
+- `/u/zluo8/.local/bin/fd`
+- `/u/zluo8/.local/bin/bat`
+- `/u/zluo8/.cargo/bin/dust`
+- `/usr/bin/jq`
+
+Prefer these tools for remote inspection commands when available, especially
+`rg` for text search and `dust` for disk-usage checks.
+
 ## Delta job submission reporting
 When submitting SLURM jobs on Delta:
 

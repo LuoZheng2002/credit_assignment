@@ -5,7 +5,7 @@ use credit_assignment::{
     directories::{oneshot_epochs_parent_dir, training_summary_oneshot_parent_dir},
     launch_inference_wrapper::InferenceBackend,
     llm_model::LlmModelName,
-    oneshot_training_summary::{prune_non_best_oneshot_models, read_existing_validation_summary},
+    oneshot_training_summary::read_existing_validation_summary,
     python_training_config::TrainingHyperparameters,
     utils::configure_mount_dir,
 };
@@ -18,6 +18,8 @@ use serde::Deserialize;
 struct CliArgs {
     #[arg(short = 'c', long)]
     config_path: String,
+    #[arg(long, default_value_t = 10)]
+    epoch_interval: usize,
     #[arg(long, default_value_t = false)]
     login_smoke: bool,
 }
@@ -64,8 +66,10 @@ async fn main() {
     dotenvy::dotenv().ok();
     let CliArgs {
         config_path,
+        epoch_interval,
         login_smoke,
     } = CliArgs::parse();
+    assert!(epoch_interval > 0, "--epoch-interval must be positive");
     let config_contents = std::fs::read_to_string(&config_path)
         .unwrap_or_else(|err| panic!("failed to read config file '{}': {}", config_path, err));
     let args: Args = toml::from_str(&config_contents)
@@ -85,8 +89,11 @@ async fn main() {
     ));
     if login_smoke {
         println!(
-            "login-smoke passed for bin_oneshot_prune: model={}, training_config={}, validation_epochs={}",
-            args.model_cli_name, args.config_nickname_training, validation_total_epochs
+            "login-smoke passed for bin_oneshot_prune: model={}, training_config={}, validation_epochs={}, epoch_interval={}",
+            args.model_cli_name,
+            args.config_nickname_training,
+            validation_total_epochs,
+            epoch_interval
         );
         return;
     }
@@ -110,25 +117,46 @@ async fn main() {
     .await
     .unwrap();
 
-    let (validated_epochs, validation_accuracies) =
+    let (validated_epochs, _validation_accuracies) =
         read_existing_validation_summary(&summary_parent_dir);
-    let missing_epochs = (0..=validation_total_epochs)
+    let expected_validated_epochs = (0..=validation_total_epochs)
+        .filter(|epoch| *epoch == 0 || *epoch % epoch_interval == 0)
+        .collect::<Vec<_>>();
+    let missing_epochs = expected_validated_epochs
+        .iter()
+        .copied()
         .filter(|epoch| !validated_epochs.contains(epoch))
         .collect::<Vec<_>>();
     assert!(
         missing_epochs.is_empty(),
-        "cannot prune before held-out validation is complete; missing epochs: {:?}",
+        "cannot prune before interval held-out validation is complete; epoch_interval={}, missing expected validated epochs: {:?}",
+        epoch_interval,
         missing_epochs
     );
-    let candidate_epochs = (1..=validation_total_epochs).collect::<Vec<_>>();
+    let candidate_epochs = (1..=validation_total_epochs)
+        .filter(|epoch| epoch % epoch_interval != 0)
+        .collect::<Vec<_>>();
     log_info(format!(
-        "Pruning after complete held-out validation: candidate_epochs={:?}",
-        candidate_epochs
+        "Pruning only non-validation-interval checkpoints after interval held-out validation: epoch_interval={}, expected_validated_epochs={:?}, candidate_epochs={:?}",
+        epoch_interval, expected_validated_epochs, candidate_epochs
     ));
-    prune_non_best_oneshot_models(
-        &model_output_root,
-        &candidate_epochs,
-        &validation_accuracies,
-    );
+    for epoch in candidate_epochs {
+        let epoch_dir =
+            std::path::Path::new(&model_output_root).join(format!("oneshot_epoch_{epoch}"));
+        if !epoch_dir.exists() {
+            continue;
+        }
+        match std::fs::remove_dir_all(&epoch_dir) {
+            Ok(()) => log_info(format!(
+                "Pruned non-validation-interval oneshot model snapshot at {}",
+                epoch_dir.display()
+            )),
+            Err(err) => log_info(format!(
+                "Failed to prune non-validation-interval oneshot model snapshot at {}: {}",
+                epoch_dir.display(),
+                err
+            )),
+        }
+    }
     ProgressTextLogger::shutdown().await.unwrap();
 }

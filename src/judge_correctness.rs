@@ -253,10 +253,15 @@ pub async fn fetch_judge_evaluation_for_model(
     } else {
         "none"
     };
+    let max_completion_tokens = if model_name == "deepseek/deepseek-v4-pro" {
+        4096
+    } else {
+        1024
+    };
     let body_map = serde_json::json!({
         "model": model_name,
         "messages": [{"role": "user", "content": prompt}],
-        "max_completion_tokens": 1024,
+        "max_completion_tokens": max_completion_tokens,
         "temperature": temperature,
         "reasoning": {
             "effort": reasoning_effort

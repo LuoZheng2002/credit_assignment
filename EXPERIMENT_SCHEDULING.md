@@ -1157,8 +1157,10 @@ Current implementation status and remaining verification:
 
 3. **Checkpoint pruning.**
    - Checkpoint pruning is a separate manual CPU job (`bin_oneshot_prune`), not part of the default one-shot pipeline launcher.
-   - Run pruning only after held-out validation, diagnostic training-chunk validation, testing, and any manual inspection that needs intermediate epoch checkpoints are complete.
-   - This avoids deleting checkpoints that diagnostic validation or follow-up testing still needs.
+   - Do not prune an experiment until all scheduled held-out validation jobs for that experiment have completed successfully.
+   - Current-stage pruning is conservative: only manually prune checkpoints whose epoch is not a multiple of the held-out validation interval, normally `10`.
+   - Keep validation-interval checkpoints, such as epochs `10`, `20`, `30`, ..., so training can resume and so missing validation/testing can be repaired without retraining.
+   - If broader checkpoint cleanup is unavoidable, first copy the checkpoint directories to another disk and record the backup source path, destination path, timestamp, and covered epochs in this document.
 
 4. **Next implementation step.**
    - Run a small end-to-end dry submission on Delta using one chunk and a short walltime to validate path conventions and dependency ordering.
@@ -1249,7 +1251,7 @@ Deferred Qwen2.5 50-epoch extension:
 - Scope: GRPO no-tool Adam and Tree no-tool Adam under the matched rank-32, learning-rate `1e-6`, Adam-state, warmup-enabled recipe.
 - Do not submit while Qwen34/Gemma/Mistral validation or training jobs are still running or pending; this is intentionally deferred to avoid blocking current cross-model evidence collection.
 - Before submission, update the relevant training configs to `num_oneshot_epochs = 50` and `validation_total_epochs = 50`, rerun generation if additional rollout chunks are needed, and run login-smoke on Delta.
-- Held-out validation for the 50-epoch extension should use `--epoch-interval 3`; expected validation epochs are `0, 3, 6, ..., 48`.
+- Future held-out validation should use `--epoch-interval 10`; expected 70-epoch validation checkpoints are `0, 10, 20, ..., 70`.
 - If checkpoint `30` and its training status are present, training should resume from epoch `31` rather than restarting.
 
 Submission update:
@@ -1281,6 +1283,7 @@ Adaptive batching follow-up:
 Held-out validation cadence:
 
 - Future held-out validation jobs should use `--epoch-interval 10`.
+- Future GPU SLURM jobs should use account/QOS `bfsl-delta-gpu` unless explicitly overridden by the user.
 - This validates epoch `0` plus trained epochs divisible by `10`, reducing validation GPU cost while preserving coarse long-run accuracy trends.
 - The one-shot pipeline launcher defaults to this policy; override it only when a dense per-epoch curve is explicitly needed for a figure or debugging.
 
@@ -1357,6 +1360,7 @@ Extension update:
 - Extend the matched Qwen2.5 no-tool non-KL Adam runs from `50` to `70` epochs/chunks for both GRPO and Tree.
 - Extend the matched Qwen2.5 tool non-KL Adam runs to `40` epochs for both GRPO and Tree. The tool rollout configs already target `50` chunks, so no tool rollout extension is needed for the 40-epoch training target.
 - Keep held-out validation on `--epoch-interval 10`; expected no-tool validation epochs are `0, 10, 20, ..., 70`, and expected tool validation epochs are `0, 10, 20, 30, 40`.
+- Extend active Qwen2.5 experiments to `70` epochs/chunks when their rollout artifacts can support the extension. For interval-10 validation, report epochs `0`, `10`, `20`, ..., `70`.
 
 ### Ablation Extension Schedule — 2026-08-15
 
@@ -1393,6 +1397,11 @@ vLLM startup latency investigation:
 - Add startup timing instrumentation to future vLLM launches so logs include timestamps before entering the vLLM module, before vLLM emits its own first log line, and before the health check succeeds.
 - Pending diagnosis: determine whether the dominant delay is Python import/package metadata access, vLLM initialization, model file access, CUDA/NCCL initialization, or cache compilation.
 - Do not globally change cache or eager-mode policy based only on speculation; use the startup-smoke measurements to decide whether persistent cache directories, default cache behavior, or longer health timeouts are justified.
+- Resolution update 2026-08-27: the failed Gemma and Qwen2.5 validation jobs timed out while importing Python/vLLM from the HDD-hosted venv. The shared vLLM runtime was rebuilt at `/u/zluo8/credit_assignment/venvs/vllm-latest-cu130`, and all future SLURM inference jobs now default `VLLM_VENV` to this `/u` path. Login-node import timing from `/u` is normal (`torch` about 15s, `triton` about 1s, `vllm` about 19s), so future startup debugging should first confirm that jobs are using the `/u` venv before changing vLLM flags.
+- Follow-up update 2026-08-27: the Mistral retry submitted before the `/u` patch still used the HDD vLLM venv and failed with the same wrapper-health timeout. Experiment SLURM scripts now hardcode `VLLM_VENV=/u/zluo8/credit_assignment/venvs/vllm-latest-cu130` instead of preserving an inherited environment variable, so stale submitter environments cannot silently revert jobs to the HDD runtime.
+- Pending-job audit 2026-08-27: the Qwen2.5 GRPO no-tool and Tree no-tool recovery validation rollouts were submitted before the `/u` vLLM fix and were replaced with new validation chains dependent on the running recovery training jobs. The remaining pending Gemma, Mistral, and forced-token Qwen2.5 jobs were submitted after the `/u` default was installed; the Mistral replacement and all future experiment SLURM scripts use the hardcoded `/u` vLLM runtime. The standalone vLLM smoke scripts were also hardened to use the same `/u` runtime.
+- Timeout handling update 2026-08-27: the Qwen2.5 GRPO no-tool and Tree no-tool recovery trainings reached about epoch `23` but timed out under a `4h` training walltime; their configs were updated to `total_time_limit_hours = 13.0` so resumed training has enough walltime to reach epoch `70`. Gemma and Mistral 50-chunk training-rollout judging jobs timed out under the default `30m` CPU budget, so those judging stages were resubmitted with `2h` while preserving `16` CPUs and `16G` memory.
+- Judge failure update 2026-08-27: Gemma 50-chunk judging failed because `deepseek/deepseek-v4-pro` returned only hidden reasoning and hit the `1024` completion-token limit before producing the required boxed verdict. The judging request now gives `deepseek/deepseek-v4-pro` `4096` completion tokens while preserving the existing fail-fast behavior for invalid judge outputs. The failed run left only a temporary JSONL output, which was removed before resubmission.
 
 ### Executed-Experiment Epoch Extension Policy — 2026-08-16
 
@@ -1466,7 +1475,8 @@ Judging and scoring should no longer be implemented separately inside rollout bi
 
 To recover from unreliable legacy judgment-cache behavior, preserve completed training rollout tree artifacts but discard downstream judgments and generated trajectories before reuse.
 
-- Remove trained checkpoint/model artifacts under `large_files/*/*/oneshot_epoch_*` to free disk space. Preserve rollout trees, judgment caches/backups, training trajectory configs/stats, validation/test scores, logs, and base model snapshots.
+- Legacy note: a broad cleanup previously removed trained checkpoint/model artifacts under `large_files/*/*/oneshot_epoch_*` to free disk space. Do not repeat this policy for active experiments; it can make later interval validation or training resume impossible.
+- For current runs, preserve completed model checkpoints until all planned validation and testing for the experiment are done. If space pressure requires action, manually prune only non-validation-interval epochs, or back up checkpoints to another disk before deletion and record the backup here.
 - Rejudge completed training rollout tree artifacts with the corrected chunked judging semantics, then regenerate training trajectories from those fresh `TreeJudgment` JSONL files.
 - Run these as CPU-only two-stage pipelines: `bin_oneshot_judging` over `trees_training_oneshot`, followed by `bin_oneshot_generation` for the matching generation config.
 - Maintain up to six active/pending rejudge-regeneration pipelines at a time. Generation jobs should depend on their corresponding judging jobs with `afterok`.
@@ -1603,3 +1613,26 @@ Current implementation status:
 - `TMB` + `TRPOA` and `TRLEB` + `TMA` have completed 30-epoch Qwen2.5 no-tool jobs in recent SLURM history; do not resubmit unless metadata later shows a correctness anomaly.
 - `TPB` + `TMA`, `TMB` + `TRLA`, and `TRLEB` + `TRLA` are the next missing Qwen2.5 no-tool ablations to schedule.
 - `TRLEB` + `TRLA` uses the existing TreeRL entropy rollout and a separate generation/training nickname so it does not overwrite the branching-only trajectory artifacts.
+
+### Validation Cleanup Priority — 2026-08-26
+
+Future scheduling should prioritize missing held-out validation records before launching new training or rollout experiments. Stale validation entries have been pruned so retained summaries should only include epoch `0` or multiples of `10`; epoch `30` and `60` are retained only when the log confirms `6` validation trials.
+
+Checkpoint retention rule:
+
+- Do not prune active experiment checkpoints until all planned validation jobs for that experiment have completed.
+- Manual pruning at this stage should only delete epochs that are not multiples of the active validation interval, currently `10`.
+- Preserve epoch multiples of `10` even if they are not the current best model, because they are needed for interval validation, testing repair, and append/resume workflows.
+- Before any broader cleanup, back up checkpoints to a different disk when possible and record the backup path, source path, epoch range, and date in this document.
+- Recovery update 2026-08-27: Qwen2.5 GRPO no-tool and Tree no-tool non-forced checkpoint directories had been removed, so their missing validation epochs cannot be repaired by validation alone. Their 70 generated trajectory chunks are intact, so the repair path is to retrain from the existing trajectory chunks and then run 6-trial interval-10 held-out validation. The current validation code reports `deepmath`, `math`, and `numinamath`, so rerun summaries should not repeat the legacy missing-NuminaMath issue.
+- Non-Qwen2.5 scheduling rule 2026-08-27: keep non-Qwen2.5 GRPO extensions at `50` epochs/chunks rather than the Qwen2.5 `70`-epoch target. Gemma and Mistral GRPO no-tool are extended from `30` to `50` epochs/chunks as secondary queue-fill work while Qwen2.5 no-tool validation recovery is prioritized.
+
+Immediate priority:
+
+1. Re-run 6-trial interval-10 held-out validation for Qwen2.5 GRPO no-tool, filling epochs `30`, `40`, `50`, `60`, and `70`.
+2. Re-run 6-trial interval-10 held-out validation for Qwen2.5 Tree no-tool non-forced, filling epochs `30`, `40`, `50`, `60`, and `70`.
+3. Finish or re-run Qwen2.5 Tree tool forced-token validation for epochs `60` and `70` with 6 trials.
+4. Upgrade Qwen2.5 GRPO tool and Tree tool non-forced validation to 6 trials if they are used in a direct forced-token comparison; otherwise label them explicitly as 3-trial results.
+5. Let already submitted Branch-8, Branch-32, TreeRL-branching, and TreeRL-advantage pipelines finish before scheduling additional ablation training.
+
+Do not use pruned interval-3 best epochs such as `27`, `51`, `63`, `66`, or `69` in paper tables unless they are explicitly labeled as legacy exploratory validation.

@@ -12,4 +12,4 @@ inference_backend = "vllm"
 total_time_limit_hours = 4.0
 num_questions_per_chunk = 125
 force_selected_branch_token = true
-num_chunks = 50
+num_chunks = 70

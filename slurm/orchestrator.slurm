@@ -34,7 +34,7 @@ source "$REPO_ROOT/slurm/setup_cuda_12_8.sh"
 # Prefer the main project venv for experiment executables. The inference wrapper
 # resolves the vLLM runtime from VLLM_VENV when a config uses vLLM.
 export PATH="$REPO_ROOT/.venv/bin:$PATH"
-export VLLM_VENV="${VLLM_VENV:-/u/zluo8/credit_assignment/venvs/vllm-latest-cu130}"
+export VLLM_VENV="/u/zluo8/credit_assignment/venvs/vllm-latest-cu130"
 export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-4096}"
 export VLLM_CACHE_HOME="${VLLM_CACHE_HOME:-/u/${USER:-zluo8}/.cache/credit_assignment_vllm}"
 mkdir -p "$VLLM_CACHE_HOME/xdg" "$VLLM_CACHE_HOME/triton" "$VLLM_CACHE_HOME/torchinductor" "$VLLM_CACHE_HOME/cuda"

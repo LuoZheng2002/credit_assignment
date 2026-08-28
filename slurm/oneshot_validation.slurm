@@ -35,7 +35,7 @@ export PATH="$REPO_ROOT/.venv/bin:$PATH"
 export SGLANG_MEM_FRACTION_STATIC="${SGLANG_MEM_FRACTION_STATIC:-0.70}"
 export SGLANG_MAX_RUNNING_REQUESTS="${SGLANG_MAX_RUNNING_REQUESTS:-32}"
 export VALIDATION_MAX_CONCURRENT_ROLLOUT=200
-export VLLM_VENV="${VLLM_VENV:-/u/zluo8/credit_assignment/venvs/vllm-latest-cu130}"
+export VLLM_VENV="/u/zluo8/credit_assignment/venvs/vllm-latest-cu130"
 export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-4096}"
 export VLLM_CACHE_HOME="${VLLM_CACHE_HOME:-/u/${USER:-zluo8}/.cache/credit_assignment_vllm}"
 mkdir -p "$VLLM_CACHE_HOME/xdg" "$VLLM_CACHE_HOME/triton" "$VLLM_CACHE_HOME/torchinductor" "$VLLM_CACHE_HOME/cuda"

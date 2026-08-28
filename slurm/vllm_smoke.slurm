@@ -17,7 +17,7 @@ cd "$REPO_ROOT"
 
 source "$REPO_ROOT/slurm/setup_cuda_12_8.sh"
 
-VLLM_VENV="${VLLM_VENV:-/u/zluo8/credit_assignment/venvs/vllm-latest-cu130}"
+VLLM_VENV="/u/zluo8/credit_assignment/venvs/vllm-latest-cu130"
 BASE_PYTHON="${BASE_PYTHON:-$REPO_ROOT/.venv/bin/python}"
 VLLM_INSTALL_PACKAGE="${VLLM_INSTALL_PACKAGE:-vllm}"
 VLLM_TORCH_BACKEND="${VLLM_TORCH_BACKEND:-cu130}"
