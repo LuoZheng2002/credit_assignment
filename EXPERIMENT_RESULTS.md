@@ -174,3 +174,28 @@ These runs were active or recovering from timeouts as of the latest poll on 2026
 3. TreeMAPPO-style credit assignment is sensitive to optimizer and learning-rate choices; rank-32 LoRA with `5e-5` can collapse, while `1e-6` is much more stable.
 4. The method-comparison story should be framed carefully: strongest current evidence is “competitive and sometimes better under matched compute,” not “dominates GRPO.”
 5. Broader model robustness is still being established for Gemma, Mistral, and Llama due to timeout/recovery work.
+
+## Latest Validation Audit — 2026-08-29
+
+The table below is computed directly from `validation_judging_outputs_trial_*.jsonl` files, so `Trials` is the number of completed held-out validation rollout/judging trials contributing to each accuracy.
+
+| Experiment | Epochs audited | Trials | Accuracy pattern | Anomaly check |
+|---|---:|---:|---|---|
+| Qwen2.5 no-tool GRPO | 0, 10, 20, 30, 40, 50, 60, 70 | 6 each | 0.6468, 0.6461, 0.6502, 0.6538, 0.6504, 0.6485, 0.6467, 0.6522 | No count anomaly; best audited epoch is 30. |
+| Qwen2.5 no-tool TreeMAPPO, non-forced | 0, 10, 20, 30, 60 | epoch 0 has 6; others have 1 | 0.6439, 0.6480, 0.6487, 0.6493, 0.6487 | Missing 6-trial validation for later epochs; recovery validation is running. |
+| Qwen2.5 no-tool TreeMAPPO, forced token | 0, 10, 20, 30, 40, 50, 60, 70 | 6 each | 0.6436, 0.6502, 0.6467, 0.6489, 0.6497, 0.6523, 0.6522, 0.6494 | No count anomaly; best audited epoch is 50. |
+| Qwen2.5 tool GRPO | 0, 10, 20, 30, 40, 50, 60, 70 | 6 each | 0.6142, 0.6196, 0.6187, 0.6246, 0.6237, 0.6226, 0.6189, 0.6171 | No count anomaly; best audited epoch is 30. |
+| Qwen2.5 tool TreeMAPPO, forced token | 0, 10, 20, 30, 40, 50, 60, 70 | 6 each | 0.6134, 0.6222, 0.6186, 0.6154, 0.6181, 0.6236, 0.6209, 0.6181 | No count anomaly; best audited epoch is 50. |
+| TEMPO-style branching ablation | 0, 10, 20, 30, 40, 50, 60, 70 | 3 each | 0.6392, 0.6450, 0.6433, 0.6421, 0.6462, 0.6521, 0.6453, 0.6514 | Valid 3-trial ablation; not yet upgraded to 6 trials. |
+| TreeRPO-style advantage ablation | 0, 10, 20, 30, 40, 50, 60, 70 | 3 each | 0.6433, 0.6450, 0.6461, 0.6411, 0.6520, 0.6481, 0.6418, 0.6464 | Valid 3-trial ablation; not yet upgraded to 6 trials. |
+| TreeRL advantage-only ablation | 0, 10, 20, 30, 40, 50, 60, 70 | 3 each | 0.6487, 0.6470, 0.6480, 0.6472, 0.6488, 0.6489, 0.6523, 0.6510 | Valid 3-trial ablation; mild cache-hit drop at epochs 60–70 but counts are complete. |
+| TreeRL branching-only ablation | 0, 10, 20, 30, 40, 50, 60, 70 | 3 each | 0.6403, 0.6453, 0.6490, 0.6464, 0.6472, 0.6470, 0.6454, 0.6443 | Valid 3-trial ablation; mild cache-hit drop at epochs 60–70 but counts are complete. |
+| Branch-8 no-tool | 0, 5 | 3 each | 0.6436, 0.6456 | Short 5-epoch branch-budget result only. |
+| Branch-32 no-tool | 0, 5 | 3 each | 0.6443, 0.6456 | Short 5-epoch branch-budget result only. |
+| Qwen34 no-tool GRPO | 0, 10, 20, 30, 40 | 3 each | 0.6911, 0.6900, 0.6880, 0.6907, 0.6934 | Valid 3-trial result; best audited epoch is 40. |
+| Qwen34 tool GRPO | 0, 10, 20, 30, 40 | 3 each | 0.6443, 0.6528, 0.6544, 0.6554, 0.6648 | Valid 3-trial result; clear positive trend to epoch 40. |
+| Gemma no-tool GRPO | 0, 10, 20, 30, 40, 50 | 3 each | 0.5636, 0.5639, 0.5649, 0.5592, 0.5612, 0.5664 | Valid 3-trial result; small noisy gain only. |
+| Mistral no-tool GRPO | 0, 10, 20, 30, 40, 50 | 3 each | 0.1781, 0.1769, 0.1740, 0.1754, 0.1803, 0.1737 | Valid 3-trial result; no positive trend. |
+| Llama no-tool GRPO | 0, 10, 20, 30, 40, 50 | 3 each | 0.4421, 0.4613, 0.4697, 0.4691, 0.4551, 0.4562 | Valid 3-trial result; improves to epoch 20–30 then regresses. |
+
+Current anomaly: the only material count issue is Qwen2.5 no-tool non-forced TreeMAPPO, where epochs after 0 in the audited set currently have only one trial. Treat those later accuracies as provisional until the running six-trial recovery validation finishes.

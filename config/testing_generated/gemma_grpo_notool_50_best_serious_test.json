@@ -1,0 +1,12 @@
+[
+  {
+    "model_cli_name": "gemma",
+    "config_nickname": "grpo_notool_10chunk_lora_r32_lr1e6_5ep_training",
+    "testing_rollout_config_path": "config/rollout_config_testing.json",
+    "epoch": 50,
+    "total_epochs": 50,
+    "mount_dir": "/work/hdd/bhph/zluo8/credit_assignment/results",
+    "use_tool": false,
+    "num_rollout_trials": 5
+  }
+]

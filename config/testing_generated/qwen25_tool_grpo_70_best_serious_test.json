@@ -1,0 +1,12 @@
+[
+  {
+    "model_cli_name": "qwen25",
+    "config_nickname": "grpo_tool_10chunk_lora_r32_lr1e6_adam_50ep_training",
+    "testing_rollout_config_path": "config/rollout_config_testing.json",
+    "epoch": 30,
+    "total_epochs": 70,
+    "mount_dir": "/work/hdd/bhph/zluo8/credit_assignment/results",
+    "use_tool": true,
+    "num_rollout_trials": 5
+  }
+]

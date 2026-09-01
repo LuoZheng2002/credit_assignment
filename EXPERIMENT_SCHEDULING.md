@@ -741,13 +741,12 @@ All tracked held-out serious test jobs from the latest batch completed, and the 
 - Qwen34 tool GRPO best checkpoint: held-out mean accuracy `0.6609` across six datasets.
 - Qwen34 tool TreeMAPPO best checkpoint: held-out mean accuracy `0.6478` across six datasets.
 - Qwen2.5 no-tool positive-advantage-only TreeMAPPO: held-out mean accuracy `0.6800`.
-- Qwen2.5 tool positive-advantage-only TreeMAPPO: held-out mean accuracy `0.6117`.
 
 Current interpretation:
 
 1. Qwen2.5 no-tool remains the cleanest paper path because both GRPO and TreeMAPPO show modest positive validation signals under matched rank-32, learning-rate `1e-6` settings.
 2. Qwen34 tool is a mixed/negative comparison for TreeMAPPO: the Tree checkpoint is below the matched GRPO checkpoint on aggregate held-out accuracy, although it improves on a subset of datasets.
-3. Positive-advantage-only TreeMAPPO should be treated as an ablation. It is not currently stronger than the standard TreeMAPPO story, especially in the tool setting.
+3. Positive-advantage-only TreeMAPPO should be treated as a single low-priority no-tool ablation, not a family of paper-facing experiments. Future positive-only reruns should use chunked tree artifacts and should not reuse legacy unchunked trajectories.
 
 ## 50-Epoch Extension Policy — 2026-08-23
 
@@ -1327,7 +1326,7 @@ Current scheduling decision:
 
 Queue policy:
 
-- Maintain roughly `3` to `5` GPU jobs pending or running, including dependent GPU jobs, to avoid overfilling the queue while keeping throughput high.
+- Maintain up to `8` active experiment pipelines when the queue is healthy, including dependent GPU jobs, to improve throughput before the September paper deadline. Keep this cap flexible downward if jobs start failing due to quota, vLLM startup instability, or artifact-lock contention.
 - Before every serious submission, run the matching launcher or binary with `--login-smoke` on the Delta login node and submit only if it passes.
 - Prefer jobs that create a direct decision point over broad exploratory sweeps. Report job id, dependency, partition, time limit, GPU count, CPU count, memory, account/QOS, and pending reason after submission.
 - Use non-KL validation first when both KL and non-KL checkpoints exist. KL validation should not block non-KL scheduling.
@@ -1605,7 +1604,8 @@ Submit orthogonal ablation combinations in this order, skipping combinations tha
 6. `TRLEB` + `TRLA`: combined TreeRL-style control. This tests the currently implemented TreeRL-style branching and advantage pair.
 7. `FLAT` + `GRPOA`: GRPO baseline. Keep as a matched baseline rather than a tree-method ablation; skip when matched GRPO already exists.
 8. `TMB` + `TMA`: main TreeMAPPO method. Skip as an ablation when the main method already exists.
-9. Branch-budget and positive-only variants are secondary mechanism checks and should run after the above matrix unless a specific paper claim depends on them.
+9. Branch-budget variants are secondary mechanism checks and should run after the above matrix unless a specific paper claim depends on them.
+10. Positive-only TreeMAPPO is retained only as one low-priority Qwen2.5 no-tool ablation because it appears in the held-out test table. Do not schedule tool positive-only or repeated positive-only variants. If rerun, start from chunked tree artifacts and regenerate chunked trajectories; do not use legacy unchunked positive-only training sets.
 
 Current implementation status:
 
@@ -1636,3 +1636,29 @@ Immediate priority:
 5. Let already submitted Branch-8, Branch-32, TreeRL-branching, and TreeRL-advantage pipelines finish before scheduling additional ablation training.
 
 Do not use pruned interval-3 best epochs such as `27`, `51`, `63`, `66`, or `69` in paper tables unless they are explicitly labeled as legacy exploratory validation.
+
+### Queue Repair and Serious-Test Fill — 2026-09-01
+
+Failed-job handling:
+
+- Canceled stale dependency jobs from the Llama Tree no-tool validation timeout and the Mistral Tree no-tool validation-judging timeout.
+- Resubmitted Mistral Tree no-tool validation judging with a `2h` CPU walltime and a dependent score job: `21712559` -> `21712560`.
+- Resubmitted Llama Tree no-tool validation rollout with an `8h` GPU walltime and dependent judge/score jobs: `21712561` -> `21712562` -> `21712563`.
+
+Queue fill:
+
+- Filled the Delta GPU queue to `8` active roots with one repaired validation rollout plus seven best-validation-epoch serious-test rollout pipelines.
+- Serious tests use `5` rollout trials, `vllm`, one A100, `32` CPUs, `32G` memory, and `2h` rollout walltime unless later logs show that a model needs a larger testing budget.
+- Submitted serious-test chains:
+  - Qwen2.5 tool GRPO, best validation epoch `30`: `21712589` -> `21712590` -> `21712591`.
+  - Qwen2.5 tool TreeMAPPO, best validation epoch `70`: `21712592` -> `21712593` -> `21712594`.
+  - Qwen2.5 no-tool forced-token TreeMAPPO, best validation epoch `50`: `21712595` -> `21712596` -> `21712597`.
+  - Qwen2.5 tool forced-token TreeMAPPO, best validation epoch `50`: `21712598` -> `21712599` -> `21712600`.
+  - Qwen3-4B no-tool GRPO, best validation epoch `40`: `21712601` -> `21712602` -> `21712603`.
+  - Qwen3-4B tool GRPO, best validation epoch `40`: `21712604` -> `21712605` -> `21712606`.
+  - Gemma no-tool GRPO, best validation epoch `50`: `21712607` -> `21712608` -> `21712609`.
+
+Future scheduling implication:
+
+- Best-epoch serious testing is now an explicit part of the queue-fill policy after validation exists. Prefer ready serious tests over low-priority exploratory reruns when the GPU queue is underfilled.
+- The low-priority positive-only ablation remains deferred; if it is rerun, it must use chunked tree artifacts and should not reuse legacy unchunked trajectories.
