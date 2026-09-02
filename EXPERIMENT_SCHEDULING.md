@@ -1662,3 +1662,13 @@ Future scheduling implication:
 
 - Best-epoch serious testing is now an explicit part of the queue-fill policy after validation exists. Prefer ready serious tests over low-priority exploratory reruns when the GPU queue is underfilled.
 - The low-priority positive-only ablation remains deferred; if it is rerun, it must use chunked tree artifacts and should not reuse legacy unchunked trajectories.
+
+### Additional Serious-Test Fill — 2026-09-01
+
+After the first serious-test rollouts began completing, the active GPU-root count dropped to `5`. To restore the queue to `8`, submitted three additional ready Qwen2.5 no-tool ablation serious-test pipelines after checkpoint checks and `bin_run_test --login-smoke` passed:
+
+- TEMPO-style branching ablation, best validation epoch `70`: `21716392` -> `21716393` -> `21716394`.
+- TreeRPO-style advantage ablation, best validation epoch `40`: `21716395` -> `21716396` -> `21716397`.
+- TreeRL advantage-only ablation, best validation epoch `60`: `21716398` -> `21716399` -> `21716400`.
+
+All three testing rollout roots request `bfsl-delta-gpu`, `gpuA100x4`, one A100, `32` CPUs, `32G` memory, and `2h` walltime. Their dependent judge jobs request `bfsl-delta-cpu`, `16` CPUs, `16G`, and `2h`; score jobs request `30m`.
