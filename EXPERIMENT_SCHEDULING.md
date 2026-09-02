@@ -1710,3 +1710,13 @@ Submitted eight serious-test pipelines after checkpoint checks and `bin_run_test
 - Qwen3-4B base tool, epoch `0`: `21724048` -> `21724049` -> `21724050`.
 
 Resource policy is unchanged: testing rollouts request `bfsl-delta-gpu`, `gpuA100x4`, one A100, `32` CPUs, `32G`, and `2h`; judge jobs use `bfsl-delta-cpu`, `16` CPUs, `16G`, and `2h`; score jobs use `30m`.
+
+### Deferred Positive-Only Rerun Policy — 2026-09-01
+
+The Qwen2.5 no-tool positive-only TreeMAPPO rerun is included in the future plan as exactly one low-priority pipeline.
+
+Scheduling rule:
+
+- Submit this positive-only rerun only when all higher-priority experiments are either completed or already running/queued, so it never displaces core GRPO-vs-Tree comparisons, forced-token checks, cross-model GRPO runs, or best-epoch serious tests.
+- The rerun must use chunked tree artifacts and regenerated chunked trajectories. Do not reuse the legacy unchunked positive-only training artifacts that previously caused timeout and poor resumability.
+- Treat its result as an auxiliary ablation for the held-out table, not as evidence for the main method unless it is later replicated under the same chunked pipeline.
