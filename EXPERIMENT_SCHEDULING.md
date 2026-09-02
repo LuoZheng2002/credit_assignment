@@ -1693,3 +1693,20 @@ The GPU queue was empty after prior serious-test rollouts completed. Submitted e
 - Llama GRPO no-tool, best validation epoch `30`: `21721188` -> `21721189` -> `21721190`.
 
 All rollout roots request `bfsl-delta-gpu`, `gpuA100x4`, one A100, `32` CPUs, `32G` memory, and `2h` walltime. Dependent judge jobs use `bfsl-delta-cpu`, `16` CPUs, `16G`, and `2h`; score jobs use `30m`.
+
+### Testing-Only Queue Fill — 2026-09-01
+
+All GPU jobs from the previous serious-test batch finished cleanly. Only the Llama Tree no-tool CPU validation judge/score chain remained active, so the GPU queue was refilled with testing-only pipelines.
+
+Submitted eight serious-test pipelines after checkpoint checks and `bin_run_test --login-smoke` passed:
+
+- Mistral base no-tool, epoch `0`: `21724027` -> `21724028` -> `21724029`.
+- Qwen2.5 base tool, epoch `0`: `21724030` -> `21724031` -> `21724032`.
+- Qwen3-4B base no-tool, epoch `0`: `21724033` -> `21724034` -> `21724035`.
+- Qwen2.5 Branch-8 legacy best, epoch `3`: `21724036` -> `21724037` -> `21724038`.
+- Qwen2.5 Branch-32 legacy best, epoch `5`: `21724039` -> `21724040` -> `21724041`.
+- Gemma base no-tool, epoch `0`: `21724042` -> `21724043` -> `21724044`.
+- Llama base no-tool, epoch `0`: `21724045` -> `21724046` -> `21724047`.
+- Qwen3-4B base tool, epoch `0`: `21724048` -> `21724049` -> `21724050`.
+
+Resource policy is unchanged: testing rollouts request `bfsl-delta-gpu`, `gpuA100x4`, one A100, `32` CPUs, `32G`, and `2h`; judge jobs use `bfsl-delta-cpu`, `16` CPUs, `16G`, and `2h`; score jobs use `30m`.
