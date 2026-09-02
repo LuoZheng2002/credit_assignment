@@ -1678,3 +1678,18 @@ Additional queue top-up:
 - The queue dropped to `7` while earlier serious-test rollouts completed, so one more ready ablation serious-test pipeline was submitted.
 - TreeRL branching-only ablation, best validation epoch `20`: `21716439` -> `21716460` -> `21716461`.
 - This job uses the same serious-test resource policy: one A100, `32` CPUs, `32G`, `2h` rollout walltime, with dependent CPU judge/score jobs.
+
+### Serious-Test Queue Fill — 2026-09-01
+
+The GPU queue was empty after prior serious-test rollouts completed. Submitted eight ready best-validation-epoch serious-test pipelines after checkpoint existence checks and `bin_run_test --login-smoke` passed:
+
+- Branch-8 TreeMAPPO no-tool, best validation epoch `10`: `21721167` -> `21721168` -> `21721169`.
+- Branch-32 TreeMAPPO no-tool, best validation epoch `60`: `21721170` -> `21721171` -> `21721172`.
+- TreeRL combined no-tool ablation, best validation epoch `40`: `21721173` -> `21721174` -> `21721175`.
+- Qwen3-4B TreeMAPPO no-tool, best validation epoch `10`: `21721176` -> `21721177` -> `21721178`.
+- Gemma TreeMAPPO no-tool, best validation epoch `20`: `21721179` -> `21721180` -> `21721181`.
+- Mistral TreeMAPPO no-tool, best validation epoch `10`: `21721182` -> `21721183` -> `21721184`.
+- Mistral GRPO no-tool, best validation epoch `40`: `21721185` -> `21721186` -> `21721187`.
+- Llama GRPO no-tool, best validation epoch `30`: `21721188` -> `21721189` -> `21721190`.
+
+All rollout roots request `bfsl-delta-gpu`, `gpuA100x4`, one A100, `32` CPUs, `32G` memory, and `2h` walltime. Dependent judge jobs use `bfsl-delta-cpu`, `16` CPUs, `16G`, and `2h`; score jobs use `30m`.
