@@ -1672,3 +1672,9 @@ After the first serious-test rollouts began completing, the active GPU-root coun
 - TreeRL advantage-only ablation, best validation epoch `60`: `21716398` -> `21716399` -> `21716400`.
 
 All three testing rollout roots request `bfsl-delta-gpu`, `gpuA100x4`, one A100, `32` CPUs, `32G` memory, and `2h` walltime. Their dependent judge jobs request `bfsl-delta-cpu`, `16` CPUs, `16G`, and `2h`; score jobs request `30m`.
+
+Additional queue top-up:
+
+- The queue dropped to `7` while earlier serious-test rollouts completed, so one more ready ablation serious-test pipeline was submitted.
+- TreeRL branching-only ablation, best validation epoch `20`: `21716439` -> `21716460` -> `21716461`.
+- This job uses the same serious-test resource policy: one A100, `32` CPUs, `32G`, `2h` rollout walltime, with dependent CPU judge/score jobs.
