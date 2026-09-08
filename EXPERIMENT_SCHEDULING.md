@@ -1720,3 +1720,135 @@ Scheduling rule:
 - Submit this positive-only rerun only when all higher-priority experiments are either completed or already running/queued, so it never displaces core GRPO-vs-Tree comparisons, forced-token checks, cross-model GRPO runs, or best-epoch serious tests.
 - The rerun must use chunked tree artifacts and regenerated chunked trajectories. Do not reuse the legacy unchunked positive-only training artifacts that previously caused timeout and poor resumability.
 - Treat its result as an auxiliary ablation for the held-out table, not as evidence for the main method unless it is later replicated under the same chunked pipeline.
+
+### Coverage Repair Schedule — 2026-09-02
+
+- Treat validation and testing results at epochs other than `0` or multiples of `10` as deprecated; do not use them for paper claims.
+- Require held-out validation to cover all `3000` validation samples and record the number of trials contributing to each epoch.
+- Require final testing to cover the full test suite when supported by the model/test configuration; partial dataset coverage or fewer than five trials must be labeled provisional.
+- Extend Qwen34, Gemma, Mistral, and Llama active GRPO/Tree no-tool or tool experiments to at least `50` epochs before final validation/testing conclusions.
+- Ensure Qwen2.5 experiments reach at least `50` epochs; Qwen2.5 GRPO no-tool and Tree no-tool remain the main long-run experiments and target `70` epochs.
+- Current repair queue should prioritize: Qwen2.5 GRPO no-tool validation checkpoint recovery, Qwen2.5 Tree no-tool validation checkpoint recovery, Qwen34 GRPO no-tool/tool extension to 50, and Gemma/Mistral/Llama Tree no-tool extension to 50.
+
+### Qwen34 Tree Comparison Repair — 2026-09-03
+
+Qwen34 TreeMAPPO must be included in the current paper comparison plan. The older Qwen34 Tree rows are legacy results and are not valid for final tables because they do not satisfy the current chunked artifact, epoch-multiple-of-10, full-validation-coverage, and five-trial testing policy.
+
+Planned Qwen34 Tree pipelines:
+
+- Qwen34 no-tool TreeMAPPO:
+  - rollout config: `config/oneshot_rollout/qwen34_rollout_tree_notool_10chunk.toml`
+  - generation config: `config/oneshot_generation/qwen34_generate_tree_notool_10chunk.toml`
+  - training config: `config/oneshot_train/qwen34_train_tree_notool_10chunk_lora_r32_lr1e6_10ep_15m.toml`
+  - target: `50` rollout chunks, `50` training epochs, LoRA rank `32`, learning rate `1e-6`, Adam, warmup, forced-token guided branching where applicable.
+- Qwen34 tool TreeMAPPO:
+  - rollout config: `config/oneshot_rollout/qwen34_rollout_tree_tool_4h.toml`
+  - generation config: `config/oneshot_generation/qwen34_generate_tree_tool_4h.toml`
+  - training config: `config/oneshot_train/qwen34_train_tree_tool_lora_r32_lr1e6_10ep_15m.toml`
+  - target: `50` rollout chunks, `50` training epochs, LoRA rank `32`, learning rate `1e-6`, Adam, warmup, forced-token guided branching where applicable.
+
+Validity requirements before Qwen34 Tree-vs-GRPO numbers can be used in paper tables:
+
+- Held-out validation must include epochs `0, 10, 20, 30, 40, 50`.
+- Each validation epoch must have `6` rollout trials and full `3000`-sample coverage over DeepMath, MATH, and NuminaMath.
+- Serious testing must run on the best validation epoch selected from the valid epoch set.
+- Serious testing must use `5` rollout trials and full dataset coverage where supported: DeepMath, MATH, NuminaMath, AMC 2023, GaoKao Math 2024, and CollegeMath.
+- The final comparison table should include, for each model-condition-method row, base validation, best validation epoch, best validation accuracy, validation gain, testing epoch, per-dataset test accuracies, dataset-macro test accuracy, number of validation trials, and number of testing trials.
+
+Scheduling priority:
+
+1. Keep currently queued Qwen2.5 validation repairs and testing repairs running.
+2. When a GPU-root slot opens, submit Qwen34 Tree no-tool first because Qwen34 GRPO no-tool already has current 50-epoch validation.
+3. Submit Qwen34 Tree tool next because Qwen34 GRPO tool already has current 50-epoch validation and is a useful tool-setting comparison.
+4. Do not use the legacy Qwen34 Tree serious-test rows as final evidence; keep them only as historical context until current chunked reruns finish.
+
+### Llama Tree No-Tool Cutoff Repair — 2026-09-03
+
+- The Llama Tree no-tool retry trained and saved checkpoints through epoch `41`, then failed at epoch `42` because `chunk_41.msgpack` contained zero accepted training trajectories.
+- This is a generation/data-quality blocker for epochs beyond `40` under the current interval-10 validation policy, not a GPU timeout or OOM failure.
+- Current handling: cancel poisoned dependent validation jobs from the failed epoch-50 chain and validate the completed, policy-valid checkpoints through epoch `40` using `6` validation trials.
+- Follow-up if Llama Tree becomes important: inspect and regenerate the empty trajectory chunk after clearing the corresponding judgment/generation artifacts.
+
+### Disk Quota Blocker — 2026-09-04
+
+Current failed GPU jobs are caused by `/work/hdd/bhph` allocation quota exhaustion, not model/runtime failures. The failing logs show `Disk quota exceeded (os error 122)` while writing rollout/testing ext-sort artifacts under `/work/hdd/bhph/zluo8/credit_assignment/results`.
+
+Required disk-inspection command before resubmitting failed artifact-writing jobs:
+
+```sh
+ssh delta 'cd /u/zluo8/credit_assignment && quota -s && /u/zluo8/.cargo/bin/dust -d 2 /work/hdd/bhph/zluo8/credit_assignment/results | tail -80'
+```
+
+Latest `dust` summary:
+
+- `/work/hdd/bhph` usage: `1.075T`, above the `1.074T` hard limit.
+- `/work/hdd/bhph/zluo8/credit_assignment/results`: about `922G`.
+- `medium_files`: about `701G`; main contributor is `qwen25` at about `389G`.
+- `large_files`: about `217G`; main contributors are `qwen25` about `111G`, `llama` about `41G`, `mistral` about `24G`, `gemma` about `20G`, `qwen34` about `19G`.
+- `cache_backups`: about `1.8G`; not enough alone to solve the quota blocker.
+
+Next scheduling rule: do not resubmit failed rollout/validation/testing jobs that write to `/work/hdd/bhph` until space is freed or the experiment output root is moved to another allocation. Prioritize cleanup of stale action-log/ext-sort artifacts and deprecated validation/testing artifacts before deleting current checkpoints needed for resumed training.
+
+### Artifact Cleanup — 2026-09-04
+
+- Deleted checkpoint directories whose epoch is not a multiple of `5` for experiments that already had both validation and testing markers.
+- Deleted obsolete diagnostic training-chunk validation directories because diagnostic rollouts are no longer part of the active paper-facing pipeline.
+- Deleted stale partial ext-sort work directories from failed disk-quota jobs before resubmitting their pipelines.
+- Post-cleanup quota for `/work/hdd/bhph`: `987.7G` used out of `1000G` soft quota and `1.074T` hard limit, so new jobs can write again but storage remains tight.
+
+### Paper-Readiness Repair Queue — 2026-09-06
+
+- Current audit policy: paper-facing validation rows should use epochs `0, 10, 20, ...`, `6` validation trials, and full held-out coverage; final testing rows should use `5` testing trials and all `6` test datasets where supported.
+- The immediate repair batch prioritizes testing rows that are currently missing, partial, or below `5` trials: Qwen2.5 tool base, Qwen34 no-tool base, Qwen34 tool base, Mistral no-tool base, Gemma no-tool base, Gemma GRPO no-tool, Mistral GRPO no-tool, and Qwen2.5 Branch-32 no-tool.
+- Base serious-test configs must use generated configs with explicit `num_rollout_trials = 5`; legacy configs without this field can write non-trial artifacts and break the decoupled judge/score path.
+- Remaining lower-priority paper-readiness gaps after this batch include Llama base full-test repair, Mistral Tree validation trial-count repair, and any ablation/test row still below the required trial count.
+
+Submitted repair batch:
+
+- Qwen2.5 tool base: `21846909` rollout -> `21846910` judge -> `21846911` score.
+- Qwen34 no-tool base: `21846912` rollout -> `21846913` judge -> `21846914` score.
+- Qwen34 tool base: `21846915` rollout -> `21846916` judge -> `21846917` score.
+- Mistral no-tool base: `21846918` rollout -> `21846919` judge -> `21846920` score.
+- Gemma no-tool base: `21846921` rollout -> `21846922` judge -> `21846923` score.
+- Gemma GRPO no-tool best epoch `50`: `21846924` rollout -> `21846925` judge -> `21846926` score.
+- Mistral GRPO no-tool best epoch `40`: `21846927` rollout -> `21846928` judge -> `21846929` score.
+- Qwen2.5 Branch-32 no-tool best epoch `60`: `21846930` rollout -> `21846931` judge -> `21846932` score.
+
+All rollout roots request `bfsl-delta-gpu`, `gpuA100x4`, one A100, `32` CPUs, `32G`, and `2h`; dependent judge jobs request `bfsl-delta-cpu`, `16` CPUs, `16G`, and `2h`; score jobs request `30m`.
+
+Repair update:
+
+- The original dependent CPU jobs used the legacy `bin_run_test --phase judge/score` path, but `bin_run_test` now only supports `all` and `rollout`; job `21846910` failed with an invalid phase error.
+- Canceled the obsolete dependent CPU jobs and replaced them with independent `bin_tree_judge_score --phase judge-score` jobs.
+- Replacement judge-score jobs: Qwen2.5 tool base `21847365`, Qwen34 no-tool base `21847370`, Qwen34 tool base `21847371`, Mistral base `21847372`, Gemma base `21847373`, Gemma GRPO `21847374`, Mistral GRPO `21847375`, Qwen2.5 Branch-32 `21847376`.
+
+Queue fill update:
+
+- Added two more high-value testing repairs after login-smoke passed: Llama no-tool base `21848029` -> `21848031`, and Qwen2.5 Tree tool non-forced best epoch `70` `21848032` -> `21848033`.
+- Added Mistral Tree no-tool held-out validation repair to upgrade validation from `3` trials to `6` trials: `21848052` rollout -> `21848053` judge -> `21848054` score.
+- No lower-risk additional GPU-root jobs were submitted in this pass; remaining obvious gaps are either already queued, duplicate lower-quality historical rows, or require a new decision about rerunning older non-forced Tree no-tool artifacts.
+
+Failure repair:
+
+- Llama no-tool base rollout `21848029` failed during vLLM startup health probing after vLLM had mostly initialized; dependent job `21848031` was canceled as dependency-never-satisfied.
+- Retried Llama no-tool base testing with clean artifacts: `21859689` rollout -> `21859690` judge-score. The retry passed login-smoke and was running after the first minute.
+
+Audit update 2026-09-07:
+
+- The paper-readiness repair batch completed cleanly except for the earlier Llama no-tool base startup failure, which is already covered by retry `21859689` -> `21859690`.
+- Newly repaired testing rows now have full `5`-trial, `6`-dataset scores for Qwen2.5 tool base, Qwen34 no-tool base, Qwen34 tool base, Mistral no-tool base, Gemma no-tool base, Gemma GRPO no-tool, Mistral GRPO no-tool, Qwen2.5 Branch-32 no-tool, Qwen2.5 Tree tool non-forced, Qwen34 Tree no-tool, and Qwen34 Tree tool.
+- Remaining incomplete rows in the generated-config audit are duplicate or historical configs with a more current paper-ready counterpart, except Llama no-tool base, which is still actively retrying.
+- No additional paper-readiness pipeline was submitted from this audit because there is no clear non-duplicate missing row whose config and artifact target are already validated.
+
+Failure repair 2026-09-07:
+
+- Llama no-tool base retry `21859689` timed out at the `2h` SLURM limit after completing trials `0` through `3` and chunk `0` of trial `4`; vLLM was healthy and throughput was normal.
+- Canceled poisoned dependency `21859690`.
+- Submitted continuation retry without deleting completed tree chunks: `21866171` rollout -> `21866172` judge-score.
+- Retry resources: `21866171` uses `bfsl-delta-gpu`, `gpuA100x4`, one A100, `32` CPUs, `32G`, `3h`; `21866172` uses `bfsl-delta-cpu`, `16` CPUs, `16G`, `2h`.
+
+Completion update:
+
+- Llama no-tool base continuation `21866171` completed in `15m40s`, and judge-score `21866172` completed in `11m10s`.
+- Llama no-tool base testing is now paper-ready with `5` trials, `6` datasets, and macro accuracy `0.3926026`.
+- The generated testing-config audit now shows all canonical paper rows have `5` trials and `6` datasets. Remaining incomplete rows are older duplicate best-epoch configs that have newer paper-ready counterparts and should not be used in paper tables.

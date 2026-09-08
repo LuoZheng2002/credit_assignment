@@ -5,7 +5,7 @@ use std::time::Duration;
 use clap::{Parser, ValueEnum};
 use ordered_float::NotNan;
 use proctitle::set_title;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use credit_assignment::{
     check_python_env::check_sympy_availability,
@@ -22,7 +22,7 @@ use credit_assignment::{
     },
     get_accuracy::get_accuracy_from_tree_judgments_at_path,
     hybrid_dataset::{DatasetSplit, Validation},
-    json_toml_utils::read_json,
+    json_toml_utils::{read_json, write_json},
     launch_inference_wrapper::{
         self, InferenceBackend, best_effort_shutdown_stale_inference_wrapper,
         shut_down_inference_wrapper_process, update_inference_model,
@@ -115,6 +115,100 @@ fn add_accuracy_stats(
     accumulator.math_weighted_total_plays += value.math_weighted_total_plays;
     accumulator.numinamath_weighted_num_wins += value.numinamath_weighted_num_wins;
     accumulator.numinamath_weighted_total_plays += value.numinamath_weighted_total_plays;
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ValidationTrialAccuracyRecord {
+    trial_index: usize,
+    average_accuracy: Option<f32>,
+    deepmath_accuracy: Option<f32>,
+    math_accuracy: Option<f32>,
+    numinamath_accuracy: Option<f32>,
+    weighted_num_wins: f32,
+    weighted_total_plays: f32,
+    num_trees_with_judgments: usize,
+    num_trajectories_judged: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ValidationEpochAccuracyDetails {
+    schema_version: usize,
+    model_cli_name: String,
+    config_nickname: String,
+    epoch: usize,
+    requested_num_rollout_trials: usize,
+    scored_num_rollout_trials: usize,
+    dataset_split: String,
+    per_trial: Vec<ValidationTrialAccuracyRecord>,
+    aggregate: credit_assignment::get_accuracy::AccuracyStats,
+}
+
+fn validation_epoch_accuracy_details_path(
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+) -> String {
+    format!(
+        "{mount_dir}/small_files/{model_cli_name}/{config_nickname}/epoch_{epoch}/validation_accuracy_details.json"
+    )
+}
+
+fn validation_epoch_accuracy_details_backup_path(
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+) -> String {
+    format!(
+        "{mount_dir}/small_files/{model_cli_name}/{config_nickname}/accuracy_details_backup/validation_epoch_{epoch}.json"
+    )
+}
+
+fn write_validation_epoch_accuracy_details(
+    mount_dir: &str,
+    model_cli_name: &str,
+    config_nickname: &str,
+    epoch: usize,
+    requested_num_rollout_trials: usize,
+    per_trial: Vec<ValidationTrialAccuracyRecord>,
+    aggregate: credit_assignment::get_accuracy::AccuracyStats,
+) {
+    let details = ValidationEpochAccuracyDetails {
+        schema_version: 1,
+        model_cli_name: model_cli_name.to_string(),
+        config_nickname: config_nickname.to_string(),
+        epoch,
+        requested_num_rollout_trials,
+        scored_num_rollout_trials: per_trial.len(),
+        dataset_split: "validation".to_string(),
+        per_trial,
+        aggregate,
+    };
+    let canonical_path =
+        validation_epoch_accuracy_details_path(mount_dir, model_cli_name, config_nickname, epoch);
+    write_json(&canonical_path, &details).unwrap_or_else(|err| {
+        panic!(
+            "failed to write validation accuracy details to {}: {}",
+            canonical_path, err
+        )
+    });
+    let backup_path = validation_epoch_accuracy_details_backup_path(
+        mount_dir,
+        model_cli_name,
+        config_nickname,
+        epoch,
+    );
+    write_json(&backup_path, &details).unwrap_or_else(|err| {
+        panic!(
+            "failed to write validation accuracy details backup to {}: {}",
+            backup_path, err
+        )
+    });
+    log_info(format!(
+        "Epoch {}: wrote validation per-trial accuracy details to {} and backup {}",
+        epoch, canonical_path, backup_path
+    ));
 }
 
 async fn judge_validation_tree_artifacts<M: LlmModelMarker>(
@@ -549,6 +643,7 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
                 numinamath_weighted_total_plays: 0.0,
             };
             let mut scored_trials = 0usize;
+            let mut per_trial_accuracy_records = Vec::new();
             for trial_index in 0..num_rollout_trials {
                 let trial_tree_artifact_path = if num_rollout_trials > 1 {
                     trial_tree_artifact_path(&validation_tree_artifact_path, trial_index)
@@ -591,6 +686,17 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
                         ),
                     )
                     .await;
+                per_trial_accuracy_records.push(ValidationTrialAccuracyRecord {
+                    trial_index,
+                    average_accuracy: trial_accuracy_stats.accuracy(),
+                    deepmath_accuracy: trial_accuracy_stats.dataset_accuracy("deepmath"),
+                    math_accuracy: trial_accuracy_stats.dataset_accuracy("math"),
+                    numinamath_accuracy: trial_accuracy_stats.dataset_accuracy("numinamath"),
+                    weighted_num_wins: trial_accuracy_stats.weighted_num_wins,
+                    weighted_total_plays: trial_accuracy_stats.weighted_total_plays,
+                    num_trees_with_judgments: trial_accuracy_stats.num_trees_with_judgments,
+                    num_trajectories_judged: trial_accuracy_stats.num_trajectories_judged,
+                });
                 add_accuracy_stats(&mut accuracy_stats, &trial_accuracy_stats);
                 scored_trials += 1;
             }
@@ -620,6 +726,15 @@ async fn run_oneshot_validation<M: LlmModelMarker>(
                     epoch
                 ));
             }
+            write_validation_epoch_accuracy_details(
+                mount_dir,
+                model_cli_name,
+                config_nickname_training,
+                epoch,
+                num_rollout_trials,
+                per_trial_accuracy_records,
+                accuracy_stats,
+            );
         }
 
         if Path::new(&legacy_validation_action_log_path).exists() {

@@ -14,8 +14,8 @@ Unless otherwise noted, training uses the one-shot pipeline, LoRA rank 32, learn
 |---|---|---|
 | Qwen2.5 no-tool GRPO vs TreeMAPPO | Both improve slightly on validation; TreeMAPPO is competitive but not clearly better overall in serious tests yet. | Strongest completed long-run validation; serious 5-rollout tests complete for one GRPO and one Tree checkpoint. |
 | Qwen2.5 tool GRPO vs TreeMAPPO | Tool setting improves over base; TreeMAPPO currently has a better single serious-test mean than GRPO in the older 5-epoch tests. | Long-run validation complete to 40 epochs; latest serious tests still need consolidation. |
-| Qwen34 tool GRPO vs TreeMAPPO | GRPO is ahead on aggregate serious test, while TreeMAPPO wins some individual datasets. | Completed six-dataset serious tests. |
-| Qwen34 no-tool GRPO vs TreeMAPPO | Both improve validation; TreeMAPPO has the higher best validation gain. | Serious tests are partial/incomplete by dataset. |
+| Qwen34 tool GRPO vs TreeMAPPO | Current chunked/audited GRPO validation is complete to epoch 50; TreeMAPPO needs a matching chunked 50-epoch rerun before a fair current comparison. | Legacy TreeMAPPO rows exist but are not table-valid under the current coverage policy. |
+| Qwen34 no-tool GRPO vs TreeMAPPO | Current chunked/audited GRPO validation is complete to epoch 50; TreeMAPPO needs a matching chunked 50-epoch rerun before a fair current comparison. | Legacy TreeMAPPO rows exist but are not table-valid under the current coverage policy. |
 | Mistral/Gemma/Llama | Useful for robustness, but current runs are still completing or recovering from timeouts. | Do not use as primary paper evidence yet. |
 | KL regularization | `kl_beta = 0.001` did not improve Qwen2.5 no-tool validation relative to non-KL Adam runs. | Partial to epoch 30. |
 | SGD/no-warmup | Not effective in prior partial results. | Negative ablation; not primary. |
@@ -30,10 +30,10 @@ Validation accuracy is the mean over the current held-out validation mixture in 
 | Qwen2.5-7B | No-tool | TreeMAPPO | 70 | 0-21, then every 3 to 69 | 0.6447 | 27 | 0.6553 | +0.0107 | 69: 0.6520 | +0.0073 | Complete to epoch 69 summary |
 | Qwen2.5-7B | Tool | GRPO | 40 | every 3 epochs | 0.6113 | 6 | 0.6267 | +0.0153 | 39: 0.6157 | +0.0043 | Complete to epoch 39 summary |
 | Qwen2.5-7B | Tool | TreeMAPPO | 40 | every 3 epochs | 0.6133 | 12 | 0.6287 | +0.0153 | 39: 0.6233 | +0.0100 | Complete to epoch 39 summary |
-| Qwen34 | No-tool | GRPO | 10 | 0-10 | 0.7034 | 8 | 0.7147 | +0.0113 | 10: 0.7079 | +0.0045 | Complete validation |
-| Qwen34 | No-tool | TreeMAPPO | 10 | 0-10 | 0.7132 | 3 | 0.7256 | +0.0124 | 10: 0.7114 | -0.0018 | Complete validation |
-| Qwen34 | Tool | GRPO | 10 | 0-10 | 0.6753 | 9 | 0.6969 | +0.0216 | 10: 0.6922 | +0.0170 | Complete validation |
-| Qwen34 | Tool | TreeMAPPO | 10 | 0-10 | 0.6623 | 1 | 0.6924 | +0.0302 | 10: 0.6880 | +0.0257 | Complete validation |
+| Qwen34 | No-tool | GRPO | 50 | 0,10,20,30,40,50 | 0.6901 | 50 | 0.6991 | +0.0089 | 50: 0.6991 | +0.0089 | Current chunked validation, 6 trials |
+| Qwen34 | No-tool | TreeMAPPO | planned 50 | 0,10,20,30,40,50 | — | — | — | — | — | — | Needs current chunked rerun |
+| Qwen34 | Tool | GRPO | 50 | 0,10,20,30,40,50 | 0.6446 | 40 | 0.6617 | +0.0172 | 50: 0.6521 | +0.0076 | Current chunked validation, 6 trials |
+| Qwen34 | Tool | TreeMAPPO | planned 50 | 0,10,20,30,40,50 | — | — | — | — | — | — | Needs current chunked rerun |
 
 ## Serious Test Results
 
@@ -199,3 +199,44 @@ The table below is computed directly from `validation_judging_outputs_trial_*.js
 | Llama no-tool GRPO | 0, 10, 20, 30, 40, 50 | 3 each | 0.4421, 0.4613, 0.4697, 0.4691, 0.4551, 0.4562 | Valid 3-trial result; improves to epoch 20–30 then regresses. |
 
 Current anomaly: the only material count issue is Qwen2.5 no-tool non-forced TreeMAPPO, where epochs after 0 in the audited set currently have only one trial. Treat those later accuracies as provisional until the running six-trial recovery validation finishes.
+
+## Result Coverage Audit — 2026-09-02
+
+Policy update:
+
+- Validation and testing results at epochs that are not `0` or a multiple of `10` are deprecated and should not be used in paper tables.
+- Validation should cover the full held-out validation set: `3000` total judged trajectories across DeepMath, MATH, and NuminaMath for each rollout trial set.
+- Testing should cover all six test datasets when supported by the model/test configuration: AMC 2023, CollegeMath, DeepMath, Gaokao Math 2024, MATH, and NuminaMath.
+- Current testing rows with fewer than five rollout trials or missing datasets are treated as partial and need rerun before being used as final evidence.
+
+Current validated full-coverage held-out results:
+
+| Model | Experiment | Validated epochs | Trials | Coverage | Current implication |
+|---|---|---:|---:|---|---|
+| Qwen2.5 | GRPO no-tool, LoRA r32, lr `1e-6`, Adam | 0, 10, 20, 30, 60 | 6 | Full | Epochs 40, 50, and 70 are missing because checkpoints were pruned; retraining from trajectory chunks is required. |
+| Qwen2.5 | Tree no-tool, LoRA r32, lr `1e-6`, Adam | 0, 10, 20, 30, 60 | 6 | Full | Epochs 40, 50, and 70 are missing because checkpoints were pruned; retraining from trajectory chunks is required. |
+
+Current testing-result coverage:
+
+| Model | Experiment | Tested epoch | Macro accuracy | Trials | Coverage status |
+|---|---|---:|---:|---:|---|
+| Qwen2.5 | Base no-tool | 0 | 0.6366 | 5 | Full. |
+| Qwen2.5 | Base tool | 0 | 0.5398 | 1 | Partial; score repair is queued. |
+| Qwen2.5 | GRPO tool | 30 | 0.5780 | 1-2 | Partial. |
+| Qwen2.5 | Tree tool | 70 | 0.5880 | 1-2 | Partial. |
+| Qwen2.5 | Tree no-tool forced-token patched | 50 | 0.6188 | 1-2 | Partial. |
+| Qwen34 | Base no-tool | 0 | 0.5610 | 1 | Partial; score repair is queued. |
+| Qwen34 | Base tool | 0 | 0.5855 | 1 | Partial. |
+| Qwen34 | GRPO no-tool | 40 | 0.7720 | 1 | Partial; epoch 50 validation/test still needed. |
+| Qwen34 | GRPO tool | 40 | 0.7005 | 1 | Partial; epoch 50 validation/test still needed. |
+| Qwen34 | Tree no-tool | 10 | 0.7001 | 1 | Legacy/partial and under-trained; not valid for current GRPO-vs-Tree table. |
+| Qwen34 | Tree tool | — | — | — | Missing under current chunked coverage policy; schedule after/with Qwen34 Tree validation. |
+| Gemma | Base no-tool | 0 | 0.5303 | 1-2 | Partial; score repair is queued. |
+| Gemma | GRPO no-tool | 50 | 0.5764 | 1 | Partial. |
+| Gemma | Tree no-tool | 20 | 0.5702 | 1 | Partial; training is being extended to 50 epochs. |
+| Mistral | Base no-tool | 0 | 0.1397 | 1 | Partial; score repair is queued. |
+| Mistral | GRPO no-tool | 40 | 0.1567 | 1 | Partial. |
+| Mistral | Tree no-tool | 10 | 0.1609 | 1 | Partial; training is being extended to 50 epochs. |
+| Llama | Base no-tool | 0 | 0.3180 | 1 | Partial, currently DeepMath-only. |
+| Llama | GRPO no-tool | 30 | 0.3850 | 1 | Partial, currently DeepMath-only. |
+| Llama | Tree no-tool | 20 | pending | pending | Testing rollout/judge/score is queued. |

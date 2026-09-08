@@ -309,6 +309,16 @@ async fn score_testing<M: LlmModelMarker>(args: &CliArgs) -> Result<(), String> 
             "Testing score metadata written to {}",
             metadata_path.display()
         );
+        let backup_path = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("accuracy_details_backup")
+            .join(path.file_name().unwrap_or_default());
+        write_json(backup_path.to_string_lossy().as_ref(), &score)?;
+        println!(
+            "Testing per-dataset trial accuracy backup written to {}",
+            backup_path.display()
+        );
     }
     Ok(())
 }

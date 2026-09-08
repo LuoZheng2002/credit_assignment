@@ -77,6 +77,21 @@ impl AccuracyStats {
             self.numinamath_weighted_num_wins / self.numinamath_weighted_total_plays,
         ))
     }
+
+    pub fn dataset_accuracy(&self, dataset_name: &str) -> Option<f32> {
+        match dataset_name {
+            DEEPMATH_DATASET_NAME if self.deepmath_weighted_total_plays > 0.0 => {
+                Some(self.deepmath_weighted_num_wins / self.deepmath_weighted_total_plays)
+            }
+            MATH_DATASET_NAME if self.math_weighted_total_plays > 0.0 => {
+                Some(self.math_weighted_num_wins / self.math_weighted_total_plays)
+            }
+            NUMINAMATH_DATASET_NAME if self.numinamath_weighted_total_plays > 0.0 => {
+                Some(self.numinamath_weighted_num_wins / self.numinamath_weighted_total_plays)
+            }
+            _ => None,
+        }
+    }
 }
 
 fn dataset_bucket_name(dataset_name: &str) -> &'static str {
