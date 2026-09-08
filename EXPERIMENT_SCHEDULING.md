@@ -1871,3 +1871,36 @@ Completion update:
 - Replaced the placeholder branching-budget figure in the ICLR paper with a generated line chart from `credit_assignment_paper/data/qwen25_branch_budget_sensitivity.csv`.
 - The plotted Qwen2.5 no-tool points are leaves `8`, `16`, and `32`, with best validation gain and serious-test macro accuracy shown on separate axes.
 - The source script is `credit_assignment_paper/scripts/plot_branch_budget_sensitivity.py`; regenerate with the minimal Python environment if branch-budget data changes.
+
+## Per-Trial Score Recovery Plan — 2026-09-08
+
+- Goal: every paper-facing serious-test row should have per-dataset means, per-dataset trial vectors, dataset-wise macro averages, and confidence intervals wherever at least two valid trials exist.
+- Recovery priority:
+  1. CPU-only score repair for rows where all testing tree artifacts and judgment overlays already exist.
+  2. CPU-only judge-and-score repair for rows where testing tree artifacts exist but some judgment overlays or score files are missing/stale.
+  3. GPU testing-rollout repair only for rows whose tree artifacts are missing or incomplete; cap concurrently submitted GPU-root pipelines at `8`.
+- The canonical score artifact remains `small_files/<model>/<config>/test_accuracy_epoch_<epoch>.json`; the per-trial/per-dataset vectors must also be preserved in the score metadata or `accuracy_details_backup` artifact.
+- Treat score files with fewer than five testing trials or missing any of the six datasets as partial. They may be useful for interim diagnostics but should not be used as final paper-facing serious-test rows.
+- For the ICLR paper, Table 2 should show per-dataset serious-test accuracy grouped into in-distribution datasets (`DeepMath`, `MATH`, `NuminaMath`) and out-of-distribution datasets (`AMC 2023`, `GaoKao 2024`, `CollegeMath`), plus the equal-dataset macro average. Checkpoint epoch, trial count, and dataset count should move to a separate checkpoint-selection table.
+- Submitted CPU-only recovery jobs:
+  - Qwen2.5 tool base legacy score repair: `21888168`.
+  - Qwen2.5 tool Tree non-forced judgment/score repair: `21888169`.
+  - Qwen3 no-tool base judgment/score repair: `21888170`.
+  - Qwen3 no-tool Tree judgment/score repair: `21888171`.
+  - Qwen3 tool base judgment/score repair: `21888172`.
+  - Qwen3 tool GRPO score repair: `21888173`.
+  - Gemma base judgment/score repair: `21888174`.
+  - Gemma GRPO judgment/score repair: `21888175`.
+  - Gemma Tree score repair: `21888176`.
+  - Mistral base judgment/score repair: `21888177`.
+  - Mistral GRPO judgment/score repair: `21888178`.
+  - Mistral Tree score repair: `21888179`.
+  - Llama base judgment/score repair: `21888180`.
+  - Llama Tree score repair: `21888181`.
+- Submitted GPU-root recovery jobs under the 8-job cap:
+  - Initial Qwen3 tool Tree epoch-1 recovery jobs (`21888196`--`21888197`) were canceled because they did not match the epoch-50 checkpoint used in the paper table.
+  - Initial Qwen2.5 no-tool GRPO epoch-36 and Tree epoch-27 recovery jobs (`21888192`--`21888195`) were canceled because they did not match the validation-selected epochs used in the paper table.
+  - Corrected Qwen2.5 no-tool GRPO epoch-30 test rollout `21888300` -> judge-score `21888301`.
+  - Corrected Qwen2.5 no-tool Tree non-forced epoch-20 test rollout `21888303` -> judge-score `21888304`.
+  - Corrected Qwen3 no-tool Tree epoch-30 test rollout `21888358` -> judge-score `21888359`.
+  - Corrected Qwen3 tool Tree epoch-50 test rollout `21888360` -> judge-score `21888361`.
