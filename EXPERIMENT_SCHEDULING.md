@@ -1852,3 +1852,22 @@ Completion update:
 - Llama no-tool base continuation `21866171` completed in `15m40s`, and judge-score `21866172` completed in `11m10s`.
 - Llama no-tool base testing is now paper-ready with `5` trials, `6` datasets, and macro accuracy `0.3926026`.
 - The generated testing-config audit now shows all canonical paper rows have `5` trials and `6` datasets. Remaining incomplete rows are older duplicate best-epoch configs that have newer paper-ready counterparts and should not be used in paper tables.
+
+## Llama Tree No-Tool Epoch-50 Completion — 2026-09-08
+
+- Audit finding: Llama-3.1 no-tool TreeMAPPO had trained and validated checkpoints through epoch `40`; no epoch-50 model or validation result was present in the current artifacts.
+- Submitted a minimal continuation chain rather than rerunning rollout/judging/generation:
+  - training continuation to `num_oneshot_epochs = 50`: `21887721`;
+  - held-out validation rollout with `--epoch-interval 10 --num-rollout-trials 6`: `21887723`;
+  - held-out validation judging: `21887724`;
+  - held-out validation scoring: `21887725`.
+- Requested resources:
+  - GPU phases use account `bfsl-delta-gpu`, partition `gpuA100x4`, `1` A100 GPU, `32` CPUs, `32G` memory, `06:36:00` walltime.
+  - CPU phases use account `bfsl-delta-cpu`, partition `cpu`, `16` CPUs, `16G` memory, `00:30:00` walltime.
+- Scientific use: after scoring finishes, update the Llama Tree validation row from epoch `40` to include epoch `50` if the checkpoint exists and validation succeeds. If epoch `50` becomes best, schedule its serious-test pipeline before finalizing the Llama robustness claim.
+
+## Branching-Budget Figure Update — 2026-09-08
+
+- Replaced the placeholder branching-budget figure in the ICLR paper with a generated line chart from `credit_assignment_paper/data/qwen25_branch_budget_sensitivity.csv`.
+- The plotted Qwen2.5 no-tool points are leaves `8`, `16`, and `32`, with best validation gain and serious-test macro accuracy shown on separate axes.
+- The source script is `credit_assignment_paper/scripts/plot_branch_budget_sensitivity.py`; regenerate with the minimal Python environment if branch-budget data changes.
