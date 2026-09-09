@@ -1415,13 +1415,29 @@ fn direct_tree_to_selected_trajectories<M: LlmModelMarker>(
     selected_trajectory_indices: &BTreeSet<usize>,
     positive_advantage_only: bool,
 ) -> Vec<(usize, DirectTrainingTrajectory<M>)> {
+    direct_tree_to_selected_trajectories_impl(
+        tree,
+        training_advantage_policy,
+        selected_trajectory_indices,
+        positive_advantage_only,
+        true,
+    )
+}
+
+fn direct_tree_to_selected_trajectories_impl<M: LlmModelMarker>(
+    tree: &DirectTree<'_, M, Training>,
+    training_advantage_policy: TrainingAdvantagePolicy,
+    selected_trajectory_indices: &BTreeSet<usize>,
+    positive_advantage_only: bool,
+    require_mixed_correctness: bool,
+) -> Vec<(usize, DirectTrainingTrajectory<M>)> {
     if selected_trajectory_indices.is_empty() {
         return Vec::new();
     }
     if !ALLOW_INCOMPLETE && !tree.completed() {
         return Vec::new();
     }
-    if !matches!(tree.get_correctness(), TreeCorrectness::Mixed) {
+    if require_mixed_correctness && !matches!(tree.get_correctness(), TreeCorrectness::Mixed) {
         return Vec::new();
     }
     let mut segment_advantages =
@@ -1523,6 +1539,42 @@ fn direct_tree_to_selected_trajectories<M: LlmModelMarker>(
     }
 
     reconstructed
+}
+
+pub fn reconstruct_all_training_trajectories_from_tree_judged<M: LlmModelMarker>(
+    tree_judged: &TreeJudged<M, Training>,
+    training_advantage_policy: TrainingAdvantagePolicy,
+    positive_advantage_only: bool,
+) -> Vec<(usize, DirectTrainingTrajectory<M>)> {
+    let num_flat_leaves = tree_judged.tree.trunk_leaf_segments.len();
+    let rollout_config = RolloutConfig {
+        num_trunks: num_flat_leaves,
+        num_early_stopping_leaves: 0,
+        num_leaves: num_flat_leaves,
+        branching_policy: crate::rollout_config::BranchingPolicy::TreeMappoGuided,
+        _phantom: std::marker::PhantomData,
+    };
+    let action_log = DirectTreeActionLog {
+        mount_dir: String::new(),
+        config_nickname: tree_judged.tree.config_nickname.clone(),
+        question: tree_judged.tree.question.clone(),
+        rollout_config,
+        posterior_calculation_config: PosteriorCalculationConfig {
+            hyperparameters: Default::default(),
+        },
+        use_tool: tree_judged.tree.use_tool,
+        fixed_temperature: NotNan::new(constants::TRAINING_TEMPERATURE).unwrap(),
+        actions: Vec::new(),
+    };
+    let tree = direct_tree_from_tree_judged(tree_judged, &action_log);
+    let selected_trajectory_indices = (0..tree_judged.tree.leaf_answers.len()).collect();
+    direct_tree_to_selected_trajectories_impl(
+        &tree,
+        training_advantage_policy,
+        &selected_trajectory_indices,
+        positive_advantage_only,
+        false,
+    )
 }
 
 fn direct_tree_from_tree_judged<'a, M: LlmModelMarker, S: DatasetSplit>(
