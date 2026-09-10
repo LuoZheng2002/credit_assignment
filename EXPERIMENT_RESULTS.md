@@ -140,8 +140,8 @@ Interpretation: Mistral GRPO improves over the Mistral base serious-test mean, b
 
 | Model | Method | Status | Current implication |
 |---|---|---|---|
-| Llama 3.1 | GRPO | Training reached epoch 16; resume chain is queued. No completed validation/test summary yet. | Cannot report accuracy yet. |
-| Llama 3.1 | TreeMAPPO | Rollout reached 22/30 chunks; resume still needed before judging/generation/training. No completed validation/test summary yet. | Cannot report accuracy yet. |
+| Llama 3.1 | GRPO | Validation and serious-test rows are available in the paper tables. | Useful robustness result; GRPO has the stronger validation gain. |
+| Llama 3.1 | TreeMAPPO | Training and 6-trial held-out validation now reach epoch 50. Best validation remains epoch 40: `0.4589 ± 0.0029`; epoch 50 is `0.4568 ± 0.0053`. | Paper table can report full `0,10,...,50` coverage; no new serious test is needed unless we choose epoch 50 despite lower validation. |
 
 ## Negative / Unstable Results
 
@@ -164,8 +164,8 @@ These runs were active or recovering from timeouts as of the latest poll on 2026
 | Gemma | No-tool | TreeMAPPO | Training reached epoch 26 and resume chain is queued. | Do not cite until validation and serious test complete. |
 | Mistral | No-tool | GRPO | Training reached epoch 28 and validation rollout is running/resubmitted. | Secondary robustness only. |
 | Mistral | No-tool | TreeMAPPO | Rollout complete; judging repeatedly timed out; 16h cached retry queued. | Blocked on judging completion. |
-| Llama 3.1 | No-tool | GRPO | Training reached epoch 16 and resume chain is queued. | Do not cite yet. |
-| Llama 3.1 | No-tool | TreeMAPPO | Rollout reached 22/30 chunks; resume still needed. | Do not cite yet. |
+| Llama 3.1 | No-tool | GRPO | Current paper table includes completed validation/testing results. | Robustness evidence; not a headline claim. |
+| Llama 3.1 | No-tool | TreeMAPPO | Current paper table includes completed validation through epoch 50 and testing at validation-selected epoch 40. | Robustness evidence; no longer blocked on epoch-50 validation. |
 
 ## Paper-Ready Claims Supported Right Now
 
@@ -182,23 +182,23 @@ The table below is computed directly from `validation_judging_outputs_trial_*.js
 | Experiment | Epochs audited | Trials | Accuracy pattern | Anomaly check |
 |---|---:|---:|---|---|
 | Qwen2.5 no-tool GRPO | 0, 10, 20, 30, 40, 50, 60, 70 | 6 each | 0.6468, 0.6461, 0.6502, 0.6538, 0.6504, 0.6485, 0.6467, 0.6522 | No count anomaly; best audited epoch is 30. |
-| Qwen2.5 no-tool TreeMAPPO, non-forced | 0, 10, 20, 30, 60 | epoch 0 has 6; others have 1 | 0.6439, 0.6480, 0.6487, 0.6493, 0.6487 | Missing 6-trial validation for later epochs; recovery validation is running. |
+| Qwen2.5 no-tool TreeMAPPO, non-forced | 0, 10, 20 | 6 each | 0.6399, 0.6447, 0.6472 | Repaired 6-trial validation for the paper-facing non-forced ablation row; best audited epoch is 20. |
 | Qwen2.5 no-tool TreeMAPPO, forced token | 0, 10, 20, 30, 40, 50, 60, 70 | 6 each | 0.6436, 0.6502, 0.6467, 0.6489, 0.6497, 0.6523, 0.6522, 0.6494 | No count anomaly; best audited epoch is 50. |
 | Qwen2.5 tool GRPO | 0, 10, 20, 30, 40, 50, 60, 70 | 6 each | 0.6142, 0.6196, 0.6187, 0.6246, 0.6237, 0.6226, 0.6189, 0.6171 | No count anomaly; best audited epoch is 30. |
 | Qwen2.5 tool TreeMAPPO, forced token | 0, 10, 20, 30, 40, 50, 60, 70 | 6 each | 0.6134, 0.6222, 0.6186, 0.6154, 0.6181, 0.6236, 0.6209, 0.6181 | No count anomaly; best audited epoch is 50. |
-| TEMPO-style branching ablation | 0, 10, 20, 30, 40, 50, 60, 70 | 3 each | 0.6392, 0.6450, 0.6433, 0.6421, 0.6462, 0.6521, 0.6453, 0.6514 | Valid 3-trial ablation; not yet upgraded to 6 trials. |
-| TreeRPO-style advantage ablation | 0, 10, 20, 30, 40, 50, 60, 70 | 3 each | 0.6433, 0.6450, 0.6461, 0.6411, 0.6520, 0.6481, 0.6418, 0.6464 | Valid 3-trial ablation; not yet upgraded to 6 trials. |
-| TreeRL advantage-only ablation | 0, 10, 20, 30, 40, 50, 60, 70 | 3 each | 0.6487, 0.6470, 0.6480, 0.6472, 0.6488, 0.6489, 0.6523, 0.6510 | Valid 3-trial ablation; mild cache-hit drop at epochs 60–70 but counts are complete. |
-| TreeRL branching-only ablation | 0, 10, 20, 30, 40, 50, 60, 70 | 3 each | 0.6403, 0.6453, 0.6490, 0.6464, 0.6472, 0.6470, 0.6454, 0.6443 | Valid 3-trial ablation; mild cache-hit drop at epochs 60–70 but counts are complete. |
-| Branch-8 no-tool | 0, 5 | 3 each | 0.6436, 0.6456 | Short 5-epoch branch-budget result only. |
-| Branch-32 no-tool | 0, 5 | 3 each | 0.6443, 0.6456 | Short 5-epoch branch-budget result only. |
+| TEMPO-style branching ablation | 0, 10, 20, 30, 40, 50, 60, 70 | 6 each | 0.6418, 0.6448, 0.6432, 0.6444, 0.6470, 0.6497, 0.6438, 0.6515 | Repaired 6-trial validation; best audited epoch is 70. |
+| TreeRPO-style advantage ablation | 0, 10, 20, 30, 40, 50, 60, 70 | 6 each | 0.6426, 0.6434, 0.6436, 0.6423, 0.6519, 0.6497, 0.6466, 0.6460 | Repaired 6-trial validation; best audited epoch is 40. |
+| TreeRL advantage-only ablation | 0, 10, 20, 30, 40, 50, 60, 70 | 6 each | 0.6474, 0.6464, 0.6465, 0.6471, 0.6471, 0.6461, 0.6528, 0.6516 | Repaired 6-trial validation; best audited epoch is 60. |
+| TreeRL branching-only ablation | 0, 10, 20, 30, 40, 50, 60, 70 | 6 each | 0.6402, 0.6430, 0.6480, 0.6472, 0.6471, 0.6473, 0.6453, 0.6451 | Repaired 6-trial validation; best audited epoch is 20. |
+| Branch-8 no-tool | 0, 10, 20, 30, 40, 50, 60, 70 | 6 each | 0.6446, 0.6471, 0.6449, 0.6420, 0.6469, 0.6449, 0.6431, 0.6448 | Repaired 6-trial validation; best audited epoch is 10. |
+| Branch-32 no-tool | 0, 10, 20, 30, 40, 50, 60, 70 | 6 each | 0.6428, 0.6420, 0.6457, 0.6498, 0.6444, 0.6469, 0.6503, 0.6489 | Repaired 6-trial validation; best audited epoch is 60. |
 | Qwen34 no-tool GRPO | 0, 10, 20, 30, 40 | 3 each | 0.6911, 0.6900, 0.6880, 0.6907, 0.6934 | Valid 3-trial result; best audited epoch is 40. |
 | Qwen34 tool GRPO | 0, 10, 20, 30, 40 | 3 each | 0.6443, 0.6528, 0.6544, 0.6554, 0.6648 | Valid 3-trial result; clear positive trend to epoch 40. |
 | Gemma no-tool GRPO | 0, 10, 20, 30, 40, 50 | 3 each | 0.5636, 0.5639, 0.5649, 0.5592, 0.5612, 0.5664 | Valid 3-trial result; small noisy gain only. |
 | Mistral no-tool GRPO | 0, 10, 20, 30, 40, 50 | 3 each | 0.1781, 0.1769, 0.1740, 0.1754, 0.1803, 0.1737 | Valid 3-trial result; no positive trend. |
 | Llama no-tool GRPO | 0, 10, 20, 30, 40, 50 | 3 each | 0.4421, 0.4613, 0.4697, 0.4691, 0.4551, 0.4562 | Valid 3-trial result; improves to epoch 20–30 then regresses. |
 
-Current anomaly: the only material count issue is Qwen2.5 no-tool non-forced TreeMAPPO, where epochs after 0 in the audited set currently have only one trial. Treat those later accuracies as provisional until the running six-trial recovery validation finishes.
+Current anomaly: no paper-facing Qwen2.5 no-tool ablation validation row is missing its six-trial CI after the latest recovery pass. Remaining lower-trial rows are broader cross-model exploratory results and should stay marked as such.
 
 ## Result Coverage Audit — 2026-09-02
 
@@ -221,9 +221,9 @@ Current testing-result coverage:
 | Model | Experiment | Tested epoch | Macro accuracy | Trials | Coverage status |
 |---|---|---:|---:|---:|---|
 | Qwen2.5 | Base no-tool | 0 | 0.6366 | 5 | Full. |
-| Qwen2.5 | Base tool | 0 | 0.5398 | 1 | Partial; score repair is queued. |
+| Qwen2.5 | Base tool | 0 | 0.5742 | 5 | Full; repaired score has all 6 datasets and per-trial CIs. |
 | Qwen2.5 | GRPO tool | 30 | 0.5780 | 1-2 | Partial. |
-| Qwen2.5 | Tree tool | 70 | 0.5880 | 1-2 | Partial. |
+| Qwen2.5 | Tree tool | 70 | 0.5962 | 5 | Full for the non-forced Tree tool ablation row. |
 | Qwen2.5 | Tree no-tool forced-token patched | 50 | 0.6188 | 1-2 | Partial. |
 | Qwen34 | Base no-tool | 0 | 0.5610 | 1 | Partial; score repair is queued. |
 | Qwen34 | Base tool | 0 | 0.5855 | 1 | Partial. |

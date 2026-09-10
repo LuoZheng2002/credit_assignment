@@ -1856,15 +1856,19 @@ Completion update:
 ## Llama Tree No-Tool Epoch-50 Completion — 2026-09-08
 
 - Audit finding: Llama-3.1 no-tool TreeMAPPO had trained and validated checkpoints through epoch `40`; no epoch-50 model or validation result was present in the current artifacts.
-- Submitted a minimal continuation chain rather than rerunning rollout/judging/generation:
-  - training continuation to `num_oneshot_epochs = 50`: `21887721`;
-  - held-out validation rollout with `--epoch-interval 10 --num-rollout-trials 6`: `21887723`;
-  - held-out validation judging: `21887724`;
-  - held-out validation scoring: `21887725`.
+- Initial minimal continuation attempts exposed that rollout chunks after `40` were incomplete and generation had stale zero-byte trajectory chunks, so a full repair chain was required.
+- Completed repair chain:
+  - rollout continuation with forced selected branch tokens explicitly enabled: `21933273`;
+  - training judging: `21933274`;
+  - trajectory generation: `21933275`;
+  - training continuation to `num_oneshot_epochs = 50`: `21933276`;
+  - held-out validation rollout with `--epoch-interval 10 --num-rollout-trials 6`: `21933277`;
+  - held-out validation judging: `21933278`;
+  - held-out validation scoring: `21933279`.
 - Requested resources:
   - GPU phases use account `bfsl-delta-gpu`, partition `gpuA100x4`, `1` A100 GPU, `32` CPUs, `32G` memory, `06:36:00` walltime.
   - CPU phases use account `bfsl-delta-cpu`, partition `cpu`, `16` CPUs, `16G` memory, `00:30:00` walltime.
-- Scientific use: after scoring finishes, update the Llama Tree validation row from epoch `40` to include epoch `50` if the checkpoint exists and validation succeeds. If epoch `50` becomes best, schedule its serious-test pipeline before finalizing the Llama robustness claim.
+- Result: 6-trial held-out validation now covers epochs `0,10,20,30,40,50`. Epoch `40` remains best at `0.4589 ± 0.0029`; epoch `50` is lower at `0.4568 ± 0.0053`, so no epoch-50 serious test is needed for checkpoint selection.
 
 ## Branching-Budget Figure Update — 2026-09-08
 
