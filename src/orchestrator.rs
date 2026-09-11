@@ -14,7 +14,6 @@ use crate::{
         base_model_dir, model_metrics_path, model_parent_dir, progress_save_path,
         training_summary_parent_dir,
     },
-    get_accuracy::get_accuracy,
     hybrid_dataset::{Training, Validation},
     json_toml_utils::write_json,
     launch_inference_wrapper::{
@@ -28,11 +27,14 @@ use crate::{
     rollout::{RolloutProgramConfig, rollout_all},
     rollout_config::{RolloutConfig, TrainingRolloutConfig},
     training_set::{
-        TrainingSetSortMode, generate_training_trajectories, open_training_trajectories,
-        training_trajectories_file_path, training_trajectories_msgpack_file_path,
-        training_trajectories_stats_file_path,
+        TrainingSetSortMode, open_training_trajectories, training_trajectories_file_path,
+        training_trajectories_msgpack_file_path, training_trajectories_stats_file_path,
+        tree_judgments_to_training_trajectories,
     },
     tree_action_log::action_logs_file_path,
+    tree_judge_score::{
+        TreeArtifactReadMode, judge_tree_artifacts_at_path, score_tree_judgments_at_path,
+    },
     tree_to_action::BranchingRuntimeOptions,
 };
 use research_utility::launch_python_process::PythonProcessHandle;
@@ -67,6 +69,9 @@ pub struct Orchestrator {
     pub mount_dir: String,
     pub training_set_sort_mode: TrainingSetSortMode,
     pub training_trajectory_len_cutoff: usize,
+    pub force_selected_branch_token: bool,
+    pub judgment_cache_config_nickname: Option<String>,
+    pub training_questions_per_epoch: Option<usize>,
 }
 
 pub struct InferenceServerHandle {
@@ -110,6 +115,119 @@ fn average_accuracy(accuracies: (f32, f32, f32, f32)) -> f32 {
 }
 
 impl Orchestrator {
+    fn tree_artifact_dir<S: crate::hybrid_dataset::DatasetSplit, M: LlmModelMarker>(
+        &self,
+        epoch: usize,
+    ) -> String {
+        let split_name = match S::dataset_file_postfix().as_str() {
+            "train" => "training",
+            "val" => "validation",
+            "test" => "testing",
+            other => panic!("unsupported orchestrator split postfix: {other}"),
+        };
+        format!(
+            "{}/medium_files/{}/{}/epoch_{}/trees_{}_orchestrator",
+            self.mount_dir,
+            M::CLI_NAME,
+            self.config_nickname,
+            epoch,
+            split_name,
+        )
+    }
+
+    fn tree_judgment_path<S: crate::hybrid_dataset::DatasetSplit, M: LlmModelMarker>(
+        &self,
+        epoch: usize,
+    ) -> String {
+        let split_name = match S::dataset_file_postfix().as_str() {
+            "train" => "training",
+            "val" => "validation",
+            "test" => "testing",
+            other => panic!("unsupported orchestrator split postfix: {other}"),
+        };
+        format!(
+            "{}/medium_files/{}/{}/epoch_{}/tree_judgments_{}_orchestrator.jsonl",
+            self.mount_dir,
+            M::CLI_NAME,
+            self.config_nickname,
+            epoch,
+            split_name,
+        )
+    }
+
+    fn judging_output_path<S: crate::hybrid_dataset::DatasetSplit, M: LlmModelMarker>(
+        &self,
+        epoch: usize,
+    ) -> String {
+        let judgment_path = self.tree_judgment_path::<S, M>(epoch);
+        let path = Path::new(&judgment_path);
+        let parent = path.parent().unwrap_or_else(|| Path::new(""));
+        let stem = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("tree_judgments_orchestrator");
+        parent
+            .join(format!("{stem}_raw_outputs.jsonl"))
+            .to_string_lossy()
+            .to_string()
+    }
+
+    fn judgment_cache_dir<M: LlmModelMarker>(&self) -> String {
+        let cache_config_nickname = self
+            .judgment_cache_config_nickname
+            .as_deref()
+            .unwrap_or(&self.config_nickname);
+        format!(
+            "{}/medium_files/{}/{}/judgment_cache",
+            self.mount_dir,
+            M::CLI_NAME,
+            cache_config_nickname,
+        )
+    }
+
+    fn judgment_escalation_path<M: LlmModelMarker>(&self) -> String {
+        format!(
+            "{}/small_files/{}/{}/judgment_escalations.jsonl",
+            self.mount_dir,
+            M::CLI_NAME,
+            self.config_nickname,
+        )
+    }
+
+    async fn judge_tree_artifacts<S: crate::hybrid_dataset::DatasetSplit, M: LlmModelMarker>(
+        &self,
+        epoch: usize,
+        read_mode: TreeArtifactReadMode,
+    ) -> Result<(), String> {
+        let tree_artifact_dir = self.tree_artifact_dir::<S, M>(epoch);
+        let tree_judgment_path = self.tree_judgment_path::<S, M>(epoch);
+        let judging_output_path = self.judging_output_path::<S, M>(epoch);
+        let cache_dir = self.judgment_cache_dir::<M>();
+        let escalation_path = self.judgment_escalation_path::<M>();
+        log_info(format!(
+            "Judging tree artifacts for epoch {}: tree_artifact_dir={}, tree_judgment_path={}",
+            epoch, tree_artifact_dir, tree_judgment_path
+        ));
+        let summary = judge_tree_artifacts_at_path::<M, S>(
+            &tree_artifact_dir,
+            &tree_judgment_path,
+            &judging_output_path,
+            &cache_dir,
+            &escalation_path,
+            read_mode,
+        )
+        .await?;
+        log_info(format!(
+            "Finished judging tree artifacts for epoch {}: total_requests={} cache_hit_rate={:.4} exact_matches={} escalations={}",
+            epoch,
+            summary.total_requests,
+            summary.cache_hit_rate,
+            summary.exact_matches,
+            summary.phase3_escalations,
+        ));
+        Ok(())
+    }
+
     fn ensure_inference_server_process_alive(&mut self, context: &str) -> Result<(), String> {
         enum Probe {
             Alive,
@@ -205,6 +323,8 @@ impl Orchestrator {
                     self.ensure_inference_server_launched::<M>(epoch, self.use_tool)
                         .await?;
                     self.validate_model::<M>(epoch).await?;
+                    self.judge_tree_artifacts::<Validation, M>(epoch, TreeArtifactReadMode::Marked)
+                        .await?;
                     self.read_and_log_validation_accuracy::<M>(epoch).await?;
                     self.sweep_previous_model_dirs_after_validation::<M>(epoch)?;
                     if epoch >= self.num_total_epochs {
@@ -230,6 +350,8 @@ impl Orchestrator {
                     self.ensure_inference_server_launched::<M>(epoch, self.use_tool)
                         .await?;
                     self.collect_training_rollout::<M>(epoch).await?;
+                    self.judge_tree_artifacts::<Training, M>(epoch, TreeArtifactReadMode::Marked)
+                        .await?;
                     self.read_and_log_training_rollout_accuracy::<M>(epoch)
                         .await?;
                     // after rollout collection, we can shut down the inference server
@@ -312,14 +434,10 @@ impl Orchestrator {
         epoch: usize,
     ) -> Result<(), String> {
         log_info("Reading and logging validation accuracy...");
-        let accuracy_stats = get_accuracy::<M, Validation>(
-            &self.mount_dir,
-            self.config_nickname.clone(),
-            self.validation_rollout_config.clone(),
-            self.posterior_calculation_config.clone(),
-            epoch,
+        let accuracy_stats = score_tree_judgments_at_path::<M, Validation>(
+            &self.tree_artifact_dir::<Validation, M>(epoch),
+            &self.tree_judgment_path::<Validation, M>(epoch),
             "Validation accuracy",
-            self.use_tool,
         )
         .await;
         let Some(accuracies) = accuracy_stats.accuracy_tuple() else {
@@ -358,14 +476,10 @@ impl Orchestrator {
         epoch: usize,
     ) -> Result<(), String> {
         log_info("Reading and logging training rollout accuracy...");
-        let accuracy_stats = get_accuracy::<M, Training>(
-            &self.mount_dir,
-            self.config_nickname.clone(),
-            self.training_set_rollout_config.to_rollout_config(),
-            self.posterior_calculation_config.clone(),
-            epoch,
+        let accuracy_stats = score_tree_judgments_at_path::<M, Training>(
+            &self.tree_artifact_dir::<Training, M>(epoch),
+            &self.tree_judgment_path::<Training, M>(epoch),
             "Training rollout accuracy",
-            self.use_tool,
         )
         .await;
         let Some(accuracies) = accuracy_stats.accuracy_tuple() else {
@@ -462,8 +576,11 @@ impl Orchestrator {
             "Inference server is already launched for epoch {}, cannot launch again without shutting down",
             self.inference_server_handle.as_ref().unwrap().epoch
         );
-        let model_parent_dir =
-            model_parent_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
+        let model_parent_dir = if epoch == 0 {
+            base_model_dir(&self.mount_dir, M::CLI_NAME)
+        } else {
+            model_parent_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch)
+        };
         let model_path = format!("{}/model", model_parent_dir);
 
         log_info(format!(
@@ -581,9 +698,12 @@ impl Orchestrator {
             use_tool: self.use_tool,
             fixed_temperature: NotNan::new(constants::VALIDATION_TEMPERATURE).unwrap(),
             max_concurrent_rollout: get_max_concurrent_rollout(self.num_gpus),
-            branching_options: BranchingRuntimeOptions::default(),
-            tree_artifact_output_path: None,
-            tree_artifact_chunk_question_count: None,
+            branching_options: BranchingRuntimeOptions {
+                force_selected_branch_token: self.force_selected_branch_token,
+                ..BranchingRuntimeOptions::default()
+            },
+            tree_artifact_output_path: Some(self.tree_artifact_dir::<Validation, M>(epoch)),
+            tree_artifact_chunk_question_count: Some(100),
             question_flat_id_start: None,
             question_flat_id_end: None,
             question_flat_ids: None,
@@ -621,6 +741,29 @@ impl Orchestrator {
             panic!("Orchestrator did not launch the sglang server before generating training set");
         };
         let inference_endpoint = sglang_server_handle.inference_endpoint.clone();
+        let (question_flat_id_start, question_flat_id_end, finish_all_training_questions) =
+            if let Some(training_questions_per_epoch) = self.training_questions_per_epoch {
+                assert!(
+                    training_questions_per_epoch > 0,
+                    "training_questions_per_epoch must be positive"
+                );
+                let start = epoch
+                    .checked_mul(training_questions_per_epoch)
+                    .expect("epoch * training_questions_per_epoch overflowed");
+                let end = start
+                    .checked_add(training_questions_per_epoch)
+                    .expect("training question end overflowed");
+                log_info(format!(
+                    "Using deterministic orchestrator training question range for epoch {}: flat_id=[{}, {}) from training_questions_per_epoch={}",
+                    epoch, start, end, training_questions_per_epoch
+                ));
+                (Some(start), Some(end), true)
+            } else {
+                log_info(
+                    "No training_questions_per_epoch configured; orchestrator training rollout may scan the full training split until the time budget expires",
+                );
+                (None, None, false)
+            };
         // assert!(self.training_set_rollout_config.split == DatasetSplit::Training);
         let training_set_rollout_program_config = RolloutProgramConfig {
             config_nickname: self.config_nickname.clone(),
@@ -630,17 +773,20 @@ impl Orchestrator {
             client: self.client.clone(),
             inference_endpoint,
             rollout_secs: self.training_rollout_secs,
-            finish_all_questions: false,
+            finish_all_questions: finish_all_training_questions,
             total_epochs: self.num_total_epochs,
             action_log_store_override_path: None,
             use_tool: self.use_tool,
             fixed_temperature: NotNan::new(constants::TRAINING_TEMPERATURE).unwrap(),
             max_concurrent_rollout: get_max_concurrent_rollout(self.num_gpus),
-            branching_options: BranchingRuntimeOptions::default(),
-            tree_artifact_output_path: None,
-            tree_artifact_chunk_question_count: None,
-            question_flat_id_start: None,
-            question_flat_id_end: None,
+            branching_options: BranchingRuntimeOptions {
+                force_selected_branch_token: self.force_selected_branch_token,
+                ..BranchingRuntimeOptions::default()
+            },
+            tree_artifact_output_path: Some(self.tree_artifact_dir::<Training, M>(epoch)),
+            tree_artifact_chunk_question_count: Some(1),
+            question_flat_id_start,
+            question_flat_id_end,
             question_flat_ids: None,
         };
         let rollout_summary =
@@ -944,16 +1090,27 @@ impl Orchestrator {
 
     async fn generate_training_set<M: LlmModelMarker>(&self, epoch: usize) {
         log_info("Generating training set");
-        generate_training_trajectories::<M>(
-            &self.mount_dir,
-            &self.config_nickname,
+        tree_judgments_to_training_trajectories::<M>(
+            &self.tree_artifact_dir::<Training, M>(epoch),
+            &self.tree_judgment_path::<Training, M>(epoch),
+            training_trajectories_msgpack_file_path::<M>(
+                &self.mount_dir,
+                &self.config_nickname,
+                epoch,
+            ),
+            training_trajectories_stats_file_path::<M>(
+                &self.mount_dir,
+                &self.config_nickname,
+                epoch,
+            ),
             self.training_set_rollout_config.to_rollout_config(),
             self.posterior_calculation_config.clone(),
-            epoch,
             self.training_set_rollout_config.training_advantage_policy,
             self.positive_advantage_only,
             self.use_tool,
             self.training_set_sort_mode,
+            None,
+            None,
         )
         .await;
         log_info("Finished generating training set");

@@ -1,0 +1,13 @@
+[project]
+name = "credit-assignment-vllm"
+version = "0.1.0"
+description = "vLLM runtime environment for credit-assignment inference jobs."
+requires-python = "==3.12.*"
+dependencies = [
+    "vllm==0.27.1",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux'"]
+prerelease = "allow"

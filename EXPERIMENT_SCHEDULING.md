@@ -1908,3 +1908,17 @@ Completion update:
   - Corrected Qwen2.5 no-tool Tree non-forced epoch-20 test rollout `21888303` -> judge-score `21888304`.
   - Corrected Qwen3 no-tool Tree epoch-30 test rollout `21888358` -> judge-score `21888359`.
   - Corrected Qwen3 tool Tree epoch-50 test rollout `21888360` -> judge-score `21888361`.
+
+## Semi-Online Orchestrator Pilot — 2026-09-10
+
+- Feasibility assessment: the old `bin_orchestrator` pipeline still compiles, but it previously depended on legacy inline judgments in action logs. Since the current pipeline writes unjudged tree artifacts and attaches judgments in a separate pass, the orchestrator needed moderate compatibility repair before it could produce usable semi-online results.
+- Implemented repair: orchestrator rollout stages now write direct tree artifacts, call the independent tree judging/scoring path after validation and training rollouts, and generate training trajectories from judged tree artifacts rather than from legacy inline-judged action logs.
+- Scope: target only Qwen2.5-7B TreeMAPPO no-tool with one A100, LoRA rank `32`, learning rate `1e-6`, Adam state enabled, learning-rate warmup enabled, forced selected branch token enabled, and `ByQuestion` trajectory order.
+- Pilot config: `config/orchestrator/qwen25_tree_notool_lora_r32_lr1e6_semionline.toml`.
+- Pilot schedule: run `7` semi-online cycles. Each cycle targets roughly the rollout and training amount of `10` split one-shot epochs: `1{,}250` raw training questions (`10` tree chunks at `125` questions/chunk), `2100s` training rollout, `9000s` training budget, and `3` training iterations over the generated trajectories. The `2100s` rollout budget follows the Qwen2.5 no-tool timing audit of about `207s` per TreeMAPPO chunk for `10` chunks; training keeps the same rank-32, learning-rate `1e-6`, Adam/warmup setting as the split one-shot runs.
+- Training question order: the orchestrator pilot sets `training_questions_per_epoch = 1250`, so cycle `e` uses deterministic flat-id range `[e * 1250, (e + 1) * 1250)`. No random starting index is used.
+- Stopping policy: when `training_questions_per_epoch` is set, training rollout uses full-completion mode over that deterministic range; `training_rollout_secs` is retained only for progress reporting. Training itself stops by `num_iterations_limit`, not by `training_time`.
+- Resume behavior: `bin_orchestrator` persists `orchestration_progress.json` after each completed stage. A restarted job resumes from the last recorded stage/cycle, while the rollout store and tree-artifact done markers prevent already completed rollout work from being repeated within a cycle.
+- Judging cache reuse: orchestrator now accepts `judgment_cache_config_nickname`. The pilot points this to `tree_notool_forced_patched_rollout_30chunk`, so identical `(split, flat id, model answer)` judgments can reuse the existing Qwen2.5 TreeMAPPO no-tool cache instead of starting with an empty orchestrator-local cache.
+- Caveat: judging currently runs inside the same orchestrator SLURM allocation, so the GPU may idle during API judging. This is acceptable for a first one-A100 pilot but is less resource-efficient than the split pipeline.
+- vLLM environment: the orchestrator must use `/u/zluo8/credit_assignment/venvs/vllm-latest-cu130` exclusively. The HDD vLLM environment can stall during imports/startup and should not be used as a fallback. Reconstruct the `/u` venv from `pyprojects/vllm/pyproject.toml` with `UV_PROJECT_ENVIRONMENT=/u/zluo8/credit_assignment/venvs/vllm-latest-cu130 uv sync --no-dev`.

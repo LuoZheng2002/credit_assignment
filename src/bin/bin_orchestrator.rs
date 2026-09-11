@@ -39,6 +39,8 @@ use research_utility::progress_text_logger::{
 struct Args {
     #[arg(short = 'c', long)]
     config_path: String,
+    #[arg(long, default_value_t = false)]
+    login_smoke: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -62,6 +64,12 @@ struct OrchestratorConfig {
     keep_action_logs: bool,
     positive_advantage_only: bool,
     training_set_sort_mode: TrainingSetSortMode,
+    #[serde(default)]
+    force_selected_branch_token: bool,
+    #[serde(default)]
+    judgment_cache_config_nickname: Option<String>,
+    #[serde(default)]
+    training_questions_per_epoch: Option<usize>,
 }
 
 fn ensure_parent_dir_exists(file_path: &str) -> Result<(), String> {
@@ -92,7 +100,10 @@ async fn main() {
         std::process::abort();
     }));
     dotenvy::dotenv().ok();
-    let Args { config_path } = Args::parse();
+    let Args {
+        config_path,
+        login_smoke,
+    } = Args::parse();
     let config_contents = std::fs::read_to_string(&config_path)
         .unwrap_or_else(|err| panic!("failed to read config file '{}': {}", config_path, err));
     let OrchestratorConfig {
@@ -113,9 +124,24 @@ async fn main() {
         keep_action_logs,
         positive_advantage_only,
         training_set_sort_mode,
+        force_selected_branch_token,
+        judgment_cache_config_nickname,
+        training_questions_per_epoch,
         total_time_limit_hours: _, // mandatory in config, not yet wired into Orchestrator
     } = toml::from_str(&config_contents)
         .unwrap_or_else(|err| panic!("failed to parse config file '{}': {}", config_path, err));
+    if login_smoke {
+        println!(
+            "login-smoke passed for bin_orchestrator: model={}, config={}, rollout_config={}, epochs={}, gpus={}, backend={:?}",
+            model_cli_name,
+            config_nickname,
+            training_rollout_config_path,
+            num_total_epochs,
+            num_gpus,
+            inference_backend,
+        );
+        return;
+    }
     let process_title = format!("orchestrator_{}_{}", model_cli_name, config_nickname);
     set_title(&process_title);
     check_sympy_availability().unwrap();
@@ -223,6 +249,9 @@ async fn main() {
         mount_dir,
         training_set_sort_mode,
         training_trajectory_len_cutoff,
+        force_selected_branch_token,
+        judgment_cache_config_nickname,
+        training_questions_per_epoch,
     };
 
     let result = match model_name {
@@ -240,6 +269,8 @@ async fn main() {
     if let Err(e) = result {
         log_exit_hint(format!("Orchestrator exits with error: {}", e));
         log_error(format!("Orchestrator exits with error: {}", e));
+        ProgressTextLogger::shutdown().await.unwrap();
+        std::process::exit(1);
     }
     ProgressTextLogger::shutdown().await.unwrap();
 }
