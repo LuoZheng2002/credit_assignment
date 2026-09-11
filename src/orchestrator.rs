@@ -818,6 +818,12 @@ impl Orchestrator {
         &self,
         epoch: usize,
     ) -> Result<(), String> {
+        if epoch == 0 {
+            log_info(
+                "Skipping stale training checkpoint cleanup for epoch 0 because it uses the shared base model directory",
+            );
+            return Ok(());
+        }
         let checkpoint_parent_dir =
             model_parent_dir(&self.mount_dir, M::CLI_NAME, &self.config_nickname, epoch);
         let metrics_path =
